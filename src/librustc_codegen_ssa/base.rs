@@ -48,6 +48,7 @@ use common::{RealPredicate, TypeKind, IntPredicate};
 use meth;
 use mir;
 use rustc::util::time_graph;
+use rustc::util::nodemap::DefIdSet;
 use rustc_mir::monomorphize::Instance;
 use rustc_mir::monomorphize::partitioning::{CodegenUnit, CodegenUnitExt};
 use mono_item::MonoItem;
@@ -63,7 +64,7 @@ use std::any::Any;
 use std::cmp;
 use std::ops::{Deref, DerefMut};
 use std::time::{Instant, Duration};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use syntax_pos::Span;
 use syntax::attr;
 use rustc::hir;
@@ -558,7 +559,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     backend: B,
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     rx: mpsc::Receiver<Box<dyn Any + Send>>
-) -> OngoingCodegen<B> {
+) -> (OngoingCodegen<B>, Arc<DefIdSet>) {
 
     check_for_rustc_errors_attr(tcx);
 
@@ -607,12 +608,12 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
         ongoing_codegen.check_for_errors(tcx.sess);
 
-        return ongoing_codegen;
+        return (ongoing_codegen, Arc::new(DefIdSet::default()));
     }
 
     // Run the monomorphization collector and partition the collected items into
     // codegen units.
-    let codegen_units = tcx.collect_and_partition_mono_items(LOCAL_CRATE).1;
+    let (def_ids, codegen_units) = tcx.collect_and_partition_mono_items(LOCAL_CRATE);
     let codegen_units = (*codegen_units).clone();
 
     // Force all codegen_unit queries so they are already either red or green
@@ -761,7 +762,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     ongoing_codegen.check_for_errors(tcx.sess);
 
     assert_and_save_dep_graph(tcx);
-    ongoing_codegen.into_inner()
+    (ongoing_codegen.into_inner(), def_ids)
 }
 
 /// A curious wrapper structure whose only purpose is to call `codegen_aborted`

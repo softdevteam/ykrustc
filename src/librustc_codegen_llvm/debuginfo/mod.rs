@@ -14,7 +14,8 @@ mod doc;
 use rustc_codegen_ssa::debuginfo::VariableAccess::*;
 use rustc_codegen_ssa::debuginfo::VariableKind::*;
 
-use self::utils::{DIB, span_start, create_DIArray, is_node_local_to_unit};
+use self::utils::{create_DIArray, is_node_local_to_unit};
+pub (crate) use self::utils::{DIB, span_start};
 use self::namespace::mangled_name_of_instance;
 use self::type_names::compute_debuginfo_type_name;
 use self::metadata::{type_metadata, file_metadata, TypeMap};

@@ -15,7 +15,7 @@ extern crate rustc;
 extern crate rustc_codegen_utils;
 
 use std::any::Any;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use syntax::symbol::Symbol;
 use rustc::session::{Session, CompileIncomplete};
 use rustc::session::config::OutputFilenames;
@@ -23,6 +23,7 @@ use rustc::ty::TyCtxt;
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::MetadataLoader;
 use rustc::dep_graph::DepGraph;
+use rustc::util::nodemap::DefIdSet;
 use rustc_codegen_utils::codegen_backend::{CodegenBackend, MetadataOnlyCodegenBackend};
 
 struct TheBackend(Box<CodegenBackend>);
@@ -44,10 +45,10 @@ impl CodegenBackend for TheBackend {
         &self,
         tcx: TyCtxt<'a, 'tcx, 'tcx>,
         _rx: mpsc::Receiver<Box<Any + Send>>
-    ) -> Box<Any> {
+    ) -> (Box<Any>, Arc<DefIdSet>) {
         use rustc::hir::def_id::LOCAL_CRATE;
 
-        Box::new(tcx.crate_name(LOCAL_CRATE) as Symbol)
+        (Box::new(tcx.crate_name(LOCAL_CRATE) as Symbol), Arc::new(DefIdSet::default()))
     }
 
     fn join_codegen_and_link(

@@ -41,6 +41,7 @@ use rustc::middle::cstore::EncodedMetadata;
 use rustc::middle::cstore::MetadataLoader;
 use rustc::dep_graph::DepGraph;
 use rustc_target::spec::Target;
+use rustc::util::nodemap::DefIdSet;
 use rustc_mir::monomorphize::collector;
 use link::out_filename;
 
@@ -61,7 +62,7 @@ pub trait CodegenBackend {
         &self,
         tcx: TyCtxt<'a, 'tcx, 'tcx>,
         rx: mpsc::Receiver<Box<dyn Any + Send>>
-    ) -> Box<dyn Any>;
+    ) -> (Box<dyn Any>, Arc<DefIdSet>);
 
     /// This is called on the returned `Box<dyn Any>` from `codegen_backend`
     ///
@@ -143,19 +144,18 @@ impl CodegenBackend for MetadataOnlyCodegenBackend {
         &self,
         tcx: TyCtxt<'a, 'tcx, 'tcx>,
         _rx: mpsc::Receiver<Box<dyn Any + Send>>
-    ) -> Box<dyn Any> {
+    ) -> (Box<dyn Any>, Arc<DefIdSet>) {
         use rustc_mir::monomorphize::item::MonoItem;
 
         ::check_for_rustc_errors_attr(tcx);
         ::symbol_names_test::report_symbol_names(tcx);
         ::rustc_incremental::assert_dep_graph(tcx);
         ::rustc_incremental::assert_module_sources::assert_module_sources(tcx);
-        ::rustc_mir::monomorphize::assert_symbols_are_distinct(tcx,
-            collector::collect_crate_mono_items(
-                tcx,
-                collector::MonoItemCollectionMode::Eager
-            ).0.iter()
-        );
+
+        let (monos, _inline_map) = collector::collect_crate_mono_items(
+            tcx, collector::MonoItemCollectionMode::Eager);
+        ::rustc_mir::monomorphize::assert_symbols_are_distinct(tcx, monos.iter());
+
         // FIXME: Fix this
         // ::rustc::middle::dependency_format::calculate(tcx);
         let _ = tcx.link_args(LOCAL_CRATE);
@@ -180,11 +180,19 @@ impl CodegenBackend for MetadataOnlyCodegenBackend {
 
         let metadata = tcx.encode_metadata();
 
-        box OngoingCodegen {
+        let def_ids: DefIdSet = monos.iter().filter_map(|mono_item| {
+            match *mono_item {
+                MonoItem::Fn(ref instance) => Some(instance.def_id()),
+                MonoItem::Static(def_id) => Some(def_id),
+                _ => None,
+            }
+        }).collect();
+
+        (box OngoingCodegen {
             metadata: metadata,
             metadata_version: tcx.metadata_encoding_version().to_vec(),
             crate_name: tcx.crate_name(LOCAL_CRATE),
-        }
+        }, Arc::new(def_ids))
     }
 
     fn join_codegen_and_link(

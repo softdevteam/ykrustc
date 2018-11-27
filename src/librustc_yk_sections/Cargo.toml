@@ -1,0 +1,16 @@
+[package]
+authors = ["Edd Barrett <vext01@gmail.com>"]
+name = "rustc_yk_sections"
+version = "0.0.0"
+
+[lib]
+name = "rustc_yk_sections"
+path = "lib.rs"
+crate-type = ["dylib"]
+test = false
+
+[dependencies]
+rustc = { path = "../librustc" }
+rustc_yk_link = { path = "../librustc_yk_link" }
+rustc_codegen_utils = { path = "../librustc_codegen_utils" }
+byteorder = "1.2"
