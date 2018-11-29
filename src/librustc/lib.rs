@@ -93,6 +93,7 @@ extern crate parking_lot;
 extern crate rustc_errors as errors;
 extern crate rustc_rayon as rayon;
 extern crate rustc_rayon_core as rayon_core;
+extern crate rustc_yk_link;
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
 extern crate syntax_pos;

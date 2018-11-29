@@ -63,6 +63,8 @@ extern crate log;
 extern crate syntax;
 extern crate syntax_ext;
 extern crate syntax_pos;
+extern crate rustc_yk_sections;
+extern crate rustc_yk_link;
 
 // Note that the linkage here should be all that we need, on Linux we're not
 // prefixing the symbols here so this should naturally override our default

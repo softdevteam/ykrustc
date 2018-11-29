@@ -1,0 +1,10 @@
+[package]
+authors = ["Edd Barrett <vext01@gmail.com>"]
+name = "rustc_yk_link"
+version = "0.0.0"
+
+[lib]
+name = "rustc_yk_link"
+path = "lib.rs"
+test = false
+crate-type = ["dylib"]

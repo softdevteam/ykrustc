@@ -57,6 +57,7 @@ extern crate rustc_platform_intrinsics as intrinsics;
 extern crate rustc_codegen_utils;
 extern crate rustc_codegen_ssa;
 extern crate rustc_fs_util;
+extern crate rustc_yk_sections;
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
@@ -86,6 +87,7 @@ use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::session::{Session, CompileIncomplete};
 use rustc::session::config::{OutputFilenames, OutputType, PrintRequest};
 use rustc::ty::{self, TyCtxt};
+use rustc::util::nodemap::DefIdSet;
 use rustc::util::time_graph;
 use rustc::util::profiling::ProfileCategory;
 use rustc_mir::monomorphize;
@@ -296,8 +298,10 @@ impl CodegenBackend for LlvmCodegenBackend {
         &self,
         tcx: TyCtxt<'b, 'tcx, 'tcx>,
         rx: mpsc::Receiver<Box<dyn Any + Send>>
-    ) -> Box<dyn Any> {
-        box rustc_codegen_ssa::base::codegen_crate(LlvmCodegenBackend(()), tcx, rx)
+    ) -> (Box<dyn Any>, Arc<DefIdSet>) {
+        let (codegen, def_ids) =
+            rustc_codegen_ssa::base::codegen_crate(LlvmCodegenBackend(()), tcx, rx);
+        (box codegen, def_ids)
     }
 
     fn join_codegen_and_link(

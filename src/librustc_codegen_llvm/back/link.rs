@@ -32,6 +32,7 @@ use rustc::hir::def_id::CrateNum;
 use tempfile::{Builder as TempFileBuilder, TempDir};
 use rustc_target::spec::{PanicStrategy, RelroLevel, LinkerFlavor};
 use rustc_data_structures::fx::FxHashSet;
+use rustc_yk_sections::with_yk_debug_sections;
 use context::get_reloc_model;
 use llvm;
 
@@ -536,6 +537,15 @@ fn link_natively(sess: &Session,
     if let Some(args) = sess.target.target.options.post_link_args.get(&flavor) {
         cmd.args(args);
     }
+
+    // Link Yorick objects in.
+    if with_yk_debug_sections() {
+        if crate_type == config::CrateType::Executable {
+            cmd.arg("-Wl,--no-gc-sections");
+            cmd.args(sess.yk_link_objects.borrow().iter().map(|o| o.path()));
+        }
+    }
+
     for &(ref k, ref v) in &sess.target.target.options.link_env {
         cmd.env(k, v);
     }
