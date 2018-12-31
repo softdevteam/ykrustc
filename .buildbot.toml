@@ -1,5 +1,8 @@
 # Config file for continuous integration.
 
 [rust]
-# Use threads.
-codegen-units = 0
+codegen-units = 0           # Use many compilation units.
+debug-assertions = true     # Turn on assertions in rustc.
+
+[llvm]
+assertions = true           # Turn on assertions in LLVM.
