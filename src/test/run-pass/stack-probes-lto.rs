@@ -24,4 +24,6 @@
 // compile-flags: -C lto
 // no-prefer-dynamic
 
+extern crate core;
+
 include!("stack-probes.rs");

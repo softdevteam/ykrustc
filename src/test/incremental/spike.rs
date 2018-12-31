@@ -20,6 +20,7 @@
 #![rustc_partition_reused(module="spike", cfg="rpass2")]
 #![rustc_partition_codegened(module="spike-x", cfg="rpass2")]
 #![rustc_partition_reused(module="spike-y", cfg="rpass2")]
+#![no_trace]
 
 mod x {
     pub struct X {

@@ -127,6 +127,8 @@
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
 
+#![no_trace]
+
 fn main() {
     let bool_val: bool = true;
     let bool_ref: &bool = &bool_val;

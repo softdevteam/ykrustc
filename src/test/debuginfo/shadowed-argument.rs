@@ -66,6 +66,7 @@
 
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
+#![no_trace]
 
 fn a_function(x: bool, y: bool) {
     zzz(); // #break

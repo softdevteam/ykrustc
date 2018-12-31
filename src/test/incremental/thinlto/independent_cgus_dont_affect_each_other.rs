@@ -18,6 +18,7 @@
 
 #![feature(rustc_attrs)]
 #![crate_type="rlib"]
+#![no_trace]
 
 #![rustc_expected_cgu_reuse(module="independent_cgus_dont_affect_each_other-foo",
                             cfg="cfail2",

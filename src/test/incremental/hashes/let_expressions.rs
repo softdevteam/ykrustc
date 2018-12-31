@@ -24,6 +24,7 @@
 #![allow(warnings)]
 #![feature(rustc_attrs)]
 #![crate_type="rlib"]
+#![no_trace]
 
 // Change Name -----------------------------------------------------------------
 #[cfg(cfail1)]

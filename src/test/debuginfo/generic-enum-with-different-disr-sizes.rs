@@ -75,6 +75,7 @@
 #![allow(dead_code)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
+#![no_trace]
 
 // This test case makes sure that we get correct type descriptions for the enum
 // discriminant of different instantiations of the same generic enum type where,

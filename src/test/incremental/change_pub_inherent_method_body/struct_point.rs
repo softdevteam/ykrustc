@@ -18,6 +18,7 @@
 #![feature(rustc_attrs)]
 #![feature(stmt_expr_attributes)]
 #![allow(dead_code)]
+#![no_trace]
 
 #![rustc_partition_codegened(module="struct_point-point", cfg="cfail2")]
 

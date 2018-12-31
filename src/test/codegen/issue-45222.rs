@@ -12,6 +12,7 @@
 // min-llvm-version 6.0
 
 #![crate_type = "lib"]
+#![no_trace]
 
 // verify that LLVM recognizes a loop involving 0..=n and will const-fold it.
 

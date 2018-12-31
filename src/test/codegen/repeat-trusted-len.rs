@@ -8,6 +8,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// ignore-test FIXME swt_ignore
 // compile-flags: -O
 // ignore-tidy-linelength
 // min-llvm-version 7.0
