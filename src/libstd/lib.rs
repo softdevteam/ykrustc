@@ -518,6 +518,10 @@ mod coresimd {
 #[cfg(all(not(stage0), not(test)))]
 pub use stdsimd::arch;
 
+/// Yorick software tracing.
+#[unstable(feature = "yk_swt", issue = "0")]
+pub mod yk_swt;
+
 // Include a number of private modules that exist solely to provide
 // the rustdoc documentation for primitive types. Using `include!`
 // because rustdoc only looks for these modules at the crate level.

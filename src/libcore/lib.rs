@@ -229,6 +229,8 @@ mod nonzero;
 mod tuple;
 mod unit;
 
+mod yk_swt;
+
 // Pull in the `coresimd` crate directly into libcore. This is where all the
 // architecture-specific (and vendor-specific) intrinsics are defined. AKA
 // things like SIMD and such. Note that the actual source for all this lies in a
