@@ -12,6 +12,8 @@
 
 // Tests that MIR inliner works for any operand
 
+#![no_trace]
+
 fn main() {
     println!("{}", bar());
 }

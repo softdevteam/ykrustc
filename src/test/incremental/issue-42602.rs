@@ -21,6 +21,7 @@
 // compile-pass
 
 #![feature(rustc_attrs)]
+#![no_trace]
 
 fn main() {
     a::foo();

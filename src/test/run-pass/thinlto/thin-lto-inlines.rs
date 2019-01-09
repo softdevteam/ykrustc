@@ -18,6 +18,8 @@
 // praying two functions go into separate codegen units and then assuming that
 // if inlining *doesn't* happen the first byte of the functions will differ.
 
+#![no_trace]
+
 pub fn foo() -> u32 {
     bar::bar()
 }

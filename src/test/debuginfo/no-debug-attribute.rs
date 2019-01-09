@@ -26,6 +26,7 @@
 #![feature(no_debug)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
+#![no_trace]
 
 #[inline(never)]
 fn id<T>(x: T) -> T {x}

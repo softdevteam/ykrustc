@@ -791,6 +791,8 @@ pub const BUILTIN_ATTRIBUTES: &'static [(&'static str, AttributeType, AttributeG
     ("abi", Normal, Ungated),
     ("automatically_derived", Normal, Ungated),
     ("no_mangle", Normal, Ungated),
+    // Don't trace this. Disables the `AddYkSWTCalls` MIR transform.
+    ("no_trace", Whitelisted, Ungated),
     ("no_link", Normal, Ungated),
     ("derive", Normal, Ungated),
     ("should_panic", Normal, Ungated),

@@ -47,6 +47,7 @@ pub mod generator;
 pub mod inline;
 pub mod lower_128bit;
 pub mod uniform_array_move_out;
+pub mod add_yk_swt_calls;
 
 pub(crate) fn provide(providers: &mut Providers) {
     self::qualify_consts::provide(providers);
@@ -302,6 +303,7 @@ fn optimized_mir<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx 
         &simplify::SimplifyLocals,
 
         &add_call_guards::CriticalCallEdges,
+        &add_yk_swt_calls::AddYkSWTCalls(def_id.index),
         &dump_mir::Marker("PreCodegen"),
     ]);
     tcx.alloc_mir(mir)

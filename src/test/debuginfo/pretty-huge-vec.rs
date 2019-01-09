@@ -27,6 +27,7 @@
 
 
 #![allow(unused_variables)]
+#![no_trace]
 
 fn main() {
 

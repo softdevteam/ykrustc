@@ -13,7 +13,7 @@
 
 #![no_std]
 #![crate_type = "staticlib"]
-#![feature(panic_handler, alloc_error_handler, alloc)]
+#![feature(panic_handler, alloc_error_handler, alloc, lang_items)]
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -31,3 +31,6 @@ unsafe impl core::alloc::GlobalAlloc for MyAlloc {
     unsafe fn alloc(&self, _: core::alloc::Layout) -> *mut u8 { 0 as _ }
     unsafe fn dealloc(&self, _: *mut u8, _: core::alloc::Layout) {}
 }
+
+#[lang = "yk_swt_rec_loc"]
+fn yk_swt_rec_loc(_crate_hash: u64, _def_idx: u32, _bb: u32) {}

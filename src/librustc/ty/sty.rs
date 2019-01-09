@@ -2036,6 +2036,16 @@ impl<'tcx> Const<'tcx> {
     }
 
     #[inline]
+    pub fn from_u32(tcx: TyCtxt<'_, '_, 'tcx>, n: u32) -> &'tcx Self {
+        Self::from_bits(tcx, n as u128, ParamEnv::empty().and(tcx.types.u32))
+    }
+
+    #[inline]
+    pub fn from_u64(tcx: TyCtxt<'_, '_, 'tcx>, n: u64) -> &'tcx Self {
+        Self::from_bits(tcx, n as u128, ParamEnv::empty().and(tcx.types.u64))
+    }
+
+    #[inline]
     pub fn to_bits(
         &self,
         tcx: TyCtxt<'_, '_, 'tcx>,

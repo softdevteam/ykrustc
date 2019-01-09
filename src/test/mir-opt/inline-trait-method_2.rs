@@ -1,5 +1,7 @@
 // compile-flags: -Z span_free_formats -Z mir-opt-level=3
 
+#![no_trace]
+
 #[inline]
 fn test(x: &dyn X) -> bool {
     x.y()

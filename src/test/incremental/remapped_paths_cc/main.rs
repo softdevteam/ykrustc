@@ -16,6 +16,7 @@
 // are changed, even when the change happens in an external crate.
 
 #![feature(rustc_attrs)]
+#![no_trace]
 
 #![rustc_partition_reused(module="main", cfg="rpass2")]
 #![rustc_partition_reused(module="main-some_mod", cfg="rpass2")]

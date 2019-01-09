@@ -9,8 +9,11 @@
 // except according to those terms.
 
 // compile-flags: -Z span_free_formats
+// ignore-test FIXME swt_ignore
 
 // Tests that MIR inliner can handle closure arguments. (#45894)
+
+#![no_trace]
 
 fn main() {
     println!("{}", foo(0, 14));

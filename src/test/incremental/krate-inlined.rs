@@ -18,6 +18,7 @@
 #![allow(warnings)]
 #![feature(rustc_attrs)]
 #![rustc_partition_reused(module="krate_inlined-x", cfg="rpass2")]
+#![no_trace]
 
 fn main() {
     x::method();

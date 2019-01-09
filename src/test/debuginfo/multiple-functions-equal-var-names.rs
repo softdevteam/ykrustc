@@ -49,6 +49,7 @@
 #![allow(unused_variables)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
+#![no_trace]
 
 fn function_one() {
     let abc = 10101;

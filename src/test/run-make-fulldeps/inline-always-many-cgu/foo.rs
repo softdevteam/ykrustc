@@ -9,6 +9,7 @@
 // except according to those terms.
 
 #![crate_type = "lib"]
+#![no_trace]
 
 pub mod a {
     #[inline(always)]

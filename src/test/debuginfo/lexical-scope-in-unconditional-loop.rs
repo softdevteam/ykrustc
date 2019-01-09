@@ -146,6 +146,7 @@
 
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
+#![no_trace]
 
 fn main() {
 

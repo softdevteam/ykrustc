@@ -12,6 +12,7 @@
 // min-llvm-version 6.0
 
 #![crate_type="rlib"]
+#![no_trace]
 
 // CHECK-LABEL: @memzero
 // CHECK-NOT: store
