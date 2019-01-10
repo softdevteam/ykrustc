@@ -43,7 +43,7 @@ pub fn start_tracing() {
 }
 
 // FIXME Anything used in `rec_loc` below cannot itself be traced, or we get infinite recursion. To
-// work sround this, many crates are ignored by the software tracing MIR pass (see
+// work around this, many crates are ignored by the software tracing MIR pass (see
 // librustc_mir/transform/add_yk_swt_calls.rs). Consider re-implementing the trace recorder in C?
 
 /// The software trace recorder function.
@@ -58,7 +58,7 @@ fn rec_loc(crate_hash: u64, def_idx: u32, bb_idx: u32) {
         let mut trace_o = rc.borrow_mut();
         match trace_o.as_mut() {
             Some(trace) => trace.push(MirLoc{crate_hash, def_idx, bb_idx}),
-            None => (), // Tracing is disabled, do nothing.
+            None => (), // We are not currently tracing, do nothing.
         }
     });
 }
@@ -67,10 +67,6 @@ fn rec_loc(crate_hash: u64, def_idx: u32, bb_idx: u32) {
 #[cfg_attr(not(stage0), no_trace)]
 pub fn stop_tracing() -> Vec<MirLoc> {
     TRACE.with(|rc| {
-        let trace_o = rc.borrow_mut().take();
-        if trace_o.is_none() {
-            panic!("tracing not started on this thread");
-        }
-        trace_o.unwrap()
+        rc.borrow_mut().take().expect("tracing not started on this thread")
     })
 }

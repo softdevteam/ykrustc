@@ -20,7 +20,7 @@ pub fn main() {
 
 #[inline(never)]
 fn work() -> u64{
-    let mut res = 47;
+    let mut res = 100;
     for i in 0..10 {
         res += res / 2 + i;
     }

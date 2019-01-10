@@ -18,10 +18,10 @@ use rustc::hir;
 use rustc::hir::def_id::{DefIndex, LOCAL_CRATE};
 use rustc::hir::map::blocks::FnLikeNode;
 
-// Crates the trace recorder depends upon.
-// This is effectively libstd and its dependencies (from its Cargo manifest).
-static RECORDER_DEPS: &'static [&'static str] = &["std", "alloc", "panic_unwind",
-    "panic_abort", "core", "libc", "compiler_builtins", "profiler_builtins", "unwind"];
+// These crates are not transformed by this MIR pass.
+// FIXME: Currently libstd and its deps are blacklisted. In the long run, we don't want this.
+static BLACKLISTED_CRATES: &'static [&'static str] = &["std", "alloc", "panic_unwind",
+    "panic_abort", "core", "libc", "profiler_builtins", "unwind"];
 
 /// A MIR transformation that, for each basic block, inserts a call to the software trace recorder.
 /// The arguments to the calls (crate hash, DefId and block index) identify the position to be
@@ -175,9 +175,8 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
         return true;
     }
 
-    // FIXME Anything which the trace recorder depends upon cannot be traced or we will get
-    // infinite recursion at runtime..
-    if RECORDER_DEPS.contains(&&*tcx.crate_name(LOCAL_CRATE).as_str()) {
+    // Don't transform any crate which is blacklisted. See the comment against BLACKLISTED_CRATES.
+    if BLACKLISTED_CRATES.contains(&&*tcx.crate_name(LOCAL_CRATE).as_str()) {
         return true;
     }
 
