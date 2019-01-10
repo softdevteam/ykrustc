@@ -16,6 +16,10 @@
 // ignore-wasm32-bare no libc
 // ignore-windows
 
+// Software tracing breaks this test as the thread local used to record the trace becomes valid at
+// atexit() time.
+#![no_trace]
+
 #![feature(libc)]
 extern crate libc;
 

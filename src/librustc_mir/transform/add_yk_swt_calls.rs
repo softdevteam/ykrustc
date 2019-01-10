@@ -18,6 +18,11 @@ use rustc::hir;
 use rustc::hir::def_id::{DefIndex, LOCAL_CRATE};
 use rustc::hir::map::blocks::FnLikeNode;
 
+// Crates the trace recorder depends upon.
+// This is effectively libstd and its dependencies (from its Cargo manifest).
+static RECORDER_DEPS: &'static [&'static str] = &["std", "alloc", "panic_unwind",
+    "panic_abort", "core", "libc", "compiler_builtins", "profiler_builtins", "unwind"];
+
 /// A MIR transformation that, for each basic block, inserts a call to the software trace recorder.
 /// The arguments to the calls (crate hash, DefId and block index) identify the position to be
 /// inserted into a trace.
@@ -167,6 +172,12 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
     // recorder wrapper `core::yk_swt::yk_swt_rec_loc_wrap`. It's not worth investigating, as this
     // crate only contains wrapped C and ASM code that we can't transform anyway.
     if tcx.is_compiler_builtins(LOCAL_CRATE) {
+        return true;
+    }
+
+    // FIXME Anything which the trace recorder depends upon cannot be traced or we will get
+    // infinite recursion at runtime..
+    if RECORDER_DEPS.contains(&&*tcx.crate_name(LOCAL_CRATE).as_str()) {
         return true;
     }
 
