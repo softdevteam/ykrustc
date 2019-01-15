@@ -310,6 +310,7 @@
 #![feature(panic_info_message)]
 #![feature(non_exhaustive)]
 #![feature(alloc_layout_extra)]
+#![feature(yk_swt)]
 
 #![default_lib_allocator]
 
@@ -517,10 +518,6 @@ mod coresimd {
 #[stable(feature = "simd_arch", since = "1.27.0")]
 #[cfg(all(not(stage0), not(test)))]
 pub use stdsimd::arch;
-
-/// Yorick software tracing.
-#[unstable(feature = "yk_swt", issue = "0")]
-pub mod yk_swt;
 
 // Include a number of private modules that exist solely to provide
 // the rustdoc documentation for primitive types. Using `include!`

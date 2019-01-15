@@ -229,7 +229,9 @@ mod nonzero;
 mod tuple;
 mod unit;
 
-mod yk_swt;
+/// Yorick software tracing.
+#[unstable(feature = "yk_swt", issue = "0")]
+pub mod yk_swt;
 
 // Pull in the `coresimd` crate directly into libcore. This is where all the
 // architecture-specific (and vendor-specific) intrinsics are defined. AKA

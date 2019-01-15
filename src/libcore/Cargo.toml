@@ -21,3 +21,6 @@ path = "../libcore/benches/lib.rs"
 
 [dev-dependencies]
 rand = "0.5"
+
+[build-dependencies]
+cc = "1.0"

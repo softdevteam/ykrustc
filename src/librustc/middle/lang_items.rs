@@ -377,7 +377,6 @@ language_item_table! {
     U128ShroFnLangItem,          "u128_shro",          u128_shro_fn,            Target::Fn;
 
     YkSwtRecLocLangItem,         "yk_swt_rec_loc",     yk_swt_rec_loc,          Target::Fn;
-    YkSwtRecLocWrapLangItem,     "yk_swt_rec_loc_wrap",yk_swt_rec_loc_wrap,     Target::Fn;
 
     // Align offset for stride != 1, must not panic.
     AlignOffsetLangItem,         "align_offset",       align_offset_fn,         Target::Fn;
