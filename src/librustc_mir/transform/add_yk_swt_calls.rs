@@ -51,7 +51,7 @@ impl MirPass for AddYkSWTCalls {
             return;
         }
 
-        let rec_fn_defid = tcx.get_lang_items(LOCAL_CRATE).yk_swt_rec_loc_wrap()
+        let rec_fn_defid = tcx.get_lang_items(LOCAL_CRATE).yk_swt_rec_loc()
             .expect("couldn't find software trace recorder function");
 
         let unit_ty = tcx.mk_unit();

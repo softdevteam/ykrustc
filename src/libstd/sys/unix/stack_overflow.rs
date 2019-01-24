@@ -97,6 +97,10 @@ mod imp {
     unsafe extern fn signal_handler(signum: libc::c_int,
                                     info: *mut libc::siginfo_t,
                                     _data: *mut libc::c_void) {
+        // A signal handler can corrupt a software trace.
+        use core::yk_swt;
+        yk_swt::invalidate_trace();
+
         use sys_common::util::report_overflow;
 
         let guard = thread_info::stack_guard().unwrap_or(0..0);
