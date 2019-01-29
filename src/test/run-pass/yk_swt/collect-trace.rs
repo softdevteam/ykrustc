@@ -23,16 +23,11 @@ pub fn main() {
     black_box(work());
     let trace = stop_tracing().unwrap();
 
-    let len = trace.len();
     // The default capacity of the trace buffer is 1024. We want to be sure we've tested the case
     // where it had to be reallocated beyond its starting capacity.
-    assert!(len > 1024);
+    assert!(trace.1 > 1024);
 
-    for idx in 0..len {
-        trace.loc(idx); // All indices are in bounds, so should not panic.
-    }
-
-    unsafe { libc::free(trace.buf() as *mut libc::c_void) };
+    unsafe { libc::free(trace.0 as *mut libc::c_void) };
 }
 
 #[inline(never)]

@@ -15,7 +15,7 @@ extern crate core;
 extern crate libc;
 extern crate test;
 
-use core::yk_swt::{start_tracing, stop_tracing, SWTrace};
+use core::yk_swt::{start_tracing, stop_tracing, MirLoc};
 use std::thread;
 use test::black_box;
 
@@ -25,16 +25,14 @@ fn main() {
         start_tracing();
         let _ = work2();
         let raw_trace2 = stop_tracing().unwrap();
-        let trace2 = trace_to_vec(&raw_trace2);
-        unsafe { libc::free(raw_trace2.buf() as *mut libc::c_void) };
+        let trace2 = trace_to_vec(raw_trace2);
         trace2
     });
 
     start_tracing();
     black_box(work1());
     let raw_trace1 = stop_tracing().unwrap();
-    let trace1 = trace_to_vec(&raw_trace1);
-    unsafe { libc::free(raw_trace1.buf() as *mut libc::c_void) };
+    let trace1 = trace_to_vec(raw_trace1);
 
     let trace2 = thr2.join().unwrap();
 
@@ -42,12 +40,15 @@ fn main() {
 }
 
 // Copies a trace into a plain Rust Vec of tuples so we can compare them.
-fn trace_to_vec(t: &SWTrace) -> Vec<(u64, u32, u32)> {
+fn trace_to_vec(tup: (*mut MirLoc, usize)) -> Vec<(u64, u32, u32)> {
+    let (buf, len) = tup;
     let mut v = Vec::new();
-    for i in 0..t.len() {
-        let loc = t.loc(i);
-        v.push((loc.crate_hash, loc.def_idx, loc.bb_idx));
+    assert!(len < (isize::max_value() as usize)); // Or we can't do ptr arithmetic.
+    for i in 0..len {
+        let loc = unsafe { &*buf.offset(i as isize) };
+        v.push((loc.crate_hash(), loc.def_idx(), loc.bb_idx()));
     }
+    unsafe { libc::free(buf as *mut libc::c_void) };
     v
 }
 

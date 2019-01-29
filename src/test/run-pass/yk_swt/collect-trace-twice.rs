@@ -28,10 +28,10 @@ pub fn main() {
     black_box(work2());
     let trace2 = stop_tracing().unwrap();
 
-    assert!(trace1.len() > trace2.len());
+    assert!(trace1.1 > trace2.1);
 
-    unsafe { libc::free(trace1.buf() as *mut libc::c_void) };
-    unsafe { libc::free(trace2.buf() as *mut libc::c_void) };
+    unsafe { libc::free(trace1.0 as *mut libc::c_void) };
+    unsafe { libc::free(trace2.0 as *mut libc::c_void) };
 }
 
 #[inline(never)]
