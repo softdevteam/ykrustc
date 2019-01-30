@@ -7,51 +7,33 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/// The result of `yk_swt_stop_tracing_impl()` is an array of this C struct.
+/// A MIR basic block location.
+/// FIXME: This shouldn't live here, as it will need to be shared across all tracing backends.
 #[repr(C)]
 #[derive(Debug)]
 pub struct MirLoc {
     /// Unique identifier for the crate.
-    pub crate_hash: u64,
+    crate_hash: u64,
     /// The definition index.
-    pub def_idx: u32,
+    def_idx: u32,
     /// The basic block index.
-    pub bb_idx: u32,
+    bb_idx: u32,
 }
 
-/// Wraps the raw C trace buffer and exposes a more "Rusty" interface to it.
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct SWTrace {
-    /// A heap allocated array of `MirLoc` structs, which the consumer must free. Ideally we'd
-    /// have this struct implement `std::ops::Drop` or at least provide a method to do the freeing,
-    /// but we can do neither due to libcore restrictions.
-    buf: *mut MirLoc,
-    /// The number of items in the above array.
-    len: usize,
-}
-
-impl SWTrace {
-    /// Returns the number of MIR locations recorded in the trace.
-    pub fn len(&self) -> usize {
-        self.len
+impl MirLoc {
+    /// Returns the crate hash of the location.
+    pub fn crate_hash(&self) -> u64 {
+        self.crate_hash
     }
 
-    /// Return a pointer to the raw trace buffer. The consumer *must* free this pointer.
-    pub fn buf(self) -> *mut MirLoc {
-        self.buf
+    /// Returns the definition index of the location.
+    pub fn def_idx(&self) -> u32 {
+        self.def_idx
     }
 
-    /// Returns the location at index `idx` or `None` if the index is out of bounds.
-    pub fn loc<'a>(&'a self, idx: usize) -> &'a MirLoc {
-        if idx >= self.len {
-            panic!("software trace index out of bounds: len={}, idx={}", self.len, idx);
-        } else {
-            if idx > isize::max_value() as usize {
-                panic!("index too large for ptr arithmetic");
-            }
-            unsafe { &*self.buf.offset(idx as isize) }
-        }
+    /// Returns the basic block index of the location.
+    pub fn bb_idx(&self) -> u32 {
+        self.bb_idx
     }
 }
 
@@ -73,10 +55,11 @@ pub fn start_tracing() {
     unsafe { yk_swt_start_tracing_impl(); }
 }
 
-/// Stop software tracing and return the trace, or `None` if the trace was invalidated.
-/// The current thread must already be tracing.
+/// Stop software tracing and on success return a tuple containing a pointer to the raw trace
+/// buffer, and the number of items inside. Returns `None` if the trace was invalidated, or if an
+/// error occurred. The current thread must already be tracing.
 #[cfg_attr(not(stage0), no_trace)]
-pub fn stop_tracing() -> Option<SWTrace> {
+pub fn stop_tracing() -> Option<(*mut MirLoc, usize)> {
     let len: usize = 0;
 
     extern "C" { fn yk_swt_stop_tracing_impl(ret_len: &usize) -> *mut MirLoc; }
@@ -85,7 +68,7 @@ pub fn stop_tracing() -> Option<SWTrace> {
     if buf.is_null() {
         None
     } else {
-        Some(SWTrace { buf, len })
+        Some((buf, len))
     }
 }
 
