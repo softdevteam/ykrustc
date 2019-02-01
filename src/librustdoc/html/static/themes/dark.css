@@ -1,15 +1,3 @@
-/**
- * Copyright 2015 The Rust Project Developers. See the COPYRIGHT
- * file at the top-level directory of this distribution and at
- * http://rust-lang.org/COPYRIGHT.
- *
- * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
- * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
- * <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
- * option. This file may not be copied, modified, or distributed
- * except according to those terms.
- */
-
 body {
 	background-color: #353535;
 	color: #ddd;
@@ -94,12 +82,6 @@ pre {
 	border-bottom-color: #ddd;
 }
 
-:target { background: #494a3d; }
-
-:target > .in-band {
-	background: #494a3d;
-}
-
 .content .method .where,
 .content .fn .where,
 .content .where.fmt-newline {
@@ -174,12 +156,22 @@ a {
 	color: #D2991D;
 }
 
+.stab.internal a {
+	color: #304FFE;
+}
+
 a.test-arrow {
 	color: #dedede;
 }
 
 .collapse-toggle {
 	color: #999;
+}
+
+#crate-search {
+	color: #111;
+	background-color: #f0f0f0;
+	border-color: #000;
 }
 
 .search-input {
@@ -192,7 +184,12 @@ a.test-arrow {
 	border-color: #008dfd;
 }
 
+#crate-search + .search-input {
+	box-shadow: 1px 0 0 1px #000, 0 0 0 2px transparent;
+}
+
 .stab.unstable { background: #FFF5D6; border-color: #FFC600; color: #404040; }
+.stab.internal { background: #FFB9B3; border-color: #B71C1C; color: #404040; }
 .stab.deprecated { background: #F3DFFF; border-color: #7F0087;  color: #404040; }
 .stab.portability { background: #C4ECFF; border-color: #7BA5DB;  color: #404040; }
 
@@ -249,7 +246,7 @@ a.test-arrow:hover{
 	color: #999;
 }
 
-:target > code {
+:target > code, :target > .in-band {
 	background-color: #494a3d;
 }
 
@@ -285,7 +282,7 @@ pre.ignore:hover, .information:hover + pre.ignore {
 	color: rgba(255,142,0,1);
 }
 
-.search-failed > a {
+.search-failed a {
 	color: #0089ff;
 }
 
@@ -413,6 +410,21 @@ kbd {
 	color: #ccc;
 }
 
-.impl-items code {
-	background-color: rgba(0, 0, 0, 0);
+#sidebar-toggle {
+	background-color: #565656;
+}
+#sidebar-toggle:hover {
+	background-color: #676767;
+}
+#source-sidebar {
+	background-color: #565656;
+}
+#source-sidebar > .title {
+	border-bottom-color: #ccc;
+}
+div.files > a:hover, div.name:hover {
+	background-color: #444;
+}
+div.files > .selected {
+	background-color: #333;
 }

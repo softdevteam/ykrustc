@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This is the implementation of the pass which transforms generators into state machines.
 //!
 //! MIR generation for generators creates a function which has a self argument which
@@ -123,6 +113,33 @@ impl<'tcx> MutVisitor<'tcx> for DerefArgVisitor {
     }
 }
 
+struct PinArgVisitor<'tcx> {
+    ref_gen_ty: Ty<'tcx>,
+}
+
+impl<'tcx> MutVisitor<'tcx> for PinArgVisitor<'tcx> {
+    fn visit_local(&mut self,
+                   local: &mut Local,
+                   _: PlaceContext<'tcx>,
+                   _: Location) {
+        assert_ne!(*local, self_arg());
+    }
+
+    fn visit_place(&mut self,
+                    place: &mut Place<'tcx>,
+                    context: PlaceContext<'tcx>,
+                    location: Location) {
+        if *place == Place::Local(self_arg()) {
+            *place = Place::Projection(Box::new(Projection {
+                base: place.clone(),
+                elem: ProjectionElem::Field(Field::new(0), self.ref_gen_ty),
+            }));
+        } else {
+            self.super_place(place, context, location);
+        }
+    }
+}
+
 fn self_arg() -> Local {
     Local::new(1)
 }
@@ -181,11 +198,11 @@ impl<'a, 'tcx> TransformVisitor<'a, 'tcx> {
             span: source_info.span,
             ty: self.tcx.types.u32,
             user_ty: None,
-            literal: ty::Const::from_bits(
+            literal: self.tcx.intern_lazy_const(ty::LazyConst::Evaluated(ty::Const::from_bits(
                 self.tcx,
                 state_disc.into(),
                 ty::ParamEnv::empty().and(self.tcx.types.u32)
-            ),
+            ))),
         });
         Statement {
             source_info,
@@ -296,6 +313,23 @@ fn make_generator_state_argument_indirect<'a, 'tcx>(
     DerefArgVisitor.visit_mir(mir);
 }
 
+fn make_generator_state_argument_pinned<'a, 'tcx>(
+                tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                mir: &mut Mir<'tcx>) {
+    let ref_gen_ty = mir.local_decls.raw[1].ty;
+
+    let pin_did = tcx.lang_items().pin_type().unwrap();
+    let pin_adt_ref = tcx.adt_def(pin_did);
+    let substs = tcx.intern_substs(&[ref_gen_ty.into()]);
+    let pin_ref_gen_ty = tcx.mk_adt(pin_adt_ref, substs);
+
+    // Replace the by ref generator argument
+    mir.local_decls.raw[1].ty = pin_ref_gen_ty;
+
+    // Add the Pin field access to accesses of the generator state
+    PinArgVisitor { ref_gen_ty }.visit_mir(mir);
+}
+
 fn replace_result_variable<'tcx>(
     ret_ty: Ty<'tcx>,
     mir: &mut Mir<'tcx>,
@@ -339,36 +373,6 @@ impl<'tcx> Visitor<'tcx> for StorageIgnored {
     }
 }
 
-struct BorrowedLocals(liveness::LiveVarSet<Local>);
-
-fn mark_as_borrowed<'tcx>(place: &Place<'tcx>, locals: &mut BorrowedLocals) {
-    match *place {
-        Place::Local(l) => { locals.0.insert(l); },
-        Place::Promoted(_) |
-        Place::Static(..) => (),
-        Place::Projection(ref proj) => {
-            match proj.elem {
-                // For derefs we don't look any further.
-                // If it pointed to a Local, it would already be borrowed elsewhere
-                ProjectionElem::Deref => (),
-                _ => mark_as_borrowed(&proj.base, locals)
-            }
-        }
-    }
-}
-
-impl<'tcx> Visitor<'tcx> for BorrowedLocals {
-    fn visit_rvalue(&mut self,
-                    rvalue: &Rvalue<'tcx>,
-                    location: Location) {
-        if let Rvalue::Ref(_, _, ref place) = *rvalue {
-            mark_as_borrowed(place, self);
-        }
-
-        self.super_rvalue(rvalue, location)
-    }
-}
-
 fn locals_live_across_suspend_points(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     mir: &Mir<'tcx>,
@@ -379,7 +383,7 @@ fn locals_live_across_suspend_points(
     FxHashMap<BasicBlock, liveness::LiveVarSet<Local>>,
 ) {
     let dead_unwinds = BitSet::new_empty(mir.basic_blocks().len());
-    let node_id = tcx.hir.as_local_node_id(source.def_id).unwrap();
+    let node_id = tcx.hir().as_local_node_id(source.def_id).unwrap();
 
     // Calculate when MIR locals have live storage. This gives us an upper bound of their
     // lifetimes.
@@ -689,7 +693,7 @@ fn create_generator_drop_shim<'a, 'tcx>(
         // Alias tracking must know we changed the type
         mir.basic_blocks_mut()[START_BLOCK].statements.insert(0, Statement {
             source_info,
-            kind: StatementKind::EscapeToRaw(Operand::Copy(Place::Local(self_arg()))),
+            kind: StatementKind::Retag(RetagKind::Raw, Place::Local(self_arg())),
         })
     }
 
@@ -727,7 +731,9 @@ fn insert_panic_block<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             span: mir.span,
             ty: tcx.types.bool,
             user_ty: None,
-            literal: ty::Const::from_bool(tcx, false),
+            literal: tcx.intern_lazy_const(ty::LazyConst::Evaluated(
+                ty::Const::from_bool(tcx, false),
+            )),
         }),
         expected: true,
         msg: message,
@@ -779,6 +785,7 @@ fn create_generator_resume_function<'a, 'tcx>(
     insert_switch(tcx, mir, cases, &transform, TerminatorKind::Unreachable);
 
     make_generator_state_argument_indirect(tcx, def_id, mir);
+    make_generator_state_argument_pinned(tcx, mir);
 
     no_landing_pads(tcx, mir);
 

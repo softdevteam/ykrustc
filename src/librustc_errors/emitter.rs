@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use self::Destination::*;
 
 use syntax_pos::{SourceFile, Span, MultiSpan};
@@ -549,7 +539,7 @@ impl EmitterWriter {
         // 3 |
         // 4 |   }
         //   |
-        for pos in 0..line_len + 1 {
+        for pos in 0..=line_len {
             draw_col_separator(buffer, line_offset + pos + 1, width_offset - 2);
             buffer.putc(line_offset + pos + 1,
                         width_offset - 2,
@@ -617,7 +607,7 @@ impl EmitterWriter {
             let pos = pos + 1;
 
             if pos > 1 && (annotation.has_label() || annotation.takes_space()) {
-                for p in line_offset + 1..line_offset + pos + 1 {
+                for p in line_offset + 1..=line_offset + pos {
                     buffer.putc(p,
                                 code_offset + annotation.start_col,
                                 '|',
@@ -634,7 +624,7 @@ impl EmitterWriter {
                     }
                 }
                 AnnotationType::MultilineEnd(depth) => {
-                    for p in line_offset..line_offset + pos + 1 {
+                    for p in line_offset..=line_offset + pos {
                         buffer.putc(p,
                                     width_offset + depth - 1,
                                     '|',
@@ -969,7 +959,7 @@ impl EmitterWriter {
             Style::MainHeaderMsg
         };
 
-        if msp.primary_spans().is_empty() && msp.span_labels().is_empty() && is_secondary
+        if !msp.has_primary_spans() && !msp.has_span_labels() && is_secondary
            && !self.short_message {
             // This is a secondary message with no span info
             for _ in 0..max_line_num_len {
@@ -1044,7 +1034,7 @@ impl EmitterWriter {
                     buffer.append(buffer_msg_line_offset,
                                   &format!("{}:{}:{}",
                                            loc.file.name,
-                                           sm.doctest_offset_line(loc.line),
+                                           sm.doctest_offset_line(&loc.file.name, loc.line),
                                            loc.col.0 + 1),
                                   Style::LineAndColumn);
                     for _ in 0..max_line_num_len {
@@ -1054,7 +1044,7 @@ impl EmitterWriter {
                     buffer.prepend(0,
                                    &format!("{}:{}:{}: ",
                                             loc.file.name,
-                                            sm.doctest_offset_line(loc.line),
+                                            sm.doctest_offset_line(&loc.file.name, loc.line),
                                             loc.col.0 + 1),
                                    Style::LineAndColumn);
                 }
@@ -1075,7 +1065,8 @@ impl EmitterWriter {
                     };
                     format!("{}:{}{}",
                             annotated_file.file.name,
-                            sm.doctest_offset_line(first_line.line_index),
+                            sm.doctest_offset_line(
+                                &annotated_file.file.name, first_line.line_index),
                             col)
                 } else {
                     annotated_file.file.name.to_string()
@@ -1261,7 +1252,7 @@ impl EmitterWriter {
 
                         // Do not underline the leading...
                         let start = part.snippet.len()
-                            .saturating_sub(part.snippet.trim_left().len());
+                            .saturating_sub(part.snippet.trim_start().len());
                         // ...or trailing spaces. Account for substitutions containing unicode
                         // characters.
                         let sub_len = part.snippet.trim().chars().fold(0, |acc, ch| {

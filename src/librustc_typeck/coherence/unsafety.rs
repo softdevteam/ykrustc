@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Unsafety checker: every impl either implements a trait defined in this
 //! crate or pertains to a type defined in this crate.
 
@@ -17,7 +7,7 @@ use rustc::hir::{self, Unsafety};
 
 pub fn check<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     let mut unsafety = UnsafetyChecker { tcx };
-    tcx.hir.krate().visit_all_item_likes(&mut unsafety);
+    tcx.hir().krate().visit_all_item_likes(&mut unsafety);
 }
 
 struct UnsafetyChecker<'cx, 'tcx: 'cx> {
@@ -31,7 +21,7 @@ impl<'cx, 'tcx, 'v> UnsafetyChecker<'cx, 'tcx> {
                                 unsafety: hir::Unsafety,
                                 polarity: hir::ImplPolarity)
     {
-        if let Some(trait_ref) = self.tcx.impl_trait_ref(self.tcx.hir.local_def_id(item.id)) {
+        if let Some(trait_ref) = self.tcx.impl_trait_ref(self.tcx.hir().local_def_id(item.id)) {
             let trait_def = self.tcx.trait_def(trait_ref.def_id);
             let unsafe_attr = impl_generics.and_then(|generics| {
                 generics.params.iter().find(|p| p.pure_wrt_drop).map(|_| "may_dangle")

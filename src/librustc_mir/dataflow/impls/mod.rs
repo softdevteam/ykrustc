@@ -1,13 +1,3 @@
-// Copyright 2012-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Dataflow analyses are built upon some interpretation of the
 //! bitvectors attached to each basic block, represented via a
 //! zero-sized structure.
@@ -293,7 +283,7 @@ impl<'a, 'gcx, 'tcx> DefinitelyInitializedPlaces<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> BitDenotation for MaybeInitializedPlaces<'a, 'gcx, 'tcx> {
+impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for MaybeInitializedPlaces<'a, 'gcx, 'tcx> {
     type Idx = MovePathIndex;
     fn name() -> &'static str { "maybe_init" }
     fn bits_per_block(&self) -> usize {
@@ -331,11 +321,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation for MaybeInitializedPlaces<'a, 'gcx, 'tcx> {
         )
     }
 
-    fn propagate_call_return(&self,
-                             in_out: &mut BitSet<MovePathIndex>,
-                             _call_bb: mir::BasicBlock,
-                             _dest_bb: mir::BasicBlock,
-                             dest_place: &mir::Place) {
+    fn propagate_call_return(
+        &self,
+        in_out: &mut BitSet<MovePathIndex>,
+        _call_bb: mir::BasicBlock,
+        _dest_bb: mir::BasicBlock,
+        dest_place: &mir::Place<'tcx>,
+    ) {
         // when a call returns successfully, that means we need to set
         // the bits for that dest_place to 1 (initialized).
         on_lookup_result_bits(self.tcx, self.mir, self.move_data(),
@@ -344,7 +336,7 @@ impl<'a, 'gcx, 'tcx> BitDenotation for MaybeInitializedPlaces<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> BitDenotation for MaybeUninitializedPlaces<'a, 'gcx, 'tcx> {
+impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for MaybeUninitializedPlaces<'a, 'gcx, 'tcx> {
     type Idx = MovePathIndex;
     fn name() -> &'static str { "maybe_uninit" }
     fn bits_per_block(&self) -> usize {
@@ -387,11 +379,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation for MaybeUninitializedPlaces<'a, 'gcx, 'tcx> 
         )
     }
 
-    fn propagate_call_return(&self,
-                             in_out: &mut BitSet<MovePathIndex>,
-                             _call_bb: mir::BasicBlock,
-                             _dest_bb: mir::BasicBlock,
-                             dest_place: &mir::Place) {
+    fn propagate_call_return(
+        &self,
+        in_out: &mut BitSet<MovePathIndex>,
+        _call_bb: mir::BasicBlock,
+        _dest_bb: mir::BasicBlock,
+        dest_place: &mir::Place<'tcx>,
+    ) {
         // when a call returns successfully, that means we need to set
         // the bits for that dest_place to 0 (initialized).
         on_lookup_result_bits(self.tcx, self.mir, self.move_data(),
@@ -400,7 +394,7 @@ impl<'a, 'gcx, 'tcx> BitDenotation for MaybeUninitializedPlaces<'a, 'gcx, 'tcx> 
     }
 }
 
-impl<'a, 'gcx, 'tcx> BitDenotation for DefinitelyInitializedPlaces<'a, 'gcx, 'tcx> {
+impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for DefinitelyInitializedPlaces<'a, 'gcx, 'tcx> {
     type Idx = MovePathIndex;
     fn name() -> &'static str { "definite_init" }
     fn bits_per_block(&self) -> usize {
@@ -441,11 +435,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation for DefinitelyInitializedPlaces<'a, 'gcx, 'tc
         )
     }
 
-    fn propagate_call_return(&self,
-                             in_out: &mut BitSet<MovePathIndex>,
-                             _call_bb: mir::BasicBlock,
-                             _dest_bb: mir::BasicBlock,
-                             dest_place: &mir::Place) {
+    fn propagate_call_return(
+        &self,
+        in_out: &mut BitSet<MovePathIndex>,
+        _call_bb: mir::BasicBlock,
+        _dest_bb: mir::BasicBlock,
+        dest_place: &mir::Place<'tcx>,
+    ) {
         // when a call returns successfully, that means we need to set
         // the bits for that dest_place to 1 (initialized).
         on_lookup_result_bits(self.tcx, self.mir, self.move_data(),
@@ -454,7 +450,7 @@ impl<'a, 'gcx, 'tcx> BitDenotation for DefinitelyInitializedPlaces<'a, 'gcx, 'tc
     }
 }
 
-impl<'a, 'gcx, 'tcx> BitDenotation for EverInitializedPlaces<'a, 'gcx, 'tcx> {
+impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for EverInitializedPlaces<'a, 'gcx, 'tcx> {
     type Idx = InitIndex;
     fn name() -> &'static str { "ever_init" }
     fn bits_per_block(&self) -> usize {
@@ -488,7 +484,7 @@ impl<'a, 'gcx, 'tcx> BitDenotation for EverInitializedPlaces<'a, 'gcx, 'tcx> {
                 //
                 // FIXME(#46525): We *need* to do this for StorageLive as well as
                 // StorageDead, because lifetimes of match bindings with guards are
-                // weird - i.e. this code
+                // weird - i.e., this code
                 //
                 // ```
                 //     fn main() {
@@ -530,11 +526,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation for EverInitializedPlaces<'a, 'gcx, 'tcx> {
         );
     }
 
-    fn propagate_call_return(&self,
-                             in_out: &mut BitSet<InitIndex>,
-                             call_bb: mir::BasicBlock,
-                             _dest_bb: mir::BasicBlock,
-                             _dest_place: &mir::Place) {
+    fn propagate_call_return(
+        &self,
+        in_out: &mut BitSet<InitIndex>,
+        call_bb: mir::BasicBlock,
+        _dest_bb: mir::BasicBlock,
+        _dest_place: &mir::Place<'tcx>,
+    ) {
         let move_data = self.move_data();
         let bits_per_block = self.bits_per_block();
         let init_loc_map = &move_data.init_loc_map;

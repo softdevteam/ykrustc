@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Traits for working with Errors.
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -36,21 +26,21 @@ use str;
 use string;
 
 /// `Error` is a trait representing the basic expectations for error values,
-/// i.e. values of type `E` in [`Result<T, E>`]. Errors must describe
+/// i.e., values of type `E` in [`Result<T, E>`]. Errors must describe
 /// themselves through the [`Display`] and [`Debug`] traits, and may provide
 /// cause chain information:
 ///
-/// The [`cause`] method is generally used when errors cross "abstraction
-/// boundaries", i.e.  when a one module must report an error that is "caused"
-/// by an error from a lower-level module. This setup makes it possible for the
-/// high-level module to provide its own errors that do not commit to any
-/// particular implementation, but also reveal some of its implementation for
-/// debugging via [`cause`] chains.
+/// The [`source`] method is generally used when errors cross "abstraction
+/// boundaries". If one module must report an error that is caused by an error
+/// from a lower-level module, it can allow access to that error via the
+/// [`source`] method. This makes it possible for the high-level module to
+/// provide its own errors while also revealing some of the implementation for
+/// debugging via [`source`] chains.
 ///
 /// [`Result<T, E>`]: ../result/enum.Result.html
 /// [`Display`]: ../fmt/trait.Display.html
 /// [`Debug`]: ../fmt/trait.Debug.html
-/// [`cause`]: trait.Error.html#method.cause
+/// [`source`]: trait.Error.html#method.source
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Error: Debug + Display {
     /// **This method is soft-deprecated.**
@@ -533,6 +523,7 @@ impl<T: Error> Error for Box<T> {
         Error::description(&**self)
     }
 
+    #[allow(deprecated)]
     fn cause(&self) -> Option<&dyn Error> {
         Error::cause(&**self)
     }

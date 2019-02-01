@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::{self, Ty};
 use rustc::ty::cast::{CastTy, IntTy};
 use rustc::ty::layout::{self, LayoutOf, HasTyCtxt};
@@ -131,8 +121,9 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let keep_going = header_bx.icmp(IntPredicate::IntNE, current, end);
                 header_bx.cond_br(keep_going, body_bx.llbb(), next_bx.llbb());
 
+                let align = dest.align.restrict_for_offset(dest.layout.field(bx.cx(), 0).size);
                 cg_elem.val.store(&mut body_bx,
-                    PlaceRef::new_sized(current, cg_elem.layout, dest.align));
+                    PlaceRef::new_sized(current, cg_elem.layout, align));
 
                 let next = body_bx.inbounds_gep(current, &[bx.cx().const_usize(1)]);
                 body_bx.br(header_bx.llbb());
@@ -319,9 +310,9 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         if let layout::Abi::Scalar(ref scalar) = operand.layout.abi {
                             if let layout::Int(_, s) = scalar.value {
                                 // We use `i1` for bytes that are always `0` or `1`,
-                                // e.g. `#[repr(i8)] enum E { A, B }`, but we can't
+                                // e.g., `#[repr(i8)] enum E { A, B }`, but we can't
                                 // let LLVM interpret the `i1` as signed, because
-                                // then `i1 1` (i.e. E::B) is effectively `i8 -1`.
+                                // then `i1 1` (i.e., E::B) is effectively `i8 -1`.
                                 signed = !scalar.is_bool() && s;
 
                                 let er = scalar.valid_range_exclusive(bx.cx());
@@ -337,7 +328,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                                         llval,
                                         ll_t_in_const
                                     );
-                                    base::call_assume(&mut bx, cmp);
+                                    bx.assume(cmp);
                                 }
                             }
                         }
@@ -496,10 +487,10 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::Rvalue::NullaryOp(mir::NullOp::Box, content_ty) => {
-                let content_ty: Ty<'tcx> = self.monomorphize(&content_ty);
-                let (size, align) = bx.cx().layout_of(content_ty).size_and_align();
-                let llsize = bx.cx().const_usize(size.bytes());
-                let llalign = bx.cx().const_usize(align.abi());
+                let content_ty = self.monomorphize(&content_ty);
+                let content_layout = bx.cx().layout_of(content_ty);
+                let llsize = bx.cx().const_usize(content_layout.size.bytes());
+                let llalign = bx.cx().const_usize(content_layout.align.abi.bytes());
                 let box_layout = bx.cx().layout_of(bx.tcx().mk_box(content_ty));
                 let llty_ptr = bx.cx().backend_type(box_layout);
 
@@ -693,11 +684,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     mir::BinOp::Mul => OverflowOp::Mul,
                     _ => unreachable!()
                 };
-                let intrinsic = get_overflow_intrinsic(oop, bx, input_ty);
-                let res = bx.call(intrinsic, &[lhs, rhs], None);
-
-                (bx.extract_value(res, 0),
-                 bx.extract_value(res, 1))
+                bx.checked_binop(oop, input_ty, lhs, rhs)
             }
             mir::BinOp::Shl | mir::BinOp::Shr => {
                 let lhs_llty = bx.cx().val_ty(lhs);
@@ -742,80 +729,6 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // (*) this is only true if the type is suitable
     }
-}
-
-#[derive(Copy, Clone)]
-enum OverflowOp {
-    Add, Sub, Mul
-}
-
-fn get_overflow_intrinsic<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
-    oop: OverflowOp,
-    bx: &mut Bx,
-    ty: Ty
-) -> Bx::Value {
-    use syntax::ast::IntTy::*;
-    use syntax::ast::UintTy::*;
-    use rustc::ty::{Int, Uint};
-
-    let tcx = bx.tcx();
-
-    let new_sty = match ty.sty {
-        Int(Isize) => Int(tcx.sess.target.isize_ty),
-        Uint(Usize) => Uint(tcx.sess.target.usize_ty),
-        ref t @ Uint(_) | ref t @ Int(_) => t.clone(),
-        _ => panic!("tried to get overflow intrinsic for op applied to non-int type")
-    };
-
-    let name = match oop {
-        OverflowOp::Add => match new_sty {
-            Int(I8) => "llvm.sadd.with.overflow.i8",
-            Int(I16) => "llvm.sadd.with.overflow.i16",
-            Int(I32) => "llvm.sadd.with.overflow.i32",
-            Int(I64) => "llvm.sadd.with.overflow.i64",
-            Int(I128) => "llvm.sadd.with.overflow.i128",
-
-            Uint(U8) => "llvm.uadd.with.overflow.i8",
-            Uint(U16) => "llvm.uadd.with.overflow.i16",
-            Uint(U32) => "llvm.uadd.with.overflow.i32",
-            Uint(U64) => "llvm.uadd.with.overflow.i64",
-            Uint(U128) => "llvm.uadd.with.overflow.i128",
-
-            _ => unreachable!(),
-        },
-        OverflowOp::Sub => match new_sty {
-            Int(I8) => "llvm.ssub.with.overflow.i8",
-            Int(I16) => "llvm.ssub.with.overflow.i16",
-            Int(I32) => "llvm.ssub.with.overflow.i32",
-            Int(I64) => "llvm.ssub.with.overflow.i64",
-            Int(I128) => "llvm.ssub.with.overflow.i128",
-
-            Uint(U8) => "llvm.usub.with.overflow.i8",
-            Uint(U16) => "llvm.usub.with.overflow.i16",
-            Uint(U32) => "llvm.usub.with.overflow.i32",
-            Uint(U64) => "llvm.usub.with.overflow.i64",
-            Uint(U128) => "llvm.usub.with.overflow.i128",
-
-            _ => unreachable!(),
-        },
-        OverflowOp::Mul => match new_sty {
-            Int(I8) => "llvm.smul.with.overflow.i8",
-            Int(I16) => "llvm.smul.with.overflow.i16",
-            Int(I32) => "llvm.smul.with.overflow.i32",
-            Int(I64) => "llvm.smul.with.overflow.i64",
-            Int(I128) => "llvm.smul.with.overflow.i128",
-
-            Uint(U8) => "llvm.umul.with.overflow.i8",
-            Uint(U16) => "llvm.umul.with.overflow.i16",
-            Uint(U32) => "llvm.umul.with.overflow.i32",
-            Uint(U64) => "llvm.umul.with.overflow.i64",
-            Uint(U128) => "llvm.umul.with.overflow.i128",
-
-            _ => unreachable!(),
-        },
-    };
-
-    bx.cx().get_intrinsic(&name)
 }
 
 fn cast_int_to_float<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(

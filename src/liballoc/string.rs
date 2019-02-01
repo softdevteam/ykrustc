@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A UTF-8 encoded, growable string.
 //!
 //! This module contains the [`String`] type, a trait for converting
@@ -577,7 +567,7 @@ impl String {
             return Cow::Borrowed("");
         };
 
-        const REPLACEMENT: &'static str = "\u{FFFD}";
+        const REPLACEMENT: &str = "\u{FFFD}";
 
         let mut res = String::with_capacity(v.len());
         res.push_str(first_valid);
@@ -618,6 +608,8 @@ impl String {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn from_utf16(v: &[u16]) -> Result<String, FromUtf16Error> {
+        // This isn't done via collect::<Result<_, _>>() for performance reasons.
+        // FIXME: the function can be simplified again when #48994 is closed.
         let mut ret = String::with_capacity(v.len());
         for c in decode_utf16(v.iter().cloned()) {
             if let Ok(c) = c {
@@ -1048,7 +1040,7 @@ impl String {
     /// assert!(s.capacity() >= 3);
     /// ```
     #[inline]
-    #[unstable(feature = "shrink_to", reason = "new API", issue="0")]
+    #[unstable(feature = "shrink_to", reason = "new API", issue="56431")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         self.vec.shrink_to(min_capacity)
     }
@@ -1730,18 +1722,37 @@ impl<'a> FromIterator<&'a str> for String {
 #[stable(feature = "extend_string", since = "1.4.0")]
 impl FromIterator<String> for String {
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> String {
-        let mut buf = String::new();
-        buf.extend(iter);
-        buf
+        let mut iterator = iter.into_iter();
+
+        // Because we're iterating over `String`s, we can avoid at least
+        // one allocation by getting the first string from the iterator
+        // and appending to it all the subsequent strings.
+        match iterator.next() {
+            None => String::new(),
+            Some(mut buf) => {
+                buf.extend(iterator);
+                buf
+            }
+        }
     }
 }
 
 #[stable(feature = "herd_cows", since = "1.19.0")]
 impl<'a> FromIterator<Cow<'a, str>> for String {
     fn from_iter<I: IntoIterator<Item = Cow<'a, str>>>(iter: I) -> String {
-        let mut buf = String::new();
-        buf.extend(iter);
-        buf
+        let mut iterator = iter.into_iter();
+
+        // Because we're iterating over CoWs, we can (potentially) avoid at least
+        // one allocation by getting the first item and appending to it all the
+        // subsequent items.
+        match iterator.next() {
+            None => String::new(),
+            Some(cow) => {
+                let mut buf = cow.into_owned();
+                buf.extend(iterator);
+                buf
+            }
+        }
     }
 }
 
@@ -1751,9 +1762,7 @@ impl Extend<char> for String {
         let iterator = iter.into_iter();
         let (lower_bound, _) = iterator.size_hint();
         self.reserve(lower_bound);
-        for ch in iterator {
-            self.push(ch)
-        }
+        iterator.for_each(move |c| self.push(c));
     }
 }
 
@@ -1767,27 +1776,21 @@ impl<'a> Extend<&'a char> for String {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a> Extend<&'a str> for String {
     fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
-        for s in iter {
-            self.push_str(s)
-        }
+        iter.into_iter().for_each(move |s| self.push_str(s));
     }
 }
 
 #[stable(feature = "extend_string", since = "1.4.0")]
 impl Extend<String> for String {
     fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
-        for s in iter {
-            self.push_str(&s)
-        }
+        iter.into_iter().for_each(move |s| self.push_str(&s));
     }
 }
 
 #[stable(feature = "herd_cows", since = "1.19.0")]
 impl<'a> Extend<Cow<'a, str>> for String {
     fn extend<I: IntoIterator<Item = Cow<'a, str>>>(&mut self, iter: I) {
-        for s in iter {
-            self.push_str(&s)
-        }
+        iter.into_iter().for_each(move |s| self.push_str(&s));
     }
 }
 
@@ -2156,7 +2159,7 @@ impl<T: fmt::Display + ?Sized> ToString for T {
         use core::fmt::Write;
         let mut buf = String::new();
         buf.write_fmt(format_args!("{}", self))
-           .expect("a Display implementation return an error unexpectedly");
+           .expect("a Display implementation returned an error unexpectedly");
         buf.shrink_to_fit();
         buf
     }

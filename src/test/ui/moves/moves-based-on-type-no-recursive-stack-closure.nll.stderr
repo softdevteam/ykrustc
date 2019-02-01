@@ -1,5 +1,5 @@
 error[E0499]: cannot borrow `*f` as mutable more than once at a time
-  --> $DIR/moves-based-on-type-no-recursive-stack-closure.rs:30:27
+  --> $DIR/moves-based-on-type-no-recursive-stack-closure.rs:20:27
    |
 LL |                     (f.c)(f, true);
    |                     ----- ^ second mutable borrow occurs here
@@ -8,14 +8,16 @@ LL |                     (f.c)(f, true);
    |                     first borrow later used by call
 
 error[E0382]: borrow of moved value: `f`
-  --> $DIR/moves-based-on-type-no-recursive-stack-closure.rs:42:5
+  --> $DIR/moves-based-on-type-no-recursive-stack-closure.rs:32:5
    |
+LL | fn conspirator<F>(mut f: F) where F: FnMut(&mut R, bool) {
+   |                -  ----- move occurs because `f` has type `F`, which does not implement the `Copy` trait
+   |                |
+   |                consider adding a `Copy` constraint to this type argument
 LL |     let mut r = R {c: Box::new(f)};
    |                                - value moved here
 LL |     f(&mut r, false) //~ ERROR use of moved value
    |     ^ value borrowed here after move
-   |
-   = note: move occurs because `f` has type `F`, which does not implement the `Copy` trait
 
 error: aborting due to 2 previous errors
 

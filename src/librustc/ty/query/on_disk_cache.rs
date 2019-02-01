@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use dep_graph::{DepNodeIndex, SerializedDepNodeIndex};
 use errors::Diagnostic;
 use hir;
@@ -17,6 +7,7 @@ use ich::{CachingSourceMapView, Fingerprint};
 use mir::{self, interpret};
 use mir::interpret::{AllocDecodingSession, AllocDecodingState};
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::thin_vec::ThinVec;
 use rustc_data_structures::sync::{Lrc, Lock, HashMapExt, Once};
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder, opaque,
@@ -351,11 +342,13 @@ impl<'sess> OnDiskCache<'sess> {
     /// Store a diagnostic emitted during the current compilation session.
     /// Anything stored like this will be available via `load_diagnostics` in
     /// the next compilation session.
+    #[inline(never)]
+    #[cold]
     pub fn store_diagnostics(&self,
                              dep_node_index: DepNodeIndex,
-                             diagnostics: Vec<Diagnostic>) {
+                             diagnostics: ThinVec<Diagnostic>) {
         let mut current_diagnostics = self.current_diagnostics.borrow_mut();
-        let prev = current_diagnostics.insert(dep_node_index, diagnostics);
+        let prev = current_diagnostics.insert(dep_node_index, diagnostics.into());
         debug_assert!(prev.is_none());
     }
 
@@ -377,16 +370,16 @@ impl<'sess> OnDiskCache<'sess> {
     /// Since many anonymous queries can share the same `DepNode`, we aggregate
     /// them -- as opposed to regular queries where we assume that there is a
     /// 1:1 relationship between query-key and `DepNode`.
+    #[inline(never)]
+    #[cold]
     pub fn store_diagnostics_for_anon_node(&self,
                                            dep_node_index: DepNodeIndex,
-                                           mut diagnostics: Vec<Diagnostic>) {
+                                           diagnostics: ThinVec<Diagnostic>) {
         let mut current_diagnostics = self.current_diagnostics.borrow_mut();
 
-        let x = current_diagnostics.entry(dep_node_index).or_insert_with(|| {
-            mem::replace(&mut diagnostics, Vec::new())
-        });
+        let x = current_diagnostics.entry(dep_node_index).or_insert(Vec::new());
 
-        x.extend(diagnostics.into_iter());
+        x.extend(Into::<Vec<_>>::into(diagnostics));
     }
 
     fn load_indexed<'tcx, T>(&self,
@@ -398,11 +391,7 @@ impl<'sess> OnDiskCache<'sess> {
                              -> Option<T>
         where T: Decodable
     {
-        let pos = if let Some(&pos) = index.get(&dep_node_index) {
-            pos
-        } else {
-            return None
-        };
+        let pos = index.get(&dep_node_index).cloned()?;
 
         // Initialize the cnum_map using the value from the thread which finishes the closure first
         self.cnum_map.init_nonlocking_same(|| {
@@ -725,7 +714,7 @@ impl<'a, 'tcx, 'x> SpecializedDecoder<NodeId> for CacheDecoder<'a, 'tcx, 'x> {
     #[inline]
     fn specialized_decode(&mut self) -> Result<NodeId, Self::Error> {
         let hir_id = hir::HirId::decode(self)?;
-        Ok(self.tcx().hir.hir_to_node_id(hir_id))
+        Ok(self.tcx().hir().hir_to_node_id(hir_id))
     }
 }
 
@@ -926,7 +915,7 @@ impl<'enc, 'a, 'tcx, E> SpecializedEncoder<hir::HirId> for CacheEncoder<'enc, 'a
             local_id,
         } = *id;
 
-        let def_path_hash = self.tcx.hir.definitions().def_path_hash(owner);
+        let def_path_hash = self.tcx.hir().definitions().def_path_hash(owner);
 
         def_path_hash.encode(self)?;
         local_id.encode(self)
@@ -968,7 +957,7 @@ impl<'enc, 'a, 'tcx, E> SpecializedEncoder<NodeId> for CacheEncoder<'enc, 'a, 't
 {
     #[inline]
     fn specialized_encode(&mut self, node_id: &NodeId) -> Result<(), Self::Error> {
-        let hir_id = self.tcx.hir.node_to_hir_id(*node_id);
+        let hir_id = self.tcx.hir().node_to_hir_id(*node_id);
         hir_id.encode(self)
     }
 }

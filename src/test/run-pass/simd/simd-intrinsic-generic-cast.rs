@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // run-pass
 #![allow(unused_must_use)]
 // ignore-emscripten FIXME(#45351) hits an LLVM assert
@@ -94,9 +84,9 @@ fn main() {
             // there are platform differences for some out of range
             // casts, so we just normalize such things: it's OK for
             // "invalid" calculations to result in nonsense answers.
-            // (E.g. negative float to unsigned integer goes through a
+            // (e.g., negative float to unsigned integer goes through a
             // library routine on the default i686 platforms, and the
-            // implementation of that routine differs on e.g. Linux
+            // implementation of that routine differs on e.g., Linux
             // vs. macOS, resulting in different answers.)
             if $from::is_float() {
                 if !$to::in_range(A) { from.0 = 0 as $to; to.0 = 0 as $to; }

@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::unicode::property::Pattern_White_Space;
 use std::fmt::{self, Display};
 
@@ -40,7 +30,7 @@ use util::borrowck_errors::{BorrowckErrors, Origin};
 #[derive(Debug)]
 enum GroupedMoveError<'tcx> {
     // Place expression can't be moved from,
-    // e.g. match x[0] { s => (), } where x: &[String]
+    // e.g., match x[0] { s => (), } where x: &[String]
     MovesFromPlace {
         original_path: Place<'tcx>,
         span: Span,
@@ -49,7 +39,7 @@ enum GroupedMoveError<'tcx> {
         binds_to: Vec<Local>,
     },
     // Part of a value expression can't be moved from,
-    // e.g. match &String::new() { &x => (), }
+    // e.g., match &String::new() { &x => (), }
     MovesFromValue {
         original_path: Place<'tcx>,
         span: Span,
@@ -319,8 +309,8 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                                         let upvar_hir_id =
                                             upvar_decl.var_hir_id.assert_crate_local();
                                         let upvar_node_id =
-                                            self.infcx.tcx.hir.hir_to_node_id(upvar_hir_id);
-                                        let upvar_span = self.infcx.tcx.hir.span(upvar_node_id);
+                                            self.infcx.tcx.hir().hir_to_node_id(upvar_hir_id);
+                                        let upvar_span = self.infcx.tcx.hir().span(upvar_node_id);
                                         diag.span_label(upvar_span, "captured outer variable");
                                         break;
                                     }
@@ -378,14 +368,14 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                     // expressions `a[b]`, which roughly desugar to
                     // `*Index::index(&a, b)` or
                     // `*IndexMut::index_mut(&mut a, b)`.
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         span,
                         "consider removing the `*`",
                         snippet[1..].to_owned(),
                         Applicability::Unspecified,
                     );
                 } else {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         span,
                         "consider borrowing here",
                         format!("&{}", snippet),
@@ -426,13 +416,13 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                     .span_to_snippet(pat_span)
                     .unwrap();
                 if pat_snippet.starts_with('&') {
-                    let pat_snippet = pat_snippet[1..].trim_left();
+                    let pat_snippet = pat_snippet[1..].trim_start();
                     let suggestion;
                     let to_remove;
                     if pat_snippet.starts_with("mut")
                         && pat_snippet["mut".len()..].starts_with(Pattern_White_Space)
                     {
-                        suggestion = pat_snippet["mut".len()..].trim_left();
+                        suggestion = pat_snippet["mut".len()..].trim_start();
                         to_remove = "&mut";
                     } else {
                         suggestion = pat_snippet;
@@ -449,7 +439,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
         suggestions.sort_unstable_by_key(|&(span, _, _)| span);
         suggestions.dedup_by_key(|&mut (span, _, _)| span);
         for (span, to_remove, suggestion) in suggestions {
-            err.span_suggestion_with_applicability(
+            err.span_suggestion(
                 span,
                 &format!("consider removing the `{}`", to_remove),
                 suggestion,

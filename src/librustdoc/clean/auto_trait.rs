@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir;
 use rustc::traits::auto_trait as auto;
 use rustc::ty::{self, TypeFoldable};
@@ -17,13 +7,13 @@ use self::def_ctor::{get_def_from_def_id, get_def_from_node_id};
 
 use super::*;
 
-pub struct AutoTraitFinder<'a, 'tcx: 'a, 'rcx: 'a, 'cstore: 'rcx> {
-    pub cx: &'a core::DocContext<'a, 'tcx, 'rcx, 'cstore>,
+pub struct AutoTraitFinder<'a, 'tcx: 'a, 'rcx: 'a> {
+    pub cx: &'a core::DocContext<'a, 'tcx, 'rcx>,
     pub f: auto::AutoTraitFinder<'a, 'tcx>,
 }
 
-impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
-    pub fn new(cx: &'a core::DocContext<'a, 'tcx, 'rcx, 'cstore>) -> Self {
+impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
+    pub fn new(cx: &'a core::DocContext<'a, 'tcx, 'rcx>) -> Self {
         let f = auto::AutoTraitFinder::new(&cx.tcx);
 
         AutoTraitFinder { cx, f }
@@ -37,7 +27,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
 
     pub fn get_with_node_id(&self, id: ast::NodeId, name: String) -> Vec<Item> {
         get_def_from_node_id(&self.cx, id, name, &|def_ctor, name| {
-            let did = self.cx.tcx.hir.local_def_id(id);
+            let did = self.cx.tcx.hir().local_def_id(id);
             self.get_auto_trait_impls(did, &def_ctor, Some(name))
         })
     }
@@ -255,7 +245,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
     // handle_lifetimes determines what *needs be* true in order for an impl to hold.
     // lexical_region_resolve, along with much of the rest of the compiler, is concerned
     // with determining if a given set up constraints/predicates *are* met, given some
-    // starting conditions (e.g. user-provided code). For this reason, it's easier
+    // starting conditions (e.g., user-provided code). For this reason, it's easier
     // to perform the calculations we need on our own, rather than trying to make
     // existing inference/solver code do what we want.
     fn handle_lifetimes<'cx>(
@@ -274,7 +264,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
         // Flattening is done in two parts. First, we insert all of the constraints
         // into a map. Each RegionTarget (either a RegionVid or a Region) maps
         // to its smaller and larger regions. Note that 'larger' regions correspond
-        // to sub-regions in Rust code (e.g. in 'a: 'b, 'a is the larger region).
+        // to sub-regions in Rust code (e.g., in 'a: 'b, 'a is the larger region).
         for constraint in regions.constraints.keys() {
             match constraint {
                 &Constraint::VarSubVar(r1, r2) => {
@@ -524,7 +514,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
     // display on the docs page. Cleaning the Predicates produces sub-optimal WherePredicate's,
     // so we fix them up:
     //
-    // * Multiple bounds for the same type are coalesced into one: e.g. 'T: Copy', 'T: Debug'
+    // * Multiple bounds for the same type are coalesced into one: e.g., 'T: Copy', 'T: Debug'
     // becomes 'T: Copy + Debug'
     // * Fn bounds are handled specially - instead of leaving it as 'T: Fn(), <T as Fn::Output> =
     // K', we use the dedicated syntax 'T: Fn() -> K'
@@ -544,8 +534,8 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
             did, param_env, type_generics, existing_predicates
         );
 
-        // The `Sized` trait must be handled specially, since we only only display it when
-        // it is *not* required (i.e. '?Sized')
+        // The `Sized` trait must be handled specially, since we only display it when
+        // it is *not* required (i.e., '?Sized')
         let sized_trait = self.cx
             .tcx
             .require_lang_item(lang_items::SizedTraitLangItem);
@@ -629,7 +619,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
                         let is_fn = match &mut b {
                             &mut GenericBound::TraitBound(ref mut p, _) => {
                                 // Insert regions into the for_generics hash map first, to ensure
-                                // that we don't end up with duplicate bounds (e.g. for<'b, 'b>)
+                                // that we don't end up with duplicate bounds (e.g., for<'b, 'b>)
                                 for_generics.extend(p.generic_params.clone());
                                 p.generic_params = for_generics.into_iter().collect();
                                 self.is_fn_ty(&tcx, &p.trait_)
@@ -737,7 +727,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
                                         hir::TraitBoundModifier::None,
                                     ));
 
-                                    // Remove any existing 'plain' bound (e.g. 'T: Iterator`) so
+                                    // Remove any existing 'plain' bound (e.g., 'T: Iterator`) so
                                     // that we don't see a
                                     // duplicate bound like `T: Iterator + Iterator<Item=u8>`
                                     // on the docs page.
@@ -837,7 +827,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> AutoTraitFinder<'a, 'tcx, 'rcx, 'cstore> {
     // auto-trait impls always render in exactly the same way.
     //
     // Using the Debug implementation for sorting prevents us from needing to
-    // write quite a bit of almost entirely useless code (e.g. how should two
+    // write quite a bit of almost entirely useless code (e.g., how should two
     // Types be sorted relative to each other). It also allows us to solve the
     // problem for both WherePredicates and GenericBounds at the same time. This
     // approach is probably somewhat slower, but the small number of items

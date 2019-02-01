@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! # The Rust Core Library
 //!
 //! The Rust Core Library is the dependency-free[^free] foundation of [The
@@ -68,10 +58,12 @@
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(deny(warnings))),
        test(attr(allow(dead_code, deprecated, unused_variables, unused_mut))))]
-
 #![no_core]
-#![deny(missing_docs)]
-#![deny(missing_debug_implementations)]
+
+#![warn(deprecated_in_future)]
+#![warn(missing_docs)]
+#![warn(intra_doc_link_resolution_failure)]
+#![warn(missing_debug_implementations)]
 
 #![feature(allow_internal_unstable)]
 #![feature(arbitrary_self_types)]
@@ -80,7 +72,6 @@
 #![feature(cfg_target_has_atomic)]
 #![feature(concat_idents)]
 #![feature(const_fn)]
-#![feature(const_int_ops)]
 #![feature(const_fn_union)]
 #![feature(custom_attribute)]
 #![feature(doc_cfg)]
@@ -88,12 +79,14 @@
 #![feature(extern_types)]
 #![feature(fundamental)]
 #![feature(intrinsics)]
+#![feature(is_sorted)]
+#![feature(iter_once_with)]
 #![feature(lang_items)]
 #![feature(link_llvm_intrinsics)]
 #![feature(never_type)]
 #![feature(nll)]
+#![feature(bind_by_move_pattern_guards)]
 #![feature(exhaustive_patterns)]
-#![feature(macro_at_most_once_rep)]
 #![feature(no_core)]
 #![feature(on_unimplemented)]
 #![feature(optin_builtin_traits)]
@@ -118,18 +111,20 @@
 #![feature(mips_target_feature)]
 #![feature(aarch64_target_feature)]
 #![feature(wasm_target_feature)]
+#![feature(avx512_target_feature)]
+#![feature(cmpxchg16b_target_feature)]
 #![feature(const_slice_len)]
 #![feature(const_str_as_bytes)]
 #![feature(const_str_len)]
-#![feature(const_let)]
-#![feature(const_int_rotate)]
-#![feature(const_int_wrapping)]
-#![feature(const_int_sign)]
 #![feature(const_int_conversion)]
 #![feature(const_transmute)]
 #![feature(reverse_bits)]
 #![feature(non_exhaustive)]
 #![feature(structural_match)]
+#![feature(abi_unadjusted)]
+#![feature(adx_target_feature)]
+#![feature(maybe_uninit)]
+#![feature(unrestricted_attribute_tokens)]
 
 #[prelude_import]
 #[allow(unused)]
@@ -224,8 +219,6 @@ pub mod task;
 pub mod alloc;
 
 // note: does not need to be public
-mod iter_private;
-mod nonzero;
 mod tuple;
 mod unit;
 
@@ -233,11 +226,12 @@ mod unit;
 #[unstable(feature = "yk_swt", issue = "0")]
 pub mod yk_swt;
 
-// Pull in the `coresimd` crate directly into libcore. This is where all the
-// architecture-specific (and vendor-specific) intrinsics are defined. AKA
-// things like SIMD and such. Note that the actual source for all this lies in a
-// different repository, rust-lang-nursery/stdsimd. That's why the setup here is
-// a bit wonky.
+// Pull in the `core_arch` crate directly into libcore. The contents of
+// `core_arch` are in a different repository: rust-lang-nursery/stdsimd.
+//
+// `core_arch` depends on libcore, but the contents of this module are
+// set up in such a way that directly pulling it here works such that the
+// crate uses the this crate as its libcore.
 #[allow(unused_macros)]
 macro_rules! test_v16 { ($item:item) => {}; }
 #[allow(unused_macros)]
@@ -252,12 +246,10 @@ macro_rules! test_v256 { ($item:item) => {}; }
 macro_rules! test_v512 { ($item:item) => {}; }
 #[allow(unused_macros)]
 macro_rules! vector_impl { ($([$f:ident, $($args:tt)*]),*) => { $($f!($($args)*);)* } }
-#[path = "../stdsimd/coresimd/mod.rs"]
+#[path = "../stdsimd/crates/core_arch/src/mod.rs"]
 #[allow(missing_docs, missing_debug_implementations, dead_code, unused_imports)]
 #[unstable(feature = "stdsimd", issue = "48556")]
-#[cfg(not(stage0))] // allow changes to how stdsimd works in stage0
-mod coresimd;
+mod core_arch;
 
 #[stable(feature = "simd_arch", since = "1.27.0")]
-#[cfg(not(stage0))]
-pub use coresimd::arch;
+pub use core_arch::arch;

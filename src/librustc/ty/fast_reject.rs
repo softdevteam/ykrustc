@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::def_id::DefId;
 use ich::StableHashingContext;
 use rustc_data_structures::stable_hasher::{StableHasher, StableHasherResult,
@@ -43,6 +33,9 @@ pub enum SimplifiedTypeGen<D>
     PtrSimplifiedType,
     NeverSimplifiedType,
     TupleSimplifiedType(usize),
+    /// A trait object, all of whose components are markers
+    /// (e.g., `dyn Send + Sync`).
+    MarkerTraitObjectSimplifiedType,
     TraitSimplifiedType(D),
     ClosureSimplifiedType(D),
     GeneratorSimplifiedType(D),
@@ -78,7 +71,12 @@ pub fn simplify_type<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
         ty::Array(..) | ty::Slice(_) => Some(ArraySimplifiedType),
         ty::RawPtr(_) => Some(PtrSimplifiedType),
         ty::Dynamic(ref trait_info, ..) => {
-            Some(TraitSimplifiedType(trait_info.principal().def_id()))
+            match trait_info.principal_def_id() {
+                Some(principal_def_id) if !tcx.trait_is_auto(principal_def_id) => {
+                    Some(TraitSimplifiedType(principal_def_id))
+                }
+                _ => Some(MarkerTraitObjectSimplifiedType)
+            }
         }
         ty::Ref(_, ty, _) => {
             // since we introduce auto-refs during method lookup, we
@@ -110,7 +108,7 @@ pub fn simplify_type<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                 // anything. when lazy normalization happens, this
                 // will change. It would still be nice to have a way
                 // to deal with known-not-to-unify-with-anything
-                // projections (e.g. the likes of <__S as Encoder>::Error).
+                // projections (e.g., the likes of <__S as Encoder>::Error).
                 Some(ParameterSimplifiedType)
             } else {
                 None
@@ -122,7 +120,7 @@ pub fn simplify_type<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
         ty::Foreign(def_id) => {
             Some(ForeignSimplifiedType(def_id))
         }
-        ty::Bound(..) | ty::Infer(_) | ty::Error => None,
+        ty::Placeholder(..) | ty::Bound(..) | ty::Infer(_) | ty::Error => None,
     }
 }
 
@@ -142,6 +140,7 @@ impl<D: Copy + Debug + Ord + Eq + Hash> SimplifiedTypeGen<D> {
             ArraySimplifiedType => ArraySimplifiedType,
             PtrSimplifiedType => PtrSimplifiedType,
             NeverSimplifiedType => NeverSimplifiedType,
+            MarkerTraitObjectSimplifiedType => MarkerTraitObjectSimplifiedType,
             TupleSimplifiedType(n) => TupleSimplifiedType(n),
             TraitSimplifiedType(d) => TraitSimplifiedType(map(d)),
             ClosureSimplifiedType(d) => ClosureSimplifiedType(map(d)),
@@ -170,7 +169,8 @@ impl<'a, 'gcx, D> HashStable<StableHashingContext<'a>> for SimplifiedTypeGen<D>
             ArraySimplifiedType |
             PtrSimplifiedType |
             NeverSimplifiedType |
-            ParameterSimplifiedType => {
+            ParameterSimplifiedType |
+            MarkerTraitObjectSimplifiedType => {
                 // nothing to do
             }
             IntSimplifiedType(t) => t.hash_stable(hcx, hasher),

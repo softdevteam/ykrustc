@@ -1,20 +1,9 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::map::DefPathData;
 use hir::def_id::{CrateNum, DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use ty::{self, DefIdTree, Ty, TyCtxt};
 use middle::cstore::{ExternCrate, ExternCrateSource};
 use syntax::ast;
 use syntax::symbol::{keywords, LocalInternedString, Symbol};
-use syntax_pos::edition::Edition;
 
 use std::cell::Cell;
 use std::fmt::Debug;
@@ -84,7 +73,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
     /// Returns a string identifying this local node-id.
     pub fn node_path_str(self, id: ast::NodeId) -> String {
-        self.item_path_str(self.hir.local_def_id(id))
+        self.item_path_str(self.hir().local_def_id(id))
     }
 
     /// Returns a string identifying this def-id. This string is
@@ -140,7 +129,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                         debug!("push_krate_path: name={:?}", name);
                         buffer.push(&name);
                     }
-                } else if self.sess.edition() == Edition::Edition2018 && !pushed_prelude_crate {
+                } else if self.sess.rust_2018() && !pushed_prelude_crate {
                     SHOULD_PREFIX_WITH_CRATE.with(|flag| {
                         // We only add the `crate::` keyword where appropriate. In particular,
                         // when we've not previously pushed a prelude crate to this path.
@@ -221,12 +210,12 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
             let visible_parent = visible_parent_map.get(&cur_def).cloned();
             let actual_parent = self.parent(cur_def);
-            debug!(
-                "try_push_visible_item_path: visible_parent={:?} actual_parent={:?}",
-                visible_parent, actual_parent,
-            );
 
             let data = cur_def_key.disambiguated_data.data;
+            debug!(
+                "try_push_visible_item_path: data={:?} visible_parent={:?} actual_parent={:?}",
+                data, visible_parent, actual_parent,
+            );
             let symbol = match data {
                 // In order to output a path that could actually be imported (valid and visible),
                 // we need to handle re-exports correctly.
@@ -259,16 +248,16 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 // the children of the visible parent (as was done when computing
                 // `visible_parent_map`), looking for the specific child we currently have and then
                 // have access to the re-exported name.
-                DefPathData::Module(module_name) if visible_parent != actual_parent => {
-                    let mut name: Option<ast::Ident> = None;
-                    if let Some(visible_parent) = visible_parent {
-                        for child in self.item_children(visible_parent).iter() {
-                            if child.def.def_id() == cur_def {
-                                name = Some(child.ident);
-                            }
-                        }
-                    }
-                    name.map(|n| n.as_str()).unwrap_or(module_name.as_str())
+                DefPathData::Module(actual_name) |
+                DefPathData::TypeNs(actual_name) if visible_parent != actual_parent => {
+                    visible_parent
+                        .and_then(|parent| {
+                            self.item_children(parent)
+                                .iter()
+                                .find(|child| child.def.def_id() == cur_def)
+                                .map(|child| child.ident.as_str())
+                        })
+                        .unwrap_or_else(|| actual_name.as_str())
                 },
                 _ => {
                     data.get_opt_name().map(|n| n.as_str()).unwrap_or_else(|| {
@@ -318,10 +307,11 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
             // Unclear if there is any value in distinguishing these.
             // Probably eventually (and maybe we would even want
-            // finer-grained distinctions, e.g. between enum/struct).
+            // finer-grained distinctions, e.g., between enum/struct).
             data @ DefPathData::Misc |
             data @ DefPathData::TypeNs(..) |
             data @ DefPathData::Trait(..) |
+            data @ DefPathData::TraitAlias(..) |
             data @ DefPathData::AssocTypeInTrait(..) |
             data @ DefPathData::AssocTypeInImpl(..) |
             data @ DefPathData::AssocExistentialInImpl(..) |
@@ -465,8 +455,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         // only occur very early in the compiler pipeline.
         let parent_def_id = self.parent_def_id(impl_def_id).unwrap();
         self.push_item_path(buffer, parent_def_id, pushed_prelude_crate);
-        let node_id = self.hir.as_local_node_id(impl_def_id).unwrap();
-        let item = self.hir.expect_item(node_id);
+        let node_id = self.hir().as_local_node_id(impl_def_id).unwrap();
+        let item = self.hir().expect_item(node_id);
         let span_str = self.sess.source_map().span_to_string(item.span);
         buffer.push(&format!("<impl at {}>", span_str));
     }
@@ -490,7 +480,7 @@ pub fn characteristic_def_id_of_type(ty: Ty<'_>) -> Option<DefId> {
     match ty.sty {
         ty::Adt(adt_def, _) => Some(adt_def.did),
 
-        ty::Dynamic(data, ..) => Some(data.principal().def_id()),
+        ty::Dynamic(data, ..) => data.principal_def_id(),
 
         ty::Array(subty, _) |
         ty::Slice(subty) => characteristic_def_id_of_type(subty),
@@ -515,6 +505,7 @@ pub fn characteristic_def_id_of_type(ty: Ty<'_>) -> Option<DefId> {
         ty::Str |
         ty::FnPtr(_) |
         ty::Projection(_) |
+        ty::Placeholder(..) |
         ty::UnnormalizedProjection(..) |
         ty::Param(_) |
         ty::Opaque(..) |

@@ -1,14 +1,4 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use ast::{self, Block, Ident, NodeId, PatKind, Path};
+use ast::{self, Block, Ident, LitKind, NodeId, PatKind, Path};
 use ast::{MacStmtStyle, StmtKind, ItemKind};
 use attr::{self, HasAttrs};
 use source_map::{ExpnInfo, MacroBang, MacroAttribute, dummy_spanned, respan};
@@ -34,8 +24,8 @@ use tokenstream::{TokenStream, TokenTree};
 use visit::{self, Visitor};
 
 use rustc_data_structures::fx::FxHashMap;
-use std::fs::File;
-use std::io::Read;
+use std::fs;
+use std::io::ErrorKind;
 use std::{iter, mem};
 use std::rc::Rc;
 use std::path::PathBuf;
@@ -203,10 +193,7 @@ fn macro_bang_format(path: &ast::Path) -> ExpnFormat {
         if i != 0 {
             path_str.push_str("::");
         }
-
-        if segment.ident.name != keywords::CrateRoot.name() &&
-            segment.ident.name != keywords::DollarCrate.name()
-        {
+        if segment.ident.name != keywords::PathRoot.name() {
             path_str.push_str(&segment.ident.as_str())
         }
     }
@@ -357,8 +344,10 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             // FIXME(jseyfried): Refactor out the following logic
             let (expanded_fragment, new_invocations) = if let Some(ext) = ext {
                 if let Some(ext) = ext {
-                    let dummy = invoc.fragment_kind.dummy(invoc.span()).unwrap();
-                    let fragment = self.expand_invoc(invoc, &*ext).unwrap_or(dummy);
+                    let (invoc_fragment_kind, invoc_span) = (invoc.fragment_kind, invoc.span());
+                    let fragment = self.expand_invoc(invoc, &*ext).unwrap_or_else(|| {
+                        invoc_fragment_kind.dummy(invoc_span).unwrap()
+                    });
                     self.collect_invocations(fragment, &[])
                 } else if let InvocationKind::Attr { attr: None, traits, item, .. } = invoc.kind {
                     if !item.derive_allowed() {
@@ -372,7 +361,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             let trait_list = traits.iter()
                                 .map(|t| t.to_string()).collect::<Vec<_>>();
                             let suggestion = format!("#[derive({})]", trait_list.join(", "));
-                            err.span_suggestion_with_applicability(
+                            err.span_suggestion(
                                 span, "try an outer attribute", suggestion,
                                 // We don't 𝑘𝑛𝑜𝑤 that the following item is an ADT
                                 Applicability::MaybeIncorrect
@@ -444,9 +433,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
 
     fn resolve_imports(&mut self) {
         if self.monotonic {
-            let err_count = self.cx.parse_sess.span_diagnostic.err_count();
             self.cx.resolver.resolve_imports();
-            self.cx.resolve_err_count += self.cx.parse_sess.span_diagnostic.err_count() - err_count;
         }
     }
 
@@ -456,6 +443,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
     /// prepares data for resolving paths of macro invocations.
     fn collect_invocations(&mut self, fragment: AstFragment, derives: &[Mark])
                            -> (AstFragment, Vec<Invocation>) {
+        // Resolve `$crate`s in the fragment for pretty-printing.
+        self.cx.resolver.resolve_dollar_crates(&fragment);
+
         let (fragment_with_placeholders, invocations) = {
             let mut collector = InvocationCollector {
                 cfg: StripUnconfigured {
@@ -470,11 +460,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         };
 
         if self.monotonic {
-            let err_count = self.cx.parse_sess.span_diagnostic.err_count();
-            let mark = self.cx.current_expansion.mark;
-            self.cx.resolver.visit_ast_fragment_with_placeholders(mark, &fragment_with_placeholders,
-                                                                  derives);
-            self.cx.resolve_err_count += self.cx.parse_sess.span_diagnostic.err_count() - err_count;
+            self.cx.resolver.visit_ast_fragment_with_placeholders(
+                self.cx.current_expansion.mark, &fragment_with_placeholders, derives
+            );
         }
 
         (fragment_with_placeholders, invocations)
@@ -622,9 +610,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
     fn extract_proc_macro_attr_input(&self, tokens: TokenStream, span: Span) -> TokenStream {
         let mut trees = tokens.trees();
         match trees.next() {
-            Some(TokenTree::Delimited(_, delim)) => {
+            Some(TokenTree::Delimited(_, _, tts)) => {
                 if trees.next().is_none() {
-                    return delim.tts.into()
+                    return tts.into()
                 }
             }
             Some(TokenTree::Token(..)) => {}
@@ -737,7 +725,6 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     emit_feature_err(this.cx.parse_sess, &*feature.as_str(), span,
                                      GateIssue::Library(Some(issue)), &explain);
                     this.cx.trace_macros_diag();
-                    return Err(kind.dummy(span));
                 }
             }
 
@@ -1055,7 +1042,7 @@ impl<'a> Parser<'a> {
             let semi_full_span = semi_span.to(self.sess.source_map().next_point(semi_span));
             match self.sess.source_map().span_to_snippet(semi_full_span) {
                 Ok(ref snippet) if &snippet[..] != ";" && kind_name == "expression" => {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         semi_span,
                         "you might be missing a semicolon here",
                         ";".to_owned(),
@@ -1134,12 +1121,6 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
         let (mut attr, mut traits, mut after_derive) = (None, Vec::new(), false);
 
         item = item.map_attrs(|mut attrs| {
-            if let Some(legacy_attr_invoc) = self.cx.resolver.find_legacy_attr_invoc(&mut attrs,
-                                                                                     true) {
-                attr = Some(legacy_attr_invoc);
-                return attrs;
-            }
-
             attr = self.find_attr_invoc(&mut attrs, &mut after_derive);
             traits = collect_derives(&mut self.cx, &mut attrs);
             attrs
@@ -1156,12 +1137,6 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
         let (mut attr, mut after_derive) = (None, false);
 
         item = item.map_attrs(|mut attrs| {
-            if let Some(legacy_attr_invoc) = self.cx.resolver.find_legacy_attr_invoc(&mut attrs,
-                                                                                     false) {
-                attr = Some(legacy_attr_invoc);
-                return attrs;
-            }
-
             attr = self.find_attr_invoc(&mut attrs, &mut after_derive);
             attrs
         });
@@ -1201,50 +1176,62 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
 
 impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
     fn fold_expr(&mut self, expr: P<ast::Expr>) -> P<ast::Expr> {
-        let mut expr = self.cfg.configure_expr(expr).into_inner();
-        expr.node = self.cfg.configure_expr_kind(expr.node);
+        let expr = self.cfg.configure_expr(expr);
+        expr.map(|mut expr| {
+            expr.node = self.cfg.configure_expr_kind(expr.node);
 
-        // ignore derives so they remain unused
-        let (attr, expr, after_derive) = self.classify_nonitem(expr);
+            // ignore derives so they remain unused
+            let (attr, expr, after_derive) = self.classify_nonitem(expr);
 
-        if attr.is_some() {
-            // collect the invoc regardless of whether or not attributes are permitted here
-            // expansion will eat the attribute so it won't error later
-            attr.as_ref().map(|a| self.cfg.maybe_emit_expr_attr_err(a));
+            if attr.is_some() {
+                // Collect the invoc regardless of whether or not attributes are permitted here
+                // expansion will eat the attribute so it won't error later.
+                attr.as_ref().map(|a| self.cfg.maybe_emit_expr_attr_err(a));
 
-            // AstFragmentKind::Expr requires the macro to emit an expression
-            return self.collect_attr(attr, vec![], Annotatable::Expr(P(expr)),
-                                     AstFragmentKind::Expr, after_derive).make_expr();
-        }
+                // AstFragmentKind::Expr requires the macro to emit an expression.
+                return self.collect_attr(attr, vec![], Annotatable::Expr(P(expr)),
+                                         AstFragmentKind::Expr, after_derive)
+                    .make_expr()
+                    .into_inner()
+            }
 
-        if let ast::ExprKind::Mac(mac) = expr.node {
-            self.check_attributes(&expr.attrs);
-            self.collect_bang(mac, expr.span, AstFragmentKind::Expr).make_expr()
-        } else {
-            P(noop_fold_expr(expr, self))
-        }
+            if let ast::ExprKind::Mac(mac) = expr.node {
+                self.check_attributes(&expr.attrs);
+                self.collect_bang(mac, expr.span, AstFragmentKind::Expr)
+                    .make_expr()
+                    .into_inner()
+            } else {
+                noop_fold_expr(expr, self)
+            }
+        })
     }
 
     fn fold_opt_expr(&mut self, expr: P<ast::Expr>) -> Option<P<ast::Expr>> {
-        let mut expr = configure!(self, expr).into_inner();
-        expr.node = self.cfg.configure_expr_kind(expr.node);
+        let expr = configure!(self, expr);
+        expr.filter_map(|mut expr| {
+            expr.node = self.cfg.configure_expr_kind(expr.node);
 
-        // ignore derives so they remain unused
-        let (attr, expr, after_derive) = self.classify_nonitem(expr);
+            // Ignore derives so they remain unused.
+            let (attr, expr, after_derive) = self.classify_nonitem(expr);
 
-        if attr.is_some() {
-            attr.as_ref().map(|a| self.cfg.maybe_emit_expr_attr_err(a));
+            if attr.is_some() {
+                attr.as_ref().map(|a| self.cfg.maybe_emit_expr_attr_err(a));
 
-            return self.collect_attr(attr, vec![], Annotatable::Expr(P(expr)),
-                                     AstFragmentKind::OptExpr, after_derive).make_opt_expr();
-        }
+                return self.collect_attr(attr, vec![], Annotatable::Expr(P(expr)),
+                                         AstFragmentKind::OptExpr, after_derive)
+                    .make_opt_expr()
+                    .map(|expr| expr.into_inner())
+            }
 
-        if let ast::ExprKind::Mac(mac) = expr.node {
-            self.check_attributes(&expr.attrs);
-            self.collect_bang(mac, expr.span, AstFragmentKind::OptExpr).make_opt_expr()
-        } else {
-            Some(P(noop_fold_expr(expr, self)))
-        }
+            if let ast::ExprKind::Mac(mac) = expr.node {
+                self.check_attributes(&expr.attrs);
+                self.collect_bang(mac, expr.span, AstFragmentKind::OptExpr)
+                    .make_opt_expr()
+                    .map(|expr| expr.into_inner())
+            } else {
+                Some(noop_fold_expr(expr, self))
+            }
+        })
     }
 
     fn fold_pat(&mut self, pat: P<ast::Pat>) -> P<ast::Pat> {
@@ -1351,7 +1338,7 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
                 module.mod_path.push(item.ident);
 
                 // Detect if this is an inline module (`mod m { ... }` as opposed to `mod m;`).
-                // In the non-inline case, `inner` is never the dummy span (c.f. `parse_item_mod`).
+                // In the non-inline case, `inner` is never the dummy span (cf. `parse_item_mod`).
                 // Thus, if `inner` is the dummy span, we know the module is inline.
                 let inline_module = item.span.contains(inner) || inner.is_dummy();
 
@@ -1507,20 +1494,8 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
                         return noop_fold_attribute(at, self);
                     }
 
-                    let mut buf = vec![];
                     let filename = self.cx.root_path.join(file.to_string());
-
-                    match File::open(&filename).and_then(|mut f| f.read_to_end(&mut buf)) {
-                        Ok(..) => {}
-                        Err(e) => {
-                            self.cx.span_err(at.span,
-                                             &format!("couldn't read {}: {}",
-                                                      filename.display(),
-                                                      e));
-                        }
-                    }
-
-                    match String::from_utf8(buf) {
+                    match fs::read_to_string(&filename) {
                         Ok(src) => {
                             let src_interned = Symbol::intern(&src);
 
@@ -1530,25 +1505,82 @@ impl<'a, 'b> Folder for InvocationCollector<'a, 'b> {
 
                             let include_info = vec![
                                 dummy_spanned(ast::NestedMetaItemKind::MetaItem(
-                                        attr::mk_name_value_item_str(Ident::from_str("file"),
-                                                                     dummy_spanned(file)))),
+                                    attr::mk_name_value_item_str(
+                                        Ident::from_str("file"),
+                                        dummy_spanned(file),
+                                    ),
+                                )),
                                 dummy_spanned(ast::NestedMetaItemKind::MetaItem(
-                                        attr::mk_name_value_item_str(Ident::from_str("contents"),
-                                                            dummy_spanned(src_interned)))),
+                                    attr::mk_name_value_item_str(
+                                        Ident::from_str("contents"),
+                                        dummy_spanned(src_interned),
+                                    ),
+                                )),
                             ];
 
                             let include_ident = Ident::from_str("include");
                             let item = attr::mk_list_item(DUMMY_SP, include_ident, include_info);
                             items.push(dummy_spanned(ast::NestedMetaItemKind::MetaItem(item)));
                         }
-                        Err(_) => {
-                            self.cx.span_err(at.span,
-                                             &format!("{} wasn't a utf-8 file",
-                                                      filename.display()));
+                        Err(e) => {
+                            let lit = it
+                                .meta_item()
+                                .and_then(|item| item.name_value_literal())
+                                .unwrap();
+
+                            if e.kind() == ErrorKind::InvalidData {
+                                self.cx
+                                    .struct_span_err(
+                                        lit.span,
+                                        &format!("{} wasn't a utf-8 file", filename.display()),
+                                    )
+                                    .span_label(lit.span, "contains invalid utf-8")
+                                    .emit();
+                            } else {
+                                let mut err = self.cx.struct_span_err(
+                                    lit.span,
+                                    &format!("couldn't read {}: {}", filename.display(), e),
+                                );
+                                err.span_label(lit.span, "couldn't read file");
+
+                                if e.kind() == ErrorKind::NotFound {
+                                    err.help("external doc paths are relative to the crate root");
+                                }
+
+                                err.emit();
+                            }
                         }
                     }
                 } else {
-                    items.push(noop_fold_meta_list_item(it, self));
+                    let mut err = self.cx.struct_span_err(
+                        it.span,
+                        &format!("expected path to external documentation"),
+                    );
+
+                    // Check if the user erroneously used `doc(include(...))` syntax.
+                    let literal = it.meta_item_list().and_then(|list| {
+                        if list.len() == 1 {
+                            list[0].literal().map(|literal| &literal.node)
+                        } else {
+                            None
+                        }
+                    });
+
+                    let (path, applicability) = match &literal {
+                        Some(LitKind::Str(path, ..)) => {
+                            (path.to_string(), Applicability::MachineApplicable)
+                        }
+                        _ => (String::from("<path>"), Applicability::HasPlaceholders),
+                    };
+
+                    err.span_suggestion(
+                        it.span,
+                        "provide a file path with `=`",
+                        format!("include = \"{}\"", path),
+                        applicability,
+                    );
+
+                    err.emit();
                 }
             }
 
@@ -1611,7 +1643,6 @@ impl<'feat> ExpansionConfig<'feat> {
     }
 
     feature_tests! {
-        fn enable_quotes = quote,
         fn enable_asm = asm,
         fn enable_custom_test_frameworks = custom_test_frameworks,
         fn enable_global_asm = global_asm,
@@ -1619,7 +1650,6 @@ impl<'feat> ExpansionConfig<'feat> {
         fn enable_concat_idents = concat_idents,
         fn enable_trace_macros = trace_macros,
         fn enable_allow_internal_unstable = allow_internal_unstable,
-        fn enable_custom_derive = custom_derive,
         fn enable_format_args_nl = format_args_nl,
         fn macros_in_extern_enabled = macros_in_extern,
         fn proc_macro_hygiene = proc_macro_hygiene,

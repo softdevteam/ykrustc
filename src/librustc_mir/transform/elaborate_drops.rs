@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use dataflow::move_paths::{HasMoveData, MoveData, MovePathIndex, LookupResult};
 use dataflow::{MaybeInitializedPlaces, MaybeUninitializedPlaces};
 use dataflow::{DataflowResults};
@@ -38,7 +28,7 @@ impl MirPass for ElaborateDrops {
     {
         debug!("elaborate_drops({:?} @ {:?})", src, mir.span);
 
-        let id = tcx.hir.as_local_node_id(src.def_id).unwrap();
+        let id = tcx.hir().as_local_node_id(src.def_id).unwrap();
         let param_env = tcx.param_env(src.def_id).with_reveal_all();
         let move_data = match MoveData::gather_moves(mir, tcx) {
             Ok(move_data) => move_data,
@@ -303,8 +293,8 @@ struct ElaborateDropsCtxt<'a, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     mir: &'a Mir<'tcx>,
     env: &'a MoveDataParamEnv<'tcx, 'tcx>,
-    flow_inits: DataflowResults<MaybeInitializedPlaces<'a, 'tcx, 'tcx>>,
-    flow_uninits:  DataflowResults<MaybeUninitializedPlaces<'a, 'tcx, 'tcx>>,
+    flow_inits: DataflowResults<'tcx, MaybeInitializedPlaces<'a, 'tcx, 'tcx>>,
+    flow_uninits:  DataflowResults<'tcx, MaybeUninitializedPlaces<'a, 'tcx, 'tcx>>,
     drop_flags: FxHashMap<MovePathIndex, Local>,
     patch: MirPatch<'tcx>,
 }
@@ -543,7 +533,9 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
             span,
             ty: self.tcx.types.bool,
             user_ty: None,
-            literal: ty::Const::from_bool(self.tcx, val),
+            literal: self.tcx.intern_lazy_const(ty::LazyConst::Evaluated(
+                ty::Const::from_bool(self.tcx, val),
+            )),
         })))
     }
 

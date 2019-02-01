@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::borrow_set::BorrowSet;
 use borrow_check::location::{LocationIndex, LocationTable};
 use borrow_check::nll::facts::AllFactsExt;
@@ -85,7 +75,7 @@ pub(in borrow_check) fn compute_regions<'cx, 'gcx, 'tcx>(
     mir: &Mir<'tcx>,
     location_table: &LocationTable,
     param_env: ty::ParamEnv<'gcx>,
-    flow_inits: &mut FlowAtLocation<MaybeInitializedPlaces<'cx, 'gcx, 'tcx>>,
+    flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'cx, 'gcx, 'tcx>>,
     move_data: &MoveData<'tcx>,
     borrow_set: &BorrowSet<'tcx>,
     errors_buffer: &mut Vec<Diagnostic>,
@@ -176,7 +166,7 @@ pub(in borrow_check) fn compute_regions<'cx, 'gcx, 'tcx>(
     // Dump facts if requested.
     let polonius_output = all_facts.and_then(|all_facts| {
         if infcx.tcx.sess.opts.debugging_opts.nll_facts {
-            let def_path = infcx.tcx.hir.def_path(def_id);
+            let def_path = infcx.tcx.hir().def_path(def_id);
             let dir_path =
                 PathBuf::from("nll-facts").join(def_path.to_filename_friendly_no_crate());
             all_facts.write_to_dir(dir_path, location_table).unwrap();
@@ -240,13 +230,14 @@ fn dump_mir_results<'a, 'gcx, 'tcx>(
                 // Before the CFG, dump out the values for each region variable.
                 PassWhere::BeforeCFG => {
                     regioncx.dump_mir(out)?;
+                    writeln!(out, "|")?;
 
                     if let Some(closure_region_requirements) = closure_region_requirements {
-                        writeln!(out, "|")?;
                         writeln!(out, "| Free Region Constraints")?;
                         for_each_region_constraint(closure_region_requirements, &mut |msg| {
                             writeln!(out, "| {}", msg)
                         })?;
+                        writeln!(out, "|")?;
                     }
                 }
 

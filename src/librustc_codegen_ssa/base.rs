@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Codegen the completed AST to the LLVM IR.
 //!
 //! Some functions here, such as codegen_block and codegen_expr, return a value --
@@ -193,7 +183,7 @@ pub fn unsized_info<'tcx, Cx: CodegenMethods<'tcx>>(
         (_, &ty::Dynamic(ref data, ..)) => {
             let vtable_ptr = cx.layout_of(cx.tcx().mk_mut_ptr(target))
                 .field(cx, FAT_PTR_EXTRA);
-            cx.static_ptrcast(meth::get_vtable(cx, source, data.principal()),
+            cx.const_ptrcast(meth::get_vtable(cx, source, data.principal()),
                             cx.backend_type(vtable_ptr))
         }
         _ => bug!("unsized_info: invalid unsizing {:?} -> {:?}",
@@ -269,7 +259,7 @@ pub fn coerce_unsized_into<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
         let (base, info) = match bx.load_operand(src).val {
             OperandValue::Pair(base, info) => {
                 // fat-ptr to fat-ptr unsize preserves the vtable
-                // i.e. &'a fmt::Debug+Send => &'a fmt::Debug
+                // i.e., &'a fmt::Debug+Send => &'a fmt::Debug
                 // So we need to pointercast the base to ensure
                 // the types match up.
                 let thin_ptr = dst.layout.field(bx.cx(), FAT_PTR_ADDR);
@@ -367,14 +357,6 @@ pub fn wants_msvc_seh(sess: &Session) -> bool {
     sess.target.target.options.is_like_msvc
 }
 
-pub fn call_assume<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
-    bx: &mut Bx,
-    val: Bx::Value
-) {
-    let assume_intrinsic = bx.cx().get_intrinsic("llvm.assume");
-    bx.call(assume_intrinsic, &[val], None);
-}
-
 pub fn from_immediate<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     val: Bx::Value
@@ -460,10 +442,8 @@ pub fn codegen_instance<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 pub fn maybe_create_entry_wrapper<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx
 ) {
-    let (main_def_id, span) = match *cx.sess().entry_fn.borrow() {
-        Some((id, span, _)) => {
-            (cx.tcx().hir.local_def_id(id), span)
-        }
+    let (main_def_id, span) = match cx.tcx().entry_fn(LOCAL_CRATE) {
+        Some((def_id, _)) => { (def_id, cx.tcx().def_span(def_id)) },
         None => return,
     };
 
@@ -477,7 +457,7 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 
     let main_llfn = cx.get_fn(instance);
 
-    let et = cx.sess().entry_fn.get().map(|e| e.2);
+    let et = cx.tcx().entry_fn(LOCAL_CRATE).map(|e| e.1);
     match et {
         Some(EntryFnType::Main) => create_entry_fn::<Bx>(cx, span, main_llfn, main_def_id, true),
         Some(EntryFnType::Start) => create_entry_fn::<Bx>(cx, span, main_llfn, main_def_id, false),
@@ -572,7 +552,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                                                             &["crate"],
                                                             Some("metadata")).as_str()
                                                                              .to_string();
-    let metadata_llvm_module = backend.new_metadata(tcx.sess, &metadata_cgu_name);
+    let metadata_llvm_module = backend.new_metadata(tcx, &metadata_cgu_name);
     let metadata = time(tcx.sess, "write metadata", || {
         backend.write_metadata(tcx, &metadata_llvm_module)
     });
@@ -657,7 +637,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                                                        &["crate"],
                                                        Some("allocator")).as_str()
                                                                          .to_string();
-        let modules = backend.new_metadata(tcx.sess, &llmod_id);
+        let modules = backend.new_metadata(tcx, &llmod_id);
         time(tcx.sess, "write allocator module", || {
             backend.codegen_allocator(tcx, &modules, kind)
         });
@@ -918,6 +898,39 @@ fn is_codegened_item(tcx: TyCtxt, id: DefId) -> bool {
 }
 
 pub fn provide_both(providers: &mut Providers) {
+    providers.backend_optimization_level = |tcx, cratenum| {
+        let for_speed = match tcx.sess.opts.optimize {
+            // If globally no optimisation is done, #[optimize] has no effect.
+            //
+            // This is done because if we ended up "upgrading" to `-O2` here, we’d populate the
+            // pass manager and it is likely that some module-wide passes (such as inliner or
+            // cross-function constant propagation) would ignore the `optnone` annotation we put
+            // on the functions, thus necessarily involving these functions into optimisations.
+            config::OptLevel::No => return config::OptLevel::No,
+            // If globally optimise-speed is already specified, just use that level.
+            config::OptLevel::Less => return config::OptLevel::Less,
+            config::OptLevel::Default => return config::OptLevel::Default,
+            config::OptLevel::Aggressive => return config::OptLevel::Aggressive,
+            // If globally optimize-for-size has been requested, use -O2 instead (if optimize(size)
+            // are present).
+            config::OptLevel::Size => config::OptLevel::Default,
+            config::OptLevel::SizeMin => config::OptLevel::Default,
+        };
+
+        let (defids, _) = tcx.collect_and_partition_mono_items(cratenum);
+        for id in &*defids {
+            let hir::CodegenFnAttrs { optimize, .. } = tcx.codegen_fn_attrs(*id);
+            match optimize {
+                attr::OptimizeAttr::None => continue,
+                attr::OptimizeAttr::Size => continue,
+                attr::OptimizeAttr::Speed => {
+                    return for_speed;
+                }
+            }
+        }
+        return tcx.sess.opts.optimize;
+    };
+
     providers.dllimport_foreign_items = |tcx, krate| {
         let module_map = tcx.foreign_modules(krate);
         let module_map = module_map.iter()

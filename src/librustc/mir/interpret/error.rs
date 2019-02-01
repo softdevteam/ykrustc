@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::{fmt, env};
 
 use hir::map::definitions::DefPathData;
@@ -47,7 +37,7 @@ impl ErrorHandled {
 }
 
 pub type ConstEvalRawResult<'tcx> = Result<RawConst<'tcx>, ErrorHandled>;
-pub type ConstEvalResult<'tcx> = Result<&'tcx ty::Const<'tcx>, ErrorHandled>;
+pub type ConstEvalResult<'tcx> = Result<ty::Const<'tcx>, ErrorHandled>;
 
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
 pub struct ConstEvalErr<'tcx> {
@@ -183,50 +173,14 @@ pub struct EvalError<'tcx> {
 impl<'tcx> EvalError<'tcx> {
     pub fn print_backtrace(&mut self) {
         if let Some(ref mut backtrace) = self.backtrace {
-            eprintln!("{}", print_backtrace(&mut *backtrace));
+            print_backtrace(&mut *backtrace);
         }
     }
 }
 
-fn print_backtrace(backtrace: &mut Backtrace) -> String {
-    use std::fmt::Write;
-
+fn print_backtrace(backtrace: &mut Backtrace) {
     backtrace.resolve();
-
-    let mut trace_text = "\n\nAn error occurred in miri:\n".to_string();
-    write!(trace_text, "backtrace frames: {}\n", backtrace.frames().len()).unwrap();
-    'frames: for (i, frame) in backtrace.frames().iter().enumerate() {
-        if frame.symbols().is_empty() {
-            write!(trace_text, "  {}: no symbols\n", i).unwrap();
-        }
-        let mut first = true;
-        for symbol in frame.symbols() {
-            if first {
-                write!(trace_text, "  {}: ", i).unwrap();
-                first = false;
-            } else {
-                let len = i.to_string().len();
-                write!(trace_text, "  {}  ", " ".repeat(len)).unwrap();
-            }
-            if let Some(name) = symbol.name() {
-                write!(trace_text, "{}\n", name).unwrap();
-            } else {
-                write!(trace_text, "<unknown>\n").unwrap();
-            }
-            write!(trace_text, "           at ").unwrap();
-            if let Some(file_path) = symbol.filename() {
-                write!(trace_text, "{}", file_path.display()).unwrap();
-            } else {
-                write!(trace_text, "<unknown_file>").unwrap();
-            }
-            if let Some(line) = symbol.lineno() {
-                write!(trace_text, ":{}\n", line).unwrap();
-            } else {
-                write!(trace_text, "\n").unwrap();
-            }
-        }
-    }
-    trace_text
+    eprintln!("\n\nAn error occurred in miri:\n{:?}", backtrace);
 }
 
 impl<'tcx> From<EvalErrorKind<'tcx, u64>> for EvalError<'tcx> {
@@ -238,7 +192,7 @@ impl<'tcx> From<EvalErrorKind<'tcx, u64>> for EvalError<'tcx> {
 
                 if val == "immediate" {
                     // Print it now
-                    eprintln!("{}", print_backtrace(&mut backtrace));
+                    print_backtrace(&mut backtrace);
                     None
                 } else {
                     Some(Box::new(backtrace))
@@ -308,6 +262,7 @@ pub enum EvalErrorKind<'tcx, O> {
     CalledClosureAsFunction,
     VtableForArgumentlessMethod,
     ModifiedConstantMemory,
+    ModifiedStatic,
     AssumptionNotHeld,
     InlineAsm,
     TypeNotPrimitive(Ty<'tcx>),
@@ -377,7 +332,7 @@ impl<'tcx, O> EvalErrorKind<'tcx, O> {
                 "tried to read from foreign (extern) static",
             InvalidPointerMath =>
                 "attempted to do invalid arithmetic on pointers that would leak base addresses, \
-                e.g. comparing pointers into different allocations",
+                e.g., comparing pointers into different allocations",
             ReadUndefBytes(_) =>
                 "attempted to read undefined bytes",
             DeadLocal =>
@@ -412,6 +367,8 @@ impl<'tcx, O> EvalErrorKind<'tcx, O> {
                 "tried to call a vtable function without arguments",
             ModifiedConstantMemory =>
                 "tried to modify constant memory",
+            ModifiedStatic =>
+                "tried to modify a static's initial value from another static's initializer",
             AssumptionNotHeld =>
                 "`assume` argument was false",
             InlineAsm =>
@@ -527,7 +484,7 @@ impl<'tcx, O: fmt::Debug> fmt::Debug for EvalErrorKind<'tcx, O> {
                 write!(f, "tried to interpret an invalid 32-bit value as a char: {}", c),
             AlignmentCheckFailed { required, has } =>
                write!(f, "tried to access memory with alignment {}, but alignment {} is required",
-                      has.abi(), required.abi()),
+                      has.bytes(), required.bytes()),
             TypeNotPrimitive(ty) =>
                 write!(f, "expected primitive type, got {}", ty),
             Layout(ref err) =>
@@ -537,8 +494,9 @@ impl<'tcx, O: fmt::Debug> fmt::Debug for EvalErrorKind<'tcx, O> {
             MachineError(ref inner) =>
                 write!(f, "{}", inner),
             IncorrectAllocationInformation(size, size2, align, align2) =>
-                write!(f, "incorrect alloc info: expected size {} and align {}, got size {} and \
-                       align {}", size.bytes(), align.abi(), size2.bytes(), align2.abi()),
+                write!(f, "incorrect alloc info: expected size {} and align {}, \
+                           got size {} and align {}",
+                    size.bytes(), align.bytes(), size2.bytes(), align2.bytes()),
             Panic { ref msg, line, col, ref file } =>
                 write!(f, "the evaluated program panicked at '{}', {}:{}:{}", msg, file, line, col),
             InvalidDiscriminant(val) =>

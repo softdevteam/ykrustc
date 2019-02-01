@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains the `EvalContext` methods for executing a single step of the interpreter.
 //!
 //! The main entry point is the `step` method.
@@ -18,7 +8,7 @@ use rustc::mir::interpret::{EvalResult, Scalar, PointerArithmetic};
 
 use super::{EvalContext, Machine};
 
-/// Classify whether an operator is "left-homogeneous", i.e. the LHS has the
+/// Classify whether an operator is "left-homogeneous", i.e., the LHS has the
 /// same type as the result.
 #[inline]
 fn binop_left_homogeneous(op: mir::BinOp) -> bool {
@@ -31,7 +21,7 @@ fn binop_left_homogeneous(op: mir::BinOp) -> bool {
             false,
     }
 }
-/// Classify whether an operator is "right-homogeneous", i.e. the RHS has the
+/// Classify whether an operator is "right-homogeneous", i.e., the RHS has the
 /// same type as the LHS.
 #[inline]
 fn binop_right_homogeneous(op: mir::BinOp) -> bool {
@@ -81,11 +71,11 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     }
 
     fn statement(&mut self, stmt: &mir::Statement<'tcx>) -> EvalResult<'tcx> {
-        debug!("{:?}", stmt);
+        info!("{:?}", stmt);
 
         use rustc::mir::StatementKind::*;
 
-        // Some statements (e.g. box) push new stack frames.
+        // Some statements (e.g., box) push new stack frames.
         // We have to record the stack frame number *before* executing the statement.
         let frame_idx = self.cur_frame();
         self.tcx.span = stmt.source_info.span;
@@ -119,17 +109,12 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             FakeRead(..) => {}
 
             // Stacked Borrows.
-            Retag { fn_entry, ref place } => {
+            Retag(kind, ref place) => {
                 let dest = self.eval_place(place)?;
-                M::retag(self, fn_entry, dest)?;
-            }
-            EscapeToRaw(ref op) => {
-                let op = self.eval_operand(op, None)?;
-                M::escape_to_raw(self, op)?;
+                M::retag(self, kind, dest)?;
             }
 
             // Statements we do not track.
-            EndRegion(..) => {}
             AscribeUserType(..) => {}
 
             // Defined to do nothing. These are added by optimization passes, to avoid changing the
@@ -263,7 +248,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             }
 
             NullaryOp(mir::NullOp::SizeOf, ty) => {
-                let ty = self.monomorphize(ty, self.substs());
+                let ty = self.monomorphize(ty)?;
                 let layout = self.layout_of(ty)?;
                 assert!(!layout.is_unsized(),
                         "SizeOf nullary MIR operator called for unsized type");
@@ -275,7 +260,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             }
 
             Cast(kind, ref operand, cast_ty) => {
-                debug_assert_eq!(self.monomorphize(cast_ty, self.substs()), dest.layout.ty);
+                debug_assert_eq!(self.monomorphize(cast_ty)?, dest.layout.ty);
                 let src = self.eval_operand(operand, None)?;
                 self.cast(src, kind, dest)?;
             }
@@ -294,7 +279,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     }
 
     fn terminator(&mut self, terminator: &mir::Terminator<'tcx>) -> EvalResult<'tcx> {
-        debug!("{:?}", terminator.kind);
+        info!("{:?}", terminator.kind);
         self.tcx.span = terminator.source_info.span;
         self.memory.tcx.span = terminator.source_info.span;
 
@@ -304,7 +289,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         if !self.stack.is_empty() {
             // This should change *something*
             debug_assert!(self.cur_frame() != old_stack || self.frame().block != old_bb);
-            debug!("// {:?}", self.frame().block);
+            info!("// {:?}", self.frame().block);
         }
         Ok(())
     }

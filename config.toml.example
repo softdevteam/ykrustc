@@ -90,6 +90,21 @@
 # with clang-cl, so this is special in that it only compiles LLVM with clang-cl
 #clang-cl = '/path/to/clang-cl.exe'
 
+# Pass extra compiler and linker flags to the LLVM CMake build.
+#cflags = "-fextra-flag"
+#cxxflags = "-fextra-flag"
+#ldflags = "-Wl,extra-flag"
+
+# Use libc++ when building LLVM instead of libstdc++. This is the default on
+# platforms already use libc++ as the default C++ library, but this option
+# allows you to use libc++ even on platforms when it's not. You need to ensure
+# that your host compiler ships with libc++.
+#use-libcxx = true
+
+# The value specified here will be passed as `-DLLVM_USE_LINKER` to CMake.
+#use-linker = "lld"
+
+
 # =============================================================================
 # General build configuration options
 # =============================================================================
@@ -171,7 +186,7 @@
 
 # Installs chosen set of extended tools if enables. By default builds all.
 # If chosen tool failed to build the installation fails.
-#tools = ["cargo", "rls", "rustfmt", "analysis", "src"]
+#tools = ["cargo", "rls", "clippy", "rustfmt", "analysis", "src"]
 
 # Verbosity level: 0 == not verbose, 1 == verbose, 2 == very verbose
 #verbose = 0
@@ -282,7 +297,7 @@
 #codegen-units-std = 1
 
 # Whether or not debug assertions are enabled for the compiler and standard
-# library. Also enables compilation of debug! and trace! logging macros.
+# library.
 #debug-assertions = false
 
 # Whether or not debuginfo is emitted
@@ -306,8 +321,8 @@
 # Whether to always use incremental compilation when building rustc
 #incremental = false
 
-# Build rustc with experimental parallelization
-#experimental-parallel-queries = false
+# Build a multi-threaded rustc
+#parallel-compiler = false
 
 # The default linker that will be hard-coded into the generated compiler for
 # targets that don't specify linker explicitly in their target specifications.
@@ -399,6 +414,11 @@
 # Link the compiler against `jemalloc`, where on Linux and OSX it should
 # override the default allocator for rustc and LLVM.
 #jemalloc = false
+
+# Run tests in various test suites with the "nll compare mode" in addition to
+# running the tests in normal mode. Largely only used on CI and during local
+# development of NLL
+#test-compare-mode = false
 
 # =============================================================================
 # Options for specific targets

@@ -1,13 +1,3 @@
-// Copyright 2013-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Utilities for formatting and printing strings.
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -201,29 +191,8 @@ pub trait Write {
     /// assert_eq!(&buf, "world");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    fn write_fmt(&mut self, args: Arguments) -> Result {
-        // This Adapter is needed to allow `self` (of type `&mut
-        // Self`) to be cast to a Write (below) without
-        // requiring a `Sized` bound.
-        struct Adapter<'a,T: ?Sized +'a>(&'a mut T);
-
-        impl<T: ?Sized> Write for Adapter<'_, T>
-            where T: Write
-        {
-            fn write_str(&mut self, s: &str) -> Result {
-                self.0.write_str(s)
-            }
-
-            fn write_char(&mut self, c: char) -> Result {
-                self.0.write_char(c)
-            }
-
-            fn write_fmt(&mut self, args: Arguments) -> Result {
-                self.0.write_fmt(args)
-            }
-        }
-
-        write(&mut Adapter(self), args)
+    fn write_fmt(mut self: &mut Self, args: Arguments) -> Result {
+        write(&mut self, args)
     }
 }
 
@@ -242,9 +211,18 @@ impl<W: Write + ?Sized> Write for &mut W {
     }
 }
 
-/// A struct to represent both where to emit formatting strings to and how they
-/// should be formatted. A mutable version of this is passed to all formatting
-/// traits.
+/// Configuration for formatting.
+///
+/// A `Formatter` represents various options related to formatting. Users do not
+/// construct `Formatter`s directly; a mutable reference to one is passed to
+/// the `fmt` method of all formatting traits, like [`Debug`] and [`Display`].
+///
+/// To interact with a `Formatter`, you'll call various methods to change the
+/// various options related to formatting. For examples, please see the
+/// documentation of the methods defined on `Formatter` below.
+///
+/// [`Debug`]: trait.Debug.html
+/// [`Display`]: trait.Display.html
 #[allow(missing_debug_implementations)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Formatter<'a> {
@@ -278,7 +256,7 @@ struct Void {
 /// family of functions. It contains a function to format the given value. At
 /// compile time it is ensured that the function and the value have the correct
 /// types, and then this struct is used to canonicalize arguments to one type.
-#[derive(Copy)]
+#[derive(Copy, Clone)]
 #[allow(missing_debug_implementations)]
 #[unstable(feature = "fmt_internals", reason = "internal to format_args!",
            issue = "0")]
@@ -286,14 +264,6 @@ struct Void {
 pub struct ArgumentV1<'a> {
     value: &'a Void,
     formatter: fn(&Void, &mut Formatter) -> Result,
-}
-
-#[unstable(feature = "fmt_internals", reason = "internal to format_args!",
-           issue = "0")]
-impl Clone for ArgumentV1<'_> {
-    fn clone(&self) -> Self {
-        *self
-    }
 }
 
 impl<'a> ArgumentV1<'a> {
@@ -609,10 +579,15 @@ pub trait Debug {
 /// println!("The origin is: {}", origin);
 /// ```
 #[rustc_on_unimplemented(
+    on(
+        _Self="std::path::Path",
+        label="`{Self}` cannot be formatted with the default formatter; call `.display()` on it",
+        note="call `.display()` or `.to_string_lossy()` to safely print paths, \
+              as they may contain non-Unicode data"
+    ),
     message="`{Self}` doesn't implement `{Display}`",
     label="`{Self}` cannot be formatted with the default formatter",
-    note="in format strings you may be able to use `{{:?}}` \
-          (or {{:#?}} for pretty-print) instead",
+    note="in format strings you may be able to use `{{:?}}` (or {{:#?}} for pretty-print) instead",
 )]
 #[doc(alias = "{}")]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1031,28 +1006,30 @@ pub fn write(output: &mut dyn Write, args: Arguments) -> Result {
         curarg: args.args.iter(),
     };
 
-    let mut pieces = args.pieces.iter();
+    let mut idx = 0;
 
     match args.fmt {
         None => {
             // We can use default formatting parameters for all arguments.
-            for (arg, piece) in args.args.iter().zip(pieces.by_ref()) {
+            for (arg, piece) in args.args.iter().zip(args.pieces.iter()) {
                 formatter.buf.write_str(*piece)?;
                 (arg.formatter)(arg.value, &mut formatter)?;
+                idx += 1;
             }
         }
         Some(fmt) => {
             // Every spec has a corresponding argument that is preceded by
             // a string piece.
-            for (arg, piece) in fmt.iter().zip(pieces.by_ref()) {
+            for (arg, piece) in fmt.iter().zip(args.pieces.iter()) {
                 formatter.buf.write_str(*piece)?;
                 formatter.run(arg)?;
+                idx += 1;
             }
         }
     }
 
     // There can be only one trailing string piece left.
-    if let Some(piece) = pieces.next() {
+    if let Some(piece) = args.pieces.get(idx) {
         formatter.buf.write_str(*piece)?;
     }
 
@@ -1110,7 +1087,7 @@ impl<'a> Formatter<'a> {
                 self.args[i].as_usize()
             }
             rt::v1::Count::NextParam => {
-                self.curarg.next().and_then(|arg| arg.as_usize())
+                self.curarg.next()?.as_usize()
             }
         }
     }
@@ -1176,15 +1153,15 @@ impl<'a> Formatter<'a> {
             sign = Some('+'); width += 1;
         }
 
-        let mut prefixed = false;
-        if self.alternate() {
-            prefixed = true; width += prefix.chars().count();
+        let prefixed = self.alternate();
+        if prefixed {
+            width += prefix.chars().count();
         }
 
         // Writes the sign if it exists, and then the prefix if it was requested
         let write_prefix = |f: &mut Formatter| {
             if let Some(c) = sign {
-                f.buf.write_str(c.encode_utf8(&mut [0; 4]))?;
+                f.buf.write_char(c)?;
             }
             if prefixed { f.buf.write_str(prefix) }
             else { Ok(()) }
@@ -1346,7 +1323,7 @@ impl<'a> Formatter<'a> {
 
                 // remove the sign from the formatted parts
                 formatted.sign = b"";
-                width = if width < sign.len() { 0 } else { width - sign.len() };
+                width = width.saturating_sub(sign.len());
                 align = rt::v1::Alignment::Right;
                 self.fill = '0';
                 self.align = rt::v1::Alignment::Right;
@@ -1381,7 +1358,7 @@ impl<'a> Formatter<'a> {
         for part in formatted.parts {
             match *part {
                 flt2dec::Part::Zero(mut nzeroes) => {
-                    const ZEROES: &'static str = // 64 zeroes
+                    const ZEROES: &str = // 64 zeroes
                         "0000000000000000000000000000000000000000000000000000000000000000";
                     while nzeroes > ZEROES.len() {
                         self.buf.write_str(ZEROES)?;
@@ -2071,7 +2048,7 @@ macro_rules! tuple {
     ( $($name:ident,)+ ) => (
         #[stable(feature = "rust1", since = "1.0.0")]
         impl<$($name:Debug),*> Debug for ($($name,)*) where last_type!($($name,)+): ?Sized {
-            #[allow(non_snake_case, unused_assignments, deprecated)]
+            #[allow(non_snake_case, unused_assignments)]
             fn fmt(&self, f: &mut Formatter) -> Result {
                 let mut builder = f.debug_tuple("");
                 let ($(ref $name,)*) = *self;

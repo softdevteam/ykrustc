@@ -1,14 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-
 //! A module for propagating forward dataflow information. The analysis
 //! assumes that the items to be propagated can be represented as bits
 //! and thus uses bitvectors. Your job is simply to specify the so-called
@@ -26,7 +15,7 @@ use rustc_data_structures::graph::implementation::OUTGOING;
 
 use rustc::util::nodemap::FxHashMap;
 use rustc::hir;
-use rustc::hir::intravisit::{self, IdRange};
+use rustc::hir::intravisit;
 use rustc::hir::print as pprust;
 
 
@@ -71,7 +60,7 @@ pub struct DataFlowContext<'a, 'tcx: 'a, O> {
     scope_kills: Vec<usize>,
 
     /// bits killed as we exit the cfg node directly; if it is jumped
-    /// over, e.g. via `break`, the kills are not reflected in the
+    /// over, e.g., via `break`, the kills are not reflected in the
     /// jump's effects. Updated by `add_kill(KillFrom::Execution)`.
     action_kills: Vec<usize>,
 
@@ -111,7 +100,7 @@ impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
 
 impl<'a, 'tcx, O:DataFlowOperator> pprust::PpAnn for DataFlowContext<'a, 'tcx, O> {
     fn nested(&self, state: &mut pprust::State, nested: pprust::Nested) -> io::Result<()> {
-        pprust::PpAnn::nested(&self.tcx.hir, state, nested)
+        pprust::PpAnn::nested(self.tcx.hir(), state, nested)
     }
     fn pre(&self,
            ps: &mut pprust::State,
@@ -172,7 +161,7 @@ fn build_local_id_to_index(body: Option<&hir::Body>,
     let mut index = FxHashMap::default();
 
     // FIXME(#15020) Would it be better to fold formals from decl
-    // into cfg itself?  i.e. introduce a fn-based flow-graph in
+    // into cfg itself?  i.e., introduce a fn-based flow-graph in
     // addition to the current block-based flow-graph, rather than
     // have to put traversals like this here?
     if let Some(body) = body {
@@ -241,16 +230,15 @@ impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
                body: Option<&hir::Body>,
                cfg: &cfg::CFG,
                oper: O,
-               id_range: IdRange,
                bits_per_id: usize) -> DataFlowContext<'a, 'tcx, O> {
         let usize_bits = mem::size_of::<usize>() * 8;
         let words_per_id = (bits_per_id + usize_bits - 1) / usize_bits;
         let num_nodes = cfg.graph.all_nodes().len();
 
-        debug!("DataFlowContext::new(analysis_name: {}, id_range={:?}, \
+        debug!("DataFlowContext::new(analysis_name: {}, \
                                      bits_per_id={}, words_per_id={}) \
                                      num_nodes: {}",
-               analysis_name, id_range, bits_per_id, words_per_id,
+               analysis_name, bits_per_id, words_per_id,
                num_nodes);
 
         let entry = if oper.initial_value() { usize::MAX } else {0};
@@ -430,7 +418,7 @@ impl<'a, 'tcx, O:DataFlowOperator> DataFlowContext<'a, 'tcx, O> {
                 for offset in 0..usize_bits {
                     let bit = 1 << offset;
                     if (word & bit) != 0 {
-                        // NB: we round up the total number of bits
+                        // N.B., we round up the total number of bits
                         // that we store in any given bit set so that
                         // it is an even multiple of usize::BITS.  This
                         // means that there may be some stray bits at

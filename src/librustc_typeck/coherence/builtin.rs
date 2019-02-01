@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Check properties that are required by built-in traits and set
 //! up data structures required by type-checking/codegen.
 
@@ -46,8 +36,8 @@ impl<'a, 'tcx> Checker<'a, 'tcx> {
         where F: FnMut(TyCtxt<'a, 'tcx, 'tcx>, DefId)
     {
         if Some(self.trait_def_id) == trait_def_id {
-            for &impl_id in self.tcx.hir.trait_impls(self.trait_def_id) {
-                let impl_def_id = self.tcx.hir.local_def_id(impl_id);
+            for &impl_id in self.tcx.hir().trait_impls(self.trait_def_id) {
+                let impl_def_id = self.tcx.hir().local_def_id(impl_id);
                 f(self.tcx, impl_def_id);
             }
         }
@@ -60,8 +50,8 @@ fn visit_implementation_of_drop<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, impl_did:
         /* do nothing */
     } else {
         // Destructors only work on nominal types.
-        if let Some(impl_node_id) = tcx.hir.as_local_node_id(impl_did) {
-            if let Some(Node::Item(item)) = tcx.hir.find(impl_node_id) {
+        if let Some(impl_node_id) = tcx.hir().as_local_node_id(impl_did) {
+            if let Some(Node::Item(item)) = tcx.hir().find(impl_node_id) {
                 let span = match item.node {
                     ItemKind::Impl(.., ref ty, _) => ty.span,
                     _ => item.span,
@@ -86,7 +76,7 @@ fn visit_implementation_of_drop<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, impl_did:
 fn visit_implementation_of_copy<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, impl_did: DefId) {
     debug!("visit_implementation_of_copy: impl_did={:?}", impl_did);
 
-    let impl_node_id = if let Some(n) = tcx.hir.as_local_node_id(impl_did) {
+    let impl_node_id = if let Some(n) = tcx.hir().as_local_node_id(impl_did) {
         n
     } else {
         debug!("visit_implementation_of_copy(): impl not in this crate");
@@ -97,7 +87,7 @@ fn visit_implementation_of_copy<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, impl_did:
     debug!("visit_implementation_of_copy: self_type={:?} (bound)",
            self_type);
 
-    let span = tcx.hir.span(impl_node_id);
+    let span = tcx.hir().span(impl_node_id);
     let param_env = tcx.param_env(impl_did);
     assert!(!self_type.has_escaping_bound_vars());
 
@@ -107,7 +97,7 @@ fn visit_implementation_of_copy<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, impl_did:
     match param_env.can_type_implement_copy(tcx, self_type) {
         Ok(()) => {}
         Err(CopyImplementationError::InfrigingFields(fields)) => {
-            let item = tcx.hir.expect_item(impl_node_id);
+            let item = tcx.hir().expect_item(impl_node_id);
             let span = if let ItemKind::Impl(.., Some(ref tr), _, _) = item.node {
                 tr.path.span
             } else {
@@ -124,7 +114,7 @@ fn visit_implementation_of_copy<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, impl_did:
             err.emit()
         }
         Err(CopyImplementationError::NotAnAdt) => {
-            let item = tcx.hir.expect_item(impl_node_id);
+            let item = tcx.hir().expect_item(impl_node_id);
             let span = if let ItemKind::Impl(.., ref ty, _) = item.node {
                 ty.span
             } else {
@@ -172,8 +162,8 @@ fn visit_implementation_of_dispatch_from_dyn<'a, 'tcx>(
     if impl_did.is_local() {
         let dispatch_from_dyn_trait = tcx.lang_items().dispatch_from_dyn_trait().unwrap();
 
-        let impl_node_id = tcx.hir.as_local_node_id(impl_did).unwrap();
-        let span = tcx.hir.span(impl_node_id);
+        let impl_node_id = tcx.hir().as_local_node_id(impl_did).unwrap();
+        let span = tcx.hir().span(impl_node_id);
 
         let source = tcx.type_of(impl_did);
         assert!(!source.has_escaping_bound_vars());
@@ -342,7 +332,7 @@ pub fn coerce_unsized_info<'a, 'gcx>(gcx: TyCtxt<'a, 'gcx, 'gcx>,
     });
 
     // this provider should only get invoked for local def-ids
-    let impl_node_id = gcx.hir.as_local_node_id(impl_did).unwrap_or_else(|| {
+    let impl_node_id = gcx.hir().as_local_node_id(impl_did).unwrap_or_else(|| {
         bug!("coerce_unsized_info: invoked for non-local def-id {:?}", impl_did)
     });
 
@@ -354,7 +344,7 @@ pub fn coerce_unsized_info<'a, 'gcx>(gcx: TyCtxt<'a, 'gcx, 'gcx>,
            source,
            target);
 
-    let span = gcx.hir.span(impl_node_id);
+    let span = gcx.hir().span(impl_node_id);
     let param_env = gcx.param_env(impl_did);
     assert!(!source.has_escaping_bound_vars());
 
@@ -469,7 +459,7 @@ pub fn coerce_unsized_info<'a, 'gcx>(gcx: TyCtxt<'a, 'gcx, 'gcx>,
                         // variance where possible. (This is because
                         // we may have to evaluate constraint
                         // expressions in the course of execution.)
-                        // See e.g. #41936.
+                        // See e.g., #41936.
                         if let Ok(ok) = infcx.at(&cause, param_env).eq(a, b) {
                             if ok.obligations.is_empty() {
                                 return None;
@@ -477,7 +467,7 @@ pub fn coerce_unsized_info<'a, 'gcx>(gcx: TyCtxt<'a, 'gcx, 'gcx>,
                         }
 
                         // Collect up all fields that were significantly changed
-                        // i.e. those that contain T in coerce_unsized T -> U
+                        // i.e., those that contain T in coerce_unsized T -> U
                         Some((i, a, b))
                     })
                     .collect::<Vec<_>>();
@@ -491,11 +481,11 @@ pub fn coerce_unsized_info<'a, 'gcx>(gcx: TyCtxt<'a, 'gcx, 'gcx>,
                                being coerced, none found");
                     return err_info;
                 } else if diff_fields.len() > 1 {
-                    let item = gcx.hir.expect_item(impl_node_id);
+                    let item = gcx.hir().expect_item(impl_node_id);
                     let span = if let ItemKind::Impl(.., Some(ref t), _, _) = item.node {
                         t.path.span
                     } else {
-                        gcx.hir.span(impl_node_id)
+                        gcx.hir().span(impl_node_id)
                     };
 
                     let mut err = struct_span_err!(gcx.sess,

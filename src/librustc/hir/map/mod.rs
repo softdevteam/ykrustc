@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use self::collector::NodeCollector;
 pub use self::def_collector::{DefCollector, MacroInvocationData};
 pub use self::definitions::{Definitions, DefKey, DefPath, DefPathData,
@@ -17,18 +7,21 @@ use dep_graph::{DepGraph, DepNode, DepKind, DepNodeIndex};
 
 use hir::def_id::{CRATE_DEF_INDEX, DefId, LocalDefId, DefIndexAddressSpace};
 
-use middle::cstore::CrateStore;
+use middle::cstore::CrateStoreDyn;
 
 use rustc_target::spec::abi::Abi;
 use rustc_data_structures::svh::Svh;
+use rustc_data_structures::sync::join;
 use syntax::ast::{self, Name, NodeId, CRATE_NODE_ID};
 use syntax::source_map::Spanned;
 use syntax::ext::base::MacroKind;
 use syntax_pos::{Span, DUMMY_SP};
 
 use hir::*;
+use hir::itemlikevisit::ItemLikeVisitor;
 use hir::print::Nested;
 use util::nodemap::FxHashMap;
+use util::common::time;
 
 use std::io;
 use std::result::Result::Err;
@@ -159,6 +152,13 @@ impl Forest {
         self.dep_graph.read(DepNode::new_no_params(DepKind::Krate));
         &self.krate
     }
+
+    /// This is internally in the depedency tracking system.
+    /// Use the `krate` method to ensure your dependency on the
+    /// crate is tracked.
+    pub fn untracked_krate<'hir>(&'hir self) -> &'hir Crate {
+        &self.krate
+    }
 }
 
 /// Represents a mapping from Node IDs to AST elements and their parent
@@ -286,9 +286,7 @@ impl<'hir> Map<'hir> {
 
         match node {
             Node::Item(item) => {
-                let def_id = || {
-                    self.local_def_id(item.id)
-                };
+                let def_id = || self.local_def_id(item.id);
 
                 match item.node {
                     ItemKind::Static(_, m, _) => Some(Def::Static(def_id(), m == MutMutable)),
@@ -383,7 +381,7 @@ impl<'hir> Map<'hir> {
     pub fn trait_item(&self, id: TraitItemId) -> &'hir TraitItem {
         self.read(id.node_id);
 
-        // NB: intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.forest.krate()` so that we
         // do not trigger a read of the whole krate here
         self.forest.krate.trait_item(id)
     }
@@ -391,7 +389,7 @@ impl<'hir> Map<'hir> {
     pub fn impl_item(&self, id: ImplItemId) -> &'hir ImplItem {
         self.read(id.node_id);
 
-        // NB: intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.forest.krate()` so that we
         // do not trigger a read of the whole krate here
         self.forest.krate.impl_item(id)
     }
@@ -399,7 +397,7 @@ impl<'hir> Map<'hir> {
     pub fn body(&self, id: BodyId) -> &'hir Body {
         self.read(id.node_id);
 
-        // NB: intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.forest.krate()` so that we
         // do not trigger a read of the whole krate here
         self.forest.krate.body(id)
     }
@@ -413,7 +411,7 @@ impl<'hir> Map<'hir> {
     }
 
     /// Returns the `NodeId` that corresponds to the definition of
-    /// which this is the body of, i.e. a `fn`, `const` or `static`
+    /// which this is the body of, i.e., a `fn`, `const` or `static`
     /// item (possibly associated), a closure, or a `hir::AnonConst`.
     pub fn body_owner(&self, BodyId { node_id }: BodyId) -> NodeId {
         let parent = self.get_parent_node(node_id);
@@ -457,11 +455,20 @@ impl<'hir> Map<'hir> {
             Node::AnonConst(_) => {
                 BodyOwnerKind::Const
             }
+            Node::Variant(&Spanned { node: VariantKind { data: VariantData::Tuple(..), .. }, .. }) |
+            Node::StructCtor(..) |
+            Node::Item(&Item { node: ItemKind::Fn(..), .. }) |
+            Node::TraitItem(&TraitItem { node: TraitItemKind::Method(..), .. }) |
+            Node::ImplItem(&ImplItem { node: ImplItemKind::Method(..), .. }) => {
+                BodyOwnerKind::Fn
+            }
             Node::Item(&Item { node: ItemKind::Static(_, m, _), .. }) => {
                 BodyOwnerKind::Static(m)
             }
-            // Default to function if it's not a constant or static.
-            _ => BodyOwnerKind::Fn
+            Node::Expr(&Expr { node: ExprKind::Closure(..), .. }) => {
+                BodyOwnerKind::Closure
+            }
+            node => bug!("{:#?} is not a body node", node),
         }
     }
 
@@ -475,7 +482,7 @@ impl<'hir> Map<'hir> {
 
     pub fn ty_param_name(&self, id: NodeId) -> Name {
         match self.get(id) {
-            Node::Item(&Item { node: ItemKind::Trait(..), .. }) => keywords::SelfType.name(),
+            Node::Item(&Item { node: ItemKind::Trait(..), .. }) => keywords::SelfUpper.name(),
             Node::GenericParam(param) => param.name.ident().name,
             _ => bug!("ty_param_name: {} not a type parameter", self.node_to_string(id)),
         }
@@ -484,7 +491,7 @@ impl<'hir> Map<'hir> {
     pub fn trait_impls(&self, trait_did: DefId) -> &'hir [NodeId] {
         self.dep_graph.read(DepNode::new_no_params(DepKind::AllLocalTraitImpls));
 
-        // NB: intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.forest.krate()` so that we
         // do not trigger a read of the whole krate here
         self.forest.krate.trait_impls.get(&trait_did).map_or(&[], |xs| &xs[..])
     }
@@ -492,7 +499,7 @@ impl<'hir> Map<'hir> {
     pub fn trait_auto_impl(&self, trait_did: DefId) -> Option<NodeId> {
         self.dep_graph.read(DepNode::new_no_params(DepKind::AllLocalTraitImpls));
 
-        // NB: intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.forest.krate()` so that we
         // do not trigger a read of the whole krate here
         self.forest.krate.trait_auto_impl.get(&trait_did).cloned()
     }
@@ -509,6 +516,47 @@ impl<'hir> Map<'hir> {
 
         self.dep_graph.read(def_path_hash.to_dep_node(DepKind::Hir));
         &self.forest.krate.attrs
+    }
+
+    pub fn get_module(&self, module: DefId) -> (&'hir Mod, Span, NodeId)
+    {
+        let node_id = self.as_local_node_id(module).unwrap();
+        self.read(node_id);
+        match self.find_entry(node_id).unwrap().node {
+            Node::Item(&Item {
+                span,
+                node: ItemKind::Mod(ref m),
+                ..
+            }) => (m, span, node_id),
+            Node::Crate => (&self.forest.krate.module, self.forest.krate.span, node_id),
+            _ => panic!("not a module")
+        }
+    }
+
+    pub fn visit_item_likes_in_module<V>(&self, module: DefId, visitor: &mut V)
+        where V: ItemLikeVisitor<'hir>
+    {
+        let node_id = self.as_local_node_id(module).unwrap();
+
+        // Read the module so we'll be re-executed if new items
+        // appear immediately under in the module. If some new item appears
+        // in some nested item in the module, we'll be re-executed due to reads
+        // in the expect_* calls the loops below
+        self.read(node_id);
+
+        let module = &self.forest.krate.modules[&node_id];
+
+        for id in &module.items {
+            visitor.visit_item(self.expect_item(*id));
+        }
+
+        for id in &module.trait_items {
+            visitor.visit_trait_item(self.expect_trait_item(id.node_id));
+        }
+
+        for id in &module.impl_items {
+            visitor.visit_impl_item(self.expect_impl_item(id.node_id));
+        }
     }
 
     /// Retrieve the Node corresponding to `id`, panicking if it cannot
@@ -565,14 +613,14 @@ impl<'hir> Map<'hir> {
         result
     }
 
-    /// Similar to get_parent, returns the parent node id or id if there is no
-    /// parent. Note that the parent may be CRATE_NODE_ID, which is not itself
+    /// Similar to `get_parent`; returns the parent node-id, or own `id` if there is
+    /// no parent. Note that the parent may be `CRATE_NODE_ID`, which is not itself
     /// present in the map -- so passing the return value of get_parent_node to
     /// get may actually panic.
     /// This function returns the immediate parent in the AST, whereas get_parent
     /// returns the enclosing item. Note that this might not be the actual parent
     /// node in the AST - some kinds of nodes are not in the map and these will
-    /// never appear as the parent_node. So you can always walk the parent_nodes
+    /// never appear as the parent_node. So you can always walk the `parent_nodes`
     /// from a node to the root of the ast (unless you get the same id back here
     /// that can happen if the id is not in the map itself or is just weird).
     pub fn get_parent_node(&self, id: NodeId) -> NodeId {
@@ -608,7 +656,7 @@ impl<'hir> Map<'hir> {
 
     /// If there is some error when walking the parents (e.g., a node does not
     /// have a parent in the map or a node can't be found), then we return the
-    /// last good node id we found. Note that reaching the crate root (id == 0),
+    /// last good node id we found. Note that reaching the crate root (`id == 0`),
     /// is not an error, since items in the crate module have the crate root as
     /// parent.
     fn walk_parent_nodes<F, F2>(&self,
@@ -644,7 +692,7 @@ impl<'hir> Map<'hir> {
         }
     }
 
-    /// Retrieve the NodeId for `id`'s enclosing method, unless there's a
+    /// Retrieve the `NodeId` for `id`'s enclosing method, unless there's a
     /// `while` or `loop` before reaching it, as block tail returns are not
     /// available in them.
     ///
@@ -672,6 +720,7 @@ impl<'hir> Map<'hir> {
                 Node::Item(_) |
                 Node::ForeignItem(_) |
                 Node::TraitItem(_) |
+                Node::Expr(Expr { node: ExprKind::Closure(..), ..}) |
                 Node::ImplItem(_) => true,
                 _ => false,
             }
@@ -680,7 +729,7 @@ impl<'hir> Map<'hir> {
             match *node {
                 Node::Expr(ref expr) => {
                     match expr.node {
-                        ExprKind::While(..) | ExprKind::Loop(..) => true,
+                        ExprKind::While(..) | ExprKind::Loop(..) | ExprKind::Ret(..) => true,
                         _ => false,
                     }
                 }
@@ -691,7 +740,7 @@ impl<'hir> Map<'hir> {
         self.walk_parent_nodes(id, match_fn, match_non_returning_block).ok()
     }
 
-    /// Retrieve the NodeId for `id`'s parent item, or `id` itself if no
+    /// Retrieve the `NodeId` for `id`'s parent item, or `id` itself if no
     /// parent item is in this map. The "parent item" is the closest parent node
     /// in the HIR which is recorded by the map and is an item, either an item
     /// in a module, trait, or impl.
@@ -708,13 +757,13 @@ impl<'hir> Map<'hir> {
         }
     }
 
-    /// Returns the DefId of `id`'s nearest module parent, or `id` itself if no
+    /// Returns the `DefId` of `id`'s nearest module parent, or `id` itself if no
     /// module parent is in this map.
     pub fn get_module_parent(&self, id: NodeId) -> DefId {
         self.local_def_id(self.get_module_parent_node(id))
     }
 
-    /// Returns the NodeId of `id`'s nearest module parent, or `id` itself if no
+    /// Returns the `NodeId` of `id`'s nearest module parent, or `id` itself if no
     /// module parent is in this map.
     pub fn get_module_parent_node(&self, id: NodeId) -> NodeId {
         match self.walk_parent_nodes(id, |node| match *node {
@@ -727,7 +776,7 @@ impl<'hir> Map<'hir> {
     }
 
     /// Returns the nearest enclosing scope. A scope is an item or block.
-    /// FIXME it is not clear to me that all items qualify as scopes - statics
+    /// FIXME: it is not clear to me that all items qualify as scopes -- statics
     /// and associated types probably shouldn't, for example. Behavior in this
     /// regard should be expected to be highly unstable.
     pub fn get_enclosing_scope(&self, id: NodeId) -> Option<NodeId> {
@@ -818,11 +867,11 @@ impl<'hir> Map<'hir> {
     /// Returns the name associated with the given NodeId's AST.
     pub fn name(&self, id: NodeId) -> Name {
         match self.get(id) {
-            Node::Item(i) => i.name,
-            Node::ForeignItem(i) => i.name,
+            Node::Item(i) => i.ident.name,
+            Node::ForeignItem(fi) => fi.ident.name,
             Node::ImplItem(ii) => ii.ident.name,
             Node::TraitItem(ti) => ti.ident.name,
-            Node::Variant(v) => v.node.name,
+            Node::Variant(v) => v.node.ident.name,
             Node::Field(f) => f.ident.name,
             Node::Lifetime(lt) => lt.name.ident().name,
             Node::GenericParam(param) => param.name.ident().name,
@@ -958,7 +1007,7 @@ impl<'a, 'hir> NodesMatchingSuffix<'a, 'hir> {
             loop {
                 if let Node::Item(item) = map.find(id)? {
                     if item_is_mod(&item) {
-                        return Some((id, item.name))
+                        return Some((id, item.ident.name))
                     }
                 }
                 let parent = map.get_parent(id);
@@ -1014,22 +1063,23 @@ trait Named {
 
 impl<T:Named> Named for Spanned<T> { fn name(&self) -> Name { self.node.name() } }
 
-impl Named for Item { fn name(&self) -> Name { self.name } }
-impl Named for ForeignItem { fn name(&self) -> Name { self.name } }
-impl Named for VariantKind { fn name(&self) -> Name { self.name } }
+impl Named for Item { fn name(&self) -> Name { self.ident.name } }
+impl Named for ForeignItem { fn name(&self) -> Name { self.ident.name } }
+impl Named for VariantKind { fn name(&self) -> Name { self.ident.name } }
 impl Named for StructField { fn name(&self) -> Name { self.ident.name } }
 impl Named for TraitItem { fn name(&self) -> Name { self.ident.name } }
 impl Named for ImplItem { fn name(&self) -> Name { self.ident.name } }
 
 pub fn map_crate<'hir>(sess: &::session::Session,
-                       cstore: &dyn CrateStore,
-                       forest: &'hir mut Forest,
+                       cstore: &CrateStoreDyn,
+                       forest: &'hir Forest,
                        definitions: &'hir Definitions)
                        -> Map<'hir> {
-    let (map, crate_hash) = {
+    let ((map, crate_hash), hir_to_node_id) = join(|| {
         let hcx = ::ich::StableHashingContext::new(sess, &forest.krate, definitions, cstore);
 
-        let mut collector = NodeCollector::root(&forest.krate,
+        let mut collector = NodeCollector::root(sess,
+                                                &forest.krate,
                                                 &forest.dep_graph,
                                                 &definitions,
                                                 hcx);
@@ -1037,11 +1087,16 @@ pub fn map_crate<'hir>(sess: &::session::Session,
 
         let crate_disambiguator = sess.local_crate_disambiguator();
         let cmdline_args = sess.opts.dep_tracking_hash();
-        collector.finalize_and_compute_crate_hash(crate_disambiguator,
-                                                  cstore,
-                                                  sess.source_map(),
-                                                  cmdline_args)
-    };
+        collector.finalize_and_compute_crate_hash(
+            crate_disambiguator,
+            cstore,
+            cmdline_args
+        )
+    }, || {
+        // Build the reverse mapping of `node_to_hir_id`.
+        definitions.node_to_hir_id.iter_enumerated()
+                    .map(|(node_id, &hir_id)| (hir_id, node_id)).collect()
+    });
 
     if log_enabled!(::log::Level::Debug) {
         // This only makes sense for ordered stores; note the
@@ -1055,10 +1110,6 @@ pub fn map_crate<'hir>(sess: &::session::Session,
               entries, vector_length, (entries as f64 / vector_length as f64) * 100.);
     }
 
-    // Build the reverse mapping of `node_to_hir_id`.
-    let hir_to_node_id = definitions.node_to_hir_id.iter_enumerated()
-        .map(|(node_id, &hir_id)| (hir_id, node_id)).collect();
-
     let map = Map {
         forest,
         dep_graph: forest.dep_graph.clone(),
@@ -1068,7 +1119,9 @@ pub fn map_crate<'hir>(sess: &::session::Session,
         definitions,
     };
 
-    hir_id_validator::check_crate(&map);
+    time(sess, "validate hir map", || {
+        hir_id_validator::check_crate(&map);
+    });
 
     map
 }
@@ -1199,7 +1252,7 @@ fn node_id_to_string(map: &Map<'_>, id: NodeId, include_id: bool) -> String {
         }
         Some(Node::Variant(ref variant)) => {
             format!("variant {} in {}{}",
-                    variant.node.name,
+                    variant.node.ident,
                     path_str(), id_str)
         }
         Some(Node::Field(ref field)) => {
@@ -1258,8 +1311,8 @@ fn node_id_to_string(map: &Map<'_>, id: NodeId, include_id: bool) -> String {
 }
 
 pub fn describe_def(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Option<Def> {
-    if let Some(node_id) = tcx.hir.as_local_node_id(def_id) {
-        tcx.hir.describe_def(node_id)
+    if let Some(node_id) = tcx.hir().as_local_node_id(def_id) {
+        tcx.hir().describe_def(node_id)
     } else {
         bug!("Calling local describe_def query provider for upstream DefId: {:?}",
              def_id)

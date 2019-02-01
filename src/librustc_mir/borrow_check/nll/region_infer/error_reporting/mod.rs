@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::nll::constraints::OutlivesConstraint;
 use borrow_check::nll::region_infer::RegionInferenceContext;
 use borrow_check::nll::type_check::Locations;
@@ -38,6 +28,7 @@ impl ConstraintDescription for ConstraintCategory {
         match self {
             ConstraintCategory::Assignment => "assignment ",
             ConstraintCategory::Return => "returning this value ",
+            ConstraintCategory::Yield => "yielding this value ",
             ConstraintCategory::UseAsConst => "using this value as a constant ",
             ConstraintCategory::UseAsStatic => "using this value as a static ",
             ConstraintCategory::Cast => "cast ",
@@ -133,11 +124,10 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             let constraint_sup_scc = self.constraint_sccs.scc(constraint.sup);
 
             match categorized_path[i].0 {
-                ConstraintCategory::OpaqueType
-                | ConstraintCategory::Boring
-                | ConstraintCategory::BoringNoLocation
-                | ConstraintCategory::Internal => false,
-                ConstraintCategory::TypeAnnotation | ConstraintCategory::Return => true,
+                ConstraintCategory::OpaqueType | ConstraintCategory::Boring |
+                ConstraintCategory::BoringNoLocation | ConstraintCategory::Internal => false,
+                ConstraintCategory::TypeAnnotation | ConstraintCategory::Return |
+                ConstraintCategory::Yield => true,
                 _ => constraint_sup_scc != target_scc,
             }
         });
@@ -253,7 +243,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         // Check if we can use one of the "nice region errors".
         if let (Some(f), Some(o)) = (self.to_error_region(fr), self.to_error_region(outlived_fr)) {
             let tables = infcx.tcx.typeck_tables_of(mir_def_id);
-            let nice = NiceRegionError::new_from_span(infcx.tcx, span, o, f, Some(tables));
+            let nice = NiceRegionError::new_from_span(infcx, span, o, f, Some(tables));
             if let Some(_error_reported) = nice.try_report_from_nll() {
                 return;
             }
@@ -376,9 +366,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
         diag.span_label(span, message);
 
-        match self.give_region_a_name(infcx, mir, mir_def_id, outlived_fr, &mut 1)
-            .source
-        {
+        match self.give_region_a_name(infcx, mir, mir_def_id, outlived_fr, &mut 1).unwrap().source {
             RegionNameSource::NamedEarlyBoundRegion(fr_span)
             | RegionNameSource::NamedFreeRegion(fr_span)
             | RegionNameSource::SynthesizedFreeEnvRegion(fr_span, _)
@@ -517,14 +505,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     ) {
         let mut diag = infcx.tcx.sess.struct_span_err(
             span,
-            "unsatisfied lifetime constraints", // FIXME
+            "lifetime may not live long enough"
         );
 
         let counter = &mut 1;
-        let fr_name = self.give_region_a_name(infcx, mir, mir_def_id, fr, counter);
+        let fr_name = self.give_region_a_name(infcx, mir, mir_def_id, fr, counter).unwrap();
         fr_name.highlight_region_name(&mut diag);
         let outlived_fr_name =
-            self.give_region_a_name(infcx, mir, mir_def_id, outlived_fr, counter);
+            self.give_region_a_name(infcx, mir, mir_def_id, outlived_fr, counter).unwrap();
         outlived_fr_name.highlight_region_name(&mut diag);
 
         let mir_def_name = if infcx.tcx.is_closure(mir_def_id) {
@@ -638,7 +626,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                             "'_".to_string()
                         };
 
-                        diag.span_suggestion_with_applicability(
+                        diag.span_suggestion(
                             span,
                             &format!(
                                 "to allow this impl Trait to capture borrowed data with lifetime \
@@ -661,7 +649,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         infcx: &InferCtxt<'_, '_, 'tcx>,
         borrow_region: RegionVid,
         outlived_region: RegionVid,
-    ) -> (ConstraintCategory, bool, Span, RegionName) {
+    ) -> (ConstraintCategory, bool, Span, Option<RegionName>) {
         let (category, from_closure, span) =
             self.best_blame_constraint(mir, borrow_region, |r| r == outlived_region);
         let outlived_fr_name =

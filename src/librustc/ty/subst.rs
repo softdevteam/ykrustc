@@ -1,23 +1,12 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Type substitutions.
 
 use hir::def_id::DefId;
 use infer::canonical::Canonical;
-use ty::{self, BoundVar, Lift, List, Ty, TyCtxt};
+use ty::{self, Lift, List, Ty, TyCtxt};
 use ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 
 use serialize::{self, Encodable, Encoder, Decodable, Decoder};
 use syntax_pos::{Span, DUMMY_SP};
-use rustc_data_structures::indexed_vec::Idx;
 use smallvec::SmallVec;
 
 use core::intrinsics;
@@ -190,11 +179,12 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
         Substs::for_item(tcx, def_id, |param, _| {
             match param.kind {
                 ty::GenericParamDefKind::Type { .. } => {
-                    tcx.mk_ty(ty::Bound(ty::BoundTy {
-                        index: ty::INNERMOST,
-                        var: ty::BoundVar::from(param.index),
-                        kind: ty::BoundTyKind::Param(param.name),
-                    })).into()
+                    tcx.mk_ty(
+                        ty::Bound(ty::INNERMOST, ty::BoundTy {
+                            var: ty::BoundVar::from(param.index),
+                            kind: ty::BoundTyKind::Param(param.name),
+                        })
+                    ).into()
                 }
 
                 ty::GenericParamDefKind::Lifetime => {
@@ -315,10 +305,10 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
     }
 
     /// Transform from substitutions for a child of `source_ancestor`
-    /// (e.g. a trait or impl) to substitutions for the same child
+    /// (e.g., a trait or impl) to substitutions for the same child
     /// in a different item, with `target_substs` as the base for
     /// the target impl/trait, with the source child-specific
-    /// parameters (e.g. method parameters) on top of that base.
+    /// parameters (e.g., method parameters) on top of that base.
     pub fn rebase_onto(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
                        source_ancestor: DefId,
                        target_substs: &Substs<'tcx>)
@@ -567,43 +557,6 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
 }
 
 pub type CanonicalUserSubsts<'tcx> = Canonical<'tcx, UserSubsts<'tcx>>;
-
-impl CanonicalUserSubsts<'tcx> {
-    /// True if this represents a substitution like
-    ///
-    /// ```text
-    /// [?0, ?1, ?2]
-    /// ```
-    ///
-    /// i.e., each thing is mapped to a canonical variable with the same index.
-    pub fn is_identity(&self) -> bool {
-        if self.value.user_self_ty.is_some() {
-            return false;
-        }
-
-        self.value.substs.iter().zip(BoundVar::new(0)..).all(|(kind, cvar)| {
-            match kind.unpack() {
-                UnpackedKind::Type(ty) => match ty.sty {
-                    ty::Bound(b) => {
-                        // We only allow a `ty::INNERMOST` index in substitutions.
-                        assert_eq!(b.index, ty::INNERMOST);
-                        cvar == b.var
-                    }
-                    _ => false,
-                },
-
-                UnpackedKind::Lifetime(r) => match r {
-                    ty::ReLateBound(index, br) => {
-                        // We only allow a `ty::INNERMOST` index in substitutions.
-                        assert_eq!(*index, ty::INNERMOST);
-                        cvar == br.assert_bound_var()
-                    }
-                    _ => false,
-                },
-            }
-        })
-    }
-}
 
 /// Stores the user-given substs to reach some fully qualified path
 /// (e.g., `<T>::Item` or `<T as Trait>::Item`).

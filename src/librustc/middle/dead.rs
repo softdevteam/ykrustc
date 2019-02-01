@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // This implements the dead-code warning pass. It follows middle::reachable
 // closely. The idea is that all reachable symbols are live, codes called
 // from live codes are live, and everything else is dead.
@@ -25,6 +15,8 @@ use middle::privacy;
 use ty::{self, TyCtxt};
 use util::nodemap::FxHashSet;
 
+use rustc_data_structures::fx::FxHashMap;
+
 use syntax::{ast, source_map};
 use syntax::attr;
 use syntax_pos;
@@ -35,7 +27,7 @@ use syntax_pos;
 // may need to be marked as live.
 fn should_explore<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                             node_id: ast::NodeId) -> bool {
-    match tcx.hir.find(node_id) {
+    match tcx.hir().find(node_id) {
         Some(Node::Item(..)) |
         Some(Node::ImplItem(..)) |
         Some(Node::ForeignItem(..)) |
@@ -55,12 +47,15 @@ struct MarkSymbolVisitor<'a, 'tcx: 'a> {
     in_pat: bool,
     inherited_pub_visibility: bool,
     ignore_variant_stack: Vec<DefId>,
+    // maps from tuple struct constructors to tuple struct items
+    struct_constructors: FxHashMap<ast::NodeId, ast::NodeId>,
 }
 
 impl<'a, 'tcx> MarkSymbolVisitor<'a, 'tcx> {
     fn check_def_id(&mut self, def_id: DefId) {
-        if let Some(node_id) = self.tcx.hir.as_local_node_id(def_id) {
-            if should_explore(self.tcx, node_id) {
+        if let Some(node_id) = self.tcx.hir().as_local_node_id(def_id) {
+            if should_explore(self.tcx, node_id) ||
+               self.struct_constructors.contains_key(&node_id) {
                 self.worklist.push(node_id);
             }
             self.live_symbols.insert(node_id);
@@ -68,7 +63,7 @@ impl<'a, 'tcx> MarkSymbolVisitor<'a, 'tcx> {
     }
 
     fn insert_def_id(&mut self, def_id: DefId) {
-        if let Some(node_id) = self.tcx.hir.as_local_node_id(def_id) {
+        if let Some(node_id) = self.tcx.hir().as_local_node_id(def_id) {
             debug_assert!(!should_explore(self.tcx, node_id));
             self.live_symbols.insert(node_id);
         }
@@ -137,23 +132,27 @@ impl<'a, 'tcx> MarkSymbolVisitor<'a, 'tcx> {
                 continue
             }
 
-            if let Some(ref node) = self.tcx.hir.find(id) {
+            // in the case of tuple struct constructors we want to check the item, not the generated
+            // tuple struct constructor function
+            let id = self.struct_constructors.get(&id).cloned().unwrap_or(id);
+
+            if let Some(node) = self.tcx.hir().find(id) {
                 self.live_symbols.insert(id);
                 self.visit_node(node);
             }
         }
     }
 
-    fn visit_node(&mut self, node: &Node<'tcx>) {
+    fn visit_node(&mut self, node: Node<'tcx>) {
         let had_repr_c = self.repr_has_repr_c;
         self.repr_has_repr_c = false;
         let had_inherited_pub_visibility = self.inherited_pub_visibility;
         self.inherited_pub_visibility = false;
-        match *node {
+        match node {
             Node::Item(item) => {
                 match item.node {
                     hir::ItemKind::Struct(..) | hir::ItemKind::Union(..) => {
-                        let def_id = self.tcx.hir.local_def_id(item.id);
+                        let def_id = self.tcx.hir().local_def_id(item.id);
                         let def = self.tcx.adt_def(def_id);
                         self.repr_has_repr_c = def.repr.c();
 
@@ -166,6 +165,7 @@ impl<'a, 'tcx> MarkSymbolVisitor<'a, 'tcx> {
                     hir::ItemKind::Fn(..)
                     | hir::ItemKind::Ty(..)
                     | hir::ItemKind::Static(..)
+                    | hir::ItemKind::Existential(..)
                     | hir::ItemKind::Const(..) => {
                         intravisit::walk_item(self, &item);
                     }
@@ -205,7 +205,7 @@ impl<'a, 'tcx> Visitor<'tcx> for MarkSymbolVisitor<'a, 'tcx> {
     fn visit_nested_body(&mut self, body: hir::BodyId) {
         let old_tables = self.tables;
         self.tables = self.tcx.body_tables(body);
-        let body = self.tcx.hir.body(body);
+        let body = self.tcx.hir().body(body);
         self.visit_body(body);
         self.tables = old_tables;
     }
@@ -306,11 +306,11 @@ fn has_allow_dead_code_or_lang_attr(tcx: TyCtxt<'_, '_, '_>,
         return true;
     }
 
-    let def_id = tcx.hir.local_def_id(id);
+    let def_id = tcx.hir().local_def_id(id);
     let cg_attrs = tcx.codegen_fn_attrs(def_id);
 
     // #[used], #[no_mangle], #[export_name], etc also keeps the item alive
-    // forcefully, e.g. for placing it in a specific section.
+    // forcefully, e.g., for placing it in a specific section.
     if cg_attrs.contains_extern_indicator() ||
         cg_attrs.flags.contains(CodegenFnAttrFlags::USED) {
         return true;
@@ -336,6 +336,8 @@ struct LifeSeeder<'k, 'tcx: 'k> {
     worklist: Vec<ast::NodeId>,
     krate: &'k hir::Crate,
     tcx: TyCtxt<'k, 'tcx, 'tcx>,
+    // see `MarkSymbolVisitor::struct_constructors`
+    struct_constructors: FxHashMap<ast::NodeId, ast::NodeId>,
 }
 
 impl<'v, 'k, 'tcx> ItemLikeVisitor<'v> for LifeSeeder<'k, 'tcx> {
@@ -378,6 +380,9 @@ impl<'v, 'k, 'tcx> ItemLikeVisitor<'v> for LifeSeeder<'k, 'tcx> {
                     }
                 }
             }
+            hir::ItemKind::Struct(ref variant_data, _) => {
+                self.struct_constructors.insert(variant_data.id(), item.id);
+            }
             _ => ()
         }
     }
@@ -391,11 +396,11 @@ impl<'v, 'k, 'tcx> ItemLikeVisitor<'v> for LifeSeeder<'k, 'tcx> {
     }
 }
 
-fn create_and_seed_worklist<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                      access_levels: &privacy::AccessLevels,
-                                      krate: &hir::Crate)
-                                      -> Vec<ast::NodeId>
-{
+fn create_and_seed_worklist<'a, 'tcx>(
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    access_levels: &privacy::AccessLevels,
+    krate: &hir::Crate,
+) -> (Vec<ast::NodeId>, FxHashMap<ast::NodeId, ast::NodeId>) {
     let worklist = access_levels.map.iter().filter_map(|(&id, level)| {
         if level >= &privacy::AccessLevel::Reachable {
             Some(id)
@@ -404,7 +409,7 @@ fn create_and_seed_worklist<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         }
     }).chain(
         // Seed entry point
-        tcx.sess.entry_fn.borrow().map(|(id, _, _)| id)
+        tcx.entry_fn(LOCAL_CRATE).map(|(def_id, _)| tcx.hir().as_local_node_id(def_id).unwrap())
     ).collect::<Vec<_>>();
 
     // Seed implemented trait items
@@ -412,17 +417,18 @@ fn create_and_seed_worklist<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         worklist,
         krate,
         tcx,
+        struct_constructors: Default::default(),
     };
     krate.visit_all_item_likes(&mut life_seeder);
 
-    return life_seeder.worklist;
+    (life_seeder.worklist, life_seeder.struct_constructors)
 }
 
 fn find_live<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                        access_levels: &privacy::AccessLevels,
                        krate: &hir::Crate)
                        -> FxHashSet<ast::NodeId> {
-    let worklist = create_and_seed_worklist(tcx, access_levels, krate);
+    let (worklist, struct_constructors) = create_and_seed_worklist(tcx, access_levels, krate);
     let mut symbol_visitor = MarkSymbolVisitor {
         worklist,
         tcx,
@@ -432,18 +438,10 @@ fn find_live<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         in_pat: false,
         inherited_pub_visibility: false,
         ignore_variant_stack: vec![],
+        struct_constructors,
     };
     symbol_visitor.mark_live_symbols();
     symbol_visitor.live_symbols
-}
-
-fn get_struct_ctor_id(item: &hir::Item) -> Option<ast::NodeId> {
-    match item.node {
-        hir::ItemKind::Struct(ref struct_def, _) if !struct_def.is_struct() => {
-            Some(struct_def.id())
-        }
-        _ => None
-    }
 }
 
 struct DeadVisitor<'a, 'tcx: 'a> {
@@ -463,57 +461,46 @@ impl<'a, 'tcx> DeadVisitor<'a, 'tcx> {
             | hir::ItemKind::Union(..) => true,
             _ => false
         };
-        let ctor_id = get_struct_ctor_id(item);
-        should_warn && !self.symbol_is_live(item.id, ctor_id)
+        should_warn && !self.symbol_is_live(item.id)
     }
 
     fn should_warn_about_field(&mut self, field: &hir::StructField) -> bool {
-        let field_type = self.tcx.type_of(self.tcx.hir.local_def_id(field.id));
+        let field_type = self.tcx.type_of(self.tcx.hir().local_def_id(field.id));
         !field.is_positional()
-            && !self.symbol_is_live(field.id, None)
+            && !self.symbol_is_live(field.id)
             && !field_type.is_phantom_data()
             && !has_allow_dead_code_or_lang_attr(self.tcx, field.id, &field.attrs)
     }
 
     fn should_warn_about_variant(&mut self, variant: &hir::VariantKind) -> bool {
-        !self.symbol_is_live(variant.data.id(), None)
+        !self.symbol_is_live(variant.data.id())
             && !has_allow_dead_code_or_lang_attr(self.tcx,
                                                  variant.data.id(),
                                                  &variant.attrs)
     }
 
     fn should_warn_about_foreign_item(&mut self, fi: &hir::ForeignItem) -> bool {
-        !self.symbol_is_live(fi.id, None)
+        !self.symbol_is_live(fi.id)
             && !has_allow_dead_code_or_lang_attr(self.tcx, fi.id, &fi.attrs)
     }
 
     // id := node id of an item's definition.
-    // ctor_id := `Some` if the item is a struct_ctor (tuple struct),
-    //            `None` otherwise.
-    // If the item is a struct_ctor, then either its `id` or
-    // `ctor_id` (unwrapped) is in the live_symbols set. More specifically,
-    // DefMap maps the ExprKind::Path of a struct_ctor to the node referred by
-    // `ctor_id`. On the other hand, in a statement like
-    // `type <ident> <generics> = <ty>;` where <ty> refers to a struct_ctor,
-    // DefMap maps <ty> to `id` instead.
-    fn symbol_is_live(&mut self,
-                      id: ast::NodeId,
-                      ctor_id: Option<ast::NodeId>)
-                      -> bool {
-        if self.live_symbols.contains(&id)
-           || ctor_id.map_or(false, |ctor| self.live_symbols.contains(&ctor))
-        {
+    fn symbol_is_live(
+        &mut self,
+        id: ast::NodeId,
+    ) -> bool {
+        if self.live_symbols.contains(&id) {
             return true;
         }
         // If it's a type whose items are live, then it's live, too.
         // This is done to handle the case where, for example, the static
         // method of a private type is used, but the type itself is never
         // called directly.
-        let def_id = self.tcx.hir.local_def_id(id);
+        let def_id = self.tcx.hir().local_def_id(id);
         let inherent_impls = self.tcx.inherent_impls(def_id);
         for &impl_did in inherent_impls.iter() {
             for &item_did in &self.tcx.associated_item_def_ids(impl_did)[..] {
-                if let Some(item_node_id) = self.tcx.hir.as_local_node_id(item_did) {
+                if let Some(item_node_id) = self.tcx.hir().as_local_node_id(item_did) {
                     if self.live_symbols.contains(&item_node_id) {
                         return true;
                     }
@@ -546,7 +533,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
     /// an error. We could do this also by checking the parents, but
     /// this is how the code is setup and it seems harmless enough.
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::All(&self.tcx.hir)
+        NestedVisitorMap::All(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -570,7 +557,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
             self.warn_dead_code(
                 item.id,
                 span,
-                item.name,
+                item.ident.name,
                 item.node.descriptive_variant(),
                 participle,
             );
@@ -585,7 +572,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
                      g: &'tcx hir::Generics,
                      id: ast::NodeId) {
         if self.should_warn_about_variant(&variant.node) {
-            self.warn_dead_code(variant.node.data.id(), variant.span, variant.node.name,
+            self.warn_dead_code(variant.node.data.id(), variant.span, variant.node.ident.name,
                                 "variant", "constructed");
         } else {
             intravisit::walk_variant(self, variant, g, id);
@@ -594,7 +581,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
 
     fn visit_foreign_item(&mut self, fi: &'tcx hir::ForeignItem) {
         if self.should_warn_about_foreign_item(fi) {
-            self.warn_dead_code(fi.id, fi.span, fi.name,
+            self.warn_dead_code(fi.id, fi.span, fi.ident.name,
                                 fi.node.descriptive_variant(), "used");
         }
         intravisit::walk_foreign_item(self, fi);
@@ -610,7 +597,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
     fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
         match impl_item.node {
             hir::ImplItemKind::Const(_, body_id) => {
-                if !self.symbol_is_live(impl_item.id, None) {
+                if !self.symbol_is_live(impl_item.id) {
                     self.warn_dead_code(impl_item.id,
                                         impl_item.span,
                                         impl_item.ident.name,
@@ -620,7 +607,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
                 self.visit_nested_body(body_id)
             }
             hir::ImplItemKind::Method(_, body_id) => {
-                if !self.symbol_is_live(impl_item.id, None) {
+                if !self.symbol_is_live(impl_item.id) {
                     let span = self.tcx.sess.source_map().def_span(impl_item.span);
                     self.warn_dead_code(impl_item.id, span, impl_item.ident.name, "method", "used");
                 }
@@ -647,7 +634,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DeadVisitor<'a, 'tcx> {
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     let access_levels = &tcx.privacy_access_levels(LOCAL_CRATE);
-    let krate = tcx.hir.krate();
+    let krate = tcx.hir().krate();
     let live_symbols = find_live(tcx, access_levels, krate);
     let mut visitor = DeadVisitor {
         tcx,

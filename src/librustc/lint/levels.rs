@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::cmp;
 
 use errors::{Applicability, DiagnosticBuilder};
@@ -66,7 +56,7 @@ impl LintLevelSets {
         for &(ref lint_name, level) in &sess.opts.lint_opts {
             store.check_lint_name_cmdline(sess, &lint_name, level);
 
-            // If the cap is less than this specified level, e.g. if we've got
+            // If the cap is less than this specified level, e.g., if we've got
             // `--cap-lints allow` but we've also got `-D foo` then we ignore
             // this specification as the lint cap will set it to allow anyway.
             let level = cmp::min(level, self.lint_cap);
@@ -183,15 +173,15 @@ impl<'a> LintLevelsBuilder<'a> {
 
     /// Pushes a list of AST lint attributes onto this context.
     ///
-    /// This function will return a `BuilderPush` object which should be be
-    /// passed to `pop` when this scope for the attributes provided is exited.
+    /// This function will return a `BuilderPush` object which should be passed
+    /// to `pop` when this scope for the attributes provided is exited.
     ///
     /// This function will perform a number of tasks:
     ///
     /// * It'll validate all lint-related attributes in `attrs`
     /// * It'll mark all lint-related attributes as used
     /// * Lint levels will be updated based on the attributes provided
-    /// * Lint attributes are validated, e.g. a #[forbid] can't be switched to
+    /// * Lint attributes are validated, e.g., a #[forbid] can't be switched to
     ///   #[allow]
     ///
     /// Don't forget to call `pop`!
@@ -214,8 +204,6 @@ impl<'a> LintLevelsBuilder<'a> {
             let mut metas = if let Some(metas) = meta.meta_item_list() {
                 metas
             } else {
-                let mut err = bad_attr(meta.span);
-                err.emit();
                 continue;
             };
 
@@ -232,14 +220,13 @@ impl<'a> LintLevelsBuilder<'a> {
                 match item.node {
                     ast::MetaItemKind::Word => {}  // actual lint names handled later
                     ast::MetaItemKind::NameValue(ref name_value) => {
-                        let gate_reasons = !self.sess.features_untracked().lint_reasons;
                         if item.ident == "reason" {
                             // found reason, reslice meta list to exclude it
                             metas = &metas[0..metas.len()-1];
                             // FIXME (#55112): issue unused-attributes lint if we thereby
                             // don't have any lint names (`#[level(reason = "foo")]`)
                             if let ast::LitKind::Str(rationale, _) = name_value.node {
-                                if gate_reasons {
+                                if !self.sess.features_untracked().lint_reasons {
                                     feature_gate::emit_feature_err(
                                         &self.sess.parse_sess,
                                         "lint_reasons",
@@ -247,9 +234,8 @@ impl<'a> LintLevelsBuilder<'a> {
                                         feature_gate::GateIssue::Language,
                                         "lint reasons are experimental"
                                     );
-                                } else {
-                                    reason = Some(rationale);
                                 }
+                                reason = Some(rationale);
                             } else {
                                 let mut err = bad_attr(name_value.span);
                                 err.help("reason must be a string literal");
@@ -338,7 +324,7 @@ impl<'a> LintLevelsBuilder<'a> {
                                     Some(li.span.into()),
                                     &msg,
                                 );
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     li.span,
                                     "change it to",
                                     new_lint_name.to_string(),
@@ -376,7 +362,7 @@ impl<'a> LintLevelsBuilder<'a> {
                                                               Some(li.span.into()),
                                                               &msg);
                         if let Some(new_name) = renamed {
-                            err.span_suggestion_with_applicability(
+                            err.span_suggestion(
                                 li.span,
                                 "use the new name",
                                 new_name,
@@ -385,7 +371,7 @@ impl<'a> LintLevelsBuilder<'a> {
                         }
                         err.emit();
                     }
-                    CheckLintNameResult::NoLint => {
+                    CheckLintNameResult::NoLint(suggestion) => {
                         let lint = builtin::UNKNOWN_LINTS;
                         let (level, src) = self.sets.get_lint_level(lint,
                                                                     self.cur,
@@ -398,22 +384,17 @@ impl<'a> LintLevelsBuilder<'a> {
                                                 src,
                                                 Some(li.span.into()),
                                                 &msg);
-                        if name.as_str().chars().any(|c| c.is_uppercase()) {
-                            let name_lower = name.as_str().to_lowercase().to_string();
-                            if let CheckLintNameResult::NoLint =
-                                    store.check_lint_name(&name_lower, tool_name) {
-                                db.emit();
-                            } else {
-                                db.span_suggestion_with_applicability(
-                                    li.span,
-                                    "lowercase the lint name",
-                                    name_lower,
-                                    Applicability::MachineApplicable
-                                ).emit();
-                            }
-                        } else {
-                            db.emit();
+
+                        if let Some(suggestion) = suggestion {
+                            db.span_suggestion(
+                                li.span,
+                                "did you mean",
+                                suggestion.to_string(),
+                                Applicability::MachineApplicable,
+                            );
                         }
+
+                        db.emit();
                     }
                 }
             }

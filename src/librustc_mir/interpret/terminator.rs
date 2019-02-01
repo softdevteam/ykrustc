@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::borrow::Cow;
 
 use rustc::{mir, ty};
@@ -182,6 +172,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     }
 
     fn check_argument_compat(
+        rust_abi: bool,
         caller: TyLayout<'tcx>,
         callee: TyLayout<'tcx>,
     ) -> bool {
@@ -189,13 +180,20 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             // No question
             return true;
         }
+        if !rust_abi {
+            // Don't risk anything
+            return false;
+        }
         // Compare layout
         match (&caller.abi, &callee.abi) {
+            // Different valid ranges are okay (once we enforce validity,
+            // that will take care to make it UB to leave the range, just
+            // like for transmute).
             (layout::Abi::Scalar(ref caller), layout::Abi::Scalar(ref callee)) =>
-                // Different valid ranges are okay (once we enforce validity,
-                // that will take care to make it UB to leave the range, just
-                // like for transmute).
                 caller.value == callee.value,
+            (layout::Abi::ScalarPair(ref caller1, ref caller2),
+             layout::Abi::ScalarPair(ref callee1, ref callee2)) =>
+                caller1.value == callee1.value && caller2.value == callee2.value,
             // Be conservative
             _ => false
         }
@@ -204,22 +202,22 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     /// Pass a single argument, checking the types for compatibility.
     fn pass_argument(
         &mut self,
-        skip_zst: bool,
+        rust_abi: bool,
         caller_arg: &mut impl Iterator<Item=OpTy<'tcx, M::PointerTag>>,
         callee_arg: PlaceTy<'tcx, M::PointerTag>,
     ) -> EvalResult<'tcx> {
-        if skip_zst && callee_arg.layout.is_zst() {
+        if rust_abi && callee_arg.layout.is_zst() {
             // Nothing to do.
             trace!("Skipping callee ZST");
             return Ok(());
         }
         let caller_arg = caller_arg.next()
             .ok_or_else(|| EvalErrorKind::FunctionArgCountMismatch)?;
-        if skip_zst {
+        if rust_abi {
             debug_assert!(!caller_arg.layout.is_zst(), "ZSTs must have been already filtered out");
         }
         // Now, check
-        if !Self::check_argument_compat(caller_arg.layout, callee_arg.layout) {
+        if !Self::check_argument_compat(rust_abi, caller_arg.layout, callee_arg.layout) {
             return err!(FunctionArgMismatch(caller_arg.layout.ty, callee_arg.layout.ty));
         }
         // We allow some transmutes here
@@ -244,7 +242,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     return err!(FunctionAbiMismatch(caller_abi, Abi::RustIntrinsic));
                 }
                 // The intrinsic itself cannot diverge, so if we got here without a return
-                // place... (can happen e.g. for transmute returning `!`)
+                // place... (can happen e.g., for transmute returning `!`)
                 let dest = match dest {
                     Some(dest) => dest,
                     None => return err!(Unreachable)
@@ -311,7 +309,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         mir.spread_arg,
                         mir.args_iter()
                             .map(|local|
-                                (local, self.layout_of_local(self.frame(), local).unwrap().ty)
+                                (local, self.layout_of_local(self.frame(), local, None).unwrap().ty)
                             )
                             .collect::<Vec<_>>()
                     );
@@ -319,7 +317,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     // Figure out how to pass which arguments.
                     // We have two iterators: Where the arguments come from,
                     // and where they go to.
-                    let skip_zst = match caller_abi {
+                    let rust_abi = match caller_abi {
                         Abi::Rust | Abi::RustCall => true,
                         _ => false
                     };
@@ -344,7 +342,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         };
                     // Skip ZSTs
                     let mut caller_iter = caller_args.iter()
-                        .filter(|op| !skip_zst || !op.layout.is_zst())
+                        .filter(|op| !rust_abi || !op.layout.is_zst())
                         .map(|op| *op);
 
                     // Now we have to spread them out across the callee's locals,
@@ -359,11 +357,11 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                             // Must be a tuple
                             for i in 0..dest.layout.fields.count() {
                                 let dest = self.place_field(dest, i as u64)?;
-                                self.pass_argument(skip_zst, &mut caller_iter, dest)?;
+                                self.pass_argument(rust_abi, &mut caller_iter, dest)?;
                             }
                         } else {
                             // Normal argument
-                            self.pass_argument(skip_zst, &mut caller_iter, dest)?;
+                            self.pass_argument(rust_abi, &mut caller_iter, dest)?;
                         }
                     }
                     // Now we should have no more caller args
@@ -374,14 +372,18 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     // Don't forget to check the return type!
                     if let Some(caller_ret) = dest {
                         let callee_ret = self.eval_place(&mir::Place::Local(mir::RETURN_PLACE))?;
-                        if !Self::check_argument_compat(caller_ret.layout, callee_ret.layout) {
+                        if !Self::check_argument_compat(
+                            rust_abi,
+                            caller_ret.layout,
+                            callee_ret.layout,
+                        ) {
                             return err!(FunctionRetMismatch(
                                 caller_ret.layout.ty, callee_ret.layout.ty
                             ));
                         }
                     } else {
                         let callee_layout =
-                            self.layout_of_local(self.frame(), mir::RETURN_PLACE)?;
+                            self.layout_of_local(self.frame(), mir::RETURN_PLACE, None)?;
                         if !callee_layout.abi.is_uninhabited() {
                             return err!(FunctionRetMismatch(
                                 self.tcx.types.never, callee_layout.ty
@@ -401,12 +403,12 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             // cannot use the shim here, because that will only result in infinite recursion
             ty::InstanceDef::Virtual(_, idx) => {
                 let ptr_size = self.pointer_size();
-                let ptr_align = self.tcx.data_layout.pointer_align;
                 let ptr = self.deref_operand(args[0])?;
                 let vtable = ptr.vtable()?;
-                let fn_ptr = self.memory.read_ptr_sized(
+                self.memory.check_align(vtable.into(), self.tcx.data_layout.pointer_align.abi)?;
+                let fn_ptr = self.memory.get(vtable.alloc_id)?.read_ptr_sized(
+                    self,
                     vtable.offset(ptr_size * (idx as u64 + 3), self)?,
-                    ptr_align
                 )?.to_ptr()?;
                 let instance = self.memory.get_fn(fn_ptr)?;
 

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![unstable(feature = "raw_vec_internals", reason = "implementation detail", issue = "0")]
 #![doc(hidden)]
 
@@ -32,7 +22,7 @@ use boxed::Box;
 /// * Catches all overflows in capacity computations (promotes them to "capacity overflow" panics)
 /// * Guards against 32-bit systems allocating more than isize::MAX bytes
 /// * Guards against overflowing your length
-/// * Aborts on OOM
+/// * Aborts on OOM or calls handle_alloc_error as applicable
 /// * Avoids freeing Unique::empty()
 /// * Contains a ptr::Unique and thus endows the user with all related benefits
 ///
@@ -739,7 +729,7 @@ unsafe impl<#[may_dangle] T, A: Alloc> Drop for RawVec<T, A> {
 // On 64-bit we just need to check for overflow since trying to allocate
 // `> isize::MAX` bytes will surely fail. On 32-bit and 16-bit we need to add
 // an extra guard for this in case we're running on a platform which can use
-// all 4GB in user-space. e.g. PAE or x32
+// all 4GB in user-space. e.g., PAE or x32
 
 #[inline]
 fn alloc_guard(alloc_size: usize) -> Result<(), CollectionAllocErr> {

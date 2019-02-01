@@ -1,19 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! Walks the crate looking for items/impl-items/trait-items that have
-//! either a `rustc_symbol_name` or `rustc_item_path` attribute and
-//! generates an error giving, respectively, the symbol name or
-//! item-path. This is used for unit testing the code that generates
-//! paths etc in all kinds of annoying scenarios.
-
 use base;
 use rustc::hir;
 use rustc::hir::def::Def;
@@ -29,7 +13,7 @@ pub use rustc_mir::monomorphize::item::MonoItemExt as BaseMonoItemExt;
 pub trait MonoItemExt<'a, 'tcx: 'a>: fmt::Debug + BaseMonoItemExt<'a, 'tcx> {
     fn define<Bx: BuilderMethods<'a, 'tcx>>(&self, cx: &'a Bx::CodegenCx) {
         debug!("BEGIN IMPLEMENTING '{} ({})' in cgu {}",
-               self.to_string(cx.tcx()),
+               self.to_string(cx.tcx(), true),
                self.to_raw_string(),
                cx.codegen_unit().name());
 
@@ -48,7 +32,7 @@ pub trait MonoItemExt<'a, 'tcx: 'a>: fmt::Debug + BaseMonoItemExt<'a, 'tcx> {
                 cx.codegen_static(def_id, is_mutable);
             }
             MonoItem::GlobalAsm(node_id) => {
-                let item = cx.tcx().hir.expect_item(node_id);
+                let item = cx.tcx().hir().expect_item(node_id);
                 if let hir::ItemKind::GlobalAsm(ref ga) = item.node {
                     cx.codegen_global_asm(ga);
                 } else {
@@ -61,7 +45,7 @@ pub trait MonoItemExt<'a, 'tcx: 'a>: fmt::Debug + BaseMonoItemExt<'a, 'tcx> {
         }
 
         debug!("END IMPLEMENTING '{} ({})' in cgu {}",
-               self.to_string(cx.tcx()),
+               self.to_string(cx.tcx(), true),
                self.to_raw_string(),
                cx.codegen_unit().name());
     }
@@ -73,7 +57,7 @@ pub trait MonoItemExt<'a, 'tcx: 'a>: fmt::Debug + BaseMonoItemExt<'a, 'tcx> {
         visibility: Visibility
     ) {
         debug!("BEGIN PREDEFINING '{} ({})' in cgu {}",
-               self.to_string(cx.tcx()),
+               self.to_string(cx.tcx(), true),
                self.to_raw_string(),
                cx.codegen_unit().name());
 
@@ -92,7 +76,7 @@ pub trait MonoItemExt<'a, 'tcx: 'a>: fmt::Debug + BaseMonoItemExt<'a, 'tcx> {
         }
 
         debug!("END PREDEFINING '{} ({})' in cgu {}",
-               self.to_string(cx.tcx()),
+               self.to_string(cx.tcx(), true),
                self.to_raw_string(),
                cx.codegen_unit().name());
     }

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // run-pass
 #![allow(dead_code)]
 // pretty-expanded FIXME #23616
@@ -32,7 +22,7 @@ fn long_to_short_rc<'a, T>(xs: Rc<[&'static T; 1]>) -> Rc<[&'a T]> {
 }
 
 // LUB-coercion (if-else/match/array) coerces `xs: &'b [&'static T: N]`
-// to a subtype of the LUB of `xs` and `ys` (i.e. `&'b [&'a T]`),
+// to a subtype of the LUB of `xs` and `ys` (i.e., `&'b [&'a T]`),
 // regardless of the order they appear (in if-else/match/array).
 fn long_and_short_lub1<'a, 'b, T>(xs: &'b [&'static T; 1], ys: &'b [&'a T]) {
     let _order1 = [xs, ys];
@@ -40,7 +30,7 @@ fn long_and_short_lub1<'a, 'b, T>(xs: &'b [&'static T; 1], ys: &'b [&'a T]) {
 }
 
 // LUB-coercion should also have the exact same effect when `&'b [&'a T; N]`
-// needs to be coerced, i.e. the resulting type is not &'b [&'static T], but
+// needs to be coerced, i.e., the resulting type is not &'b [&'static T], but
 // rather the `&'b [&'a T]` LUB.
 fn long_and_short_lub2<'a, 'b, T>(xs: &'b [&'static T], ys: &'b [&'a T; 1]) {
     let _order1 = [xs, ys];

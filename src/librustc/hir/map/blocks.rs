@@ -1,19 +1,9 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module provides a simplified abstraction for working with
 //! code blocks identified by their integer node-id.  In particular,
 //! it captures a common set of attributes that all "function-like
 //! things" (represented by `FnLike` instances) share.  For example,
 //! all `FnLike` instances have a type signature (be it explicit or
-//! inferred).  And all `FnLike` instances have a body, i.e. the code
+//! inferred).  And all `FnLike` instances have a body, i.e., the code
 //! that is run when the function-like thing it represents is invoked.
 //!
 //! With the above abstraction in place, one can treat the program
@@ -25,7 +15,7 @@ use hir as ast;
 use hir::map;
 use hir::{Expr, FnDecl, Node};
 use hir::intravisit::FnKind;
-use syntax::ast::{Attribute, Ident, Name, NodeId};
+use syntax::ast::{Attribute, Ident, NodeId};
 use syntax_pos::Span;
 
 /// An FnLikeNode is a Node that is like a fn, in that it has a decl
@@ -34,7 +24,7 @@ use syntax_pos::Span;
 /// More specifically, it is one of either:
 ///
 ///   - A function item,
-///   - A closure expr (i.e. an ExprKind::Closure), or
+///   - A closure expr (i.e., an ExprKind::Closure), or
 ///   - The default implementation for a trait method.
 ///
 /// To construct one, use the `Code::from_node` function.
@@ -108,7 +98,7 @@ impl<'a> Code<'a> {
 /// These are all the components one can extract from a fn item for
 /// use when implementing FnLikeNode operations.
 struct ItemFnParts<'a> {
-    name:     Name,
+    ident:    Ident,
     decl:     &'a ast::FnDecl,
     header:   ast::FnHeader,
     vis:      &'a ast::Visibility,
@@ -210,7 +200,7 @@ impl<'a> FnLikeNode<'a> {
 
     pub fn kind(self) -> FnKind<'a> {
         let item = |p: ItemFnParts<'a>| -> FnKind<'a> {
-            FnKind::ItemFn(p.name, p.generics, p.header, p.vis, p.attrs)
+            FnKind::ItemFn(p.ident, p.generics, p.header, p.vis, p.attrs)
         };
         let closure = |c: ClosureParts<'a>| {
             FnKind::Closure(c.attrs)
@@ -238,7 +228,7 @@ impl<'a> FnLikeNode<'a> {
                 ast::ItemKind::Fn(ref decl, header, ref generics, block) =>
                     item_fn(ItemFnParts {
                         id: i.id,
-                        name: i.name,
+                        ident: i.ident,
                         decl: &decl,
                         body: block,
                         vis: &i.vis,

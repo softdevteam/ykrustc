@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::def_id::DefId;
 use hir;
 use hir::Node;
@@ -29,7 +19,7 @@ pub type OpaqueTypeMap<'tcx> = DefIdMap<OpaqueTypeDecl<'tcx>>;
 /// appear in the return type).
 #[derive(Copy, Clone, Debug)]
 pub struct OpaqueTypeDecl<'tcx> {
-    /// The substitutions that we apply to the abstract that that this
+    /// The substitutions that we apply to the abstract that this
     /// `impl Trait` desugars to. e.g., if:
     ///
     ///     fn foo<'a, 'b, T>() -> impl Trait<'a>
@@ -691,13 +681,13 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
                     //     let x = || foo(); // returns the Opaque assoc with `foo`
                     // }
                     // ```
-                    if let Some(opaque_node_id) = tcx.hir.as_local_node_id(def_id) {
+                    if let Some(opaque_node_id) = tcx.hir().as_local_node_id(def_id) {
                         let parent_def_id = self.parent_def_id;
                         let def_scope_default = || {
-                            let opaque_parent_node_id = tcx.hir.get_parent(opaque_node_id);
-                            parent_def_id == tcx.hir.local_def_id(opaque_parent_node_id)
+                            let opaque_parent_node_id = tcx.hir().get_parent(opaque_node_id);
+                            parent_def_id == tcx.hir().local_def_id(opaque_parent_node_id)
                         };
-                        let in_definition_scope = match tcx.hir.find(opaque_node_id) {
+                        let in_definition_scope = match tcx.hir().find(opaque_node_id) {
                             Some(Node::Item(item)) => match item.node {
                                 // impl trait
                                 hir::ItemKind::Existential(hir::ExistTy {
@@ -725,7 +715,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
                             },
                             _ => bug!(
                                 "expected (impl) item, found {}",
-                                tcx.hir.node_to_string(opaque_node_id),
+                                tcx.hir().node_to_string(opaque_node_id),
                             ),
                         };
                         if in_definition_scope {
@@ -761,7 +751,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
         );
 
         // Use the same type variable if the exact same Opaque appears more
-        // than once in the return type (e.g. if it's passed to a type alias).
+        // than once in the return type (e.g., if it's passed to a type alias).
         if let Some(opaque_defn) = self.opaque_types.get(&def_id) {
             return opaque_defn.concrete_ty;
         }
@@ -783,7 +773,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
         );
 
         // make sure that we are in fact defining the *entire* type
-        // e.g. `existential type Foo<T: Bound>: Bar;` needs to be
+        // e.g., `existential type Foo<T: Bound>: Bar;` needs to be
         // defined by a function like `fn foo<T: Bound>() -> Foo<T>`.
         debug!(
             "instantiate_opaque_types: param_env: {:#?}",
@@ -848,16 +838,16 @@ pub fn may_define_existential_type(
     opaque_node_id: ast::NodeId,
 ) -> bool {
     let mut node_id = tcx
-        .hir
+        .hir()
         .as_local_node_id(def_id)
         .unwrap();
     // named existential types can be defined by any siblings or
     // children of siblings
-    let mod_id = tcx.hir.get_parent(opaque_node_id);
+    let mod_id = tcx.hir().get_parent(opaque_node_id);
     // so we walk up the node tree until we hit the root or the parent
     // of the opaque type
     while node_id != mod_id && node_id != ast::CRATE_NODE_ID {
-        node_id = tcx.hir.get_parent(node_id);
+        node_id = tcx.hir().get_parent(node_id);
     }
     // syntactically we are allowed to define the concrete type
     node_id == mod_id

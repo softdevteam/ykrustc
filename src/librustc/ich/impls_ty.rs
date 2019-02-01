@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains `HashStable` implementations for various data types
 //! from rustc::ty in no particular order.
 
@@ -311,9 +301,8 @@ impl_stable_hash_for!(struct ty::FieldDef {
 
 impl_stable_hash_for!(
     impl<'tcx> for enum mir::interpret::ConstValue<'tcx> [ mir::interpret::ConstValue ] {
-        Unevaluated(def_id, substs),
         Scalar(val),
-        ScalarPair(a, b),
+        Slice(a, b),
         ByRef(id, alloc, offset),
     }
 );
@@ -338,7 +327,7 @@ impl_stable_hash_for!(
 );
 
 impl_stable_hash_for!(
-    impl<'tcx, M> for enum mir::interpret::AllocType<'tcx, M> [ mir::interpret::AllocType ] {
+    impl<'tcx> for enum mir::interpret::AllocKind<'tcx> [ mir::interpret::AllocKind ] {
         Function(instance),
         Static(def_id),
         Memory(mem),
@@ -388,6 +377,11 @@ impl_stable_hash_for!(struct ty::Const<'tcx> {
     val
 });
 
+impl_stable_hash_for!(impl<'tcx> for enum ty::LazyConst<'tcx> [ty::LazyConst] {
+    Unevaluated(did, substs),
+    Evaluated(c)
+});
+
 impl_stable_hash_for!(enum mir::interpret::ErrorHandled {
     Reported,
     TooGeneric
@@ -429,6 +423,7 @@ impl_stable_hash_for!(
         CalledClosureAsFunction,
         VtableForArgumentlessMethod,
         ModifiedConstantMemory,
+        ModifiedStatic,
         AssumptionNotHeld,
         InlineAsm,
         ReallocateNonBasePtr,
@@ -480,22 +475,6 @@ impl_stable_hash_for!(
 impl_stable_hash_for!(enum mir::interpret::InboundsCheck {
     Live,
     MaybeDead
-});
-
-impl_stable_hash_for!(enum mir::interpret::Lock {
-    NoLock,
-    WriteLock(dl),
-    ReadLock(v)
-});
-
-impl_stable_hash_for!(struct mir::interpret::DynamicLifetime {
-    frame,
-    region
-});
-
-impl_stable_hash_for!(enum mir::interpret::AccessKind {
-    Read,
-    Write
 });
 
 impl_stable_hash_for!(enum ty::Variance {
@@ -684,8 +663,12 @@ for ty::TyKind<'gcx>
             Param(param_ty) => {
                 param_ty.hash_stable(hcx, hasher);
             }
-            Bound(bound_ty) => {
+            Bound(debruijn, bound_ty) => {
+                debruijn.hash_stable(hcx, hasher);
                 bound_ty.hash_stable(hcx, hasher);
+            }
+            ty::Placeholder(placeholder_ty) => {
+                placeholder_ty.hash_stable(hcx, hasher);
             }
             Foreign(def_id) => {
                 def_id.hash_stable(hcx, hasher);
@@ -890,7 +873,8 @@ for ty::steal::Steal<T>
 
 impl_stable_hash_for!(struct ty::ParamEnv<'tcx> {
     caller_bounds,
-    reveal
+    reveal,
+    def_id
 });
 
 impl_stable_hash_for!(enum traits::Reveal {
@@ -1096,12 +1080,13 @@ impl_stable_hash_for!(struct infer::canonical::CanonicalVarInfo {
 
 impl_stable_hash_for!(enum infer::canonical::CanonicalVarKind {
     Ty(k),
+    PlaceholderTy(placeholder),
     Region(ui),
     PlaceholderRegion(placeholder),
 });
 
 impl_stable_hash_for!(enum infer::canonical::CanonicalTyVarKind {
-    General,
+    General(ui),
     Int,
     Float
 });
@@ -1198,6 +1183,10 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for traits::Goal<'tcx> {
                 quantifier.hash_stable(hcx, hasher);
                 goal.hash_stable(hcx, hasher);
             },
+            Subtype(a, b) => {
+                a.hash_stable(hcx, hasher);
+                b.hash_stable(hcx, hasher);
+            }
             CannotProve => { },
         }
     }
@@ -1243,3 +1232,42 @@ impl_stable_hash_for!(
         clauses,
     }
 );
+
+impl_stable_hash_for!(
+    impl<'tcx, G> for struct traits::InEnvironment<'tcx, G> {
+        environment,
+        goal,
+    }
+);
+
+impl_stable_hash_for!(
+    struct ty::CanonicalUserTypeAnnotation<'tcx> {
+        user_ty, span, inferred_ty
+    }
+);
+
+impl<'a, 'gcx> HashStable<StableHashingContext<'a>> for ty::UserType<'gcx> {
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          hcx: &mut StableHashingContext<'a>,
+                                          hasher: &mut StableHasher<W>) {
+        mem::discriminant(self).hash_stable(hcx, hasher);
+        match *self {
+            ty::UserType::Ty(ref ty) => {
+                ty.hash_stable(hcx, hasher);
+            }
+            ty::UserType::TypeOf(ref def_id, ref substs) => {
+                def_id.hash_stable(hcx, hasher);
+                substs.hash_stable(hcx, hasher);
+            }
+        }
+    }
+}
+
+impl<'a> HashStable<StableHashingContext<'a>> for ty::UserTypeAnnotationIndex {
+    #[inline]
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          hcx: &mut StableHashingContext<'a>,
+                                          hasher: &mut StableHasher<W>) {
+        self.index().hash_stable(hcx, hasher);
+    }
+}

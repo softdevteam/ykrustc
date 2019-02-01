@@ -1,13 +1,3 @@
-# Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
-
 set -ex
 
 export ANDROID_HOME=/android/sdk
@@ -30,7 +20,7 @@ download_sysimage() {
     # The output from sdkmanager is so noisy that it will occupy all of the 4 MB
     # log extremely quickly. Thus we must silence all output.
     yes | sdkmanager --licenses > /dev/null
-    sdkmanager platform-tools emulator \
+    yes | sdkmanager platform-tools emulator \
         "platforms;android-$api" \
         "system-images;android-$api;default;$abi" > /dev/null
 }

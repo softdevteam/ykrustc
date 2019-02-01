@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The code to do lexical region resolution.
 
 use infer::region_constraints::Constraint;
@@ -23,6 +13,7 @@ use rustc_data_structures::graph::implementation::{
     Direction, Graph, NodeIndex, INCOMING, OUTGOING,
 };
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
+use smallvec::SmallVec;
 use std::fmt;
 use std::u32;
 use ty::fold::TypeFoldable;
@@ -83,12 +74,13 @@ pub enum RegionResolutionError<'tcx> {
     /// `a` (but none of the known bounds are sufficient).
     GenericBoundFailure(SubregionOrigin<'tcx>, GenericKind<'tcx>, Region<'tcx>),
 
-    /// `SubSupConflict(v, sub_origin, sub_r, sup_origin, sup_r)`:
+    /// `SubSupConflict(v, v_origin, sub_origin, sub_r, sup_origin, sup_r)`:
     ///
-    /// Could not infer a value for `v` because `sub_r <= v` (due to
-    /// `sub_origin`) but `v <= sup_r` (due to `sup_origin`) and
+    /// Could not infer a value for `v` (which has origin `v_origin`)
+    /// because `sub_r <= v` (due to `sub_origin`) but `v <= sup_r` (due to `sup_origin`) and
     /// `sub_r <= sup_r` does not hold.
     SubSupConflict(
+        RegionVid,
         RegionVariableOrigin,
         SubregionOrigin<'tcx>,
         Region<'tcx>,
@@ -194,29 +186,39 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
     }
 
     fn expansion(&self, var_values: &mut LexicalRegionResolutions<'tcx>) {
-        self.iterate_until_fixed_point("Expansion", |constraint, origin| {
-            debug!("expansion: constraint={:?} origin={:?}", constraint, origin);
-            match *constraint {
+        self.iterate_until_fixed_point("Expansion", |constraint| {
+            debug!("expansion: constraint={:?}", constraint);
+            let (a_region, b_vid, b_data, retain) = match *constraint {
                 Constraint::RegSubVar(a_region, b_vid) => {
                     let b_data = var_values.value_mut(b_vid);
-                    self.expand_node(a_region, b_vid, b_data)
+                    (a_region, b_vid, b_data, false)
                 }
                 Constraint::VarSubVar(a_vid, b_vid) => match *var_values.value(a_vid) {
-                    VarValue::ErrorValue => false,
+                    VarValue::ErrorValue => return (false, false),
                     VarValue::Value(a_region) => {
-                        let b_node = var_values.value_mut(b_vid);
-                        self.expand_node(a_region, b_vid, b_node)
+                        let b_data = var_values.value_mut(b_vid);
+                        let retain = match *b_data {
+                            VarValue::Value(ReStatic) | VarValue::ErrorValue => false,
+                            _ => true
+                        };
+                        (a_region, b_vid, b_data, retain)
                     }
                 },
                 Constraint::RegSubReg(..) | Constraint::VarSubReg(..) => {
                     // These constraints are checked after expansion
                     // is done, in `collect_errors`.
-                    false
+                    return (false, false)
                 }
-            }
+            };
+
+            let changed = self.expand_node(a_region, b_vid, b_data);
+            (changed, retain)
         })
     }
 
+    // This function is very hot in some workloads. There's a single callsite
+    // so always inlining is ok even though it's large.
+    #[inline(always)]
     fn expand_node(
         &self,
         a_region: Region<'tcx>,
@@ -225,21 +227,47 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
     ) -> bool {
         debug!("expand_node({:?}, {:?} == {:?})", a_region, b_vid, b_data);
 
-        // Check if this relationship is implied by a given.
         match *a_region {
+            // Check if this relationship is implied by a given.
             ty::ReEarlyBound(_) | ty::ReFree(_) => if self.data.givens.contains(&(a_region, b_vid))
             {
                 debug!("given");
                 return false;
             },
+
             _ => {}
         }
 
+
         match *b_data {
             VarValue::Value(cur_region) => {
-                let lub = self.lub_concrete_regions(a_region, cur_region);
+                // Identical scopes can show up quite often, if the fixed point
+                // iteration converges slowly, skip them
+                if let (ReScope(a_scope), ReScope(cur_scope)) = (a_region, cur_region) {
+                    if a_scope == cur_scope {
+                        return false;
+                    }
+                }
+
+                let mut lub = self.lub_concrete_regions(a_region, cur_region);
                 if lub == cur_region {
                     return false;
+                }
+
+                // Watch out for `'b: !1` relationships, where the
+                // universe of `'b` can't name the placeholder `!1`. In
+                // that case, we have to grow `'b` to be `'static` for the
+                // relationship to hold. This is obviously a kind of sub-optimal
+                // choice -- in the future, when we incorporate a knowledge
+                // of the parameter environment, we might be able to find a
+                // tighter bound than `'static`.
+                //
+                // (This might e.g. arise from being asked to prove `for<'a> { 'b: 'a }`.)
+                let b_universe = self.var_infos[b_vid].universe;
+                if let ty::RePlaceholder(p) = lub {
+                    if b_universe.cannot_name(p.universe) {
+                        lub = self.tcx().types.re_static;
+                    }
                 }
 
                 debug!(
@@ -259,6 +287,7 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
 
     fn lub_concrete_regions(&self, a: Region<'tcx>, b: Region<'tcx>) -> Region<'tcx> {
         let tcx = self.tcx();
+
         match (a, b) {
             (&ty::ReClosureBound(..), _)
             | (_, &ty::ReClosureBound(..))
@@ -564,10 +593,22 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
         lower_bounds.sort_by_key(region_order_key);
         upper_bounds.sort_by_key(region_order_key);
 
+        let node_universe = self.var_infos[node_idx].universe;
+
         for lower_bound in &lower_bounds {
+            let effective_lower_bound = if let ty::RePlaceholder(p) = lower_bound.region {
+                if node_universe.cannot_name(p.universe) {
+                    self.tcx().types.re_static
+                } else {
+                    lower_bound.region
+                }
+            } else {
+                lower_bound.region
+            };
+
             for upper_bound in &upper_bounds {
                 if !self.region_rels
-                    .is_subregion_of(lower_bound.region, upper_bound.region)
+                    .is_subregion_of(effective_lower_bound, upper_bound.region)
                 {
                     let origin = self.var_infos[node_idx].origin.clone();
                     debug!(
@@ -576,6 +617,7 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
                         origin, node_idx, lower_bound.region, upper_bound.region
                     );
                     errors.push(RegionResolutionError::SubSupConflict(
+                        node_idx,
                         origin,
                         lower_bound.origin.clone(),
                         lower_bound.region,
@@ -590,9 +632,10 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
         span_bug!(
             self.var_infos[node_idx].origin.span(),
             "collect_error_for_expanding_node() could not find \
-             error for var {:?}, lower_bounds={:?}, \
-             upper_bounds={:?}",
+             error for var {:?} in universe {:?}, lower_bounds={:#?}, \
+             upper_bounds={:#?}",
             node_idx,
+            node_universe,
             lower_bounds,
             upper_bounds
         );
@@ -686,22 +729,23 @@ impl<'cx, 'gcx, 'tcx> LexicalResolver<'cx, 'gcx, 'tcx> {
     }
 
     fn iterate_until_fixed_point<F>(&self, tag: &str, mut body: F)
-    where
-        F: FnMut(&Constraint<'tcx>, &SubregionOrigin<'tcx>) -> bool,
+        where F: FnMut(&Constraint<'tcx>) -> (bool, bool),
     {
+        let mut constraints: SmallVec<[_; 16]> = self.data.constraints.keys().collect();
         let mut iteration = 0;
         let mut changed = true;
         while changed {
             changed = false;
             iteration += 1;
             debug!("---- {} Iteration {}{}", "#", tag, iteration);
-            for (constraint, origin) in &self.data.constraints {
-                let edge_changed = body(constraint, origin);
+            constraints.retain(|constraint| {
+                let (edge_changed, retain) = body(constraint);
                 if edge_changed {
                     debug!("Updated due to constraint {:?}", constraint);
                     changed = true;
                 }
-            }
+                retain
+            });
         }
         debug!("---- {} Complete after {} iteration(s)", tag, iteration);
     }

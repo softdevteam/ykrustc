@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Command-line interface of the rustbuild build system.
 //!
 //! This module implements the command-line parsing of the build system which
@@ -19,12 +9,12 @@ use std::process;
 
 use getopts::Options;
 
-use builder::Builder;
-use config::Config;
-use metadata;
-use {Build, DocTests};
+use crate::builder::Builder;
+use crate::config::Config;
+use crate::metadata;
+use crate::{Build, DocTests};
 
-use cache::{Interned, INTERNER};
+use crate::cache::{Interned, INTERNER};
 
 /// Deserialized version of all flags for this compile.
 pub struct Flags {
@@ -121,11 +111,11 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`"
         opts.optopt("", "on-fail", "command to run on failure", "CMD");
         opts.optflag("", "dry-run", "dry run; don't build anything");
         opts.optopt("", "stage",
-            "stage to build (indicates compiler to use/test, e.g. stage 0 uses the \
+            "stage to build (indicates compiler to use/test, e.g., stage 0 uses the \
              bootstrap compiler, stage 1 the stage 0 rustc artifacts, etc.)",
             "N");
         opts.optmulti("", "keep-stage", "stage(s) to keep without recompiling \
-            (pass multiple times to keep e.g. both stages 0 and 1)", "N");
+            (pass multiple times to keep e.g., both stages 0 and 1)", "N");
         opts.optopt("", "src", "path to the root of the rust checkout", "DIR");
         opts.optopt("j", "jobs", "number of jobs to run in parallel", "JOBS");
         opts.optflag("h", "help", "print this help message");

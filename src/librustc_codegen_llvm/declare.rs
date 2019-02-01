@@ -1,12 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 //! Declare various LLVM values.
 //!
 //! Prefer using functions and methods from this module rather than calling LLVM
@@ -26,8 +17,7 @@ use rustc::ty::{self, PolyFnSig};
 use rustc::ty::layout::LayoutOf;
 use rustc::session::config::Sanitizer;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_target::spec::PanicStrategy;
-use abi::{Abi, FnType, FnTypeExt};
+use abi::{FnType, FnTypeExt};
 use attributes;
 use context::CodegenCx;
 use type_::Type;
@@ -75,23 +65,8 @@ fn declare_raw_fn(
         }
     }
 
-    match cx.tcx.sess.opts.cg.opt_level.as_ref().map(String::as_ref) {
-        Some("s") => {
-            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
-        },
-        Some("z") => {
-            llvm::Attribute::MinSize.apply_llfn(Function, llfn);
-            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
-        },
-        _ => {},
-    }
-
-    if cx.tcx.sess.panic_strategy() != PanicStrategy::Unwind {
-        attributes::unwind(llfn, false);
-    }
-
+    attributes::default_optimisation_attrs(cx.tcx.sess, llfn);
     attributes::non_lazy_bind(cx.sess(), llfn);
-
     llfn
 }
 
@@ -130,10 +105,6 @@ impl DeclareMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
         if self.layout_of(sig.output()).abi.is_uninhabited() {
             llvm::Attribute::NoReturn.apply_llfn(Function, llfn);
-        }
-
-        if sig.abi != Abi::Rust && sig.abi != Abi::RustCall {
-            attributes::unwind(llfn, false);
         }
 
         fty.apply_attrs_llfn(llfn);

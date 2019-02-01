@@ -1,18 +1,8 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This pass erases all early-bound regions from the types occurring in the MIR.
 //! We want to do this once just before codegen, so codegen does not have to take
 //! care erasing regions all over the place.
 //! NOTE:  We do NOT erase regions of statements that are relevant for
-//! "types-as-contracts"-validation, namely, AcquireValid, ReleaseValid, and EndRegion.
+//! "types-as-contracts"-validation, namely, AcquireValid, ReleaseValid
 
 use rustc::ty::subst::Substs;
 use rustc::ty::{self, Ty, TyCtxt};
@@ -42,7 +32,7 @@ impl<'a, 'tcx> MutVisitor<'tcx> for EraseRegionsVisitor<'a, 'tcx> {
         *region = self.tcx.types.re_erased;
     }
 
-    fn visit_const(&mut self, constant: &mut &'tcx ty::Const<'tcx>, _: Location) {
+    fn visit_const(&mut self, constant: &mut &'tcx ty::LazyConst<'tcx>, _: Location) {
         *constant = self.tcx.erase_regions(constant);
     }
 
@@ -54,10 +44,6 @@ impl<'a, 'tcx> MutVisitor<'tcx> for EraseRegionsVisitor<'a, 'tcx> {
                        block: BasicBlock,
                        statement: &mut Statement<'tcx>,
                        location: Location) {
-        if let StatementKind::EndRegion(_) = statement.kind {
-            statement.kind = StatementKind::Nop;
-        }
-
         self.super_statement(block, statement, location);
     }
 }

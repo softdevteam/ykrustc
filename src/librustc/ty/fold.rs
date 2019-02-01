@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Generalized type folding mechanism. The setup is a bit convoluted
 //! but allows for convenient usage. Let T be an instance of some
 //! "foldable type" (one which implements `TypeFoldable`) and F be an
@@ -39,7 +29,6 @@
 //! These methods return true to indicate that the visitor has found what it is looking for
 //! and does not need to visit anything else.
 
-use mir::interpret::ConstValue;
 use hir::def_id::DefId;
 use ty::{self, Binder, Ty, TyCtxt, TypeFlags};
 
@@ -102,14 +91,14 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
     fn needs_infer(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_TY_INFER | TypeFlags::HAS_RE_INFER)
     }
-    fn has_skol(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_RE_SKOL)
+    fn has_placeholders(&self) -> bool {
+        self.has_type_flags(TypeFlags::HAS_RE_PLACEHOLDER | TypeFlags::HAS_TY_PLACEHOLDER)
     }
     fn needs_subst(&self) -> bool {
         self.has_type_flags(TypeFlags::NEEDS_SUBST)
     }
-    fn has_re_skol(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_RE_SKOL)
+    fn has_re_placeholders(&self) -> bool {
+        self.has_type_flags(TypeFlags::HAS_RE_PLACEHOLDER)
     }
     fn has_closure_types(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_TY_CLOSURE)
@@ -120,7 +109,7 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
         self.has_type_flags(TypeFlags::HAS_FREE_REGIONS)
     }
 
-    /// True if there any any un-erased free regions.
+    /// True if there are any un-erased free regions.
     fn has_erasable_regions(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_FREE_REGIONS)
     }
@@ -174,7 +163,7 @@ pub trait TypeFolder<'gcx: 'tcx, 'tcx> : Sized {
         r.super_fold_with(self)
     }
 
-    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+    fn fold_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
         c.super_fold_with(self)
     }
 }
@@ -192,7 +181,7 @@ pub trait TypeVisitor<'tcx> : Sized {
         r.super_visit_with(self)
     }
 
-    fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
+    fn visit_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> bool {
         c.super_visit_with(self)
     }
 }
@@ -374,6 +363,7 @@ pub struct RegionFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
 }
 
 impl<'a, 'gcx, 'tcx> RegionFolder<'a, 'gcx, 'tcx> {
+    #[inline]
     pub fn new(
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
         skipped_regions: &'a mut bool,
@@ -460,8 +450,8 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for BoundVarReplacer<'a, 'gcx, 'tcx>
 
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
         match t.sty {
-            ty::Bound(bound_ty) => {
-                if bound_ty.index == self.current_index {
+            ty::Bound(debruijn, bound_ty) => {
+                if debruijn == self.current_index {
                     let fld_t = &mut self.fld_t;
                     let ty = fld_t(bound_ty);
                     ty::fold::shift_vars(
@@ -526,7 +516,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
               T: TypeFoldable<'tcx>
     {
         // identity for bound types
-        let fld_t = |bound_ty| self.mk_ty(ty::Bound(bound_ty));
+        let fld_t = |bound_ty| self.mk_ty(ty::Bound(ty::INNERMOST, bound_ty));
         self.replace_escaping_bound_vars(value.skip_binder(), fld_r, fld_t)
     }
 
@@ -542,18 +532,25 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
               G: FnMut(ty::BoundTy) -> ty::Ty<'tcx>,
               T: TypeFoldable<'tcx>
     {
-        let mut map = BTreeMap::new();
+        use rustc_data_structures::fx::FxHashMap;
+
+        let mut region_map = BTreeMap::new();
+        let mut type_map = FxHashMap::default();
 
         if !value.has_escaping_bound_vars() {
-            (value.clone(), map)
+            (value.clone(), region_map)
         } else {
             let mut real_fld_r = |br| {
-                *map.entry(br).or_insert_with(|| fld_r(br))
+                *region_map.entry(br).or_insert_with(|| fld_r(br))
             };
 
-            let mut replacer = BoundVarReplacer::new(self, &mut real_fld_r, &mut fld_t);
+            let mut real_fld_t = |bound_ty| {
+                *type_map.entry(bound_ty).or_insert_with(|| fld_t(bound_ty))
+            };
+
+            let mut replacer = BoundVarReplacer::new(self, &mut real_fld_r, &mut real_fld_t);
             let result = value.fold_with(&mut replacer);
-            (result, map)
+            (result, region_map)
         }
     }
 
@@ -679,24 +676,31 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 // vars. See comment on `shift_vars_through_binders` method in
 // `subst.rs` for more details.
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+enum Direction {
+    In,
+    Out,
+}
+
 struct Shifter<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-
     current_index: ty::DebruijnIndex,
     amount: u32,
+    direction: Direction,
 }
 
 impl Shifter<'a, 'gcx, 'tcx> {
-    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, amount: u32) -> Self {
+    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, amount: u32, direction: Direction) -> Self {
         Shifter {
             tcx,
             current_index: ty::INNERMOST,
             amount,
+            direction,
         }
     }
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
+impl TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
     fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> { self.tcx }
 
     fn fold_binder<T: TypeFoldable<'tcx>>(&mut self, t: &ty::Binder<T>) -> ty::Binder<T> {
@@ -712,7 +716,14 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
                 if self.amount == 0 || debruijn < self.current_index {
                     r
                 } else {
-                    let shifted = ty::ReLateBound(debruijn.shifted_in(self.amount), br);
+                    let debruijn = match self.direction {
+                        Direction::In => debruijn.shifted_in(self.amount),
+                        Direction::Out => {
+                            assert!(debruijn.as_u32() >= self.amount);
+                            debruijn.shifted_out(self.amount)
+                        }
+                    };
+                    let shifted = ty::ReLateBound(debruijn, br);
                     self.tcx.mk_region(shifted)
                 }
             }
@@ -722,16 +733,20 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
 
     fn fold_ty(&mut self, ty: ty::Ty<'tcx>) -> ty::Ty<'tcx> {
         match ty.sty {
-            ty::Bound(bound_ty) => {
-                if self.amount == 0 || bound_ty.index < self.current_index {
+            ty::Bound(debruijn, bound_ty) => {
+                if self.amount == 0 || debruijn < self.current_index {
                     ty
                 } else {
-                    let shifted = ty::BoundTy {
-                        index: bound_ty.index.shifted_in(self.amount),
-                        var: bound_ty.var,
-                        kind: bound_ty.kind,
+                    let debruijn = match self.direction {
+                        Direction::In => debruijn.shifted_in(self.amount),
+                        Direction::Out => {
+                            assert!(debruijn.as_u32() >= self.amount);
+                            debruijn.shifted_out(self.amount)
+                        }
                     };
-                    self.tcx.mk_ty(ty::Bound(shifted))
+                    self.tcx.mk_ty(
+                        ty::Bound(debruijn, bound_ty)
+                    )
                 }
             }
 
@@ -763,7 +778,18 @@ pub fn shift_vars<'a, 'gcx, 'tcx, T>(
     debug!("shift_vars(value={:?}, amount={})",
            value, amount);
 
-    value.fold_with(&mut Shifter::new(tcx, amount))
+    value.fold_with(&mut Shifter::new(tcx, amount, Direction::In))
+}
+
+pub fn shift_out_vars<'a, 'gcx, 'tcx, T>(
+    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+    value: &T,
+    amount: u32
+) -> T where T: TypeFoldable<'tcx> {
+    debug!("shift_out_vars(value={:?}, amount={})",
+           value, amount);
+
+    value.fold_with(&mut Shifter::new(tcx, amount, Direction::Out))
 }
 
 /// An "escaping var" is a bound var whose binder is not part of `t`. A bound var can be a
@@ -837,8 +863,8 @@ impl<'tcx> TypeVisitor<'tcx> for HasTypeFlagsVisitor {
         flags.intersects(self.flags)
     }
 
-    fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
-        if let ConstValue::Unevaluated(..) = c.val {
+    fn visit_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> bool {
+        if let ty::LazyConst::Unevaluated(..) = c {
             let projection_flags = TypeFlags::HAS_NORMALIZABLE_PROJECTION |
                 TypeFlags::HAS_PROJECTION;
             if projection_flags.intersects(self.flags) {
@@ -857,7 +883,7 @@ struct LateBoundRegionsCollector {
 
     /// If true, we only want regions that are known to be
     /// "constrained" when you equate this type with another type. In
-    /// particular, if you have e.g. `&'a u32` and `&'b u32`, equating
+    /// particular, if you have e.g., `&'a u32` and `&'b u32`, equating
     /// them constraints `'a == 'b`.  But if you have `<&'a u32 as
     /// Trait>::Foo` and `<&'b u32 as Trait>::Foo`, normalizing those
     /// types may mean that `'a` and `'b` don't appear in the results,

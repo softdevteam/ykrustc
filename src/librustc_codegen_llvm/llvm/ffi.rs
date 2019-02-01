@@ -1,18 +1,8 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::debuginfo::{
     DIBuilder, DIDescriptor, DIFile, DILexicalBlock, DISubprogram, DIType,
     DIBasicType, DIDerivedType, DICompositeType, DIScope, DIVariable,
     DIGlobalVariableExpression, DIArray, DISubrange, DITemplateTypeParameter, DIEnumerator,
-    DINameSpace, DIFlags,
+    DINameSpace, DIFlags, DISPFlags, DebugEmissionKind,
 };
 
 use libc::{c_uint, c_int, size_t, c_char};
@@ -125,6 +115,7 @@ pub enum Attribute {
     SanitizeAddress = 21,
     SanitizeMemory  = 22,
     NonLazyBind     = 23,
+    OptimizeNone    = 24,
 }
 
 /// LLVMIntPredicate
@@ -599,6 +590,40 @@ pub mod debuginfo {
             const FlagBitField            = (1 << 19);
             const FlagNoReturn            = (1 << 20);
             const FlagMainSubprogram      = (1 << 21);
+        }
+    }
+
+    // These values **must** match with LLVMRustDISPFlags!!
+    bitflags! {
+        #[repr(C)]
+        #[derive(Default)]
+        pub struct DISPFlags: ::libc::uint32_t {
+            const SPFlagZero              = 0;
+            const SPFlagVirtual           = 1;
+            const SPFlagPureVirtual       = 2;
+            const SPFlagLocalToUnit       = (1 << 2);
+            const SPFlagDefinition        = (1 << 3);
+            const SPFlagOptimized         = (1 << 4);
+        }
+    }
+
+    /// LLVMRustDebugEmissionKind
+    #[derive(Copy, Clone)]
+    #[repr(C)]
+    pub enum DebugEmissionKind {
+        NoDebug,
+        FullDebug,
+        LineTablesOnly,
+    }
+
+    impl DebugEmissionKind {
+        pub fn from_generic(kind: rustc::session::config::DebugInfo) -> Self {
+            use rustc::session::config::DebugInfo;
+            match kind {
+                DebugInfo::None => DebugEmissionKind::NoDebug,
+                DebugInfo::Limited => DebugEmissionKind::LineTablesOnly,
+                DebugInfo::Full => DebugEmissionKind::FullDebug,
+            }
         }
     }
 }
@@ -1222,12 +1247,12 @@ extern "C" {
         B: &Builder<'a>,
         LHS: &'a Value,
         LHS: &'a Value,
-    ) -> Option<&'a Value>;
+    ) -> &'a Value;
     pub fn LLVMRustBuildMaxNum(
         B: &Builder<'a>,
         LHS: &'a Value,
         LHS: &'a Value,
-    ) -> Option<&'a Value>;
+    ) -> &'a Value;
 
     // Atomic Operations
     pub fn LLVMRustBuildAtomicLoad(B: &Builder<'a>,
@@ -1358,6 +1383,7 @@ extern "C" {
     pub fn LLVMRustDebugMetadataVersion() -> u32;
     pub fn LLVMRustVersionMajor() -> u32;
     pub fn LLVMRustVersionMinor() -> u32;
+    pub fn LLVMRustIsRustLLVM() -> bool;
 
     pub fn LLVMRustAddModuleFlag(M: &Module, name: *const c_char, value: u32);
 
@@ -1376,7 +1402,8 @@ extern "C" {
                                               isOptimized: bool,
                                               Flags: *const c_char,
                                               RuntimeVer: c_uint,
-                                              SplitName: *const c_char)
+                                              SplitName: *const c_char,
+                                              kind: DebugEmissionKind)
                                               -> &'a DIDescriptor;
 
     pub fn LLVMRustDIBuilderCreateFile(Builder: &DIBuilder<'a>,
@@ -1396,11 +1423,9 @@ extern "C" {
                                            File: &'a DIFile,
                                            LineNo: c_uint,
                                            Ty: &'a DIType,
-                                           isLocalToUnit: bool,
-                                           isDefinition: bool,
                                            ScopeLine: c_uint,
                                            Flags: DIFlags,
-                                           isOptimized: bool,
+                                           SPFlags: DISPFlags,
                                            Fn: &'a Value,
                                            TParam: &'a DIArray,
                                            Decl: Option<&'a DIDescriptor>)
@@ -1538,7 +1563,7 @@ extern "C" {
                                                   AlignInBits: u32,
                                                   Elements: &'a DIArray,
                                                   ClassType: &'a DIType,
-                                                  IsFixed: bool)
+                                                  IsScoped: bool)
                                                   -> &'a DIType;
 
     pub fn LLVMRustDIBuilderCreateUnionType(Builder: &DIBuilder<'a>,
@@ -1586,9 +1611,10 @@ extern "C" {
                                             LineNo: c_uint)
                                             -> &'a DINameSpace;
 
-    pub fn LLVMRustDICompositeTypeSetTypeArray(Builder: &DIBuilder<'a>,
-                                               CompositeType: &'a DIType,
-                                               TypeArray: &'a DIArray);
+    pub fn LLVMRustDICompositeTypeReplaceArrays(Builder: &DIBuilder<'a>,
+                                                CompositeType: &'a DIType,
+                                                Elements: Option<&'a DIArray>,
+                                                Params: Option<&'a DIArray>);
 
 
     pub fn LLVMRustDIBuilderCreateDebugLocation(Context: &'a Context,
@@ -1599,15 +1625,12 @@ extern "C" {
                                                 -> &'a Value;
     pub fn LLVMRustDIBuilderCreateOpDeref() -> i64;
     pub fn LLVMRustDIBuilderCreateOpPlusUconst() -> i64;
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTypeToString(Type: &Type, s: &RustString);
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteValueToString(value_ref: &Value, s: &RustString);
-}
 
-extern "C" {
     pub fn LLVMIsAConstantInt(value_ref: &Value) -> Option<&Value>;
     pub fn LLVMIsAConstantFP(value_ref: &Value) -> Option<&Value>;
 
@@ -1685,21 +1708,15 @@ extern "C" {
     pub fn LLVMRustDestroyArchive(AR: &'static mut Archive);
 
     pub fn LLVMRustGetSectionName(SI: &SectionIterator, data: &mut *const c_char) -> size_t;
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTwineToString(T: &Twine, s: &RustString);
-}
 
-extern "C" {
     pub fn LLVMContextSetDiagnosticHandler(C: &Context,
                                            Handler: DiagnosticHandler,
                                            DiagnosticContext: *mut c_void);
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustUnpackOptimizationDiagnostic(DI: &'a DiagnosticInfo,
                                                 pass_name_out: &RustString,
                                                 function_out: &mut Option<&'a Value>,
@@ -1707,34 +1724,23 @@ extern "C" {
                                                 loc_column_out: &mut c_uint,
                                                 loc_filename_out: &RustString,
                                                 message_out: &RustString);
-}
 
-extern "C" {
     pub fn LLVMRustUnpackInlineAsmDiagnostic(DI: &'a DiagnosticInfo,
                                              cookie_out: &mut c_uint,
                                              message_out: &mut Option<&'a Twine>,
                                              instruction_out: &mut Option<&'a Value>);
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteDiagnosticInfoToString(DI: &DiagnosticInfo, s: &RustString);
-}
-
-extern "C" {
     pub fn LLVMRustGetDiagInfoKind(DI: &DiagnosticInfo) -> DiagnosticKind;
 
     pub fn LLVMRustSetInlineAsmDiagnosticHandler(C: &Context,
                                                  H: InlineAsmDiagHandler,
                                                  CX: *mut c_void);
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteSMDiagnosticToString(d: &SMDiagnostic, s: &RustString);
-}
 
-extern "C" {
     pub fn LLVMRustWriteArchive(Dst: *const c_char,
                                 NumMembers: size_t,
                                 Members: *const &RustArchiveMember,

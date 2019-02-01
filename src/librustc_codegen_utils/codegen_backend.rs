@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust compiler.
 //!
 //! # Note
@@ -22,8 +12,8 @@
 #![feature(box_syntax)]
 
 use std::any::Any;
-use std::io::{self, Write};
-use std::fs::File;
+use std::io::Write;
+use std::fs;
 use std::path::Path;
 use std::sync::{mpsc, Arc};
 
@@ -82,13 +72,9 @@ pub struct NoLlvmMetadataLoader;
 
 impl MetadataLoader for NoLlvmMetadataLoader {
     fn get_rlib_metadata(&self, _: &Target, filename: &Path) -> Result<MetadataRef, String> {
-        let mut file = File::open(filename)
-            .map_err(|e| format!("metadata file open err: {:?}", e))?;
-
-        let mut buf = Vec::new();
-        io::copy(&mut file, &mut buf).unwrap();
-        let buf: OwningRef<Vec<u8>, [u8]> = OwningRef::new(buf).into();
-        return Ok(rustc_erase_owner!(buf.map_owner_box()));
+        let buf = fs::read(filename).map_err(|e| format!("metadata file open err: {:?}", e))?;
+        let buf: OwningRef<Vec<u8>, [u8]> = OwningRef::new(buf);
+        Ok(rustc_erase_owner!(buf.map_owner_box()))
     }
 
     fn get_dylib_metadata(&self, target: &Target, filename: &Path) -> Result<MetadataRef, String> {
@@ -104,7 +90,7 @@ pub struct OngoingCodegen {
 }
 
 impl MetadataOnlyCodegenBackend {
-    pub fn new() -> Box<dyn CodegenBackend> {
+    pub fn boxed() -> Box<dyn CodegenBackend> {
         box MetadataOnlyCodegenBackend(())
     }
 }
@@ -160,20 +146,13 @@ impl CodegenBackend for MetadataOnlyCodegenBackend {
         // ::rustc::middle::dependency_format::calculate(tcx);
         let _ = tcx.link_args(LOCAL_CRATE);
         let _ = tcx.native_libraries(LOCAL_CRATE);
-        for mono_item in
-            collector::collect_crate_mono_items(
-                tcx,
-                collector::MonoItemCollectionMode::Eager
-            ).0 {
-            match mono_item {
-                MonoItem::Fn(inst) => {
-                    let def_id = inst.def_id();
-                    if def_id.is_local()  {
-                        let _ = inst.def.is_inline(tcx);
-                        let _ = tcx.codegen_fn_attrs(def_id);
-                    }
+        let (_, cgus) = tcx.collect_and_partition_mono_items(LOCAL_CRATE);
+        for (mono_item, _) in cgus.iter().flat_map(|cgu| cgu.items().iter()) {
+            if let MonoItem::Fn(inst) = mono_item {
+                let def_id = inst.def_id();
+                if def_id.is_local() {
+                    let _ = tcx.codegen_fn_attrs(def_id);
                 }
-                _ => {}
             }
         }
         tcx.sess.abort_if_errors();
@@ -189,7 +168,7 @@ impl CodegenBackend for MetadataOnlyCodegenBackend {
         }).collect();
 
         (box OngoingCodegen {
-            metadata: metadata,
+            metadata,
             metadata_version: tcx.metadata_encoding_version().to_vec(),
             crate_name: tcx.crate_name(LOCAL_CRATE),
         }, Arc::new(def_ids))
@@ -220,8 +199,7 @@ impl CodegenBackend for MetadataOnlyCodegenBackend {
             } else {
                 &ongoing_codegen.metadata.raw_data
             };
-            let mut file = File::create(&output_name).unwrap();
-            file.write_all(metadata).unwrap();
+            fs::write(&output_name, metadata).unwrap();
         }
 
         sess.abort_if_errors();

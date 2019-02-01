@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Code to extract the universally quantified regions declared on a
 //! function and the relationships between them. For example:
 //!
@@ -210,8 +200,8 @@ impl<'tcx> UniversalRegions<'tcx> {
         param_env: ty::ParamEnv<'tcx>,
     ) -> Self {
         let tcx = infcx.tcx;
-        let mir_node_id = tcx.hir.as_local_node_id(mir_def_id).unwrap();
-        let mir_hir_id = tcx.hir.node_to_hir_id(mir_node_id);
+        let mir_node_id = tcx.hir().as_local_node_id(mir_def_id).unwrap();
+        let mir_hir_id = tcx.hir().node_to_hir_id(mir_node_id);
         UniversalRegionsBuilder {
             infcx,
             mir_def_id,
@@ -485,7 +475,8 @@ impl<'cx, 'gcx, 'tcx> UniversalRegionsBuilder<'cx, 'gcx, 'tcx> {
         let tcx = self.infcx.tcx;
         let closure_base_def_id = tcx.closure_base_def_id(self.mir_def_id);
 
-        match tcx.hir.body_owner_kind(self.mir_node_id) {
+        match tcx.hir().body_owner_kind(self.mir_node_id) {
+            BodyOwnerKind::Closure |
             BodyOwnerKind::Fn => {
                 let defining_ty = if self.mir_def_id == closure_base_def_id {
                     tcx.type_of(closure_base_def_id)
@@ -780,9 +771,9 @@ fn for_each_late_bound_region_defined_on<'tcx>(
                 owner: fn_def_id.index,
                 local_id: *late_bound,
             };
-            let region_node_id = tcx.hir.hir_to_node_id(hir_id);
-            let name = tcx.hir.name(region_node_id).as_interned_str();
-            let region_def_id = tcx.hir.local_def_id(region_node_id);
+            let region_node_id = tcx.hir().hir_to_node_id(hir_id);
+            let name = tcx.hir().name(region_node_id).as_interned_str();
+            let region_def_id = tcx.hir().local_def_id(region_node_id);
             let liberated_region = tcx.mk_region(ty::ReFree(ty::FreeRegion {
                 scope: fn_def_id,
                 bound_region: ty::BoundRegion::BrNamed(region_def_id, name),

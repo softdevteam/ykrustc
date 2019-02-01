@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Codegen the completed AST to the LLVM IR.
 //!
 //! Some functions here, such as codegen_block and codegen_expr, return a value --
@@ -146,7 +136,7 @@ pub fn iter_globals(llmod: &'ll llvm::Module) -> ValueIter<'ll> {
     }
 }
 
-pub fn compile_codegen_unit<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>,
+pub fn compile_codegen_unit<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                   cgu_name: InternedString)
                                   -> Stats {
     let start_time = Instant::now();
@@ -174,7 +164,7 @@ pub fn compile_codegen_unit<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>,
         let backend = LlvmCodegenBackend(());
         let cgu = tcx.codegen_unit(cgu_name);
         // Instantiate monomorphizations without filling out definitions yet...
-        let llvm_module = backend.new_metadata(tcx.sess, &cgu_name.as_str());
+        let llvm_module = backend.new_metadata(tcx, &cgu_name.as_str());
         let stats = {
             let cx = CodegenCx::new(tcx, cgu, &llvm_module);
             let mono_items = cx.codegen_unit
@@ -195,7 +185,9 @@ pub fn compile_codegen_unit<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>,
             // Run replace-all-uses-with for statics that need it
             for &(old_g, new_g) in cx.statics_to_rauw().borrow().iter() {
                 unsafe {
-                    cx.static_replace_all_uses(old_g, new_g)
+                    let bitcast = llvm::LLVMConstPointerCast(new_g, cx.val_ty(old_g));
+                    llvm::LLVMReplaceAllUsesWith(old_g, bitcast);
+                    llvm::LLVMDeleteGlobal(old_g);
                 }
             }
 

@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! String manipulation
 //!
 //! For more details, see std::str
@@ -19,8 +9,7 @@ use self::pattern::{Searcher, ReverseSearcher, DoubleEndedSearcher};
 
 use char;
 use fmt;
-use iter::{Map, Cloned, FusedIterator, TrustedLen, Filter};
-use iter_private::TrustedRandomAccess;
+use iter::{Map, Cloned, FusedIterator, TrustedLen, TrustedRandomAccess, Filter};
 use slice::{self, SliceIndex, Split as SliceSplit};
 use mem;
 
@@ -30,8 +19,7 @@ pub mod pattern;
 #[allow(missing_docs)]
 pub mod lossy;
 
-/// A trait to abstract the idea of creating a new instance of a type from a
-/// string.
+/// Parse a value from a string
 ///
 /// `FromStr`'s [`from_str`] method is often used implicitly, through
 /// [`str`]'s [`parse`] method. See [`parse`]'s documentation for examples.
@@ -39,6 +27,11 @@ pub mod lossy;
 /// [`from_str`]: #tymethod.from_str
 /// [`str`]: ../../std/primitive.str.html
 /// [`parse`]: ../../std/primitive.str.html#method.parse
+///
+/// `FromStr` does not have a lifetime parameter, and so you can only parse types
+/// that do not contain a lifetime parameter themselves. In other words, you can
+/// parse an `i32` with `FromStr`, but not a `&i32`. You can parse a struct that
+/// contains an `i32`, but not one that contains an `&i32`.
 ///
 /// # Examples
 ///
@@ -482,7 +475,7 @@ fn utf8_first_byte(byte: u8, width: u32) -> u32 { (byte & (0x7F >> width)) as u3
 #[inline]
 fn utf8_acc_cont_byte(ch: u32, byte: u8) -> u32 { (ch << 6) | (byte & CONT_MASK) as u32 }
 
-/// Checks whether the byte is a UTF-8 continuation byte (i.e. starts with the
+/// Checks whether the byte is a UTF-8 continuation byte (i.e., starts with the
 /// bits `10`).
 #[inline]
 fn utf8_is_cont_byte(byte: u8) -> bool { (byte & !CONT_MASK) == TAG_CONT_U8 }
@@ -536,10 +529,9 @@ fn next_code_point_reverse<'a, I>(bytes: &mut I) -> Option<u32>
     where I: DoubleEndedIterator<Item = &'a u8>,
 {
     // Decode UTF-8
-    let w = match bytes.next_back() {
-        None => return None,
-        Some(&next_byte) if next_byte < 128 => return Some(next_byte as u32),
-        Some(&back_byte) => back_byte,
+    let w = match *bytes.next_back()? {
+        next_byte if next_byte < 128 => return Some(next_byte as u32),
+        back_byte => back_byte,
     };
 
     // Multibyte case follows
@@ -1424,10 +1416,8 @@ fn contains_nonascii(x: usize) -> bool {
     (x & NONASCII_MASK) != 0
 }
 
-/// Walks through `iter` checking that it's a valid UTF-8 sequence,
-/// returning `true` in that case, or, if it is invalid, `false` with
-/// `iter` reset such that it is pointing at the first byte in the
-/// invalid sequence.
+/// Walks through `v` checking that it's a valid UTF-8 sequence,
+/// returning `Ok(())` in that case, or, if it is invalid, `Err(err)`.
 #[inline]
 fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
     let mut index = 0;
@@ -1630,190 +1620,26 @@ mod traits {
         }
     }
 
-    /// Implements substring slicing with syntax `&self[begin .. end]`.
-    ///
-    /// Returns a slice of the given string from the byte range
-    /// [`begin`..`end`).
-    ///
-    /// This operation is `O(1)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `begin` or `end` does not point to the starting
-    /// byte offset of a character (as defined by `is_char_boundary`).
-    /// Requires that `begin <= end` and `end <= len` where `len` is the
-    /// length of the string.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// let s = "Löwe 老虎 Léopard";
-    /// assert_eq!(&s[0 .. 1], "L");
-    ///
-    /// assert_eq!(&s[1 .. 9], "öwe 老");
-    ///
-    /// // these will panic:
-    /// // byte 2 lies within `ö`:
-    /// // &s[2 ..3];
-    ///
-    /// // byte 8 lies within `老`
-    /// // &s[1 .. 8];
-    ///
-    /// // byte 100 is outside the string
-    /// // &s[3 .. 100];
-    /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl ops::Index<ops::Range<usize>> for str {
-        type Output = str;
+    impl<I> ops::Index<I> for str
+    where
+        I: SliceIndex<str>,
+    {
+        type Output = I::Output;
+
         #[inline]
-        fn index(&self, index: ops::Range<usize>) -> &str {
+        fn index(&self, index: I) -> &I::Output {
             index.index(self)
         }
     }
 
-    /// Implements mutable substring slicing with syntax
-    /// `&mut self[begin .. end]`.
-    ///
-    /// Returns a mutable slice of the given string from the byte range
-    /// [`begin`..`end`).
-    ///
-    /// This operation is `O(1)`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `begin` or `end` does not point to the starting
-    /// byte offset of a character (as defined by `is_char_boundary`).
-    /// Requires that `begin <= end` and `end <= len` where `len` is the
-    /// length of the string.
-    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
-    impl ops::IndexMut<ops::Range<usize>> for str {
-        #[inline]
-        fn index_mut(&mut self, index: ops::Range<usize>) -> &mut str {
-            index.index_mut(self)
-        }
-    }
-
-    /// Implements substring slicing with syntax `&self[.. end]`.
-    ///
-    /// Returns a slice of the string from the beginning to byte offset
-    /// `end`.
-    ///
-    /// Equivalent to `&self[0 .. end]`.
     #[stable(feature = "rust1", since = "1.0.0")]
-    impl ops::Index<ops::RangeTo<usize>> for str {
-        type Output = str;
-
+    impl<I> ops::IndexMut<I> for str
+    where
+        I: SliceIndex<str>,
+    {
         #[inline]
-        fn index(&self, index: ops::RangeTo<usize>) -> &str {
-            index.index(self)
-        }
-    }
-
-    /// Implements mutable substring slicing with syntax `&mut self[.. end]`.
-    ///
-    /// Returns a mutable slice of the string from the beginning to byte offset
-    /// `end`.
-    ///
-    /// Equivalent to `&mut self[0 .. end]`.
-    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
-    impl ops::IndexMut<ops::RangeTo<usize>> for str {
-        #[inline]
-        fn index_mut(&mut self, index: ops::RangeTo<usize>) -> &mut str {
-            index.index_mut(self)
-        }
-    }
-
-    /// Implements substring slicing with syntax `&self[begin ..]`.
-    ///
-    /// Returns a slice of the string from byte offset `begin`
-    /// to the end of the string.
-    ///
-    /// Equivalent to `&self[begin .. len]`.
-    #[stable(feature = "rust1", since = "1.0.0")]
-    impl ops::Index<ops::RangeFrom<usize>> for str {
-        type Output = str;
-
-        #[inline]
-        fn index(&self, index: ops::RangeFrom<usize>) -> &str {
-            index.index(self)
-        }
-    }
-
-    /// Implements mutable substring slicing with syntax `&mut self[begin ..]`.
-    ///
-    /// Returns a mutable slice of the string from byte offset `begin`
-    /// to the end of the string.
-    ///
-    /// Equivalent to `&mut self[begin .. len]`.
-    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
-    impl ops::IndexMut<ops::RangeFrom<usize>> for str {
-        #[inline]
-        fn index_mut(&mut self, index: ops::RangeFrom<usize>) -> &mut str {
-            index.index_mut(self)
-        }
-    }
-
-    /// Implements substring slicing with syntax `&self[..]`.
-    ///
-    /// Returns a slice of the whole string. This operation can
-    /// never panic.
-    ///
-    /// Equivalent to `&self[0 .. len]`.
-    #[stable(feature = "rust1", since = "1.0.0")]
-    impl ops::Index<ops::RangeFull> for str {
-        type Output = str;
-
-        #[inline]
-        fn index(&self, _index: ops::RangeFull) -> &str {
-            self
-        }
-    }
-
-    /// Implements mutable substring slicing with syntax `&mut self[..]`.
-    ///
-    /// Returns a mutable slice of the whole string. This operation can
-    /// never panic.
-    ///
-    /// Equivalent to `&mut self[0 .. len]`.
-    #[stable(feature = "derefmut_for_string", since = "1.3.0")]
-    impl ops::IndexMut<ops::RangeFull> for str {
-        #[inline]
-        fn index_mut(&mut self, _index: ops::RangeFull) -> &mut str {
-            self
-        }
-    }
-
-    #[stable(feature = "inclusive_range", since = "1.26.0")]
-    impl ops::Index<ops::RangeInclusive<usize>> for str {
-        type Output = str;
-
-        #[inline]
-        fn index(&self, index: ops::RangeInclusive<usize>) -> &str {
-            index.index(self)
-        }
-    }
-
-    #[stable(feature = "inclusive_range", since = "1.26.0")]
-    impl ops::Index<ops::RangeToInclusive<usize>> for str {
-        type Output = str;
-
-        #[inline]
-        fn index(&self, index: ops::RangeToInclusive<usize>) -> &str {
-            index.index(self)
-        }
-    }
-
-    #[stable(feature = "inclusive_range", since = "1.26.0")]
-    impl ops::IndexMut<ops::RangeInclusive<usize>> for str {
-        #[inline]
-        fn index_mut(&mut self, index: ops::RangeInclusive<usize>) -> &mut str {
-            index.index_mut(self)
-        }
-    }
-    #[stable(feature = "inclusive_range", since = "1.26.0")]
-    impl ops::IndexMut<ops::RangeToInclusive<usize>> for str {
-        #[inline]
-        fn index_mut(&mut self, index: ops::RangeToInclusive<usize>) -> &mut str {
+        fn index_mut(&mut self, index: I) -> &mut I::Output {
             index.index_mut(self)
         }
     }
@@ -1824,6 +1650,18 @@ mod traits {
         panic!("attempted to index str up to maximum usize");
     }
 
+    /// Implements substring slicing with syntax `&self[..]` or `&mut self[..]`.
+    ///
+    /// Returns a slice of the whole string, i.e., returns `&self` or `&mut
+    /// self`. Equivalent to `&self[0 .. len]` or `&mut self[0 .. len]`. Unlike
+    /// other indexing operations, this can never panic.
+    ///
+    /// This operation is `O(1)`.
+    ///
+    /// Prior to 1.20.0, these indexing operations were still supported by
+    /// direct implementation of `Index` and `IndexMut`.
+    ///
+    /// Equivalent to `&self[0 .. len]` or `&mut self[0 .. len]`.
     #[stable(feature = "str_checked_slicing", since = "1.20.0")]
     impl SliceIndex<str> for ops::RangeFull {
         type Output = str;
@@ -1853,6 +1691,41 @@ mod traits {
         }
     }
 
+    /// Implements substring slicing with syntax `&self[begin .. end]` or `&mut
+    /// self[begin .. end]`.
+    ///
+    /// Returns a slice of the given string from the byte range
+    /// [`begin`, `end`).
+    ///
+    /// This operation is `O(1)`.
+    ///
+    /// Prior to 1.20.0, these indexing operations were still supported by
+    /// direct implementation of `Index` and `IndexMut`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `begin` or `end` does not point to the starting byte offset of
+    /// a character (as defined by `is_char_boundary`), if `begin > end`, or if
+    /// `end > len`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = "Löwe 老虎 Léopard";
+    /// assert_eq!(&s[0 .. 1], "L");
+    ///
+    /// assert_eq!(&s[1 .. 9], "öwe 老");
+    ///
+    /// // these will panic:
+    /// // byte 2 lies within `ö`:
+    /// // &s[2 ..3];
+    ///
+    /// // byte 8 lies within `老`
+    /// // &s[1 .. 8];
+    ///
+    /// // byte 100 is outside the string
+    /// // &s[3 .. 100];
+    /// ```
     #[stable(feature = "str_checked_slicing", since = "1.20.0")]
     impl SliceIndex<str> for ops::Range<usize> {
         type Output = str;
@@ -1907,6 +1780,21 @@ mod traits {
         }
     }
 
+    /// Implements substring slicing with syntax `&self[.. end]` or `&mut
+    /// self[.. end]`.
+    ///
+    /// Returns a slice of the given string from the byte range [`0`, `end`).
+    /// Equivalent to `&self[0 .. end]` or `&mut self[0 .. end]`.
+    ///
+    /// This operation is `O(1)`.
+    ///
+    /// Prior to 1.20.0, these indexing operations were still supported by
+    /// direct implementation of `Index` and `IndexMut`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `end` does not point to the starting byte offset of a
+    /// character (as defined by `is_char_boundary`), or if `end > len`.
     #[stable(feature = "str_checked_slicing", since = "1.20.0")]
     impl SliceIndex<str> for ops::RangeTo<usize> {
         type Output = str;
@@ -1952,6 +1840,22 @@ mod traits {
         }
     }
 
+    /// Implements substring slicing with syntax `&self[begin ..]` or `&mut
+    /// self[begin ..]`.
+    ///
+    /// Returns a slice of the given string from the byte range [`begin`,
+    /// `len`). Equivalent to `&self[begin .. len]` or `&mut self[begin ..
+    /// len]`.
+    ///
+    /// This operation is `O(1)`.
+    ///
+    /// Prior to 1.20.0, these indexing operations were still supported by
+    /// direct implementation of `Index` and `IndexMut`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `begin` does not point to the starting byte offset of
+    /// a character (as defined by `is_char_boundary`), or if `begin >= len`.
     #[stable(feature = "str_checked_slicing", since = "1.20.0")]
     impl SliceIndex<str> for ops::RangeFrom<usize> {
         type Output = str;
@@ -1999,6 +1903,22 @@ mod traits {
         }
     }
 
+    /// Implements substring slicing with syntax `&self[begin ..= end]` or `&mut
+    /// self[begin ..= end]`.
+    ///
+    /// Returns a slice of the given string from the byte range
+    /// [`begin`, `end`]. Equivalent to `&self [begin .. end + 1]` or `&mut
+    /// self[begin .. end + 1]`, except if `end` has the maximum value for
+    /// `usize`.
+    ///
+    /// This operation is `O(1)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `begin` does not point to the starting byte offset of
+    /// a character (as defined by `is_char_boundary`), if `end` does not point
+    /// to the ending byte offset of a character (`end + 1` is either a starting
+    /// byte offset or equal to `len`), if `begin > end`, or if `end >= len`.
     #[stable(feature = "inclusive_range", since = "1.26.0")]
     impl SliceIndex<str> for ops::RangeInclusive<usize> {
         type Output = str;
@@ -2032,8 +1952,20 @@ mod traits {
         }
     }
 
-
-
+    /// Implements substring slicing with syntax `&self[..= end]` or `&mut
+    /// self[..= end]`.
+    ///
+    /// Returns a slice of the given string from the byte range [0, `end`].
+    /// Equivalent to `&self [0 .. end + 1]`, except if `end` has the maximum
+    /// value for `usize`.
+    ///
+    /// This operation is `O(1)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `end` does not point to the ending byte offset of a character
+    /// (`end + 1` is either a starting byte offset as defined by
+    /// `is_char_boundary`, or equal to `len`), or if `end >= len`.
     #[stable(feature = "inclusive_range", since = "1.26.0")]
     impl SliceIndex<str> for ops::RangeToInclusive<usize> {
         type Output = str;
@@ -3557,6 +3489,8 @@ impl str {
     ///
     /// assert_eq!("Hello\tworld", s.trim());
     /// ```
+    #[must_use = "this returns the trimmed string as a slice, \
+                  without modifying the original"]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn trim(&self) -> &str {
         self.trim_matches(|c: char| c.is_whitespace())
@@ -3592,6 +3526,8 @@ impl str {
     /// let s = "  עברית  ";
     /// assert!(Some('ע') == s.trim_start().chars().next());
     /// ```
+    #[must_use = "this returns the trimmed string as a new slice, \
+                  without modifying the original"]
     #[stable(feature = "trim_direction", since = "1.30.0")]
     pub fn trim_start(&self) -> &str {
         self.trim_start_matches(|c: char| c.is_whitespace())
@@ -3627,6 +3563,8 @@ impl str {
     /// let s = "  עברית  ";
     /// assert!(Some('ת') == s.trim_end().chars().rev().next());
     /// ```
+    #[must_use = "this returns the trimmed string as a new slice, \
+                  without modifying the original"]
     #[stable(feature = "trim_direction", since = "1.30.0")]
     pub fn trim_end(&self) -> &str {
         self.trim_end_matches(|c: char| c.is_whitespace())
@@ -3729,6 +3667,8 @@ impl str {
     /// ```
     /// assert_eq!("1foo1barXX".trim_matches(|c| c == '1' || c == 'X'), "foo1bar");
     /// ```
+    #[must_use = "this returns the trimmed string as a new slice, \
+                  without modifying the original"]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn trim_matches<'a, P: Pattern<'a>>(&'a self, pat: P) -> &'a str
         where P::Searcher: DoubleEndedSearcher<'a>
@@ -3774,6 +3714,8 @@ impl str {
     /// let x: &[_] = &['1', '2'];
     /// assert_eq!("12foo1bar12".trim_start_matches(x), "foo1bar12");
     /// ```
+    #[must_use = "this returns the trimmed string as a new slice, \
+                  without modifying the original"]
     #[stable(feature = "trim_direction", since = "1.30.0")]
     pub fn trim_start_matches<'a, P: Pattern<'a>>(&'a self, pat: P) -> &'a str {
         let mut i = self.len();
@@ -3817,6 +3759,8 @@ impl str {
     /// ```
     /// assert_eq!("1fooX".trim_end_matches(|c| c == '1' || c == 'X'), "1foo");
     /// ```
+    #[must_use = "this returns the trimmed string as a new slice, \
+                  without modifying the original"]
     #[stable(feature = "trim_direction", since = "1.30.0")]
     pub fn trim_end_matches<'a, P: Pattern<'a>>(&'a self, pat: P) -> &'a str
         where P::Searcher: ReverseSearcher<'a>
@@ -3842,10 +3786,10 @@ impl str {
     ///
     /// # Text directionality
     ///
-    /// A string is a sequence of bytes. 'Left' in this context means the first
-    /// position of that byte string; for a language like Arabic or Hebrew
-    /// which are 'right to left' rather than 'left to right', this will be
-    /// the _right_ side, not the left.
+    /// A string is a sequence of bytes. `start` in this context means the first
+    /// position of that byte string; for a left-to-right language like English or
+    /// Russian, this will be left side; and for right-to-left languages like
+    /// like Arabic or Hebrew, this will be the right side.
     ///
     /// # Examples
     ///
@@ -3874,10 +3818,10 @@ impl str {
     ///
     /// # Text directionality
     ///
-    /// A string is a sequence of bytes. 'Right' in this context means the last
-    /// position of that byte string; for a language like Arabic or Hebrew
-    /// which are 'right to left' rather than 'left to right', this will be
-    /// the _left_ side, not the right.
+    /// A string is a sequence of bytes. `end` in this context means the last
+    /// position of that byte string; for a left-to-right language like English or
+    /// Russian, this will be right side; and for right-to-left languages like
+    /// like Arabic or Hebrew, this will be the left side.
     ///
     /// # Examples
     ///

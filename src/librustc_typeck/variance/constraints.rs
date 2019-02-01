@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Constraint construction and representation
 //!
 //! The second pass over the AST determines the set of constraints.
@@ -44,7 +34,7 @@ pub struct Constraint<'a> {
 }
 
 /// To build constraints, we visit one item (type, trait) at a time
-/// and look at its contents. So e.g. if we have
+/// and look at its contents. So e.g., if we have
 ///
 ///     struct Foo<T> {
 ///         b: Bar<T>
@@ -72,7 +62,7 @@ pub fn add_constraints_from_crate<'a, 'tcx>(terms_cx: TermsContext<'a, 'tcx>)
         constraints: Vec::new(),
     };
 
-    tcx.hir.krate().visit_all_item_likes(&mut constraint_cx);
+    tcx.hir().krate().visit_all_item_likes(&mut constraint_cx);
 
     constraint_cx
 }
@@ -131,7 +121,7 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for ConstraintContext<'a, 'tcx> {
 impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
     fn visit_node_helper(&mut self, id: ast::NodeId) {
         let tcx = self.terms_cx.tcx;
-        let def_id = tcx.hir.local_def_id(id);
+        let def_id = tcx.hir().local_def_id(id);
         self.build_constraints_for_item(def_id);
     }
 
@@ -148,7 +138,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
             return;
         }
 
-        let id = tcx.hir.as_local_node_id(def_id).unwrap();
+        let id = tcx.hir().as_local_node_id(def_id).unwrap();
         let inferred_start = self.terms_cx.inferred_starts[&id];
         let current_item = &CurrentItem { inferred_start };
         match tcx.type_of(def_id).sty {
@@ -311,11 +301,12 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                 let contra = self.contravariant(variance);
                 self.add_constraints_from_region(current, r, contra);
 
-                let poly_trait_ref = data
-                    .principal()
-                    .with_self_ty(self.tcx(), self.tcx().types.err);
-                self.add_constraints_from_trait_ref(
-                    current, *poly_trait_ref.skip_binder(), variance);
+                if let Some(poly_trait_ref) = data.principal() {
+                    let poly_trait_ref =
+                        poly_trait_ref.with_self_ty(self.tcx(), self.tcx().types.err);
+                    self.add_constraints_from_trait_ref(
+                        current, *poly_trait_ref.skip_binder(), variance);
+                }
 
                 for projection in data.projection_bounds() {
                     self.add_constraints_from_ty(
@@ -336,6 +327,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                 // types, where we use Error as the Self type
             }
 
+            ty::Placeholder(..) |
             ty::UnnormalizedProjection(..) |
             ty::GeneratorWitness(..) |
             ty::Bound(..) |
@@ -364,7 +356,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
             return;
         }
 
-        let (local, remote) = if let Some(id) = self.tcx().hir.as_local_node_id(def_id) {
+        let (local, remote) = if let Some(id) = self.tcx().hir().as_local_node_id(def_id) {
             (Some(self.terms_cx.inferred_starts[&id]), None)
         } else {
             (None, Some(self.tcx().variances_of(def_id)))

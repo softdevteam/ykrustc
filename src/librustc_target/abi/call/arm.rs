@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use abi::call::{Conv, FnType, ArgType, Reg, RegKind, Uniform};
 use abi::{HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
 use spec::HasTargetSpec;
@@ -17,7 +7,7 @@ fn is_homogeneous_aggregate<'a, Ty, C>(cx: &C, arg: &mut ArgType<'a, Ty>)
     where Ty: TyLayoutMethods<'a, C> + Copy,
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
 {
-    arg.layout.homogeneous_aggregate(cx).and_then(|unit| {
+    arg.layout.homogeneous_aggregate(cx).unit().and_then(|unit| {
         let size = arg.layout.size;
 
         // Ensure we have at most four uniquely addressable members.
@@ -93,7 +83,7 @@ fn classify_arg_ty<'a, Ty, C>(cx: &C, arg: &mut ArgType<'a, Ty>, vfp: bool)
         }
     }
 
-    let align = arg.layout.align.abi();
+    let align = arg.layout.align.abi.bytes();
     let total = arg.layout.size;
     arg.cast_to(Uniform {
         unit: if align <= 4 { Reg::i32() } else { Reg::i64() },

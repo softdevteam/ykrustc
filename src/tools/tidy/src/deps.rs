@@ -1,18 +1,7 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! Check license of third-party deps by inspecting src/vendor
+//! Checks the licenses of third-party dependencies by inspecting vendors.
 
 use std::collections::{BTreeSet, HashSet, HashMap};
-use std::fs::File;
-use std::io::Read;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
@@ -32,11 +21,12 @@ const LICENSES: &[&str] = &[
 /// These are exceptions to Rust's permissive licensing policy, and
 /// should be considered bugs. Exceptions are only allowed in Rust
 /// tooling. It is _crucial_ that no exception crates be dependencies
-/// of the Rust runtime (std / test).
+/// of the Rust runtime (std/test).
 const EXCEPTIONS: &[&str] = &[
     "mdbook",             // MPL2, mdbook
     "openssl",            // BSD+advertising clause, cargo, mdbook
     "pest",               // MPL2, mdbook via handlebars
+    "arrayref",           // BSD-2-Clause, mdbook via handlebars via pest
     "thread-id",          // Apache-2.0, mdbook
     "toml-query",         // MPL-2.0, mdbook
     "is-match",           // MPL-2.0, mdbook
@@ -50,8 +40,11 @@ const EXCEPTIONS: &[&str] = &[
     "colored",            // MPL-2.0, rustfmt
     "ordslice",           // Apache-2.0, rls
     "cloudabi",           // BSD-2-Clause, (rls -> crossbeam-channel 0.2 -> rand 0.5)
-    "ryu",                // Apache-2.0, rls/cargo/... (b/c of serde)
+    "ryu",                // Apache-2.0, rls/cargo/... (because of serde)
     "bytesize",           // Apache-2.0, cargo
+    "im-rc",              // MPL-2.0+, cargo
+    "adler32",            // BSD-3-Clause AND Zlib, cargo dep that isn't used
+    "fortanix-sgx-abi",   // MPL-2.0+, libstd but only for `sgx` target
 ];
 
 /// Which crates to check against the whitelist?
@@ -62,12 +55,14 @@ const WHITELIST_CRATES: &[CrateVersion] = &[
 
 /// Whitelist of crates rustc is allowed to depend on. Avoid adding to the list if possible.
 const WHITELIST: &[Crate] = &[
+    Crate("adler32"),
     Crate("aho-corasick"),
     Crate("arrayvec"),
     Crate("atty"),
     Crate("backtrace"),
     Crate("backtrace-sys"),
     Crate("bitflags"),
+    Crate("build_const"),
     Crate("byteorder"),
     Crate("cc"),
     Crate("cfg-if"),
@@ -75,6 +70,9 @@ const WHITELIST: &[Crate] = &[
     Crate("chalk-macros"),
     Crate("cloudabi"),
     Crate("cmake"),
+    Crate("compiler_builtins"),
+    Crate("crc"),
+    Crate("crc32fast"),
     Crate("crossbeam-deque"),
     Crate("crossbeam-epoch"),
     Crate("crossbeam-utils"),
@@ -100,6 +98,8 @@ const WHITELIST: &[Crate] = &[
     Crate("memmap"),
     Crate("memoffset"),
     Crate("miniz-sys"),
+    Crate("miniz_oxide"),
+    Crate("miniz_oxide_c_api"),
     Crate("nodrop"),
     Crate("num_cpus"),
     Crate("owning_ref"),
@@ -107,9 +107,16 @@ const WHITELIST: &[Crate] = &[
     Crate("parking_lot_core"),
     Crate("pkg-config"),
     Crate("polonius-engine"),
+    Crate("proc-macro2"),
     Crate("quick-error"),
+    Crate("quote"),
     Crate("rand"),
+    Crate("rand_chacha"),
     Crate("rand_core"),
+    Crate("rand_hc"),
+    Crate("rand_isaac"),
+    Crate("rand_pcg"),
+    Crate("rand_xorshift"),
     Crate("redox_syscall"),
     Crate("redox_termios"),
     Crate("regex"),
@@ -119,10 +126,16 @@ const WHITELIST: &[Crate] = &[
     Crate("rustc-hash"),
     Crate("rustc-rayon"),
     Crate("rustc-rayon-core"),
+    Crate("rustc_version"),
     Crate("scoped-tls"),
     Crate("scopeguard"),
+    Crate("semver"),
+    Crate("semver-parser"),
+    Crate("serde"),
+    Crate("serde_derive"),
     Crate("smallvec"),
     Crate("stable_deref_trait"),
+    Crate("syn"),
     Crate("tempfile"),
     Crate("termcolor"),
     Crate("terminon"),
@@ -130,11 +143,12 @@ const WHITELIST: &[Crate] = &[
     Crate("thread_local"),
     Crate("ucd-util"),
     Crate("unicode-width"),
+    Crate("unicode-xid"),
     Crate("unreachable"),
     Crate("utf8-ranges"),
+    Crate("vcpkg"),
     Crate("version_check"),
     Crate("void"),
-    Crate("vcpkg"),
     Crate("winapi"),
     Crate("winapi-build"),
     Crate("winapi-i686-pc-windows-gnu"),
@@ -143,7 +157,7 @@ const WHITELIST: &[Crate] = &[
     Crate("wincolor"),
 ];
 
-// Some types for Serde to deserialize the output of `cargo metadata` to...
+// Some types for Serde to deserialize the output of `cargo metadata` to.
 
 #[derive(Deserialize)]
 struct Output {
@@ -161,9 +175,9 @@ struct ResolveNode {
     dependencies: Vec<String>,
 }
 
-/// A unique identifier for a crate
+/// A unique identifier for a crate.
 #[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Debug, Hash)]
-struct Crate<'a>(&'a str); // (name,)
+struct Crate<'a>(&'a str); // (name)
 
 #[derive(Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Debug, Hash)]
 struct CrateVersion<'a>(&'a str, &'a str); // (name, version)
@@ -175,7 +189,7 @@ impl<'a> Crate<'a> {
 }
 
 impl<'a> CrateVersion<'a> {
-    /// Returns the struct and whether or not the dep is in-tree
+    /// Returns the struct and whether or not the dependency is in-tree.
     pub fn from_str(s: &'a str) -> (Self, bool) {
         let mut parts = s.split(' ');
         let name = parts.next().unwrap();
@@ -202,20 +216,20 @@ impl<'a> From<CrateVersion<'a>> for Crate<'a> {
 ///
 /// Specifically, this checks that the license is correct.
 pub fn check(path: &Path, bad: &mut bool) {
-    // Check licences
-    let path = path.join("vendor");
+    // Check licences.
+    let path = path.join("../vendor");
     assert!(path.exists(), "vendor directory missing");
     let mut saw_dir = false;
     for dir in t!(path.read_dir()) {
         saw_dir = true;
         let dir = t!(dir);
 
-        // skip our exceptions
+        // Skip our exceptions.
         let is_exception = EXCEPTIONS.iter().any(|exception| {
             dir.path()
                 .to_str()
                 .unwrap()
-                .contains(&format!("src/vendor/{}", exception))
+                .contains(&format!("vendor/{}", exception))
         });
         if is_exception {
             continue;
@@ -227,18 +241,18 @@ pub fn check(path: &Path, bad: &mut bool) {
     assert!(saw_dir, "no vendored source");
 }
 
-/// Checks the dependency of WHITELIST_CRATES at the given path. Changes `bad` to `true` if a check
-/// failed.
+/// Checks the dependency of `WHITELIST_CRATES` at the given path. Changes `bad` to `true` if a
+/// check failed.
 ///
-/// Specifically, this checks that the dependencies are on the WHITELIST.
+/// Specifically, this checks that the dependencies are on the `WHITELIST`.
 pub fn check_whitelist(path: &Path, cargo: &Path, bad: &mut bool) {
-    // Get dependencies from cargo metadata
+    // Get dependencies from Cargo metadata.
     let resolve = get_deps(path, cargo);
 
-    // Get the whitelist into a convenient form
+    // Get the whitelist in a convenient form.
     let whitelist: HashSet<_> = WHITELIST.iter().cloned().collect();
 
-    // Check dependencies
+    // Check dependencies.
     let mut visited = BTreeSet::new();
     let mut unapproved = BTreeSet::new();
     for &krate in WHITELIST_CRATES.iter() {
@@ -261,8 +275,7 @@ fn check_license(path: &Path) -> bool {
     if !path.exists() {
         panic!("{} does not exist", path.display());
     }
-    let mut contents = String::new();
-    t!(t!(File::open(path)).read_to_string(&mut contents));
+    let contents = t!(fs::read_to_string(&path));
 
     let mut found_license = false;
     for line in contents.lines() {
@@ -296,15 +309,15 @@ fn extract_license(line: &str) -> String {
     }
 }
 
-/// Get the dependencies of the crate at the given path using `cargo metadata`.
+/// Gets the dependencies of the crate at the given path using `cargo metadata`.
 fn get_deps(path: &Path, cargo: &Path) -> Resolve {
-    // Run `cargo metadata` to get the set of dependencies
+    // Run `cargo metadata` to get the set of dependencies.
     let output = Command::new(cargo)
         .arg("metadata")
         .arg("--format-version")
         .arg("1")
         .arg("--manifest-path")
-        .arg(path.join("Cargo.toml"))
+        .arg(path.join("../Cargo.toml"))
         .output()
         .expect("Unable to run `cargo metadata`")
         .stdout;
@@ -323,25 +336,25 @@ fn check_crate_whitelist<'a, 'b>(
     krate: CrateVersion<'a>,
     must_be_on_whitelist: bool,
 ) -> BTreeSet<Crate<'a>> {
-    // Will contain bad deps
+    // This will contain bad deps.
     let mut unapproved = BTreeSet::new();
 
-    // Check if we have already visited this crate
+    // Check if we have already visited this crate.
     if visited.contains(&krate) {
         return unapproved;
     }
 
     visited.insert(krate);
 
-    // If this path is in-tree, we don't require it to be on the whitelist
+    // If this path is in-tree, we don't require it to be on the whitelist.
     if must_be_on_whitelist {
-        // If this dependency is not on the WHITELIST, add to bad set
+        // If this dependency is not on `WHITELIST`, add to bad set.
         if !whitelist.contains(&krate.into()) {
             unapproved.insert(krate.into());
         }
     }
 
-    // Do a DFS in the crate graph (it's a DAG, so we know we have no cycles!)
+    // Do a DFS in the crate graph (it's a DAG, so we know we have no cycles!).
     let to_check = resolve
         .nodes
         .iter()
@@ -360,9 +373,10 @@ fn check_crate_whitelist<'a, 'b>(
 
 fn check_crate_duplicate(resolve: &Resolve, bad: &mut bool) {
     const FORBIDDEN_TO_HAVE_DUPLICATES: &[&str] = &[
-        // These two crates take quite a long time to build, let's not let two
-        // versions of them accidentally sneak into our dependency graph to
-        // ensure we keep our CI times under control
+        // These two crates take quite a long time to build, so don't allow two versions of them
+        // to accidentally sneak into our dependency graph, in order to ensure we keep our CI times
+        // under control.
+
         // "cargo", // FIXME(#53005)
         "rustc-ap-syntax",
     ];

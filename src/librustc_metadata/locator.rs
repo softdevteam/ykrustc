@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Finds crate binaries and loads their metadata
 //!
 //! Might I be the first to welcome you to a world of platform differences,
@@ -661,7 +651,7 @@ impl<'a> Context<'a> {
             // Ok so at this point we've determined that `(lib, kind)` above is
             // a candidate crate to load, and that `slot` is either none (this
             // is the first crate of its kind) or if some the previous path has
-            // the exact same hash (e.g. it's the exact same crate).
+            // the exact same hash (e.g., it's the exact same crate).
             //
             // In principle these two candidate crates are exactly the same so
             // we can choose either of them to link. As a stupidly gross hack,
@@ -678,7 +668,7 @@ impl<'a> Context<'a> {
             // candidates are all canonicalized, so we canonicalize the sysroot
             // as well.
             if let Some((ref prev, _)) = ret {
-                let sysroot = self.sess.sysroot();
+                let sysroot = &self.sess.sysroot;
                 let sysroot = sysroot.canonicalize()
                                      .unwrap_or_else(|_| sysroot.to_path_buf());
                 if prev.starts_with(&sysroot) {
@@ -713,7 +703,7 @@ impl<'a> Context<'a> {
 
         let root = metadata.get_root();
         if let Some(is_proc_macro) = self.is_proc_macro {
-            if root.macro_derive_registrar.is_some() != is_proc_macro {
+            if root.proc_macro_decls_static.is_some() != is_proc_macro {
                 return None;
             }
         }

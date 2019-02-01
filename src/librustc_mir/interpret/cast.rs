@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::{self, Ty, TypeAndMut};
 use rustc::ty::layout::{self, TyLayout, Size};
 use syntax::ast::{FloatTy, IntTy, UintTy};
@@ -44,22 +34,16 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             }
 
             Misc => {
-                let src_layout = src.layout;
                 let src = self.read_immediate(src)?;
 
-                // There are no casts to references
-                assert!(!dest.layout.ty.is_region_ptr());
-                // Hence we make all casts erase the tag
-                let src = src.erase_tag().with_default_tag();
-
-                if self.type_is_fat_ptr(src_layout.ty) {
-                    match (src, self.type_is_fat_ptr(dest.layout.ty)) {
+                if self.type_is_fat_ptr(src.layout.ty) {
+                    match (*src, self.type_is_fat_ptr(dest.layout.ty)) {
                         // pointers to extern types
                         (Immediate::Scalar(_),_) |
                         // slices and trait objects to other slices/trait objects
                         (Immediate::ScalarPair(..), true) => {
                             // No change to immediate
-                            self.write_immediate(src, dest)?;
+                            self.write_immediate(*src, dest)?;
                         }
                         // slices and trait objects to thin pointers (dropping the metadata)
                         (Immediate::ScalarPair(data, _), false) => {
@@ -67,11 +51,11 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         }
                     }
                 } else {
-                    match src_layout.variants {
+                    match src.layout.variants {
                         layout::Variants::Single { index } => {
-                            if let Some(def) = src_layout.ty.ty_adt_def() {
+                            if let Some(def) = src.layout.ty.ty_adt_def() {
                                 // Cast from a univariant enum
-                                assert!(src_layout.is_zst());
+                                assert!(src.layout.is_zst());
                                 let discr_val = def
                                     .discriminant_for_variant(*self.tcx, index)
                                     .val;
@@ -84,7 +68,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         layout::Variants::NicheFilling { .. } => {},
                     }
 
-                    let dest_val = self.cast_scalar(src.to_scalar()?, src_layout, dest.layout)?;
+                    let dest_val = self.cast_scalar(src.to_scalar()?, src.layout, dest.layout)?;
                     self.write_scalar(dest_val, dest)?;
                 }
             }
@@ -125,11 +109,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                 // The src operand does not matter, just its type
                 match src.layout.ty.sty {
                     ty::Closure(def_id, substs) => {
-                        let substs = self.tcx.subst_and_normalize_erasing_regions(
-                            self.substs(),
-                            ty::ParamEnv::reveal_all(),
-                            &substs,
-                        );
+                        let substs = self.subst_and_normalize_erasing_regions(substs)?;
                         let instance = ty::Instance::resolve_closure(
                             *self.tcx,
                             def_id,

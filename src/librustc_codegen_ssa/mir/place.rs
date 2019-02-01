@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::{self, Ty};
 use rustc::ty::layout::{self, Align, TyLayout, LayoutOf, VariantIdx, HasTyCtxt};
 use rustc::mir;
@@ -58,8 +48,8 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
     ) -> Self {
         debug!("alloca({:?}: {:?})", name, layout);
         assert!(!layout.is_unsized(), "tried to statically allocate unsized place");
-        let tmp = bx.alloca(bx.cx().backend_type(layout), name, layout.align);
-        Self::new_sized(tmp, layout, layout.align)
+        let tmp = bx.alloca(bx.cx().backend_type(layout), name, layout.align.abi);
+        Self::new_sized(tmp, layout, layout.align.abi)
     }
 
     /// Returns a place for an indirect reference to an unsized place.
@@ -109,7 +99,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
                 self.llval
             } else if let layout::Abi::ScalarPair(ref a, ref b) = self.layout.abi {
                 // Offsets have to match either first or second field.
-                assert_eq!(offset, a.value.size(bx.cx()).abi_align(b.value.align(bx.cx())));
+                assert_eq!(offset, a.value.size(bx.cx()).align_to(b.value.align(bx.cx()).abi));
                 bx.struct_gep(self.llval, 1)
             } else {
                 bx.struct_gep(self.llval, bx.cx().backend_field_index(self.layout, ix))
@@ -143,7 +133,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
                 if def.repr.packed() {
                     // FIXME(eddyb) generalize the adjustment when we
                     // start supporting packing to larger alignments.
-                    assert_eq!(self.layout.align.abi(), 1);
+                    assert_eq!(self.layout.align.abi.bytes(), 1);
                     return simple();
                 }
             }
@@ -229,9 +219,9 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
             layout::Variants::Tagged { ref tag, .. } => {
                 let signed = match tag.value {
                     // We use `i1` for bytes that are always `0` or `1`,
-                    // e.g. `#[repr(i8)] enum E { A, B }`, but we can't
+                    // e.g., `#[repr(i8)] enum E { A, B }`, but we can't
                     // let LLVM interpret the `i1` as signed, because
-                    // then `i1 1` (i.e. E::B) is effectively `i8 -1`.
+                    // then `i1 1` (i.e., E::B) is effectively `i8 -1`.
                     layout::Int(_, signed) => !tag.is_bool() && signed,
                     _ => false
                 };
@@ -308,9 +298,8 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
                         // Issue #34427: As workaround for LLVM bug on ARM,
                         // use memset of 0 before assigning niche value.
                         let fill_byte = bx.cx().const_u8(0);
-                        let (size, align) = self.layout.size_and_align();
-                        let size = bx.cx().const_usize(size.bytes());
-                        bx.memset(self.llval, fill_byte, size, align, MemFlags::empty());
+                        let size = bx.cx().const_usize(self.layout.size.bytes());
+                        bx.memset(self.llval, fill_byte, size, self.align, MemFlags::empty());
                     }
 
                     let niche = self.project_field(bx, 0);
@@ -336,11 +325,20 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
         bx: &mut Bx,
         llindex: V
     ) -> Self {
+        // Statically compute the offset if we can, otherwise just use the element size,
+        // as this will yield the lowest alignment.
+        let layout = self.layout.field(bx, 0);
+        let offset = if bx.is_const_integral(llindex) {
+            layout.size.checked_mul(bx.const_to_uint(llindex), bx).unwrap_or(layout.size)
+        } else {
+            layout.size
+        };
+
         PlaceRef {
             llval: bx.inbounds_gep(self.llval, &[bx.cx().const_usize(0), llindex]),
             llextra: None,
-            layout: self.layout.field(bx.cx(), 0),
-            align: self.align
+            layout,
+            align: self.align.restrict_for_offset(offset),
         }
     }
 
@@ -414,18 +412,17 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         // and compile-time agree on values
                         // With floats that won't always be true
                         // so we generate an abort
-                        let fnname = bx.cx().get_intrinsic(&("llvm.trap"));
-                        bx.call(fnname, &[], None);
+                        bx.abort();
                         let llval = bx.cx().const_undef(
                             bx.cx().type_ptr_to(bx.cx().backend_type(layout))
                         );
-                        PlaceRef::new_sized(llval, layout, layout.align)
+                        PlaceRef::new_sized(llval, layout, layout.align.abi)
                     }
                 }
             }
             mir::Place::Static(box mir::Static { def_id, ty }) => {
                 let layout = cx.layout_of(self.monomorphize(&ty));
-                PlaceRef::new_sized(cx.get_static(def_id), layout, layout.align)
+                PlaceRef::new_sized(bx.get_static(def_id), layout, layout.align.abi)
             },
             mir::Place::Projection(box mir::Projection {
                 ref base,

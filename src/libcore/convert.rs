@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Traits for conversions between types.
 //!
 //! The traits in this module provide a general way to talk about conversions
@@ -65,7 +55,6 @@
 /// Using `identity` to do nothing among other interesting functions:
 ///
 /// ```rust
-/// #![feature(convert_id)]
 /// use std::convert::identity;
 ///
 /// fn manipulation(x: u32) -> u32 {
@@ -79,7 +68,6 @@
 /// Using `identity` to get a function that changes nothing in a conditional:
 ///
 /// ```rust
-/// #![feature(convert_id)]
 /// use std::convert::identity;
 ///
 /// # let condition = true;
@@ -96,14 +84,13 @@
 /// Using `identity` to keep the `Some` variants of an iterator of `Option<T>`:
 ///
 /// ```rust
-/// #![feature(convert_id)]
 /// use std::convert::identity;
 ///
 /// let iter = vec![Some(1), None, Some(3)].into_iter();
 /// let filtered = iter.filter_map(identity).collect::<Vec<_>>();
 /// assert_eq!(vec![1, 3], filtered);
 /// ```
-#[unstable(feature = "convert_id", issue = "53500")]
+#[stable(feature = "convert_id", since = "1.33.0")]
 #[inline]
 pub const fn identity<T>(x: T) -> T { x }
 
@@ -327,7 +314,8 @@ pub trait Into<T>: Sized {
 /// An example usage for error handling:
 ///
 /// ```
-/// use std::io::{self, Read};
+/// use std::fs;
+/// use std::io;
 /// use std::num;
 ///
 /// enum CliError {
@@ -348,9 +336,7 @@ pub trait Into<T>: Sized {
 /// }
 ///
 /// fn open_and_parse_file(file_name: &str) -> Result<i32, CliError> {
-///     let mut file = std::fs::File::open("test")?;
-///     let mut contents = String::new();
-///     file.read_to_string(&mut contents)?;
+///     let mut contents = fs::read_to_string(&file_name)?;
 ///     let num: i32 = contents.trim().parse()?;
 ///     Ok(num)
 /// }
@@ -477,11 +463,11 @@ impl<T, U> TryInto<U> for T where U: TryFrom<T>
 // Infallible conversions are semantically equivalent to fallible conversions
 // with an uninhabited error type.
 #[unstable(feature = "try_from", issue = "33417")]
-impl<T, U> TryFrom<U> for T where T: From<U> {
+impl<T, U> TryFrom<U> for T where U: Into<T> {
     type Error = !;
 
     fn try_from(value: U) -> Result<Self, Self::Error> {
-        Ok(T::from(value))
+        Ok(U::into(value))
     }
 }
 

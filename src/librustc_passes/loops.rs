@@ -1,16 +1,11 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 use self::Context::*;
 
 use rustc::session::Session;
 
+use rustc::ty::query::Providers;
+use rustc::ty::query::queries;
+use rustc::ty::TyCtxt;
+use rustc::hir::def_id::DefId;
 use rustc::hir::map::Map;
 use rustc::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use rustc::hir::{self, Node, Destination};
@@ -51,26 +46,30 @@ struct CheckLoopVisitor<'a, 'hir: 'a> {
     cx: Context,
 }
 
-pub fn check_crate(sess: &Session, map: &Map) {
-    let krate = map.krate();
-    krate.visit_all_item_likes(&mut CheckLoopVisitor {
-        sess,
-        hir_map: map,
+pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+    for &module in tcx.hir().krate().modules.keys() {
+        queries::check_mod_loops::ensure(tcx, tcx.hir().local_def_id(module));
+    }
+}
+
+fn check_mod_loops<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+    tcx.hir().visit_item_likes_in_module(module_def_id, &mut CheckLoopVisitor {
+        sess: &tcx.sess,
+        hir_map: &tcx.hir(),
         cx: Normal,
     }.as_deep_visitor());
+}
+
+pub(crate) fn provide(providers: &mut Providers) {
+    *providers = Providers {
+        check_mod_loops,
+        ..*providers
+    };
 }
 
 impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'hir> {
         NestedVisitorMap::OnlyBodies(&self.hir_map)
-    }
-
-    fn visit_item(&mut self, i: &'hir hir::Item) {
-        self.with_context(Normal, |v| intravisit::walk_item(v, i));
-    }
-
-    fn visit_impl_item(&mut self, i: &'hir hir::ImplItem) {
-        self.with_context(Normal, |v| intravisit::walk_impl_item(v, i));
     }
 
     fn visit_anon_const(&mut self, c: &'hir hir::AnonConst) {
@@ -141,7 +140,7 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
                                 .span_label(e.span,
                                             "can only break with a value inside \
                                             `loop` or breakable block")
-                                .span_suggestion_with_applicability(
+                                .span_suggestion(
                                     e.span,
                                     &format!(
                                         "instead, use `break` on its own \

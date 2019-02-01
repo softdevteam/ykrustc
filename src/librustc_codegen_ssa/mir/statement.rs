@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::mir;
 
 use traits::BuilderMethods;
@@ -89,7 +79,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         if let OperandValue::Immediate(_) = op.val {
                             acc.push(op.immediate());
                         } else {
-                            span_err!(bx.cx().sess(), span.to_owned(), E0669,
+                            span_err!(bx.sess(), span.to_owned(), E0669,
                                      "invalid value for constraint in inline assembly");
                         }
                         acc
@@ -98,16 +88,14 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 if input_vals.len() == inputs.len() {
                     let res = bx.codegen_inline_asm(asm, outputs, input_vals);
                     if !res {
-                        span_err!(bx.cx().sess(), statement.source_info.span, E0668,
+                        span_err!(bx.sess(), statement.source_info.span, E0668,
                                   "malformed inline assembly");
                     }
                 }
                 bx
             }
             mir::StatementKind::FakeRead(..) |
-            mir::StatementKind::EndRegion(..) |
             mir::StatementKind::Retag { .. } |
-            mir::StatementKind::EscapeToRaw { .. } |
             mir::StatementKind::AscribeUserType(..) |
             mir::StatementKind::Nop => bx,
         }

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::location::LocationTable;
 use borrow_check::nll::region_infer::values::RegionValueElements;
 use borrow_check::nll::constraints::ConstraintSet;
@@ -39,7 +29,7 @@ pub(super) fn generate<'gcx, 'tcx>(
     typeck: &mut TypeChecker<'_, 'gcx, 'tcx>,
     mir: &Mir<'tcx>,
     elements: &Rc<RegionValueElements>,
-    flow_inits: &mut FlowAtLocation<MaybeInitializedPlaces<'_, 'gcx, 'tcx>>,
+    flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'_, 'gcx, 'tcx>>,
     move_data: &MoveData<'tcx>,
     location_table: &LocationTable,
 ) {

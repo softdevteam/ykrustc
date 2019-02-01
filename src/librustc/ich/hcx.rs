@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir;
 use hir::def_id::{DefId, DefIndex};
 use hir::map::DefPathHash;
@@ -45,7 +35,7 @@ fn compute_ignored_attr_names() -> FxHashSet<Symbol> {
 /// This is the context state available during incr. comp. hashing. It contains
 /// enough information to transform DefIds and HirIds into stable DefPaths (i.e.
 /// a reference to the TyCtxt) and it holds a few caches for speeding up various
-/// things (e.g. each DefId/DefPath is only hashed once).
+/// things (e.g., each DefId/DefPath is only hashed once).
 #[derive(Clone)]
 pub struct StableHashingContext<'a> {
     sess: &'a Session,
@@ -86,6 +76,7 @@ impl<'a> StableHashingContext<'a> {
     // The `krate` here is only used for mapping BodyIds to Bodies.
     // Don't use it for anything else or you'll run the risk of
     // leaking data out of the tracking system.
+    #[inline]
     pub fn new(sess: &'a Session,
                krate: &'a hir::Crate,
                definitions: &'a Definitions,

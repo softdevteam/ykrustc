@@ -1,29 +1,19 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::fs;
 use std::env;
-use std::iter;
 use std::path::PathBuf;
 use std::process::{Command, exit};
 use std::collections::HashSet;
 
-use Mode;
-use Compiler;
-use builder::{Step, RunConfig, ShouldRun, Builder};
-use util::{exe, add_lib_path};
-use compile;
-use native;
-use channel::GitInfo;
-use cache::Interned;
-use toolstate::ToolState;
+use crate::Mode;
+use crate::Compiler;
+use crate::builder::{Step, RunConfig, ShouldRun, Builder};
+use crate::util::{exe, add_lib_path};
+use crate::compile;
+use crate::native;
+use crate::channel::GitInfo;
+use crate::channel;
+use crate::cache::Interned;
+use crate::toolstate::ToolState;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum SourceType {
@@ -86,12 +76,13 @@ impl Step for ToolBuild {
         let _folder = builder.fold_output(|| format!("stage{}-{}", compiler.stage, tool));
         builder.info(&format!("Building stage{} tool {} ({})", compiler.stage, tool, target));
         let mut duplicates = Vec::new();
-        let is_expected = compile::stream_cargo(builder, &mut cargo, vec![], &mut |msg| {
+        let is_expected = compile::stream_cargo(builder, &mut cargo, &mut |msg| {
             // Only care about big things like the RLS/Cargo for now
             match tool {
                 | "rls"
                 | "cargo"
                 | "clippy-driver"
+                | "miri"
                 => {}
 
                 _ => return,
@@ -149,7 +140,7 @@ impl Step for ToolBuild {
         });
 
         if is_expected && !duplicates.is_empty() {
-            println!("duplicate artfacts found when compiling a tool, this \
+            println!("duplicate artifacts found when compiling a tool, this \
                       typically means that something was recompiled because \
                       a transitive dependency has different features activated \
                       than in a previous build:\n");
@@ -227,6 +218,7 @@ pub fn prepare_tool_cargo(
         if path.ends_with("cargo") ||
             path.ends_with("rls") ||
             path.ends_with("clippy") ||
+            path.ends_with("miri") ||
             path.ends_with("rustfmt")
         {
             cargo.env("LIBZ_SYS_STATIC", "1");
@@ -240,6 +232,7 @@ pub fn prepare_tool_cargo(
 
     cargo.env("CFG_RELEASE_CHANNEL", &builder.config.channel);
     cargo.env("CFG_VERSION", builder.rust_version());
+    cargo.env("CFG_RELEASE_NUM", channel::CFG_RELEASE_NUM);
 
     let info = GitInfo::new(&builder.config, &dir);
     if let Some(sha) = info.sha() {
@@ -258,8 +251,12 @@ pub fn prepare_tool_cargo(
 }
 
 macro_rules! tool {
-    ($($name:ident, $path:expr, $tool_name:expr, $mode:expr
-        $(,llvm_tools = $llvm:expr)* $(,is_external_tool = $external:expr)*;)+) => {
+    ($(
+        $name:ident, $path:expr, $tool_name:expr, $mode:expr
+        $(,llvm_tools = $llvm:expr)*
+        $(,is_external_tool = $external:expr)*
+        ;
+    )+) => {
         #[derive(Copy, PartialEq, Eq, Clone)]
         pub enum Tool {
             $(
@@ -596,6 +593,14 @@ tool_extended!((self, builder),
         });
     };
     Miri, miri, "src/tools/miri", "miri", {};
+    CargoMiri, miri, "src/tools/miri", "cargo-miri", {
+        // Miri depends on procedural macros (serde), which requires a full host
+        // compiler to be available, so we need to depend on that.
+        builder.ensure(compile::Rustc {
+            compiler: self.compiler,
+            target: builder.config.build,
+        });
+    };
     Rls, rls, "src/tools/rls", "rls", {
         let clippy = builder.ensure(Clippy {
             compiler: self.compiler,
@@ -640,7 +645,7 @@ impl<'a> Builder<'a> {
             self.cargo_out(compiler, tool.get_mode(), *host).join("deps"),
         ];
 
-        // On MSVC a tool may invoke a C compiler (e.g. compiletest in run-make
+        // On MSVC a tool may invoke a C compiler (e.g., compiletest in run-make
         // mode) and that C compiler may need some extra PATH modification. Do
         // so here.
         if compiler.host.contains("msvc") {
@@ -660,19 +665,33 @@ impl<'a> Builder<'a> {
 
         // Add the llvm/bin directory to PATH since it contains lots of
         // useful, platform-independent tools
-        if tool.uses_llvm_tools() {
+        if tool.uses_llvm_tools() && !self.config.dry_run {
+            let mut additional_paths = vec![];
+
             if let Some(llvm_bin_path) = self.llvm_bin_path() {
-                if host.contains("windows") {
-                    // On Windows, PATH and the dynamic library path are the same,
-                    // so we just add the LLVM bin path to lib_path
-                    lib_paths.push(llvm_bin_path);
-                } else {
-                    let old_path = env::var_os("PATH").unwrap_or_default();
-                    let new_path = env::join_paths(iter::once(llvm_bin_path)
-                            .chain(env::split_paths(&old_path)))
-                        .expect("Could not add LLVM bin path to PATH");
-                    cmd.env("PATH", new_path);
-                }
+                additional_paths.push(llvm_bin_path);
+            }
+
+            // If LLD is available, add that too.
+            if self.config.lld_enabled {
+                let lld_install_root = self.ensure(native::Lld {
+                    target: self.config.build,
+                });
+
+                let lld_bin_path = lld_install_root.join("bin");
+                additional_paths.push(lld_bin_path);
+            }
+
+            if host.contains("windows") {
+                // On Windows, PATH and the dynamic library path are the same,
+                // so we just add the LLVM bin path to lib_path
+                lib_paths.extend(additional_paths);
+            } else {
+                let old_path = env::var_os("PATH").unwrap_or_default();
+                let new_path = env::join_paths(additional_paths.into_iter()
+                        .chain(env::split_paths(&old_path)))
+                    .expect("Could not add LLVM bin path to PATH");
+                cmd.env("PATH", new_path);
             }
         }
 
@@ -680,7 +699,7 @@ impl<'a> Builder<'a> {
     }
 
     fn llvm_bin_path(&self) -> Option<PathBuf> {
-        if self.config.llvm_enabled && !self.config.dry_run {
+        if self.config.llvm_enabled {
             let llvm_config = self.ensure(native::Llvm {
                 target: self.config.build,
                 emscripten: false,

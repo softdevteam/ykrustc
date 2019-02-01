@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // The visitors in this module collect sizes and counts of the most important
 // pieces of AST and HIR. The resulting numbers are good approximations but not
 // completely accurate (some things might be counted twice, others missed).
@@ -154,7 +144,7 @@ impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
     }
 
     fn visit_stmt(&mut self, s: &'v hir::Stmt) {
-        self.record("Stmt", Id::Node(s.node.id()), s);
+        self.record("Stmt", Id::Node(s.id), s);
         hir_visit::walk_stmt(self, s)
     }
 
@@ -166,11 +156,6 @@ impl<'v> hir_visit::Visitor<'v> for StatCollector<'v> {
     fn visit_pat(&mut self, p: &'v hir::Pat) {
         self.record("Pat", Id::Node(p.id), p);
         hir_visit::walk_pat(self, p)
-    }
-
-    fn visit_decl(&mut self, d: &'v hir::Decl) {
-        self.record("Decl", Id::None, d);
-        hir_visit::walk_decl(self, d)
     }
 
     fn visit_expr(&mut self, ex: &'v hir::Expr) {

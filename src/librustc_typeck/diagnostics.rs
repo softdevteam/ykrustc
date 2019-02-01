@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
@@ -526,7 +516,7 @@ recursion limit (which can be set via the `recursion_limit` attribute).
 For a somewhat artificial example:
 
 ```compile_fail,E0055
-#![recursion_limit="2"]
+#![recursion_limit="5"]
 
 struct Foo;
 
@@ -536,9 +526,9 @@ impl Foo {
 
 fn main() {
     let foo = Foo;
-    let ref_foo = &&Foo;
+    let ref_foo = &&&&&Foo;
 
-    // error, reached the recursion limit while auto-dereferencing &&Foo
+    // error, reached the recursion limit while auto-dereferencing `&&&&&Foo`
     ref_foo.foo();
 }
 ```
@@ -655,7 +645,7 @@ For example, a function like:
 fn f(a: u16, b: &str) {}
 ```
 
-Must always be called with exactly two arguments, e.g. `f(2, "test")`.
+Must always be called with exactly two arguments, e.g., `f(2, "test")`.
 
 Note that Rust does not have a notion of optional function arguments or
 variadic functions (except for its C-FFI).
@@ -773,7 +763,7 @@ function's return type and the value being returned.
 "##,
 
 E0070: r##"
-The left-hand side of an assignment operator must be a place expression. An
+The left-hand side of an assignment operator must be a place expression. A
 place expression represents a memory location and can be a variable (with
 optional namespacing), a dereference, an indexing expression or a field
 reference.
@@ -1301,7 +1291,7 @@ You tried to give a type parameter to a type which doesn't need it. Erroneous
 code example:
 
 ```compile_fail,E0109
-type X = u32<i32>; // error: type parameters are not allowed on this type
+type X = u32<i32>; // error: type arguments are not allowed on this entity
 ```
 
 Please check that you used the correct type and recheck its definition. Perhaps
@@ -1610,7 +1600,7 @@ it has been disabled for now.
 
 E0185: r##"
 An associated function for a trait was defined to be static, but an
-implementation of the trait declared the same function to be a method (i.e. to
+implementation of the trait declared the same function to be a method (i.e., to
 take a `self` parameter).
 
 Here's an example of this error:
@@ -1631,7 +1621,7 @@ impl Foo for Bar {
 "##,
 
 E0186: r##"
-An associated function for a trait was defined to be a method (i.e. to take a
+An associated function for a trait was defined to be a method (i.e., to take a
 `self` parameter), but an implementation of the trait declared the same function
 to be static.
 
@@ -3379,180 +3369,6 @@ extern "platform-intrinsic" {
 ```
 "##,
 
-E0440: r##"
-A platform-specific intrinsic function has the wrong number of type
-parameters. Erroneous code example:
-
-```compile_fail,E0440
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd<T>(x: f64x2) -> i32;
-    // error: platform-specific intrinsic has wrong number of type
-    //        parameters
-}
-```
-
-Please refer to the function declaration to see if it corresponds
-with yours. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd(x: f64x2) -> i32;
-}
-```
-"##,
-
-E0441: r##"
-An unknown platform-specific intrinsic function was used. Erroneous
-code example:
-
-```compile_fail,E0441
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_ep16(x: i16x8, y: i16x8) -> i16x8;
-    // error: unrecognized platform-specific intrinsic function
-}
-```
-
-Please verify that the function name wasn't misspelled, and ensure
-that it is declared in the rust source code (in the file
-src/librustc_platform_intrinsics/x86.rs). Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i16x8; // ok!
-}
-```
-"##,
-
-E0442: r##"
-Intrinsic argument(s) and/or return value have the wrong type.
-Erroneous code example:
-
-```compile_fail,E0442
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i8x16(i8, i8, i8, i8, i8, i8, i8, i8,
-             i8, i8, i8, i8, i8, i8, i8, i8);
-#[repr(simd)]
-struct i32x4(i32, i32, i32, i32);
-#[repr(simd)]
-struct i64x2(i64, i64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i8x16, y: i32x4) -> i64x2;
-    // error: intrinsic arguments/return value have wrong type
-}
-```
-
-To fix this error, please refer to the function declaration to give
-it the awaited types. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i16x8; // ok!
-}
-```
-"##,
-
-E0443: r##"
-Intrinsic argument(s) and/or return value have the wrong type.
-Erroneous code example:
-
-```compile_fail,E0443
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-#[repr(simd)]
-struct i64x8(i64, i64, i64, i64, i64, i64, i64, i64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i64x8;
-    // error: intrinsic argument/return value has wrong type
-}
-```
-
-To fix this error, please refer to the function declaration to give
-it the awaited types. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i16x8; // ok!
-}
-```
-"##,
-
-E0444: r##"
-A platform-specific intrinsic function has wrong number of arguments.
-Erroneous code example:
-
-```compile_fail,E0444
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd(x: f64x2, y: f64x2, z: f64x2) -> i32;
-    // error: platform-specific intrinsic has invalid number of arguments
-}
-```
-
-Please refer to the function declaration to see if it corresponds
-with yours. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd(x: f64x2) -> i32; // ok!
-}
-```
-"##,
-
 E0516: r##"
 The `typeof` keyword is currently reserved but unimplemented.
 Erroneous code example:
@@ -3793,29 +3609,6 @@ fn main() {}
 
 For more information about the inline attribute, https:
 read://doc.rust-lang.org/reference.html#inline-attributes
-"##,
-
-E0558: r##"
-The `export_name` attribute was malformed.
-
-Erroneous code example:
-
-```ignore (error-emitted-at-codegen-which-cannot-be-handled-by-compile_fail)
-#[export_name] // error: `export_name` attribute has invalid format
-pub fn something() {}
-
-fn main() {}
-```
-
-The `export_name` attribute expects a string in order to determine the name of
-the exported symbol. Example:
-
-```
-#[export_name = "some_function"] // ok!
-pub fn something() {}
-
-fn main() {}
-```
 "##,
 
 E0559: r##"
@@ -4826,6 +4619,21 @@ type, it's not allowed to override anything in those implementations, as it
 would be ambiguous which override should actually be used.
 "##,
 
+
+E0720: r##"
+An `impl Trait` type expands to a recursive type.
+
+An `impl Trait` type must be expandable to a concrete type that contains no
+`impl Trait` types. For example the following example tries to create an
+`impl Trait` type `T` that is equal to `[T, T]`:
+
+```compile_fail,E0720
+fn make_recursive_type() -> impl Sized {
+    [make_recursive_type(), make_recursive_type()]
+}
+```
+"##,
+
 }
 
 register_diagnostics! {
@@ -4891,6 +4699,7 @@ register_diagnostics! {
 //  E0372, // coherence not object safe
     E0377, // the trait `CoerceUnsized` may only be implemented for a coercion
            // between structures with the same definition
+//  E0558, // replaced with a generic attribute input check
     E0533, // `{}` does not name a unit variant, unit struct or a constant
 //  E0563, // cannot determine a type for this `impl Trait`: {} // removed in 6383de15
     E0564, // only named lifetimes are allowed in `impl Trait`,
@@ -4910,4 +4719,5 @@ register_diagnostics! {
     E0645, // trait aliases not finished
     E0698, // type inside generator must be known in this context
     E0719, // duplicate values for associated type binding
+    E0722, // Malformed #[optimize] attribute
 }

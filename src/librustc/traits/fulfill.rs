@@ -1,29 +1,18 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use infer::InferCtxt;
 use mir::interpret::{GlobalId, ErrorHandled};
-use ty::{self, Ty, TypeFoldable, ToPolyTraitRef, ToPredicate};
+use ty::{self, Ty, TypeFoldable, ToPolyTraitRef};
 use ty::error::ExpectedFound;
 use rustc_data_structures::obligation_forest::{DoCompleted, Error, ForestObligation};
 use rustc_data_structures::obligation_forest::{ObligationForest, ObligationProcessor};
 use rustc_data_structures::obligation_forest::{ProcessResult};
 use std::marker::PhantomData;
-use hir::def_id::DefId;
 
 use super::CodeAmbiguity;
 use super::CodeProjectionError;
 use super::CodeSelectionError;
 use super::engine::{TraitEngine, TraitEngineExt};
 use super::{FulfillmentError, FulfillmentErrorCode};
-use super::{ObligationCause, PredicateObligation, Obligation};
+use super::{ObligationCause, PredicateObligation};
 use super::project;
 use super::select::SelectionContext;
 use super::{Unimplemented, ConstEvalFailure};
@@ -61,6 +50,16 @@ pub struct FulfillmentContext<'tcx> {
     // type-lives-for-region constraints, and because the type
     // is well-formed, the constraints should hold.
     register_region_obligations: bool,
+    // Is it OK to register obligations into this infcx inside
+    // an infcx snapshot?
+    //
+    // The "primary fulfillment" in many cases in typeck lives
+    // outside of any snapshot, so any use of it inside a snapshot
+    // will lead to trouble and therefore is checked against, but
+    // other fulfillment contexts sometimes do live inside of
+    // a snapshot (they don't *straddle* a snapshot, so there
+    // is no trouble there).
+    usable_in_snapshot: bool
 }
 
 #[derive(Clone, Debug)]
@@ -74,14 +73,24 @@ impl<'a, 'gcx, 'tcx> FulfillmentContext<'tcx> {
     pub fn new() -> FulfillmentContext<'tcx> {
         FulfillmentContext {
             predicates: ObligationForest::new(),
-            register_region_obligations: true
+            register_region_obligations: true,
+            usable_in_snapshot: false,
+        }
+    }
+
+    pub fn new_in_snapshot() -> FulfillmentContext<'tcx> {
+        FulfillmentContext {
+            predicates: ObligationForest::new(),
+            register_region_obligations: true,
+            usable_in_snapshot: true,
         }
     }
 
     pub fn new_ignoring_regions() -> FulfillmentContext<'tcx> {
         FulfillmentContext {
             predicates: ObligationForest::new(),
-            register_region_obligations: false
+            register_region_obligations: false,
+            usable_in_snapshot: false
         }
     }
 
@@ -163,28 +172,6 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         normalized_ty
     }
 
-    /// Requires that `ty` must implement the trait with `def_id` in
-    /// the given environment. This trait must not have any type
-    /// parameters (except for `Self`).
-    fn register_bound<'a, 'gcx>(&mut self,
-                      infcx: &InferCtxt<'a, 'gcx, 'tcx>,
-                      param_env: ty::ParamEnv<'tcx>,
-                      ty: Ty<'tcx>,
-                      def_id: DefId,
-                      cause: ObligationCause<'tcx>)
-    {
-        let trait_ref = ty::TraitRef {
-            def_id,
-            substs: infcx.tcx.mk_substs_trait(ty, &[]),
-        };
-        self.register_predicate_obligation(infcx, Obligation {
-            cause,
-            recursion_depth: 0,
-            param_env,
-            predicate: trait_ref.to_predicate()
-        });
-    }
-
     fn register_predicate_obligation<'a, 'gcx>(&mut self,
                                      infcx: &InferCtxt<'a, 'gcx, 'tcx>,
                                      obligation: PredicateObligation<'tcx>)
@@ -195,7 +182,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
 
         debug!("register_predicate_obligation(obligation={:?})", obligation);
 
-        assert!(!infcx.is_in_snapshot());
+        assert!(!infcx.is_in_snapshot() || self.usable_in_snapshot);
 
         self.predicates.register_obligation(PendingPredicateObligation {
             obligation,
@@ -203,9 +190,10 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         });
     }
 
-    fn select_all_or_error<'a, 'gcx>(&mut self,
-                                     infcx: &InferCtxt<'a, 'gcx, 'tcx>)
-                                     -> Result<(),Vec<FulfillmentError<'tcx>>>
+    fn select_all_or_error<'a, 'gcx>(
+        &mut self,
+        infcx: &InferCtxt<'a, 'gcx, 'tcx>
+    ) -> Result<(),Vec<FulfillmentError<'tcx>>>
     {
         self.select_where_possible(infcx)?;
 
@@ -294,7 +282,7 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
                 if data.is_global() {
                     // no type variables present, can use evaluation for better caching.
                     // FIXME: consider caching errors too.
-                    if self.selcx.infcx().predicate_must_hold(&obligation) {
+                    if self.selcx.infcx().predicate_must_hold_considering_regions(&obligation) {
                         debug!("selecting trait `{:?}` at depth {} evaluated to holds",
                                data, obligation.recursion_depth);
                         return ProcessResult::Changed(vec![])
@@ -343,10 +331,8 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
             }
 
             ty::Predicate::RegionOutlives(ref binder) => {
-                match self.selcx.infcx().region_outlives_predicate(&obligation.cause, binder) {
-                    Ok(()) => ProcessResult::Changed(vec![]),
-                    Err(_) => ProcessResult::Error(CodeSelectionError(Unimplemented)),
-                }
+                let () = self.selcx.infcx().region_outlives_predicate(&obligation.cause, binder);
+                ProcessResult::Changed(vec![])
             }
 
             ty::Predicate::TypeOutlives(ref binder) => {

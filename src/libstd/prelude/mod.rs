@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust Prelude.
 //!
 //! Rust comes with a variety of things in its standard library. However, if
@@ -54,8 +44,8 @@
 //! The current version of the prelude (version 1) lives in
 //! [`std::prelude::v1`], and re-exports the following.
 //!
-//! * [`std::marker`]::{[`Copy`], [`Send`], [`Sized`], [`Sync`]}. The marker
-//!   traits indicate fundamental properties of types.
+//! * [`std::marker`]::{[`Copy`], [`Send`], [`Sized`], [`Sync`], [`Unpin`]}. The
+//!   marker traits indicate fundamental properties of types.
 //! * [`std::ops`]::{[`Drop`], [`Fn`], [`FnMut`], [`FnOnce`]}. Various
 //!   operations for both destructors and overloading `()`.
 //! * [`std::mem`]::[`drop`][`mem::drop`], a convenience function for explicitly
@@ -118,6 +108,7 @@
 //! [`Sync`]: ../marker/trait.Sync.html
 //! [`ToOwned`]: ../borrow/trait.ToOwned.html
 //! [`ToString`]: ../string/trait.ToString.html
+//! [`Unpin`]: ../marker/trait.Unpin.html
 //! [`Vec`]: ../vec/struct.Vec.html
 //! [`Clone::clone`]: ../clone/trait.Clone.html#tymethod.clone
 //! [`mem::drop`]: ../mem/fn.drop.html

@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // ignore-tidy-linelength
 
 // We specify -Z incremental here because we want to test the partitioning for
@@ -76,7 +66,7 @@ mod mod1 {
 //~ MONO_ITEM fn vtable_through_const::start[0]
 #[start]
 fn start(_: isize, _: *const *const u8) -> isize {
-    //~ MONO_ITEM fn core::ptr[0]::drop_in_place[0]<u32> @@ vtable_through_const[Internal]
+    //~ MONO_ITEM fn core::ptr[0]::real_drop_in_place[0]<u32> @@ vtable_through_const[Internal]
 
     // Since Trait1::do_something() is instantiated via its default implementation,
     // it is considered a generic and is instantiated here only because it is

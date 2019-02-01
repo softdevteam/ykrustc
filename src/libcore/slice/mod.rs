@@ -1,14 +1,4 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! Slice management and manipulation
+//! Slice management and manipulation.
 //!
 //! For more details see [`std::slice`].
 //!
@@ -44,7 +34,6 @@ use result::Result::{Ok, Err};
 use ptr;
 use mem;
 use marker::{Copy, Send, Sync, Sized, self};
-use iter_private::TrustedRandomAccess;
 
 #[unstable(feature = "slice_internals", issue = "0",
            reason = "exposed from core to be reused in std; use the memchr crate")]
@@ -702,8 +691,7 @@ impl<T> [T] {
     /// resulting code better than in the case of [`chunks`].
     ///
     /// See [`chunks`] for a variant of this iterator that also returns the remainder as a smaller
-    /// chunk, and [`rchunks_exact`] for the same iterator but starting at the end of the slice of
-    /// the slice.
+    /// chunk, and [`rchunks_exact`] for the same iterator but starting at the end of the slice.
     ///
     /// # Panics
     ///
@@ -878,6 +866,7 @@ impl<T> [T] {
     /// assert_eq!(iter.remainder(), &['l']);
     /// ```
     ///
+    /// [`chunks`]: #method.chunks
     /// [`rchunks`]: #method.rchunks
     /// [`chunks_exact`]: #method.chunks_exact
     #[stable(feature = "rchunks", since = "1.31.0")]
@@ -922,6 +911,7 @@ impl<T> [T] {
     /// assert_eq!(v, &[0, 2, 2, 1, 1]);
     /// ```
     ///
+    /// [`chunks_mut`]: #method.chunks_mut
     /// [`rchunks_mut`]: #method.rchunks_mut
     /// [`chunks_exact_mut`]: #method.chunks_exact_mut
     #[stable(feature = "rchunks", since = "1.31.0")]
@@ -1152,7 +1142,7 @@ impl<T> [T] {
     ///
     /// # Examples
     ///
-    /// Print the slice split once by numbers divisible by 3 (i.e. `[10, 40]`,
+    /// Print the slice split once by numbers divisible by 3 (i.e., `[10, 40]`,
     /// `[20, 60, 50]`):
     ///
     /// ```
@@ -1216,7 +1206,7 @@ impl<T> [T] {
     /// # Examples
     ///
     /// Print the slice split once, starting from the end, by numbers divisible
-    /// by 3 (i.e. `[50]`, `[10, 40, 30, 20]`):
+    /// by 3 (i.e., `[50]`, `[10, 40, 30, 20]`):
     ///
     /// ```
     /// let v = [10, 40, 30, 20, 60, 50];
@@ -1472,8 +1462,8 @@ impl<T> [T] {
 
     /// Sorts the slice, but may not preserve the order of equal elements.
     ///
-    /// This sort is unstable (i.e. may reorder equal elements), in-place (i.e. does not allocate),
-    /// and `O(n log n)` worst-case.
+    /// This sort is unstable (i.e., may reorder equal elements), in-place
+    /// (i.e., does not allocate), and `O(n log n)` worst-case.
     ///
     /// # Current implementation
     ///
@@ -1483,7 +1473,7 @@ impl<T> [T] {
     /// randomization to avoid degenerate cases, but with a fixed seed to always provide
     /// deterministic behavior.
     ///
-    /// It is typically faster than stable sorting, except in a few special cases, e.g. when the
+    /// It is typically faster than stable sorting, except in a few special cases, e.g., when the
     /// slice consists of several concatenated sorted sequences.
     ///
     /// # Examples
@@ -1507,8 +1497,24 @@ impl<T> [T] {
     /// Sorts the slice with a comparator function, but may not preserve the order of equal
     /// elements.
     ///
-    /// This sort is unstable (i.e. may reorder equal elements), in-place (i.e. does not allocate),
-    /// and `O(n log n)` worst-case.
+    /// This sort is unstable (i.e., may reorder equal elements), in-place
+    /// (i.e., does not allocate), and `O(n log n)` worst-case.
+    ///
+    /// The comparator function must define a total ordering for the elements in the slice. If
+    /// the ordering is not total, the order of the elements is unspecified. An order is a
+    /// total order if it is (for all a, b and c):
+    ///
+    /// * total and antisymmetric: exactly one of a < b, a == b or a > b is true; and
+    /// * transitive, a < b and b < c implies a < c. The same must hold for both == and >.
+    ///
+    /// For example, while [`f64`] doesn't implement [`Ord`] because `NaN != NaN`, we can use
+    /// `partial_cmp` as our sort function when we know the slice doesn't contain a `NaN`.
+    ///
+    /// ```
+    /// let mut floats = [5f64, 4.0, 1.0, 3.0, 2.0];
+    /// floats.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    /// assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0]);
+    /// ```
     ///
     /// # Current implementation
     ///
@@ -1518,7 +1524,7 @@ impl<T> [T] {
     /// randomization to avoid degenerate cases, but with a fixed seed to always provide
     /// deterministic behavior.
     ///
-    /// It is typically faster than stable sorting, except in a few special cases, e.g. when the
+    /// It is typically faster than stable sorting, except in a few special cases, e.g., when the
     /// slice consists of several concatenated sorted sequences.
     ///
     /// # Examples
@@ -1545,8 +1551,9 @@ impl<T> [T] {
     /// Sorts the slice with a key extraction function, but may not preserve the order of equal
     /// elements.
     ///
-    /// This sort is unstable (i.e. may reorder equal elements), in-place (i.e. does not allocate),
-    /// and `O(m n log(m n))` worst-case, where the key function is `O(m)`.
+    /// This sort is unstable (i.e., may reorder equal elements), in-place
+    /// (i.e., does not allocate), and `O(m n log(m n))` worst-case, where the key function is
+    /// `O(m)`.
     ///
     /// # Current implementation
     ///
@@ -1775,7 +1782,7 @@ impl<T> [T] {
     /// let mut a = ['a', 'b', 'c', 'd', 'e', 'f'];
     /// a[1..5].rotate_left(1);
     /// assert_eq!(a, ['a', 'c', 'd', 'e', 'b', 'f']);
-   /// ```
+    /// ```
     #[stable(feature = "slice_rotate", since = "1.26.0")]
     pub fn rotate_left(&mut self, mid: usize) {
         assert!(mid <= self.len());
@@ -2242,6 +2249,77 @@ impl<T> [T] {
              from_raw_parts_mut(mut_ptr.add(rest.len() - ts_len), ts_len))
         }
     }
+
+    /// Checks if the elements of this slice are sorted.
+    ///
+    /// That is, for each element `a` and its following element `b`, `a <= b` must hold. If the
+    /// slice yields exactly zero or one element, `true` is returned.
+    ///
+    /// Note that if `Self::Item` is only `PartialOrd`, but not `Ord`, the above definition
+    /// implies that this function returns `false` if any two consecutive items are not
+    /// comparable.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(is_sorted)]
+    /// let empty: [i32; 0] = [];
+    ///
+    /// assert!([1, 2, 2, 9].is_sorted());
+    /// assert!(![1, 3, 2, 4].is_sorted());
+    /// assert!([0].is_sorted());
+    /// assert!(empty.is_sorted());
+    /// assert!(![0.0, 1.0, std::f32::NAN].is_sorted());
+    /// ```
+    #[inline]
+    #[unstable(feature = "is_sorted", reason = "new API", issue = "53485")]
+    pub fn is_sorted(&self) -> bool
+    where
+        T: PartialOrd,
+    {
+        self.is_sorted_by(|a, b| a.partial_cmp(b))
+    }
+
+    /// Checks if the elements of this slice are sorted using the given comparator function.
+    ///
+    /// Instead of using `PartialOrd::partial_cmp`, this function uses the given `compare`
+    /// function to determine the ordering of two elements. Apart from that, it's equivalent to
+    /// [`is_sorted`]; see its documentation for more information.
+    ///
+    /// [`is_sorted`]: #method.is_sorted
+    #[unstable(feature = "is_sorted", reason = "new API", issue = "53485")]
+    pub fn is_sorted_by<F>(&self, mut compare: F) -> bool
+    where
+        F: FnMut(&T, &T) -> Option<Ordering>
+    {
+        self.iter().is_sorted_by(|a, b| compare(*a, *b))
+    }
+
+    /// Checks if the elements of this slice are sorted using the given key extraction function.
+    ///
+    /// Instead of comparing the slice's elements directly, this function compares the keys of the
+    /// elements, as determined by `f`. Apart from that, it's equivalent to [`is_sorted`]; see its
+    /// documentation for more information.
+    ///
+    /// [`is_sorted`]: #method.is_sorted
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(is_sorted)]
+    ///
+    /// assert!(["c", "bb", "aaa"].is_sorted_by_key(|s| s.len()));
+    /// assert!(![-2i32, -1, 0, 3].is_sorted_by_key(|n| n.abs()));
+    /// ```
+    #[inline]
+    #[unstable(feature = "is_sorted", reason = "new API", issue = "53485")]
+    pub fn is_sorted_by_key<F, K>(&self, mut f: F) -> bool
+    where
+        F: FnMut(&T) -> K,
+        K: PartialOrd
+    {
+        self.is_sorted_by(|a, b| f(a).partial_cmp(&f(b)))
+    }
 }
 
 #[lang = "slice_u8"]
@@ -2304,7 +2382,6 @@ impl [u8] {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_on_unimplemented = "slice indices are of type `usize` or ranges of `usize`"]
 impl<T, I> ops::Index<I> for [T]
     where I: SliceIndex<[T]>
 {
@@ -2317,7 +2394,6 @@ impl<T, I> ops::Index<I> for [T]
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-#[rustc_on_unimplemented = "slice indices are of type `usize` or ranges of `usize`"]
 impl<T, I> ops::IndexMut<I> for [T]
     where I: SliceIndex<[T]>
 {
@@ -2368,7 +2444,19 @@ mod private_slice_index {
 
 /// A helper trait used for indexing operations.
 #[stable(feature = "slice_get_slice", since = "1.28.0")]
-#[rustc_on_unimplemented = "slice indices are of type `usize` or ranges of `usize`"]
+#[rustc_on_unimplemented(
+    on(
+        T = "str",
+        label = "string indices are ranges of `usize`",
+    ),
+    on(
+        all(any(T = "str", T = "&str", T = "std::string::String"), _Self="{integer}"),
+        note="you can use `.chars().nth()` or `.bytes().nth()`
+see chapter in The Book <https://doc.rust-lang.org/book/ch08-02-strings.html#indexing-into-strings>"
+    ),
+    message = "the type `{T}` cannot be indexed by `{Self}`",
+    label = "slice indices are of type `usize` or ranges of `usize`",
+)]
 pub trait SliceIndex<T: ?Sized>: private_slice_index::Sealed {
     /// The output type returned by methods.
     #[stable(feature = "slice_get_slice", since = "1.28.0")]
@@ -2443,13 +2531,13 @@ impl<T> SliceIndex<[T]> for usize {
 
     #[inline]
     fn index(self, slice: &[T]) -> &T {
-        // NB: use intrinsic indexing
+        // N.B., use intrinsic indexing
         &(*slice)[self]
     }
 
     #[inline]
     fn index_mut(self, slice: &mut [T]) -> &mut T {
-        // NB: use intrinsic indexing
+        // N.B., use intrinsic indexing
         &mut (*slice)[self]
     }
 }
@@ -2765,7 +2853,13 @@ macro_rules! len {
 
 // The shared definition of the `Iter` and `IterMut` iterators
 macro_rules! iterator {
-    (struct $name:ident -> $ptr:ty, $elem:ty, $raw_mut:tt, $( $mut_:tt )*) => {
+    (
+        struct $name:ident -> $ptr:ty,
+        $elem:ty,
+        $raw_mut:tt,
+        {$( $mut_:tt )*},
+        {$($extra:tt)*}
+    ) => {
         impl<'a, T> $name<'a, T> {
             // Helper function for creating a slice from the iterator.
             #[inline(always)]
@@ -2942,6 +3036,8 @@ macro_rules! iterator {
                         i
                     })
             }
+
+            $($extra)*
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -3079,7 +3175,17 @@ impl<'a, T> Iter<'a, T> {
     }
 }
 
-iterator!{struct Iter -> *const T, &'a T, const, /* no mut */}
+iterator!{struct Iter -> *const T, &'a T, const, {/* no mut */}, {
+    fn is_sorted_by<F>(self, mut compare: F) -> bool
+    where
+        Self: Sized,
+        F: FnMut(&Self::Item, &Self::Item) -> Option<Ordering>,
+    {
+        self.as_slice().windows(2).all(|w| {
+            compare(&&w[0], &&w[1]).map(|o| o != Ordering::Greater).unwrap_or(false)
+        })
+    }
+}}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Clone for Iter<'_, T> {
@@ -3180,7 +3286,7 @@ impl<'a, T> IterMut<'a, T> {
     }
 }
 
-iterator!{struct IterMut -> *mut T, &'a mut T, mut, mut}
+iterator!{struct IterMut -> *mut T, &'a mut T, mut, {mut}, {}}
 
 /// An internal abstraction over the splitting iterators, so that
 /// splitn, splitn_mut etc can be implemented once.

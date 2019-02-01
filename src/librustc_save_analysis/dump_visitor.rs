@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Write the output of rustc's analysis to an implementor of Dump.
 //!
 //! Dumping the analysis is implemented by walking the AST and getting a bunch of
@@ -66,14 +56,14 @@ macro_rules! access_from {
     ($save_ctxt:expr, $vis:expr, $id:expr) => {
         Access {
             public: $vis.node.is_pub(),
-            reachable: $save_ctxt.analysis.access_levels.is_reachable($id),
+            reachable: $save_ctxt.access_levels.is_reachable($id),
         }
     };
 
     ($save_ctxt:expr, $item:expr) => {
         Access {
             public: $item.vis.node.is_pub(),
-            reachable: $save_ctxt.analysis.access_levels.is_reachable($item.id),
+            reachable: $save_ctxt.access_levels.is_reachable($item.id),
         }
     };
 }
@@ -126,7 +116,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
     where
         F: FnOnce(&mut DumpVisitor<'l, 'tcx, 'll, O>),
     {
-        let item_def_id = self.tcx.hir.local_def_id(item_id);
+        let item_def_id = self.tcx.hir().local_def_id(item_id);
         if self.tcx.has_typeck_tables(item_def_id) {
             let tables = self.tcx.typeck_tables_of(item_def_id);
             let old_tables = self.save_ctxt.tables;
@@ -249,7 +239,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
             collector.visit_pat(&arg.pat);
 
             for (id, ident, ..) in collector.collected_idents {
-                let hir_id = self.tcx.hir.node_to_hir_id(id);
+                let hir_id = self.tcx.hir().node_to_hir_id(id);
                 let typ = match self.save_ctxt.tables.node_id_to_type_opt(hir_id) {
                     Some(s) => s.to_string(),
                     None => continue,
@@ -673,7 +663,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
         }
         self.process_generic_params(type_parameters, "", item.id);
         for impl_item in impl_items {
-            let map = &self.tcx.hir;
+            let map = &self.tcx.hir();
             self.process_impl_item(impl_item, map.local_def_id(item.id));
         }
     }
@@ -752,7 +742,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
         // walk generics and methods
         self.process_generic_params(generics, &qualname, item.id);
         for method in methods {
-            let map = &self.tcx.hir;
+            let map = &self.tcx.hir();
             self.process_trait_item(method, map.local_def_id(item.id))
         }
     }
@@ -866,7 +856,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
         match p.node {
             PatKind::Struct(ref _path, ref fields, _) => {
                 // FIXME do something with _path?
-                let hir_id = self.tcx.hir.node_to_hir_id(p.id);
+                let hir_id = self.tcx.hir().node_to_hir_id(p.id);
                 let adt = match self.save_ctxt.tables.node_id_to_type_opt(hir_id) {
                     Some(ty) => ty.ty_adt_def().unwrap(),
                     None => {
@@ -911,7 +901,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                     } else {
                         "<mutable>".to_owned()
                     };
-                    let hir_id = self.tcx.hir.node_to_hir_id(id);
+                    let hir_id = self.tcx.hir().node_to_hir_id(id);
                     let typ = self.save_ctxt
                         .tables
                         .node_id_to_type_opt(hir_id)
@@ -982,7 +972,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                 ast::Mutability::Immutable => value.to_string(),
                 _ => String::new(),
             };
-            let hir_id = self.tcx.hir.node_to_hir_id(id);
+            let hir_id = self.tcx.hir().node_to_hir_id(id);
             let typ = match self.save_ctxt.tables.node_id_to_type_opt(hir_id) {
                 Some(typ) => {
                     let typ = typ.to_string();
@@ -1204,7 +1194,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
         let access = access_from!(self.save_ctxt, root_item.vis, id);
 
         // The parent def id of a given use tree is always the enclosing item.
-        let parent = self.save_ctxt.tcx.hir.opt_local_def_id(id)
+        let parent = self.save_ctxt.tcx.hir().opt_local_def_id(id)
             .and_then(|id| self.save_ctxt.tcx.parent_def_id(id))
             .map(::id_from_def_id);
 
@@ -1248,13 +1238,9 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                 };
 
                 // Make a comma-separated list of names of imported modules.
-                let glob_map = &self.save_ctxt.analysis.glob_map;
-                let glob_map = glob_map.as_ref().unwrap();
-                let names = if glob_map.contains_key(&id) {
-                    glob_map.get(&id).unwrap().iter().map(|n| n.to_string()).collect()
-                } else {
-                    Vec::new()
-                };
+                let def_id = self.tcx.hir().local_def_id(id);
+                let names = self.tcx.names_imported_by_glob_use(def_id);
+                let names: Vec<_> = names.iter().map(|n| n.to_string()).collect();
 
                 // Otherwise it's a span with wrong macro expansion info, which
                 // we don't want to track anyway, since it's probably macro-internal `use`
@@ -1357,7 +1343,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tc
                 let name_span = item.ident.span;
                 if !self.span.filter_generated(name_span) {
                     let span = self.span_from_span(name_span);
-                    let parent = self.save_ctxt.tcx.hir.opt_local_def_id(item.id)
+                    let parent = self.save_ctxt.tcx.hir().opt_local_def_id(item.id)
                         .and_then(|id| self.save_ctxt.tcx.parent_def_id(id))
                         .map(::id_from_def_id);
                     self.dumper.import(
@@ -1510,7 +1496,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tc
         self.process_macro_use(ex.span);
         match ex.node {
             ast::ExprKind::Struct(ref path, ref fields, ref base) => {
-                let hir_expr = self.save_ctxt.tcx.hir.expect_expr(ex.id);
+                let hir_expr = self.save_ctxt.tcx.hir().expect_expr(ex.id);
                 let adt = match self.save_ctxt.tables.expr_ty_opt(&hir_expr) {
                     Some(ty) if ty.ty_adt_def().is_some() => ty.ty_adt_def().unwrap(),
                     _ => {

@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains the code to instantiate a "query result", and
 //! in particular to extract out the resulting region obligations and
 //! encode them therein.
@@ -15,7 +5,7 @@
 //! For an overview of what canonicaliation is and how it fits into
 //! rustc, check out the [chapter in the rustc guide][c].
 //!
-//! [c]: https://rust-lang-nursery.github.io/rustc-guide/traits/canonicalization.html
+//! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
 use infer::canonical::substitute::substitute_value;
 use infer::canonical::{
@@ -31,11 +21,12 @@ use rustc_data_structures::sync::Lrc;
 use std::fmt::Debug;
 use syntax_pos::DUMMY_SP;
 use traits::query::{Fallible, NoSolution};
-use traits::{FulfillmentContext, TraitEngine};
+use traits::TraitEngine;
 use traits::{Obligation, ObligationCause, PredicateObligation};
 use ty::fold::TypeFoldable;
 use ty::subst::{Kind, UnpackedKind};
 use ty::{self, BoundVar, Lift, Ty, TyCtxt};
+use util::captures::Captures;
 
 impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
     /// The "main method" for a canonicalized trait query. Given the
@@ -57,7 +48,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
     pub fn enter_canonical_trait_query<K, R>(
         &'tcx mut self,
         canonical_key: &Canonical<'tcx, K>,
-        operation: impl FnOnce(&InferCtxt<'_, 'gcx, 'tcx>, &mut FulfillmentContext<'tcx>, K)
+        operation: impl FnOnce(&InferCtxt<'_, 'gcx, 'tcx>, &mut dyn TraitEngine<'tcx>, K)
             -> Fallible<R>,
     ) -> Fallible<CanonicalizedQueryResponse<'gcx, R>>
     where
@@ -68,9 +59,13 @@ impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
             DUMMY_SP,
             canonical_key,
             |ref infcx, key, canonical_inference_vars| {
-                let fulfill_cx = &mut FulfillmentContext::new();
-                let value = operation(infcx, fulfill_cx, key)?;
-                infcx.make_canonicalized_query_response(canonical_inference_vars, value, fulfill_cx)
+                let mut fulfill_cx = TraitEngine::new(infcx.tcx);
+                let value = operation(infcx, &mut *fulfill_cx, key)?;
+                infcx.make_canonicalized_query_response(
+                    canonical_inference_vars,
+                    value,
+                    &mut *fulfill_cx
+                )
             },
         )
     }
@@ -100,7 +95,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         &self,
         inference_vars: CanonicalVarValues<'tcx>,
         answer: T,
-        fulfill_cx: &mut FulfillmentContext<'tcx>,
+        fulfill_cx: &mut dyn TraitEngine<'tcx>,
     ) -> Fallible<CanonicalizedQueryResponse<'gcx, T>>
     where
         T: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
@@ -116,13 +111,38 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         Ok(Lrc::new(canonical_result))
     }
 
+    /// A version of `make_canonicalized_query_response` that does
+    /// not pack in obligations, for contexts that want to drop
+    /// pending obligations instead of treating them as an ambiguity (e.g.
+    /// typeck "probing" contexts).
+    ///
+    /// If you DO want to keep track of pending obligations (which
+    /// include all region obligations, so this includes all cases
+    /// that care about regions) with this function, you have to
+    /// do it yourself, by e.g. having them be a part of the answer.
+    pub fn make_query_response_ignoring_pending_obligations<T>(
+        &self,
+        inference_vars: CanonicalVarValues<'tcx>,
+        answer: T
+    ) -> Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>
+    where
+        T: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
+    {
+        self.canonicalize_response(&QueryResponse {
+            var_values: inference_vars,
+            region_constraints: vec![],
+            certainty: Certainty::Proven, // Ambiguities are OK!
+            value: answer,
+        })
+    }
+
     /// Helper for `make_canonicalized_query_response` that does
     /// everything up until the final canonicalization.
     fn make_query_response<T>(
         &self,
         inference_vars: CanonicalVarValues<'tcx>,
         answer: T,
-        fulfill_cx: &mut FulfillmentContext<'tcx>,
+        fulfill_cx: &mut dyn TraitEngine<'tcx>,
     ) -> Result<QueryResponse<'tcx, T>, NoSolution>
     where
         T: Debug + TypeFoldable<'tcx> + Lift<'gcx>,
@@ -184,7 +204,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     /// To get a good understanding of what is happening here, check
     /// out the [chapter in the rustc guide][c].
     ///
-    /// [c]: https://rust-lang-nursery.github.io/rustc-guide/traits/canonicalization.html#processing-the-canonicalized-query-result
+    /// [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html#processing-the-canonicalized-query-result
     pub fn instantiate_query_response_and_region_obligations<R>(
         &self,
         cause: &ObligationCause<'tcx>,
@@ -435,21 +455,21 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
             match result_value.unpack() {
                 UnpackedKind::Type(result_value) => {
                     // e.g., here `result_value` might be `?0` in the example above...
-                    if let ty::Bound(b) = result_value.sty {
+                    if let ty::Bound(debruijn, b) = result_value.sty {
                         // ...in which case we would set `canonical_vars[0]` to `Some(?U)`.
 
                         // We only allow a `ty::INNERMOST` index in substitutions.
-                        assert_eq!(b.index, ty::INNERMOST);
+                        assert_eq!(debruijn, ty::INNERMOST);
                         opt_values[b.var] = Some(*original_value);
                     }
                 }
                 UnpackedKind::Lifetime(result_value) => {
                     // e.g., here `result_value` might be `'?1` in the example above...
-                    if let &ty::RegionKind::ReLateBound(index, br) = result_value {
+                    if let &ty::RegionKind::ReLateBound(debruijn, br) = result_value {
                         // ... in which case we would set `canonical_vars[0]` to `Some('static)`.
 
                         // We only allow a `ty::INNERMOST` index in substitutions.
-                        assert_eq!(index, ty::INNERMOST);
+                        assert_eq!(debruijn, ty::INNERMOST);
                         opt_values[br.assert_bound_var()] = Some(*original_value);
                     }
                 }
@@ -527,32 +547,30 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         param_env: ty::ParamEnv<'tcx>,
         unsubstituted_region_constraints: &'a [QueryRegionConstraint<'tcx>],
         result_subst: &'a CanonicalVarValues<'tcx>,
-    ) -> impl Iterator<Item = PredicateObligation<'tcx>> + 'a {
-        Box::new(
-            unsubstituted_region_constraints
-                .iter()
-                .map(move |constraint| {
-                    let constraint = substitute_value(self.tcx, result_subst, constraint);
-                    let &ty::OutlivesPredicate(k1, r2) = constraint.skip_binder(); // restored below
+    ) -> impl Iterator<Item = PredicateObligation<'tcx>> + 'a + Captures<'gcx> {
+        unsubstituted_region_constraints
+            .iter()
+            .map(move |constraint| {
+                let constraint = substitute_value(self.tcx, result_subst, constraint);
+                let &ty::OutlivesPredicate(k1, r2) = constraint.skip_binder(); // restored below
 
-                    Obligation::new(
-                        cause.clone(),
-                        param_env,
-                        match k1.unpack() {
-                            UnpackedKind::Lifetime(r1) => ty::Predicate::RegionOutlives(
-                                ty::Binder::bind(
-                                    ty::OutlivesPredicate(r1, r2)
-                                )
-                            ),
-                            UnpackedKind::Type(t1) => ty::Predicate::TypeOutlives(
-                                ty::Binder::bind(
-                                    ty::OutlivesPredicate(t1, r2)
-                                )
-                            ),
-                        }
-                    )
-                })
-        ) as Box<dyn Iterator<Item = _>>
+                Obligation::new(
+                    cause.clone(),
+                    param_env,
+                    match k1.unpack() {
+                        UnpackedKind::Lifetime(r1) => ty::Predicate::RegionOutlives(
+                            ty::Binder::bind(
+                                ty::OutlivesPredicate(r1, r2)
+                            )
+                        ),
+                        UnpackedKind::Type(t1) => ty::Predicate::TypeOutlives(
+                            ty::Binder::bind(
+                                ty::OutlivesPredicate(t1, r2)
+                            )
+                        ),
+                    }
+                )
+            })
     }
 
     /// Given two sets of values for the same set of canonical variables, unify them.

@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::session::Session;
 use syntax_pos::Span;
 use errors::{Applicability, DiagnosticId, DiagnosticBuilder};
@@ -73,7 +63,7 @@ impl<'tcx> StructuredDiagnostic<'tcx> for VariadicError<'tcx> {
             )
         };
         if let Ok(snippet) = self.sess.source_map().span_to_snippet(self.span) {
-            err.span_suggestion_with_applicability(
+            err.span_suggestion(
                 self.span,
                 &format!("cast the value to `{}`", self.cast_ty),
                 format!("{} as {}", snippet, self.cast_ty),

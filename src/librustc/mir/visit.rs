@@ -1,16 +1,6 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::def_id::DefId;
 use ty::subst::Substs;
-use ty::{ClosureSubsts, GeneratorSubsts, Region, Ty};
+use ty::{CanonicalUserTypeAnnotation, ClosureSubsts, GeneratorSubsts, Region, Ty};
 use mir::*;
 use syntax_pos::Span;
 
@@ -33,7 +23,7 @@ use syntax_pos::Span;
 // in that circumstance.
 //
 // For the most part, we do not destructure things external to the
-// MIR, e.g. types, spans, etc, but simply visit them and stop. This
+// MIR, e.g., types, spans, etc, but simply visit them and stop. This
 // avoids duplication with other visitors like `TypeFoldable`.
 //
 // ## Updating
@@ -153,10 +143,10 @@ macro_rules! make_mir_visitor {
             }
 
             fn visit_retag(&mut self,
-                           fn_entry: & $($mutability)* bool,
+                           kind: & $($mutability)* RetagKind,
                            place: & $($mutability)* Place<'tcx>,
                            location: Location) {
-                self.super_retag(fn_entry, place, location);
+                self.super_retag(kind, place, location);
             }
 
             fn visit_place(&mut self,
@@ -229,9 +219,10 @@ macro_rules! make_mir_visitor {
 
             fn visit_user_type_annotation(
                 &mut self,
-                ty: & $($mutability)* UserTypeAnnotation<'tcx>,
+                index: UserTypeAnnotationIndex,
+                ty: & $($mutability)* CanonicalUserTypeAnnotation<'tcx>,
             ) {
-                self.super_user_type_annotation(ty);
+                self.super_user_type_annotation(index, ty);
             }
 
             fn visit_region(&mut self,
@@ -241,7 +232,7 @@ macro_rules! make_mir_visitor {
             }
 
             fn visit_const(&mut self,
-                           constant: & $($mutability)* &'tcx ty::Const<'tcx>,
+                           constant: & $($mutability)* &'tcx ty::LazyConst<'tcx>,
                            _: Location) {
                 self.super_const(constant);
             }
@@ -317,6 +308,17 @@ macro_rules! make_mir_visitor {
                     self.visit_local_decl(local, & $($mutability)* mir.local_decls[local]);
                 }
 
+                macro_rules! type_annotations {
+                    (mut) => (mir.user_type_annotations.iter_enumerated_mut());
+                    () => (mir.user_type_annotations.iter_enumerated());
+                };
+
+                for (index, annotation) in type_annotations!($($mutability)*) {
+                    self.visit_user_type_annotation(
+                        index, annotation
+                    );
+                }
+
                 self.visit_span(&$($mutability)* mir.span);
             }
 
@@ -377,16 +379,12 @@ macro_rules! make_mir_visitor {
                             location
                         );
                     }
-                    StatementKind::EndRegion(_) => {}
                     StatementKind::SetDiscriminant{ ref $($mutability)* place, .. } => {
                         self.visit_place(
                             place,
                             PlaceContext::MutatingUse(MutatingUseContext::Store),
                             location
                         );
-                    }
-                    StatementKind::EscapeToRaw(ref $($mutability)* op) => {
-                        self.visit_operand(op, location);
                     }
                     StatementKind::StorageLive(ref $($mutability)* local) => {
                         self.visit_local(
@@ -417,9 +415,9 @@ macro_rules! make_mir_visitor {
                             self.visit_operand(input, location);
                         }
                     }
-                    StatementKind::Retag { ref $($mutability)* fn_entry,
-                                           ref $($mutability)* place } => {
-                        self.visit_retag(fn_entry, place, location);
+                    StatementKind::Retag ( ref $($mutability)* kind,
+                                           ref $($mutability)* place ) => {
+                        self.visit_retag(kind, place, location);
                     }
                     StatementKind::AscribeUserType(
                         ref $($mutability)* place,
@@ -724,7 +722,7 @@ macro_rules! make_mir_visitor {
             }
 
             fn super_retag(&mut self,
-                           _fn_entry: & $($mutability)* bool,
+                           _kind: & $($mutability)* RetagKind,
                            place: & $($mutability)* Place<'tcx>,
                            location: Location) {
                 self.visit_place(
@@ -879,19 +877,17 @@ macro_rules! make_mir_visitor {
 
             fn super_user_type_projection(
                 &mut self,
-                ty: & $($mutability)* UserTypeProjection<'tcx>,
+                _ty: & $($mutability)* UserTypeProjection<'tcx>,
             ) {
-                let UserTypeProjection {
-                    ref $($mutability)* base,
-                    projs: _, // Note: Does not visit projection elems!
-                } = *ty;
-                self.visit_user_type_annotation(base);
             }
 
             fn super_user_type_annotation(
                 &mut self,
-                _ty: & $($mutability)* UserTypeAnnotation<'tcx>,
+                _index: UserTypeAnnotationIndex,
+                ty: & $($mutability)* CanonicalUserTypeAnnotation<'tcx>,
             ) {
+                self.visit_span(& $($mutability)* ty.span);
+                self.visit_ty(& $($mutability)* ty.inferred_ty, TyContext::UserTy(ty.span));
             }
 
             fn super_ty(&mut self, _ty: & $($mutability)* Ty<'tcx>) {
@@ -900,7 +896,7 @@ macro_rules! make_mir_visitor {
             fn super_region(&mut self, _region: & $($mutability)* ty::Region<'tcx>) {
             }
 
-            fn super_const(&mut self, _const: & $($mutability)* &'tcx ty::Const<'tcx>) {
+            fn super_const(&mut self, _const: & $($mutability)* &'tcx ty::LazyConst<'tcx>) {
             }
 
             fn super_substs(&mut self, _substs: & $($mutability)* &'tcx Substs<'tcx>) {
@@ -972,6 +968,9 @@ pub enum TyContext {
         source_info: SourceInfo,
     },
 
+    /// The inferred type of a user type annotation.
+    UserTy(Span),
+
     /// The return type of the function.
     ReturnTy(SourceInfo),
 
@@ -995,7 +994,7 @@ pub enum NonMutatingUseContext<'tcx> {
     ShallowBorrow(Region<'tcx>),
     /// Unique borrow.
     UniqueBorrow(Region<'tcx>),
-    /// Used as base for another place, e.g. `x` in `x.y`. Will not mutate the place.
+    /// Used as base for another place, e.g., `x` in `x.y`. Will not mutate the place.
     /// For example, the projection `x.y` is not marked as a mutation in these cases:
     ///
     ///     z = x.y;
@@ -1018,7 +1017,7 @@ pub enum MutatingUseContext<'tcx> {
     Drop,
     /// Mutable borrow.
     Borrow(Region<'tcx>),
-    /// Used as base for another place, e.g. `x` in `x.y`. Could potentially mutate the place.
+    /// Used as base for another place, e.g., `x` in `x.y`. Could potentially mutate the place.
     /// For example, the projection `x.y` is marked as a mutation in these cases:
     ///
     ///     x.y = ...;

@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 pub use self::code_stats::{DataTypeKind, SizeKind, FieldInfo, VariantInfo};
 use self::code_stats::CodeStats;
 
@@ -19,15 +9,18 @@ use lint;
 use lint::builtin::BuiltinLintDiagnostics;
 use middle::allocator::AllocatorKind;
 use middle::dependency_format;
-use session::search_paths::PathKind;
 use session::config::{OutputType, Lto};
+use session::search_paths::{PathKind, SearchPath};
 use util::nodemap::{FxHashMap, FxHashSet};
 use util::common::{duration_to_secs_str, ErrorReported};
 use util::common::ProfileQueriesMsg;
 use rustc_yk_link::YkExtraLinkObject;
 
 use rustc_data_structures::base_n;
-use rustc_data_structures::sync::{self, Lrc, Lock, LockCell, OneThread, Once, RwLock};
+use rustc_data_structures::sync::{
+    self, Lrc, Lock, OneThread, Once, RwLock, AtomicU64, AtomicUsize, Ordering,
+    Ordering::SeqCst,
+};
 
 use errors::{self, DiagnosticBuilder, DiagnosticId, Applicability};
 use errors::emitter::{Emitter, EmitterWriter};
@@ -49,15 +42,21 @@ use std::cell::{self, Cell, RefCell};
 use std::env;
 use std::fmt;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use std::sync::mpsc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod code_stats;
 pub mod config;
 pub mod filesearch;
 pub mod search_paths;
+
+pub struct OptimizationFuel {
+    /// If -zfuel=crate=n is specified, initially set to n. Otherwise 0.
+    remaining: u64,
+    /// We're rejecting all further optimizations.
+    out_of_fuel: bool,
+}
 
 /// Represents the data associated with a compilation
 /// session for a single crate.
@@ -68,12 +67,11 @@ pub struct Session {
     pub target: config::Config,
     pub host: Target,
     pub opts: config::Options,
+    pub host_tlib_path: SearchPath,
+    /// This is `None` if the host and target are the same.
+    pub target_tlib_path: Option<SearchPath>,
     pub parse_sess: ParseSess,
-    /// For a library crate, this is always none
-    pub entry_fn: Once<Option<(NodeId, Span, config::EntryFnType)>>,
-    pub plugin_registrar_fn: Once<Option<ast::NodeId>>,
-    pub derive_registrar_fn: Once<Option<ast::NodeId>>,
-    pub default_sysroot: Option<PathBuf>,
+    pub sysroot: PathBuf,
     /// The name of the root source file of the crate, in the local file system.
     /// `None` means that there is no source file.
     pub local_crate_source_file: Option<PathBuf>,
@@ -133,6 +131,9 @@ pub struct Session {
     pub profile_channel: Lock<Option<mpsc::Sender<ProfileQueriesMsg>>>,
 
     /// Used by -Z self-profile
+    pub self_profiling_active: bool,
+
+    /// Used by -Z self-profile
     pub self_profiling: Lock<SelfProfiler>,
 
     /// Some measurements that are being gathered during compilation.
@@ -145,16 +146,15 @@ pub struct Session {
 
     /// If -zfuel=crate=n is specified, Some(crate).
     optimization_fuel_crate: Option<String>,
-    /// If -zfuel=crate=n is specified, initially set to n. Otherwise 0.
-    optimization_fuel_limit: LockCell<u64>,
-    /// We're rejecting all further optimizations.
-    out_of_fuel: LockCell<bool>,
+
+    /// Tracks fuel info if If -zfuel=crate=n is specified
+    optimization_fuel: Lock<OptimizationFuel>,
 
     // The next two are public because the driver needs to read them.
     /// If -zprint-fuel=crate, Some(crate).
     pub print_fuel_crate: Option<String>,
     /// Always set to zero and incremented so that we can print fuel expended by a crate.
-    pub print_fuel: LockCell<u64>,
+    pub print_fuel: AtomicU64,
 
     /// Loaded up early on in the initialization of this `Session` to avoid
     /// false positives about a job server in our environment.
@@ -407,6 +407,9 @@ impl Session {
     pub fn next_node_id(&self) -> NodeId {
         self.reserve_node_ids(1)
     }
+    pub(crate) fn current_node_id_count(&self) -> usize {
+        self.next_node_id.get().as_u32() as usize
+    }
     pub fn diagnostic<'a>(&'a self) -> &'a errors::Handler {
         &self.parse_sess.span_diagnostic
     }
@@ -436,7 +439,7 @@ impl Session {
                 }
                 DiagnosticBuilderMethod::SpanSuggestion(suggestion) => {
                     let span = span_maybe.expect("span_suggestion_* needs a span");
-                    diag_builder.span_suggestion_with_applicability(
+                    diag_builder.span_suggestion(
                         span,
                         message,
                         suggestion,
@@ -510,6 +513,9 @@ impl Session {
     }
     pub fn profile_queries_and_keys(&self) -> bool {
         self.opts.debugging_opts.profile_queries_and_keys
+    }
+    pub fn instrument_mcount(&self) -> bool {
+        self.opts.debugging_opts.instrument_mcount
     }
     pub fn count_llvm_insns(&self) -> bool {
         self.opts.debugging_opts.count_llvm_insns
@@ -590,7 +596,7 @@ impl Session {
         // either return `No` or `ThinLocal`.
 
         // If processing command line options determined that we're incompatible
-        // with ThinLTO (e.g. `-C lto --emit llvm-ir`) then return that option.
+        // with ThinLTO (e.g., `-C lto --emit llvm-ir`) then return that option.
         if self.opts.cli_forced_thinlto_off {
             return config::Lto::No;
         }
@@ -675,7 +681,11 @@ impl Session {
     }
 
     pub fn must_not_eliminate_frame_pointers(&self) -> bool {
-        if let Some(x) = self.opts.cg.force_frame_pointers {
+        // "mcount" function relies on stack pointer.
+        // See https://sourceware.org/binutils/docs/gprof/Implementation.html
+        if self.instrument_mcount() {
+            true
+        } else if let Some(x) = self.opts.cg.force_frame_pointers {
             x
         } else {
             !self.target.target.options.eliminate_frame_pointer
@@ -691,34 +701,29 @@ impl Session {
         )
     }
 
-    pub fn generate_derive_registrar_symbol(&self, disambiguator: CrateDisambiguator) -> String {
+    pub fn generate_proc_macro_decls_symbol(&self, disambiguator: CrateDisambiguator) -> String {
         format!(
-            "__rustc_derive_registrar_{}__",
+            "__rustc_proc_macro_decls_{}__",
             disambiguator.to_fingerprint().to_hex()
         )
     }
 
-    pub fn sysroot<'a>(&'a self) -> &'a Path {
-        match self.opts.maybe_sysroot {
-            Some(ref sysroot) => sysroot,
-            None => self.default_sysroot
-                        .as_ref()
-                        .expect("missing sysroot and default_sysroot in Session"),
-        }
-    }
     pub fn target_filesearch(&self, kind: PathKind) -> filesearch::FileSearch<'_> {
         filesearch::FileSearch::new(
-            self.sysroot(),
+            &self.sysroot,
             self.opts.target_triple.triple(),
             &self.opts.search_paths,
+            // target_tlib_path==None means it's the same as host_tlib_path.
+            self.target_tlib_path.as_ref().unwrap_or(&self.host_tlib_path),
             kind,
         )
     }
     pub fn host_filesearch(&self, kind: PathKind) -> filesearch::FileSearch<'_> {
         filesearch::FileSearch::new(
-            self.sysroot(),
+            &self.sysroot,
             config::host_triple(),
             &self.opts.search_paths,
+            &self.host_tlib_path,
             kind,
         )
     }
@@ -829,9 +834,18 @@ impl Session {
         }
     }
 
-    pub fn profiler<F: FnOnce(&mut SelfProfiler) -> ()>(&self, f: F) {
+    #[inline(never)]
+    #[cold]
+    fn profiler_active<F: FnOnce(&mut SelfProfiler) -> ()>(&self, f: F) {
         let mut profiler = self.self_profiling.borrow_mut();
         f(&mut profiler);
+    }
+
+    #[inline(always)]
+    pub fn profiler<F: FnOnce(&mut SelfProfiler) -> ()>(&self, f: F) {
+        if unlikely!(self.self_profiling_active) {
+            self.profiler_active(f)
+        }
     }
 
     pub fn print_profiler_results(&self) {
@@ -867,21 +881,21 @@ impl Session {
         let mut ret = true;
         if let Some(ref c) = self.optimization_fuel_crate {
             if c == crate_name {
-                assert_eq!(self.query_threads(), 1);
-                let fuel = self.optimization_fuel_limit.get();
-                ret = fuel != 0;
-                if fuel == 0 && !self.out_of_fuel.get() {
+                assert_eq!(self.threads(), 1);
+                let mut fuel = self.optimization_fuel.lock();
+                ret = fuel.remaining != 0;
+                if fuel.remaining == 0 && !fuel.out_of_fuel {
                     eprintln!("optimization-fuel-exhausted: {}", msg());
-                    self.out_of_fuel.set(true);
-                } else if fuel > 0 {
-                    self.optimization_fuel_limit.set(fuel - 1);
+                    fuel.out_of_fuel = true;
+                } else if fuel.remaining > 0 {
+                    fuel.remaining -= 1;
                 }
             }
         }
         if let Some(ref c) = self.print_fuel_crate {
             if c == crate_name {
-                assert_eq!(self.query_threads(), 1);
-                self.print_fuel.set(self.print_fuel.get() + 1);
+                assert_eq!(self.threads(), 1);
+                self.print_fuel.fetch_add(1, SeqCst);
             }
         }
         ret
@@ -889,14 +903,14 @@ impl Session {
 
     /// Returns the number of query threads that should be used for this
     /// compilation
-    pub fn query_threads_from_opts(opts: &config::Options) -> usize {
-        opts.debugging_opts.query_threads.unwrap_or(1)
+    pub fn threads_from_opts(opts: &config::Options) -> usize {
+        opts.debugging_opts.threads.unwrap_or(::num_cpus::get())
     }
 
     /// Returns the number of query threads that should be used for this
     /// compilation
-    pub fn query_threads(&self) -> usize {
-        Self::query_threads_from_opts(&self.opts)
+    pub fn threads(&self) -> usize {
+        Self::threads_from_opts(&self.opts)
     }
 
     /// Returns the number of codegen units that should be used for this
@@ -1111,9 +1125,18 @@ pub fn build_session_(
     let target_cfg = config::build_target_config(&sopts, &span_diagnostic);
 
     let p_s = parse::ParseSess::with_span_handler(span_diagnostic, source_map);
-    let default_sysroot = match sopts.maybe_sysroot {
-        Some(_) => None,
-        None => Some(filesearch::get_or_default_sysroot()),
+    let sysroot = match &sopts.maybe_sysroot {
+        Some(sysroot) => sysroot.clone(),
+        None => filesearch::get_or_default_sysroot(),
+    };
+
+    let host_triple = config::host_triple();
+    let target_triple = sopts.target_triple.triple();
+    let host_tlib_path = SearchPath::from_sysroot_and_triple(&sysroot, host_triple);
+    let target_tlib_path = if host_triple == target_triple {
+        None
+    } else {
+        Some(SearchPath::from_sysroot_and_triple(&sysroot, target_triple))
     };
 
     let file_path_mapping = sopts.file_path_mapping();
@@ -1122,10 +1145,12 @@ pub fn build_session_(
         local_crate_source_file.map(|path| file_path_mapping.map_prefix(path).0);
 
     let optimization_fuel_crate = sopts.debugging_opts.fuel.as_ref().map(|i| i.0.clone());
-    let optimization_fuel_limit =
-        LockCell::new(sopts.debugging_opts.fuel.as_ref().map(|i| i.1).unwrap_or(0));
+    let optimization_fuel = Lock::new(OptimizationFuel {
+        remaining: sopts.debugging_opts.fuel.as_ref().map(|i| i.1).unwrap_or(0),
+        out_of_fuel: false,
+    });
     let print_fuel_crate = sopts.debugging_opts.print_fuel.clone();
-    let print_fuel = LockCell::new(0);
+    let print_fuel = AtomicU64::new(0);
 
     let working_dir = env::current_dir().unwrap_or_else(|e|
         p_s.span_diagnostic
@@ -1140,17 +1165,18 @@ pub fn build_session_(
         CguReuseTracker::new_disabled()
     };
 
+    let self_profiling_active = sopts.debugging_opts.self_profile ||
+                                sopts.debugging_opts.profile_json;
+
     let sess = Session {
         yk_link_objects: RefCell::new(Vec::new()),
         target: target_cfg,
         host,
         opts: sopts,
+        host_tlib_path,
+        target_tlib_path,
         parse_sess: p_s,
-        // For a library crate, this is always none
-        entry_fn: Once::new(),
-        plugin_registrar_fn: Once::new(),
-        derive_registrar_fn: Once::new(),
-        default_sysroot,
+        sysroot,
         local_crate_source_file,
         working_dir,
         lint_store: RwLock::new(lint::LintStore::new()),
@@ -1171,6 +1197,7 @@ pub fn build_session_(
         imported_macro_spans: OneThread::new(RefCell::new(FxHashMap::default())),
         incr_comp_session: OneThread::new(RefCell::new(IncrCompSession::NotInitialized)),
         cgu_reuse_tracker,
+        self_profiling_active,
         self_profiling: Lock::new(SelfProfiler::new()),
         profile_channel: Lock::new(None),
         perf_stats: PerfStats {
@@ -1182,10 +1209,9 @@ pub fn build_session_(
         },
         code_stats: Default::default(),
         optimization_fuel_crate,
-        optimization_fuel_limit,
+        optimization_fuel,
         print_fuel_crate,
         print_fuel,
-        out_of_fuel: LockCell::new(false),
         // Note that this is unsafe because it may misinterpret file descriptors
         // on Unix as jobserver file descriptors. We hopefully execute this near
         // the beginning of the process though to ensure we don't get false

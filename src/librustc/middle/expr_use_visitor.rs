@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A different sort of visitor for walking fn bodies.  Unlike the
 //! normal visitor, which just walks the entire body in one shot, the
 //! `ExprUseVisitor` determines how expressions are being used.
@@ -489,7 +479,8 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
             }
 
             hir::ExprKind::Continue(..) |
-            hir::ExprKind::Lit(..) => {}
+            hir::ExprKind::Lit(..) |
+            hir::ExprKind::Err => {}
 
             hir::ExprKind::Loop(ref blk, _, _) => {
                 self.walk_block(&blk);
@@ -598,21 +589,17 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
 
     fn walk_stmt(&mut self, stmt: &hir::Stmt) {
         match stmt.node {
-            hir::StmtKind::Decl(ref decl, _) => {
-                match decl.node {
-                    hir::DeclKind::Local(ref local) => {
-                        self.walk_local(&local);
-                    }
-
-                    hir::DeclKind::Item(_) => {
-                        // we don't visit nested items in this visitor,
-                        // only the fn body we were given.
-                    }
-                }
+            hir::StmtKind::Local(ref local) => {
+                self.walk_local(&local);
             }
 
-            hir::StmtKind::Expr(ref expr, _) |
-            hir::StmtKind::Semi(ref expr, _) => {
+            hir::StmtKind::Item(_) => {
+                // we don't visit nested items in this visitor,
+                // only the fn body we were given.
+            }
+
+            hir::StmtKind::Expr(ref expr) |
+            hir::StmtKind::Semi(ref expr) => {
                 self.consume_expr(&expr);
             }
         }
@@ -622,7 +609,7 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
         match local.init {
             None => {
                 local.pat.each_binding(|_, hir_id, span, _| {
-                    let node_id = self.mc.tcx.hir.hir_to_node_id(hir_id);
+                    let node_id = self.mc.tcx.hir().hir_to_node_id(hir_id);
                     self.delegate.decl_without_init(node_id, span);
                 })
             }
@@ -813,7 +800,7 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
         self.consume_expr(&arm.body);
     }
 
-    /// Walks a pat that occurs in isolation (i.e. top-level of fn
+    /// Walks a pat that occurs in isolation (i.e., top-level of fn
     /// arg or let binding.  *Not* a match arm or nested pat.)
     fn walk_irrefutable_pat(&mut self, cmt_discr: mc::cmt<'tcx>, pat: &hir::Pat) {
         let mut mode = Unknown;
@@ -851,7 +838,7 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
     }
 
     /// The core driver for walking a pattern; `match_mode` must be
-    /// established up front, e.g. via `determine_pat_move_mode` (see
+    /// established up front, e.g., via `determine_pat_move_mode` (see
     /// also `walk_irrefutable_pat` for patterns that stand alone).
     fn walk_pat(&mut self, cmt_discr: mc::cmt<'tcx>, pat: &hir::Pat, match_mode: MatchMode) {
         debug!("walk_pat(cmt_discr={:?}, pat={:?})", cmt_discr, pat);
@@ -935,8 +922,8 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
 
         self.tcx().with_freevars(closure_expr.id, |freevars| {
             for freevar in freevars {
-                let var_hir_id = self.tcx().hir.node_to_hir_id(freevar.var_id());
-                let closure_def_id = self.tcx().hir.local_def_id(closure_expr.id);
+                let var_hir_id = self.tcx().hir().node_to_hir_id(freevar.var_id());
+                let closure_def_id = self.tcx().hir().local_def_id(closure_expr.id);
                 let upvar_id = ty::UpvarId {
                     var_path: ty::UpvarPath { hir_id: var_hir_id },
                     closure_expr_id: closure_def_id.to_local(),
@@ -973,7 +960,7 @@ impl<'a, 'gcx, 'tcx> ExprUseVisitor<'a, 'gcx, 'tcx> {
                         -> mc::McResult<mc::cmt_<'tcx>> {
         // Create the cmt for the variable being borrowed, from the
         // caller's perspective
-        let var_hir_id = self.tcx().hir.node_to_hir_id(upvar.var_id());
+        let var_hir_id = self.tcx().hir().node_to_hir_id(upvar.var_id());
         let var_ty = self.mc.node_ty(var_hir_id)?;
         self.mc.cat_def(closure_hir_id, closure_span, var_ty, upvar.def)
     }
@@ -985,7 +972,7 @@ fn copy_or_move<'a, 'gcx, 'tcx>(mc: &mc::MemCategorizationContext<'a, 'gcx, 'tcx
                                 move_reason: MoveReason)
                                 -> ConsumeMode
 {
-    if mc.type_moves_by_default(param_env, cmt.ty, cmt.span) {
+    if !mc.type_is_copy_modulo_regions(param_env, cmt.ty, cmt.span) {
         Move(move_reason)
     } else {
         Copy

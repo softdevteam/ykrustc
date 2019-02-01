@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Serialized configuration of a build.
 //!
 //! This module implements parsing `config.toml` configuration files to tweak
@@ -15,17 +5,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::{self, File};
-use std::io::prelude::*;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::cmp;
 
 use num_cpus;
 use toml;
-use cache::{INTERNER, Interned};
-use flags::Flags;
-pub use flags::Subcommand;
+use crate::cache::{INTERNER, Interned};
+use crate::flags::Flags;
+pub use crate::flags::Subcommand;
 
 /// Global configuration for the entire build and/or bootstrap.
 ///
@@ -58,6 +47,7 @@ pub struct Config {
     pub ignore_git: bool,
     pub exclude: Vec<PathBuf>,
     pub rustc_error_format: Option<String>,
+    pub test_compare_mode: bool,
 
     pub run_host_only: bool,
 
@@ -87,10 +77,16 @@ pub struct Config {
     pub llvm_experimental_targets: String,
     pub llvm_link_jobs: Option<u32>,
     pub llvm_version_suffix: Option<String>,
+    pub llvm_use_linker: Option<String>,
 
     pub lld_enabled: bool,
     pub lldb_enabled: bool,
     pub llvm_tools_enabled: bool,
+
+    pub llvm_cflags: Option<String>,
+    pub llvm_cxxflags: Option<String>,
+    pub llvm_ldflags: Option<String>,
+    pub llvm_use_libcxx: bool,
 
     // rust codegen options
     pub rust_optimize: bool,
@@ -102,7 +98,7 @@ pub struct Config {
     pub rust_debuginfo_only_std: bool,
     pub rust_debuginfo_tools: bool,
     pub rust_rpath: bool,
-    pub rustc_parallel_queries: bool,
+    pub rustc_parallel: bool,
     pub rustc_default_linker: Option<String>,
     pub rust_optimize_tests: bool,
     pub rust_debuginfo_tests: bool,
@@ -262,6 +258,11 @@ struct Llvm {
     link_shared: Option<bool>,
     version_suffix: Option<String>,
     clang_cl: Option<String>,
+    cflags: Option<String>,
+    cxxflags: Option<String>,
+    ldflags: Option<String>,
+    use_libcxx: Option<bool>,
+    use_linker: Option<String>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -299,7 +300,7 @@ struct Rust {
     debuginfo_lines: Option<bool>,
     debuginfo_only_std: Option<bool>,
     debuginfo_tools: Option<bool>,
-    experimental_parallel_queries: Option<bool>,
+    parallel_compiler: Option<bool>,
     backtrace: Option<bool>,
     default_linker: Option<String>,
     channel: Option<String>,
@@ -326,6 +327,7 @@ struct Rust {
     verify_llvm_ir: Option<bool>,
     remap_debuginfo: Option<bool>,
     jemalloc: Option<bool>,
+    test_compare_mode: Option<bool>,
 }
 
 /// TOML representation of how each build target is configured.
@@ -414,9 +416,7 @@ impl Config {
         config.run_host_only = !(flags.host.is_empty() && !flags.target.is_empty());
 
         let toml = file.map(|file| {
-            let mut f = t!(File::open(&file));
-            let mut contents = String::new();
-            t!(f.read_to_string(&mut contents));
+            let contents = t!(fs::read_to_string(&file));
             match toml::from_str(&contents) {
                 Ok(table) => table,
                 Err(err) => {
@@ -524,6 +524,12 @@ impl Config {
             config.llvm_link_jobs = llvm.link_jobs;
             config.llvm_version_suffix = llvm.version_suffix.clone();
             config.llvm_clang_cl = llvm.clang_cl.clone();
+
+            config.llvm_cflags = llvm.cflags.clone();
+            config.llvm_cxxflags = llvm.cxxflags.clone();
+            config.llvm_ldflags = llvm.ldflags.clone();
+            set(&mut config.llvm_use_libcxx, llvm.use_libcxx);
+            config.llvm_use_linker = llvm.use_linker.clone();
         }
 
         if let Some(ref rust) = toml.rust {
@@ -540,6 +546,7 @@ impl Config {
             set(&mut config.codegen_tests, rust.codegen_tests);
             set(&mut config.rust_rpath, rust.rpath);
             set(&mut config.jemalloc, rust.jemalloc);
+            set(&mut config.test_compare_mode, rust.test_compare_mode);
             set(&mut config.backtrace, rust.backtrace);
             set(&mut config.channel, rust.channel.clone());
             set(&mut config.rust_dist_src, rust.dist_src);
@@ -553,7 +560,7 @@ impl Config {
             set(&mut config.lld_enabled, rust.lld);
             set(&mut config.lldb_enabled, rust.lldb);
             set(&mut config.llvm_tools_enabled, rust.llvm_tools);
-            config.rustc_parallel_queries = rust.experimental_parallel_queries.unwrap_or(false);
+            config.rustc_parallel = rust.parallel_compiler.unwrap_or(false);
             config.rustc_default_linker = rust.default_linker.clone();
             config.musl_root = rust.musl_root.clone().map(PathBuf::from);
             config.save_toolstates = rust.save_toolstates.clone().map(PathBuf::from);

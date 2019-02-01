@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::nll::region_infer::values::{PointIndex, RegionValueElements};
 use borrow_check::nll::type_check::liveness::liveness_map::{LiveVar, NllLivenessMap};
 use rustc::mir::visit::{PlaceContext, Visitor};
@@ -23,7 +13,7 @@ crate struct LocalUseMap<'me> {
     liveness_map: &'me NllLivenessMap,
 
     /// Head of a linked list of **definitions** of each variable --
-    /// definition in this context means assignment, e.g. `x` is
+    /// definition in this context means assignment, e.g., `x` is
     /// defined in `x = y` but not `y`; that first def is the head of
     /// a linked list that lets you enumerate all places the variable
     /// is assigned.

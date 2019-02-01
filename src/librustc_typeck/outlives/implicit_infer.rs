@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir;
 use hir::Node;
 use rustc::hir::def_id::DefId;
@@ -48,7 +38,7 @@ pub fn infer_predicates<'tcx>(
         };
 
         // Visit all the crates and infer predicates
-        tcx.hir.krate().visit_all_item_likes(&mut visitor);
+        tcx.hir().krate().visit_all_item_likes(&mut visitor);
     }
 
     global_inferred_outlives
@@ -63,16 +53,16 @@ pub struct InferVisitor<'cx, 'tcx: 'cx> {
 
 impl<'cx, 'tcx> ItemLikeVisitor<'tcx> for InferVisitor<'cx, 'tcx> {
     fn visit_item(&mut self, item: &hir::Item) {
-        let item_did = self.tcx.hir.local_def_id(item.id);
+        let item_did = self.tcx.hir().local_def_id(item.id);
 
         debug!("InferVisitor::visit_item(item={:?})", item_did);
 
         let node_id = self
             .tcx
-            .hir
+            .hir()
             .as_local_node_id(item_did)
             .expect("expected local def-id");
-        let item = match self.tcx.hir.get(node_id) {
+        let item = match self.tcx.hir().get(node_id) {
             Node::Item(item) => item,
             _ => bug!(),
         };
@@ -204,27 +194,28 @@ fn insert_required_predicates_to_be_wf<'tcx>(
                 debug!("Dynamic");
                 debug!("field_ty = {}", &field_ty);
                 debug!("ty in field = {}", &ty);
-                let ex_trait_ref = obj.principal();
-                // Here, we are passing the type `usize` as a
-                // placeholder value with the function
-                // `with_self_ty`, since there is no concrete type
-                // `Self` for a `dyn Trait` at this
-                // stage. Therefore when checking explicit
-                // predicates in `check_explicit_predicates` we
-                // need to ignore checking the explicit_map for
-                // Self type.
-                let substs = ex_trait_ref
-                    .with_self_ty(tcx, tcx.types.usize)
-                    .skip_binder()
-                    .substs;
-                check_explicit_predicates(
-                    tcx,
-                    &ex_trait_ref.skip_binder().def_id,
-                    substs,
-                    required_predicates,
-                    explicit_map,
-                    IgnoreSelfTy(true),
-                );
+                if let Some(ex_trait_ref) = obj.principal() {
+                    // Here, we are passing the type `usize` as a
+                    // placeholder value with the function
+                    // `with_self_ty`, since there is no concrete type
+                    // `Self` for a `dyn Trait` at this
+                    // stage. Therefore when checking explicit
+                    // predicates in `check_explicit_predicates` we
+                    // need to ignore checking the explicit_map for
+                    // Self type.
+                    let substs = ex_trait_ref
+                        .with_self_ty(tcx, tcx.types.usize)
+                        .skip_binder()
+                        .substs;
+                    check_explicit_predicates(
+                        tcx,
+                        &ex_trait_ref.skip_binder().def_id,
+                        substs,
+                        required_predicates,
+                        explicit_map,
+                        IgnoreSelfTy(true),
+                    );
+                }
             }
 
             ty::Projection(obj) => {
@@ -314,7 +305,7 @@ pub fn check_explicit_predicates<'tcx>(
         // case that `substs` come from a `dyn Trait` type, our caller will have
         // included `Self = usize` as the value for `Self`. If we were
         // to apply the substs, and not filter this predicate, we might then falsely
-        // conclude that e.g. `X: 'x` was a reasonable inferred requirement.
+        // conclude that e.g., `X: 'x` was a reasonable inferred requirement.
         //
         // Another similar case is where we have a inferred
         // requirement like `<Self as Trait>::Foo: 'b`. We presently

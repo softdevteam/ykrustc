@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust compiler.
 //!
 //! # Note
@@ -27,7 +17,6 @@
 #![allow(unused_attributes)]
 #![feature(libc)]
 #![feature(nll)]
-#![feature(quote)]
 #![feature(range_contains)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(slice_sort_by_cached_key)]
@@ -53,7 +42,6 @@ extern crate rustc_target;
 extern crate rustc_demangle;
 extern crate rustc_incremental;
 extern crate rustc_llvm;
-extern crate rustc_platform_intrinsics as intrinsics;
 extern crate rustc_codegen_utils;
 extern crate rustc_codegen_ssa;
 extern crate rustc_fs_util;
@@ -85,7 +73,7 @@ use rustc::dep_graph::DepGraph;
 use rustc::middle::allocator::AllocatorKind;
 use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::session::{Session, CompileIncomplete};
-use rustc::session::config::{OutputFilenames, OutputType, PrintRequest};
+use rustc::session::config::{OutputFilenames, OutputType, PrintRequest, OptLevel};
 use rustc::ty::{self, TyCtxt};
 use rustc::util::nodemap::DefIdSet;
 use rustc::util::time_graph;
@@ -129,13 +117,14 @@ mod mono_item;
 mod type_;
 mod type_of;
 mod value;
+mod va_arg;
 
 #[derive(Clone)]
 pub struct LlvmCodegenBackend(());
 
 impl ExtraBackendMethods for LlvmCodegenBackend {
-    fn new_metadata(&self, sess: &Session, mod_name: &str) -> ModuleLlvm {
-        ModuleLlvm::new(sess, mod_name)
+    fn new_metadata(&self, tcx: TyCtxt, mod_name: &str) -> ModuleLlvm {
+        ModuleLlvm::new(tcx, mod_name)
     }
     fn write_metadata<'b, 'gcx>(
         &self,
@@ -157,10 +146,11 @@ impl ExtraBackendMethods for LlvmCodegenBackend {
     fn target_machine_factory(
         &self,
         sess: &Session,
+        optlvl: OptLevel,
         find_features: bool
     ) -> Arc<dyn Fn() ->
         Result<&'static mut llvm::TargetMachine, String> + Send + Sync> {
-        back::write::target_machine_factory(sess, find_features)
+        back::write::target_machine_factory(sess, optlvl, find_features)
     }
     fn target_cpu<'b>(&self, sess: &'b Session) -> &'b str {
         llvm_util::target_cpu(sess)
@@ -177,13 +167,20 @@ impl WriteBackendMethods for LlvmCodegenBackend {
     fn print_pass_timings(&self) {
             unsafe { llvm::LLVMRustPrintPassTimings(); }
     }
-    fn run_lto(
+    fn run_fat_lto(
         cgcx: &CodegenContext<Self>,
         modules: Vec<ModuleCodegen<Self::Module>>,
+        timeline: &mut Timeline
+    ) -> Result<LtoModuleCodegen<Self>, FatalError> {
+        back::lto::run_fat(cgcx, modules, timeline)
+    }
+    fn run_thin_lto(
+        cgcx: &CodegenContext<Self>,
+        modules: Vec<(String, Self::ThinBuffer)>,
         cached_modules: Vec<(SerializedModule<Self::ModuleBuffer>, WorkProduct)>,
         timeline: &mut Timeline
     ) -> Result<(Vec<LtoModuleCodegen<Self>>, Vec<WorkProduct>), FatalError> {
-        back::lto::run(cgcx, modules, cached_modules, timeline)
+        back::lto::run_thin(cgcx, modules, cached_modules, timeline)
     }
     unsafe fn optimize(
         cgcx: &CodegenContext<Self>,
@@ -209,6 +206,12 @@ impl WriteBackendMethods for LlvmCodegenBackend {
         timeline: &mut Timeline
     ) -> Result<CompiledModule, FatalError> {
         back::write::codegen(cgcx, diag_handler, module, config, timeline)
+    }
+    fn prepare_thin(
+        cgcx: &CodegenContext<Self>,
+        module: ModuleCodegen<Self::Module>
+    ) -> (String, Self::ThinBuffer) {
+        back::lto::prepare_thin(cgcx, module)
     }
     fn run_lto_pass_manager(
         cgcx: &CodegenContext<Self>,
@@ -365,15 +368,15 @@ unsafe impl Send for ModuleLlvm { }
 unsafe impl Sync for ModuleLlvm { }
 
 impl ModuleLlvm {
-    fn new(sess: &Session, mod_name: &str) -> Self {
+    fn new(tcx: TyCtxt, mod_name: &str) -> Self {
         unsafe {
-            let llcx = llvm::LLVMRustContextCreate(sess.fewer_names());
-            let llmod_raw = context::create_module(sess, llcx, mod_name) as *const _;
+            let llcx = llvm::LLVMRustContextCreate(tcx.sess.fewer_names());
+            let llmod_raw = context::create_module(tcx, llcx, mod_name) as *const _;
 
             ModuleLlvm {
                 llmod_raw,
                 llcx,
-                tm: create_target_machine(sess, false),
+                tm: create_target_machine(tcx, false),
             }
         }
     }

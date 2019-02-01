@@ -1,13 +1,3 @@
-// Copyright 2012-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use llvm::{self, AttributePlace};
 use rustc_codegen_ssa::MemFlags;
 use builder::Builder;
@@ -73,7 +63,7 @@ impl ArgAttributesExt for ArgAttributes {
             if let Some(align) = self.pointee_align {
                 llvm::LLVMRustAddAlignmentAttr(llfn,
                                                idx.as_uint(),
-                                               align.abi() as u32);
+                                               align.bytes() as u32);
             }
             regular.for_each_kind(|attr| attr.apply_llfn(idx, llfn));
         }
@@ -98,7 +88,7 @@ impl ArgAttributesExt for ArgAttributes {
             if let Some(align) = self.pointee_align {
                 llvm::LLVMRustAddAlignmentCallSiteAttr(callsite,
                                                        idx.as_uint(),
-                                                       align.abi() as u32);
+                                                       align.bytes() as u32);
             }
             regular.for_each_kind(|attr| attr.apply_callsite(idx, callsite));
         }
@@ -185,7 +175,7 @@ pub trait ArgTypeExt<'ll, 'tcx> {
 
 impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
     /// Get the LLVM type for a place of the original Rust type of
-    /// this argument/return, i.e. the result of `type_of::type_of`.
+    /// this argument/return, i.e., the result of `type_of::type_of`.
     fn memory_ty(&self, cx: &CodegenCx<'ll, 'tcx>) -> &'ll Type {
         self.layout.llvm_type(cx)
     }
@@ -204,7 +194,7 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
             return;
         }
         if self.is_sized_indirect() {
-            OperandValue::Ref(val, None, self.layout.align).store(bx, dst)
+            OperandValue::Ref(val, None, self.layout.align.abi).store(bx, dst)
         } else if self.is_unsized_indirect() {
             bug!("unsized ArgType must be handled through store_fn_arg");
         } else if let PassMode::Cast(cast) = self.mode {
@@ -212,9 +202,9 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
             // uses it for i16 -> {i8, i8}, but not for i24 -> {i8, i8, i8}.
             let can_store_through_cast_ptr = false;
             if can_store_through_cast_ptr {
-                let cast_ptr_llty = bx.cx().type_ptr_to(cast.llvm_type(bx.cx()));
+                let cast_ptr_llty = bx.type_ptr_to(cast.llvm_type(bx));
                 let cast_dst = bx.pointercast(dst.llval, cast_ptr_llty);
-                bx.store(val, cast_dst, self.layout.align);
+                bx.store(val, cast_dst, self.layout.align.abi);
             } else {
                 // The actual return type is a struct, but the ABI
                 // adaptation code has cast it into some scalar type.  The
@@ -231,9 +221,9 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
                 //   bitcasting to the struct type yields invalid cast errors.
 
                 // We instead thus allocate some scratch space...
-                let scratch_size = cast.size(bx.cx());
-                let scratch_align = cast.align(bx.cx());
-                let llscratch = bx.alloca(cast.llvm_type(bx.cx()), "abi_cast", scratch_align);
+                let scratch_size = cast.size(bx);
+                let scratch_align = cast.align(bx);
+                let llscratch = bx.alloca(cast.llvm_type(bx), "abi_cast", scratch_align);
                 bx.lifetime_start(llscratch, scratch_size);
 
                 // ...where we first store the value...
@@ -242,10 +232,10 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
                 // ...and then memcpy it to the intended destination.
                 bx.memcpy(
                     dst.llval,
-                    self.layout.align,
+                    self.layout.align.abi,
                     llscratch,
                     scratch_align,
-                    bx.cx().const_usize(self.layout.size.bytes()),
+                    bx.const_usize(self.layout.size.bytes()),
                     MemFlags::empty()
                 );
 
@@ -273,7 +263,7 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
                 OperandValue::Pair(next(), next()).store(bx, dst);
             }
             PassMode::Indirect(_, Some(_)) => {
-                OperandValue::Ref(next(), Some(next()), self.layout.align).store(bx, dst);
+                OperandValue::Ref(next(), Some(next()), self.layout.align.abi).store(bx, dst);
             }
             PassMode::Direct(_) | PassMode::Indirect(_, None) | PassMode::Cast(_) => {
                 self.store(bx, next(), dst);
@@ -299,7 +289,7 @@ impl ArgTypeMethods<'tcx> for Builder<'a, 'll, 'tcx> {
         ty.store(self, val, dst)
     }
     fn memory_ty(&self, ty: &ArgType<'tcx, Ty<'tcx>>) -> &'ll Type {
-        ty.memory_ty(self.cx())
+        ty.memory_ty(self)
     }
 }
 
@@ -456,6 +446,9 @@ impl<'tcx> FnTypeExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
         let linux_s390x = target.target_os == "linux"
                        && target.arch == "s390x"
                        && target.target_env == "gnu";
+        let linux_sparc64 = target.target_os == "linux"
+                       && target.arch == "sparc64"
+                       && target.target_env == "gnu";
         let rust_abi = match sig.abi {
             RustIntrinsic | PlatformIntrinsic | Rust | RustCall => true,
             _ => false
@@ -489,12 +482,6 @@ impl<'tcx> FnTypeExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
                     attrs.pointee_size = pointee.size;
                     attrs.pointee_align = Some(pointee.align);
 
-                    // HACK(eddyb) LLVM inserts `llvm.assume` calls when inlining functions
-                    // with align attributes, and those calls later block optimizations.
-                    if !is_return && !cx.tcx.sess.opts.debugging_opts.arg_align_attributes {
-                        attrs.pointee_align = None;
-                    }
-
                     // `Box` pointer parameters never alias because ownership is transferred
                     // `&mut` pointer parameters never alias other parameters,
                     // or mutable global data
@@ -526,8 +513,9 @@ impl<'tcx> FnTypeExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
             if arg.layout.is_zst() {
                 // For some forsaken reason, x86_64-pc-windows-gnu
                 // doesn't ignore zero-sized struct arguments.
-                // The same is true for s390x-unknown-linux-gnu.
-                if is_return || rust_abi || (!win_x64_gnu && !linux_s390x) {
+                // The same is true for s390x-unknown-linux-gnu
+                // and sparc64-unknown-linux-gnu.
+                if is_return || rust_abi || (!win_x64_gnu && !linux_s390x && !linux_sparc64) {
                     arg.mode = PassMode::Ignore;
                 }
             }
@@ -545,7 +533,7 @@ impl<'tcx> FnTypeExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
                     adjust_for_rust_scalar(&mut b_attrs,
                                            b,
                                            arg.layout,
-                                           a.value.size(cx).abi_align(b.value.align(cx)),
+                                           a.value.size(cx).align_to(b.value.align(cx).abi),
                                            false);
                     arg.mode = PassMode::Pair(a_attrs, b_attrs);
                     return arg;
@@ -780,7 +768,7 @@ impl<'tcx> FnTypeExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
             // by the LLVM verifier.
             if let layout::Int(..) = scalar.value {
                 if !scalar.is_bool() {
-                    let range = scalar.valid_range_exclusive(bx.cx());
+                    let range = scalar.valid_range_exclusive(bx);
                     if range.start != range.end {
                         bx.range_metadata(callsite, range);
                     }

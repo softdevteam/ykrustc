@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Resolution of mixing rlibs and dylibs
 //!
 //! When producing a final artifact, such as a dynamic library, the compiler has
@@ -127,9 +117,8 @@ fn calculate_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             sess.crt_static() => Linkage::Static,
         config::CrateType::Executable => Linkage::Dynamic,
 
-        // proc-macro crates are required to be dylibs, and they're currently
-        // required to link to libsyntax as well.
-        config::CrateType::ProcMacro => Linkage::Dynamic,
+        // proc-macro crates are mostly cdylibs, but we also need metadata.
+        config::CrateType::ProcMacro => Linkage::Static,
 
         // No linkage happens with rlibs, we just needed the metadata (which we
         // got long ago), so don't bother with anything.
@@ -202,7 +191,7 @@ fn calculate_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // static libraries.
     //
     // If the crate hasn't been included yet and it's not actually required
-    // (e.g. it's an allocator) then we skip it here as well.
+    // (e.g., it's an allocator) then we skip it here as well.
     for &cnum in tcx.crates().iter() {
         let src = tcx.used_crate_source(cnum);
         if src.dylib.is_none() &&
@@ -307,7 +296,7 @@ fn attempt_static<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Option<DependencyLis
 
 // Given a list of how to link upstream dependencies so far, ensure that an
 // injected dependency is activated. This will not do anything if one was
-// transitively included already (e.g. via a dylib or explicitly so).
+// transitively included already (e.g., via a dylib or explicitly so).
 //
 // If an injected dependency was not found then we're guaranteed the
 // metadata::creader module has injected that dependency (not listed as

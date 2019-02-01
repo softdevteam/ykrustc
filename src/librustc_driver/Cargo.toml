@@ -37,11 +37,6 @@ rustc_yk_sections = { path = "../librustc_yk_sections" }
 rustc_yk_link = { path = "../librustc_yk_link" }
 serialize = { path = "../libserialize" }
 syntax = { path = "../libsyntax" }
-smallvec = { version = "0.6.5", features = ["union"] }
+smallvec = { version = "0.6.7", features = ["union", "may_dangle"] }
 syntax_ext = { path = "../libsyntax_ext" }
 syntax_pos = { path = "../libsyntax_pos" }
-
-[dependencies.jemalloc-sys]
-version = '0.1.8'
-optional = true
-features = ['unprefixed_malloc_on_supported_platforms']

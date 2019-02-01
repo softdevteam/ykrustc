@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::mir::interpret::{ConstValue, ErrorHandled};
 use rustc::mir;
 use rustc::ty;
@@ -77,7 +67,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
 
     pub fn from_const<Bx: BuilderMethods<'a, 'tcx, Value = V>>(
         bx: &mut Bx,
-        val: &'tcx ty::Const<'tcx>
+        val: ty::Const<'tcx>
     ) -> Result<Self, ErrorHandled> {
         let layout = bx.cx().layout_of(val.ty);
 
@@ -86,7 +76,6 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
         }
 
         let val = match val.val {
-            ConstValue::Unevaluated(..) => bug!(),
             ConstValue::Scalar(x) => {
                 let scalar = match layout.abi {
                     layout::Abi::Scalar(ref x) => x,
@@ -99,9 +88,9 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
                 );
                 OperandValue::Immediate(llval)
             },
-            ConstValue::ScalarPair(a, b) => {
-                let (a_scalar, b_scalar) = match layout.abi {
-                    layout::Abi::ScalarPair(ref a, ref b) => (a, b),
+            ConstValue::Slice(a, b) => {
+                let a_scalar = match layout.abi {
+                    layout::Abi::ScalarPair(ref a, _) => a,
                     _ => bug!("from_const: invalid ScalarPair layout: {:#?}", layout)
                 };
                 let a_llval = bx.cx().scalar_to_backend(
@@ -109,11 +98,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
                     a_scalar,
                     bx.cx().scalar_pair_element_backend_type(layout, 0, true),
                 );
-                let b_llval = bx.cx().scalar_to_backend(
-                    b,
-                    b_scalar,
-                    bx.cx().scalar_pair_element_backend_type(layout, 1, true),
-                );
+                let b_llval = bx.cx().const_usize(b);
                 OperandValue::Pair(a_llval, b_llval)
             },
             ConstValue::ByRef(_, alloc, offset) => {
@@ -152,7 +137,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
             llval: llptr,
             llextra,
             layout,
-            align: layout.align,
+            align: layout.align.abi,
         }
     }
 
@@ -228,7 +213,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
                     OperandValue::Immediate(a_llval)
                 } else {
                     assert_eq!(offset, a.value.size(bx.cx())
-                        .abi_align(b.value.align(bx.cx())));
+                        .align_to(b.value.align(bx.cx()).abi));
                     assert_eq!(field.size, b.value.size(bx.cx()));
                     OperandValue::Immediate(b_llval)
                 }
@@ -244,13 +229,24 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
         };
 
         // HACK(eddyb) have to bitcast pointers until LLVM removes pointee types.
+        // Bools in union fields needs to be truncated.
+        let to_immediate_or_cast = |bx: &mut Bx, val, ty| {
+            if ty == bx.cx().type_i1() {
+                bx.trunc(val, ty)
+            } else {
+                bx.bitcast(val, ty)
+            }
+        };
+
         match val {
             OperandValue::Immediate(ref mut llval) => {
-                *llval = bx.bitcast(*llval, bx.cx().immediate_backend_type(field));
+                *llval = to_immediate_or_cast(bx, *llval, bx.cx().immediate_backend_type(field));
             }
             OperandValue::Pair(ref mut a, ref mut b) => {
-                *a = bx.bitcast(*a, bx.cx().scalar_pair_element_backend_type(field, 0, true));
-                *b = bx.bitcast(*b, bx.cx().scalar_pair_element_backend_type(field, 1, true));
+                *a = to_immediate_or_cast(bx, *a, bx.cx()
+                    .scalar_pair_element_backend_type(field, 0, true));
+                *b = to_immediate_or_cast(bx, *b, bx.cx()
+                    .scalar_pair_element_backend_type(field, 1, true));
             }
             OperandValue::Ref(..) => bug!()
         }
@@ -320,11 +316,21 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandValue<V> {
                 bx.store_with_flags(val, dest.llval, dest.align, flags);
             }
             OperandValue::Pair(a, b) => {
-                for (i, &x) in [a, b].iter().enumerate() {
-                    let llptr = bx.struct_gep(dest.llval, i as u64);
-                    let val = base::from_immediate(bx, x);
-                    bx.store_with_flags(val, llptr, dest.align, flags);
-                }
+                let (a_scalar, b_scalar) = match dest.layout.abi {
+                    layout::Abi::ScalarPair(ref a, ref b) => (a, b),
+                    _ => bug!("store_with_flags: invalid ScalarPair layout: {:#?}", dest.layout)
+                };
+                let b_offset = a_scalar.value.size(bx).align_to(b_scalar.value.align(bx).abi);
+
+                let llptr = bx.struct_gep(dest.llval, 0);
+                let val = base::from_immediate(bx, a);
+                let align = dest.align;
+                bx.store_with_flags(val, llptr, align, flags);
+
+                let llptr = bx.struct_gep(dest.llval, 1);
+                let val = base::from_immediate(bx, b);
+                let align = dest.align.restrict_for_offset(b_offset);
+                bx.store_with_flags(val, llptr, align, flags);
             }
         }
     }
@@ -348,8 +354,8 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandValue<V> {
             };
 
         // FIXME: choose an appropriate alignment, or use dynamic align somehow
-        let max_align = Align::from_bits(128, 128).unwrap();
-        let min_align = Align::from_bits(8, 8).unwrap();
+        let max_align = Align::from_bits(128).unwrap();
+        let min_align = Align::from_bits(8).unwrap();
 
         // Allocate an appropriate region on the stack, and copy the value into it
         let (llsize, _) = glue::size_and_align_of_dst(bx, unsized_ty, Some(llextra));
@@ -463,14 +469,13 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         }
                         // Allow RalfJ to sleep soundly knowing that even refactorings that remove
                         // the above error (or silence it under some conditions) will not cause UB
-                        let fnname = bx.cx().get_intrinsic(&("llvm.trap"));
-                        bx.call(fnname, &[], None);
+                        bx.abort();
                         // We've errored, so we don't have to produce working code.
                         let layout = bx.cx().layout_of(ty);
                         bx.load_operand(PlaceRef::new_sized(
                             bx.cx().const_undef(bx.cx().type_ptr_to(bx.cx().backend_type(layout))),
                             layout,
-                            layout.align,
+                            layout.align.abi,
                         ))
                     })
             }

@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::def_id::DefId;
 use util::nodemap::{NodeMap, DefIdMap};
 use syntax::ast;
@@ -46,7 +36,7 @@ pub enum NonMacroAttrKind {
 pub enum Def {
     // Type namespace
     Mod(DefId),
-    Struct(DefId), // DefId refers to NodeId of the struct itself
+    Struct(DefId), // `DefId` refers to `NodeId` of the struct itself
     Union(DefId),
     Enum(DefId),
     Variant(DefId),
@@ -63,27 +53,27 @@ pub enum Def {
     PrimTy(hir::PrimTy),
     TyParam(DefId),
     SelfTy(Option<DefId> /* trait */, Option<DefId> /* impl */),
-    ToolMod, // e.g. `rustfmt` in `#[rustfmt::skip]`
+    ToolMod, // e.g., `rustfmt` in `#[rustfmt::skip]`
 
     // Value namespace
     Fn(DefId),
     Const(DefId),
     Static(DefId, bool /* is_mutbl */),
-    StructCtor(DefId, CtorKind), // DefId refers to NodeId of the struct's constructor
-    VariantCtor(DefId, CtorKind), // DefId refers to the enum variant
-    SelfCtor(DefId /* impl */),  // DefId refers to the impl
+    StructCtor(DefId, CtorKind), // `DefId` refers to `NodeId` of the struct's constructor
+    VariantCtor(DefId, CtorKind), // `DefId` refers to the enum variant
+    SelfCtor(DefId /* impl */),  // `DefId` refers to the impl
     Method(DefId),
     AssociatedConst(DefId),
 
     Local(ast::NodeId),
-    Upvar(ast::NodeId,  // node id of closed over local
-          usize,        // index in the freevars list of the closure
+    Upvar(ast::NodeId,  // `NodeId` of closed over local
+          usize,        // index in the `freevars` list of the closure
           ast::NodeId), // expr node that creates the closure
     Label(ast::NodeId),
 
     // Macro namespace
     Macro(DefId, MacroKind),
-    NonMacroAttr(NonMacroAttrKind), // e.g. `#[inline]` or `#[rustfmt::skip]`
+    NonMacroAttr(NonMacroAttrKind), // e.g., `#[inline]` or `#[rustfmt::skip]`
 
     // Both namespaces
     Err,
@@ -170,6 +160,7 @@ impl<T> PerNS<T> {
 
 impl<T> ::std::ops::Index<Namespace> for PerNS<T> {
     type Output = T;
+
     fn index(&self, ns: Namespace) -> &T {
         match ns {
             ValueNS => &self.value_ns,
@@ -238,6 +229,7 @@ impl CtorKind {
             ast::VariantData::Struct(..) => CtorKind::Fictive,
         }
     }
+
     pub fn from_hir(vdata: &hir::VariantData) -> CtorKind {
         match *vdata {
             hir::VariantData::Tuple(..) => CtorKind::Fn,
@@ -248,7 +240,7 @@ impl CtorKind {
 }
 
 impl NonMacroAttrKind {
-    fn descr(self) -> &'static str {
+    pub fn descr(self) -> &'static str {
         match self {
             NonMacroAttrKind::Builtin => "built-in attribute",
             NonMacroAttrKind::Tool => "tool attribute",
@@ -292,7 +284,7 @@ impl Def {
         }
     }
 
-    /// A human readable kind name
+    /// A human readable name for the def kind ("function", "module", etc.).
     pub fn kind_name(&self) -> &'static str {
         match *self {
             Def::Fn(..) => "function",
@@ -332,6 +324,7 @@ impl Def {
         }
     }
 
+    /// An English article for the def.
     pub fn article(&self) -> &'static str {
         match *self {
             Def::AssociatedTy(..) | Def::AssociatedConst(..) | Def::AssociatedExistential(..) |

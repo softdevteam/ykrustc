@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir;
 use rustc::hir::Node;
 use rustc::mir::{self, BindingForm, Constant, ClearCrossCrate, Local, Location, Mir};
@@ -241,7 +231,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                     base.ty(self.mir, self.infcx.tcx).to_ty(self.infcx.tcx),
                     field,
                 ) {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         span,
                         "consider changing this to be mutable",
                         message,
@@ -263,7 +253,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                             // Deliberately fall into this case for all implicit self types,
                             // so that we don't fall in to the next case with them.
                             *kind == mir::ImplicitSelfKind::MutRef
-                        } else if Some(keywords::SelfValue.name()) == local_decl.name {
+                        } else if Some(keywords::SelfLower.name()) == local_decl.name {
                             // Otherwise, check if the name is the self kewyord - in which case
                             // we have an explicit self. Do the same thing in this case and check
                             // for a `self: &mut Self` to suggest removing the `&mut`.
@@ -295,7 +285,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 assert_eq!(local_decl.mutability, Mutability::Not);
 
                 err.span_label(span, format!("cannot {ACT}", ACT = act));
-                err.span_suggestion_with_applicability(
+                err.span_suggestion(
                     local_decl.source_info.span,
                     "consider changing this to be mutable",
                     format!("mut {}", local_decl.name.unwrap()),
@@ -317,8 +307,8 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 let upvar_hir_id = self.mir.upvar_decls[upvar_index.index()]
                     .var_hir_id
                     .assert_crate_local();
-                let upvar_node_id = self.infcx.tcx.hir.hir_to_node_id(upvar_hir_id);
-                if let Some(Node::Binding(pat)) = self.infcx.tcx.hir.find(upvar_node_id) {
+                let upvar_node_id = self.infcx.tcx.hir().hir_to_node_id(upvar_hir_id);
+                if let Some(Node::Binding(pat)) = self.infcx.tcx.hir().find(upvar_node_id) {
                     if let hir::PatKind::Binding(
                         hir::BindingAnnotation::Unannotated,
                         _,
@@ -326,7 +316,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                         _,
                     ) = pat.node
                     {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             upvar_ident.span,
                             "consider changing this to be mutable",
                             format!("mut {}", upvar_ident.name),
@@ -420,7 +410,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 };
 
                 if let Some((err_help_span, suggested_code)) = suggestion {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         err_help_span,
                         &format!("consider changing this to be a mutable {}", pointer_desc),
                         suggested_code,
@@ -478,13 +468,13 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                             Terminator {
                                 kind: TerminatorKind::Call {
                                     func: Operand::Constant(box Constant {
-                                        literal: Const {
+                                        literal: ty::LazyConst::Evaluated(Const {
                                             ty: &TyS {
                                                 sty: TyKind::FnDef(id, substs),
                                                 ..
                                             },
                                             ..
-                                        },
+                                        }),
                                         ..
                                     }),
                                     ..
@@ -641,8 +631,8 @@ fn annotate_struct_field(
         if let ty::TyKind::Adt(def, _) = ty.sty {
             let field = def.all_fields().nth(field.index())?;
             // Use the HIR types to construct the diagnostic message.
-            let node_id = tcx.hir.as_local_node_id(field.did)?;
-            let node = tcx.hir.find(node_id)?;
+            let node_id = tcx.hir().as_local_node_id(field.did)?;
+            let node = tcx.hir().find(node_id)?;
             // Now we're dealing with the actual struct that we're going to suggest a change to,
             // we can expect a field that is an immutable reference to a type.
             if let hir::Node::Field(field) = node {

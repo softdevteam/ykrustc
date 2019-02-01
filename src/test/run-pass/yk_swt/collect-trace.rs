@@ -10,6 +10,7 @@
 #![feature(yk_swt)]
 #![feature(libc)]
 #![feature(test)]
+#![feature(rustc_private)]
 
 extern crate core;
 extern crate libc;

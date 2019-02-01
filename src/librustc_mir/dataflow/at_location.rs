@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A nice wrapper to consume dataflow results at several CFG
 //! locations.
 
@@ -67,22 +57,22 @@ pub trait FlowsAtLocation {
 /// effects at any point in the control-flow graph by starting with
 /// the state at the start of the basic block (`reset_to_entry_of`)
 /// and then replaying the effects of statements and terminators
-/// (e.g. via `reconstruct_statement_effect` and
+/// (e.g., via `reconstruct_statement_effect` and
 /// `reconstruct_terminator_effect`; don't forget to call
 /// `apply_local_effect`).
-pub struct FlowAtLocation<BD>
+pub struct FlowAtLocation<'tcx, BD>
 where
-    BD: BitDenotation,
+    BD: BitDenotation<'tcx>,
 {
-    base_results: DataflowResults<BD>,
+    base_results: DataflowResults<'tcx, BD>,
     curr_state: BitSet<BD::Idx>,
     stmt_gen: HybridBitSet<BD::Idx>,
     stmt_kill: HybridBitSet<BD::Idx>,
 }
 
-impl<BD> FlowAtLocation<BD>
+impl<'tcx, BD> FlowAtLocation<'tcx, BD>
 where
-    BD: BitDenotation,
+    BD: BitDenotation<'tcx>,
 {
     /// Iterate over each bit set in the current state.
     pub fn each_state_bit<F>(&self, f: F)
@@ -102,7 +92,7 @@ where
         self.stmt_gen.iter().for_each(f)
     }
 
-    pub fn new(results: DataflowResults<BD>) -> Self {
+    pub fn new(results: DataflowResults<'tcx, BD>) -> Self {
         let bits_per_block = results.sets().bits_per_block();
         let curr_state = BitSet::new_empty(bits_per_block);
         let stmt_gen = HybridBitSet::new_empty(bits_per_block);
@@ -143,8 +133,8 @@ where
     }
 }
 
-impl<BD> FlowsAtLocation for FlowAtLocation<BD>
-    where BD: BitDenotation
+impl<'tcx, BD> FlowsAtLocation for FlowAtLocation<'tcx, BD>
+    where BD: BitDenotation<'tcx>
 {
     fn reset_to_entry_of(&mut self, bb: BasicBlock) {
         self.curr_state.overwrite(self.base_results.sets().on_entry_set_for(bb.index()));
@@ -213,9 +203,9 @@ impl<BD> FlowsAtLocation for FlowAtLocation<BD>
 }
 
 
-impl<'tcx, T> FlowAtLocation<T>
+impl<'tcx, T> FlowAtLocation<'tcx, T>
 where
-    T: HasMoveData<'tcx> + BitDenotation<Idx = MovePathIndex>,
+    T: HasMoveData<'tcx> + BitDenotation<'tcx, Idx = MovePathIndex>,
 {
     pub fn has_any_child_of(&self, mpi: T::Idx) -> Option<T::Idx> {
         // We process `mpi` before the loop below, for two reasons:

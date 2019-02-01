@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use dep_graph::{DepConstructor, DepNode};
 use errors::DiagnosticBuilder;
 use hir::def_id::{CrateNum, DefId, DefIndex};
@@ -32,14 +22,15 @@ use mir::mono::CodegenUnit;
 use mir;
 use mir::interpret::GlobalId;
 use session::{CompileResult, CrateDisambiguator};
-use session::config::OutputFilenames;
+use session::config::{EntryFnType, OutputFilenames, OptLevel};
 use traits::{self, Vtable};
 use traits::query::{
     CanonicalPredicateGoal, CanonicalProjectionGoal,
-    CanonicalTyGoal, CanonicalTypeOpAscribeUserTypeGoal, CanonicalTypeOpEqGoal,
-    CanonicalTypeOpSubtypeGoal, CanonicalTypeOpProvePredicateGoal,
+    CanonicalTyGoal, CanonicalTypeOpAscribeUserTypeGoal,
+    CanonicalTypeOpEqGoal, CanonicalTypeOpSubtypeGoal, CanonicalTypeOpProvePredicateGoal,
     CanonicalTypeOpNormalizeGoal, NoSolution,
 };
+use traits::query::method_autoderef::MethodAutoderefStepsResult;
 use traits::query::dropck_outlives::{DtorckConstraint, DropckOutlivesResult};
 use traits::query::normalize::NormalizationResult;
 use traits::query::outlives_bounds::OutlivesBound;
@@ -51,6 +42,7 @@ use ty::subst::Substs;
 use util::nodemap::{DefIdSet, DefIdMap, ItemLocalSet};
 use util::common::{ErrorReported};
 use util::profiling::ProfileCategory::*;
+use session::Session;
 
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::IndexVec;
@@ -62,6 +54,7 @@ use rustc_target::spec::PanicStrategy;
 use std::borrow::Cow;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::intrinsics::type_name;
 use syntax_pos::{Span, DUMMY_SP};
 use syntax_pos::symbol::InternedString;
 use syntax::attr;
@@ -76,7 +69,7 @@ pub use self::plumbing::{force_from_dep_node, CycleError};
 
 mod job;
 pub use self::job::{QueryJob, QueryInfo};
-#[cfg(parallel_queries)]
+#[cfg(parallel_compiler)]
 pub use self::job::handle_deadlock;
 
 mod keys;
@@ -166,21 +159,21 @@ define_queries! { <'tcx>
         ) -> Result<DtorckConstraint<'tcx>, NoSolution>,
 
         /// True if this is a const fn, use the `is_const_fn` to know whether your crate actually
-        /// sees it as const fn (e.g. the const-fn-ness might be unstable and you might not have
+        /// sees it as const fn (e.g., the const-fn-ness might be unstable and you might not have
         /// the feature gate active)
         ///
-        /// DO NOT CALL MANUALLY, it is only meant to cache the base data for the `is_const_fn`
-        /// function
+        /// **Do not call this function manually.** It is only meant to cache the base data for the
+        /// `is_const_fn` function.
         [] fn is_const_fn_raw: IsConstFn(DefId) -> bool,
 
 
         /// Returns true if calls to the function may be promoted
         ///
-        /// This is either because the function is e.g. a tuple-struct or tuple-variant constructor,
-        /// or because it has the `#[rustc_promotable]` attribute. The attribute should be removed
-        /// in the future in favour of some form of check which figures out whether the function
-        /// does not inspect the bits of any of its arguments (so is essentially just a constructor
-        /// function)
+        /// This is either because the function is e.g., a tuple-struct or tuple-variant
+        /// constructor, or because it has the `#[rustc_promotable]` attribute. The attribute should
+        /// be removed in the future in favour of some form of check which figures out whether the
+        /// function does not inspect the bits of any of its arguments (so is essentially just a
+        /// constructor function).
         [] fn is_promotable_const_fn: IsPromotableConstFn(DefId) -> bool,
 
         /// True if this is a foreign item (i.e., linked via `extern { ... }`).
@@ -210,6 +203,8 @@ define_queries! { <'tcx>
 
         [] fn impl_trait_ref: ImplTraitRef(DefId) -> Option<ty::TraitRef<'tcx>>,
         [] fn impl_polarity: ImplPolarity(DefId) -> hir::ImplPolarity,
+
+        [] fn issue33140_self_ty: Issue33140SelfTy(DefId) -> Option<ty::Ty<'tcx>>,
     },
 
     TypeChecking {
@@ -259,6 +254,24 @@ define_queries! { <'tcx>
     },
 
     Other {
+        /// Checks the attributes in the module
+        [] fn check_mod_attrs: CheckModAttrs(DefId) -> (),
+
+        [] fn check_mod_unstable_api_usage: CheckModUnstableApiUsage(DefId) -> (),
+
+        /// Checks the loops in the module
+        [] fn check_mod_loops: CheckModLoops(DefId) -> (),
+
+        [] fn check_mod_item_types: CheckModItemTypes(DefId) -> (),
+
+        [] fn check_mod_privacy: CheckModPrivacy(DefId) -> (),
+
+        [] fn check_mod_intrinsics: CheckModIntrinsics(DefId) -> (),
+
+        [] fn check_mod_liveness: CheckModLiveness(DefId) -> (),
+
+        [] fn collect_mod_item_types: CollectModItemTypes(DefId) -> (),
+
         /// Caches CoerceUnsized kinds for impls on custom types.
         [] fn coerce_unsized_info: CoerceUnsizedInfo(DefId)
             -> ty::adjustment::CoerceUnsizedInfo,
@@ -390,7 +403,7 @@ define_queries! { <'tcx>
         /// might want to use `reveal_all()` method to change modes.
         [] fn param_env: ParamEnv(DefId) -> ty::ParamEnv<'tcx>,
 
-        /// Trait selection queries. These are best used by invoking `ty.moves_by_default()`,
+        /// Trait selection queries. These are best used by invoking `ty.is_copy_modulo_regions()`,
         /// `ty.is_copy()`, etc, since that will prune the environment where possible.
         [] fn is_copy_raw: is_copy_dep_node(ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool,
         [] fn is_sized_raw: is_sized_dep_node(ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool,
@@ -469,8 +482,11 @@ define_queries! { <'tcx>
 
         [] fn foreign_modules: ForeignModules(CrateNum) -> Lrc<Vec<ForeignModule>>,
 
+        /// Identifies the entry-point (e.g. the `main` function) for a given
+        /// crate, returning `None` if there is no entry point (such as for library crates).
+        [] fn entry_fn: EntryFn(CrateNum) -> Option<(DefId, EntryFnType)>,
         [] fn plugin_registrar_fn: PluginRegistrarFn(CrateNum) -> Option<DefId>,
-        [] fn derive_registrar_fn: DeriveRegistrarFn(CrateNum) -> Option<DefId>,
+        [] fn proc_macro_decls_static: ProcMacroDeclsStatic(CrateNum) -> Option<DefId>,
         [] fn crate_disambiguator: CrateDisambiguator(CrateNum) -> CrateDisambiguator,
         [] fn crate_hash: CrateHash(CrateNum) -> Svh,
         [] fn original_crate_name: OriginalCrateName(CrateNum) -> Symbol,
@@ -534,12 +550,14 @@ define_queries! { <'tcx>
         [] fn maybe_unused_trait_import: MaybeUnusedTraitImport(DefId) -> bool,
         [] fn maybe_unused_extern_crates: maybe_unused_extern_crates_node(CrateNum)
             -> Lrc<Vec<(DefId, Span)>>,
+        [] fn names_imported_by_glob_use: NamesImportedByGlobUse(DefId)
+            -> Lrc<FxHashSet<ast::Name>>,
 
         [] fn stability_index: stability_index_node(CrateNum) -> Lrc<stability::Index<'tcx>>,
         [] fn all_crate_nums: all_crate_nums_node(CrateNum) -> Lrc<Vec<CrateNum>>,
 
         /// A vector of every trait accessible in the whole crate
-        /// (i.e. including those from subcrates). This is used only for
+        /// (i.e., including those from subcrates). This is used only for
         /// error reporting.
         [] fn all_traits: all_traits_node(CrateNum) -> Lrc<Vec<DefId>>,
     },
@@ -555,6 +573,7 @@ define_queries! { <'tcx>
             -> (Arc<DefIdSet>, Arc<Vec<Arc<CodegenUnit<'tcx>>>>),
         [] fn is_codegened_item: IsCodegenedItem(DefId) -> bool,
         [] fn codegen_unit: CodegenUnit(InternedString) -> Arc<CodegenUnit<'tcx>>,
+        [] fn backend_optimization_level: BackendOptimizationLevel(CrateNum) -> OptLevel,
     },
 
     Other {
@@ -601,6 +620,13 @@ define_queries! { <'tcx>
         [] fn evaluate_obligation: EvaluateObligation(
             CanonicalPredicateGoal<'tcx>
         ) -> Result<traits::EvaluationResult, traits::OverflowError>,
+
+        [] fn evaluate_goal: EvaluateGoal(
+            traits::ChalkCanonicalGoal<'tcx>
+        ) -> Result<
+            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>>,
+            NoSolution
+        >,
 
         /// Do not call this query directly: part of the `Eq` type-op
         [] fn type_op_ascribe_user_type: TypeOpAscribeUserType(
@@ -668,6 +694,10 @@ define_queries! { <'tcx>
 
         [] fn substitute_normalize_and_test_predicates:
             substitute_normalize_and_test_predicates_node((DefId, &'tcx Substs<'tcx>)) -> bool,
+
+        [] fn method_autoderef_steps: MethodAutoderefSteps(
+            CanonicalTyGoal<'tcx>
+        ) -> MethodAutoderefStepsResult<'tcx>,
     },
 
     Other {
@@ -689,7 +719,7 @@ define_queries! { <'tcx>
         ) -> Clauses<'tcx>,
 
         // Get the chalk-style environment of the given item.
-        [] fn environment: Environment(DefId) -> ty::Binder<traits::Environment<'tcx>>,
+        [] fn environment: Environment(DefId) -> traits::Environment<'tcx>,
     },
 
     Linking {
@@ -705,21 +735,21 @@ impl<'a, 'tcx, 'lcx> TyCtxt<'a, 'tcx, 'lcx> {
         self,
         span: Span,
         key: DefId,
-    ) -> Result<&'tcx [Ty<'tcx>], DiagnosticBuilder<'a>> {
+    ) -> Result<&'tcx [Ty<'tcx>], Box<DiagnosticBuilder<'a>>> {
         self.try_get_query::<queries::adt_sized_constraint<'_>>(span, key)
     }
     pub fn try_needs_drop_raw(
         self,
         span: Span,
         key: ty::ParamEnvAnd<'tcx, Ty<'tcx>>,
-    ) -> Result<bool, DiagnosticBuilder<'a>> {
+    ) -> Result<bool, Box<DiagnosticBuilder<'a>>> {
         self.try_get_query::<queries::needs_drop_raw<'_>>(span, key)
     }
     pub fn try_optimized_mir(
         self,
         span: Span,
         key: DefId,
-    ) -> Result<&'tcx mir::Mir<'tcx>, DiagnosticBuilder<'a>> {
+    ) -> Result<&'tcx mir::Mir<'tcx>, Box<DiagnosticBuilder<'a>>> {
         self.try_get_query::<queries::optimized_mir<'_>>(span, key)
     }
 }

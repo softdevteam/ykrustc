@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Parsing and validation of builtin attributes
 
 use ast::{self, Attribute, MetaItem, Name, NestedMetaItemKind};
@@ -52,7 +42,7 @@ fn handle_errors(sess: &ParseSess, span: Span, error: AttrError) {
             let mut err = struct_span_err!(diag, span, E0565, "{}", msg);
             if is_bytestr {
                 if let Ok(lint_str) = sess.source_map().span_to_snippet(span) {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         span,
                         "consider removing the prefix",
                         format!("{}", &lint_str[1..]),
@@ -71,6 +61,13 @@ pub enum InlineAttr {
     Hint,
     Always,
     Never,
+}
+
+#[derive(Copy, Clone, Hash, PartialEq, RustcEncodable, RustcDecodable)]
+pub enum OptimizeAttr {
+    None,
+    Speed,
+    Size,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -161,6 +158,8 @@ impl StabilityLevel {
 pub struct RustcDeprecation {
     pub since: Symbol,
     pub reason: Symbol,
+    /// A text snippet used to completely replace any use of the deprecated item in an expression.
+    pub suggestion: Option<Symbol>,
 }
 
 /// Check if `attrs` contains an attribute like `#![feature(feature_name)]`.
@@ -277,13 +276,14 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                         continue 'outer
                     }
 
-                    get_meta!(since, reason);
+                    get_meta!(since, reason, suggestion);
 
                     match (since, reason) {
                         (Some(since), Some(reason)) => {
                             rustc_depr = Some(RustcDeprecation {
                                 since,
                                 reason,
+                                suggestion,
                             })
                         }
                         (None, _) => {
@@ -446,9 +446,6 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                 }
                 _ => unreachable!()
             }
-        } else {
-            span_err!(diagnostic, attr.span(), E0548, "incorrect stability attribute type");
-            continue
         }
     }
 
@@ -800,7 +797,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
                                     "incorrect `repr(align)` attribute format");
                                 match value.node {
                                     ast::LitKind::Int(int, ast::LitIntType::Unsuffixed) => {
-                                        err.span_suggestion_with_applicability(
+                                        err.span_suggestion(
                                             item.span,
                                             "use parentheses instead",
                                             format!("align({})", int),
@@ -808,7 +805,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
                                         );
                                     }
                                     ast::LitKind::Str(s, _) => {
-                                        err.span_suggestion_with_applicability(
+                                        err.span_suggestion(
                                             item.span,
                                             "use parentheses instead",
                                             format!("align({})", s),

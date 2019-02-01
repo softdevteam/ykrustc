@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A Folder represents an AST->AST fold; it accepts an AST piece,
 //! and returns a piece of the same type. So, for instance, macro
 //! expansion is a Folder that walks over an AST and produces another
@@ -217,8 +207,8 @@ pub trait Folder : Sized {
         noop_fold_angle_bracketed_parameter_data(p, self)
     }
 
-    fn fold_parenthesized_parameter_data(&mut self, p: ParenthesisedArgs)
-                                         -> ParenthesisedArgs
+    fn fold_parenthesized_parameter_data(&mut self, p: ParenthesizedArgs)
+                                         -> ParenthesizedArgs
     {
         noop_fold_parenthesized_parameter_data(p, self)
     }
@@ -229,7 +219,7 @@ pub trait Folder : Sized {
 
     fn fold_mac(&mut self, _mac: Mac) -> Mac {
         panic!("fold_mac disabled by default");
-        // NB: see note about macros above.
+        // N.B., see note about macros above.
         // if you really want a folder that
         // works on macros, use this
         // definition in your trait impl:
@@ -514,12 +504,12 @@ pub fn noop_fold_angle_bracketed_parameter_data<T: Folder>(data: AngleBracketedA
     }
 }
 
-pub fn noop_fold_parenthesized_parameter_data<T: Folder>(data: ParenthesisedArgs,
+pub fn noop_fold_parenthesized_parameter_data<T: Folder>(data: ParenthesizedArgs,
                                                          fld: &mut T)
-                                                         -> ParenthesisedArgs
+                                                         -> ParenthesizedArgs
 {
-    let ParenthesisedArgs { inputs, output, span } = data;
-    ParenthesisedArgs {
+    let ParenthesizedArgs { inputs, output, span } = data;
+    ParenthesizedArgs {
         inputs: inputs.move_map(|ty| fld.fold_ty(ty)),
         output: output.map(|ty| fld.fold_ty(ty)),
         span: fld.new_span(span)
@@ -605,12 +595,10 @@ pub fn noop_fold_tt<T: Folder>(tt: TokenTree, fld: &mut T) -> TokenTree {
     match tt {
         TokenTree::Token(span, tok) =>
             TokenTree::Token(fld.new_span(span), fld.fold_token(tok)),
-        TokenTree::Delimited(span, delimed) => TokenTree::Delimited(
+        TokenTree::Delimited(span, delim, tts) => TokenTree::Delimited(
             DelimSpan::from_pair(fld.new_span(span.open), fld.new_span(span.close)),
-            Delimited {
-                tts: fld.fold_tts(delimed.stream()).into(),
-                delim: delimed.delim,
-            }
+            delim,
+            fld.fold_tts(tts).into(),
         ),
     }
 }
@@ -637,7 +625,7 @@ pub fn noop_fold_token<T: Folder>(t: token::Token, fld: &mut T) -> token::Token 
 
 /// apply folder to elements of interpolated nodes
 //
-// NB: this can occur only when applying a fold to partially expanded code, where
+// N.B., this can occur only when applying a fold to partially expanded code, where
 // parsed pieces have gotten implanted ito *other* macro invocations. This is relevant
 // for macro hygiene, but possibly not elsewhere.
 //
@@ -904,12 +892,11 @@ fn noop_fold_bounds<T: Folder>(bounds: GenericBounds, folder: &mut T)
 }
 
 pub fn noop_fold_block<T: Folder>(b: P<Block>, folder: &mut T) -> P<Block> {
-    b.map(|Block {id, stmts, rules, span, recovered}| Block {
+    b.map(|Block {id, stmts, rules, span}| Block {
         id: folder.new_id(id),
         stmts: stmts.move_flat_map(|s| folder.fold_stmt(s).into_iter()),
         rules,
         span: folder.new_span(span),
-        recovered,
     })
 }
 
@@ -1379,6 +1366,7 @@ pub fn noop_fold_expr<T: Folder>(Expr {id, node, span, attrs}: Expr, folder: &mu
             ExprKind::Yield(ex) => ExprKind::Yield(ex.map(|x| folder.fold_expr(x))),
             ExprKind::Try(ex) => ExprKind::Try(folder.fold_expr(ex)),
             ExprKind::TryBlock(body) => ExprKind::TryBlock(folder.fold_block(body)),
+            ExprKind::Err => ExprKind::Err,
         },
         id: folder.new_id(id),
         span: folder.new_span(span),

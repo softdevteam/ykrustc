@@ -1,14 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! Tidy check to enforce rules about platform-specific code in std
+//! Tidy check to enforce rules about platform-specific code in std.
 //!
 //! This is intended to maintain existing standards of code
 //! organization in hopes that the standard library will continue to
@@ -25,16 +15,15 @@
 //! Following are the basic rules, though there are currently
 //! exceptions:
 //!
-//! - core may not have platform-specific code
-//! - libcompiler_builtins may have platform-specific code
-//! - libpanic_abort may have platform-specific code
-//! - libpanic_unwind may have platform-specific code
-//! - libunwind may have platform-specific code
-//! - other crates in the std facade may not
-//! - std may have platform-specific code in the following places
-//!   - sys/unix/
-//!   - sys/windows/
-//!   - os/
+//! - core may not have platform-specific code.
+//! - libpanic_abort may have platform-specific code.
+//! - libpanic_unwind may have platform-specific code.
+//! - libunwind may have platform-specific code.
+//! - other crates in the std facade may not.
+//! - std may have platform-specific code in the following places:
+//!   - `sys/unix/`
+//!   - `sys/windows/`
+//!   - `os/`
 //!
 //! `std/sys_common` should _not_ contain platform-specific code.
 //! Finally, because std contains tests with platform-specific
@@ -47,11 +36,9 @@ use std::io::Read;
 use std::path::Path;
 use std::iter::Iterator;
 
-// Paths that may contain platform-specific code
+// Paths that may contain platform-specific code.
 const EXCEPTION_PATHS: &[&str] = &[
     // std crates
-    "src/libcompiler_builtins",
-    "src/liblibc",
     "src/libpanic_abort",
     "src/libpanic_unwind",
     "src/libunwind",
@@ -61,18 +48,27 @@ const EXCEPTION_PATHS: &[&str] = &[
     "src/rtstartup", // Not sure what to do about this. magic stuff for mingw
 
     // temporary exceptions
-    "src/libstd/lib.rs", // FIXME(#44217)
+    "src/libstd/lib.rs",
     "src/libstd/path.rs",
     "src/libstd/f32.rs",
     "src/libstd/f64.rs",
+    // Integration test for platform-specific run-time feature detection:
+    "src/libstd/tests/run-time-detect.rs" ,
     "src/libstd/sys_common/mod.rs",
     "src/libstd/sys_common/net.rs",
-    "src/libterm", // Not sure how to make this crate portable, but test needs it
-    "src/libtest", // Probably should defer to unstable std::sys APIs
+    "src/libterm", // Not sure how to make this crate portable, but test crate needs it.
+    "src/libtest", // Probably should defer to unstable `std::sys` APIs.
 
-    // std testing crates, ok for now at least
+    // std testing crates, okay for now at least
     "src/libcore/tests",
     "src/liballoc/tests/lib.rs",
+
+    // The `VaList` implementation must have platform specific code.
+    // The Windows implementation of a `va_list` is always a character
+    // pointer regardless of the target architecture. As a result,
+    // we must use `#[cfg(windows)]` to conditionally compile the
+    // correct `VaList` structure for windows.
+    "src/libcore/ffi.rs",
 
     // non-std crates
     "src/test",
@@ -85,7 +81,7 @@ const EXCEPTION_PATHS: &[&str] = &[
 
 pub fn check(path: &Path, bad: &mut bool) {
     let mut contents = String::new();
-    // Sanity check that the complex parsing here works
+    // Sanity check that the complex parsing here works.
     let mut saw_target_arch = false;
     let mut saw_cfg_bang = false;
     super::walk(path, &mut super::filter_dirs, &mut |file| {
@@ -110,7 +106,7 @@ fn check_cfgs(contents: &mut String, file: &Path,
     // For now it's ok to have platform-specific code after 'mod tests'.
     let mod_tests_idx = find_test_mod(contents);
     let contents = &contents[..mod_tests_idx];
-    // Pull out all "cfg(...)" and "cfg!(...)" strings
+    // Pull out all `cfg(...)` and `cfg!(...)` strings.
     let cfgs = parse_cfgs(contents);
 
     let mut line_numbers: Option<Vec<usize>> = None;
@@ -127,7 +123,7 @@ fn check_cfgs(contents: &mut String, file: &Path,
     };
 
     for (idx, cfg) in cfgs {
-        // Sanity check that the parsing here works
+        // Sanity check that the parsing here works.
         if !*saw_target_arch && cfg.contains("target_arch") { *saw_target_arch = true }
         if !*saw_cfg_bang && cfg.contains("cfg!") { *saw_cfg_bang = true }
 
@@ -159,7 +155,7 @@ fn check_cfgs(contents: &mut String, file: &Path,
 
 fn find_test_mod(contents: &str) -> usize {
     if let Some(mod_tests_idx) = contents.find("mod tests") {
-        // Also capture a previous line indicating "mod tests" in cfg-ed out
+        // Also capture a previous line indicating that "mod tests" is cfg'd out.
         let prev_newline_idx = contents[..mod_tests_idx].rfind('\n').unwrap_or(mod_tests_idx);
         let prev_newline_idx = contents[..prev_newline_idx].rfind('\n');
         if let Some(nl) = prev_newline_idx {
@@ -182,7 +178,7 @@ fn parse_cfgs<'a>(contents: &'a str) -> Vec<(usize, &'a str)> {
     let candidate_cfgs = contents.match_indices("cfg");
     let candidate_cfg_idxs = candidate_cfgs.map(|(i, _)| i);
     // This is puling out the indexes of all "cfg" strings
-    // that appear to be tokens succeeded by a paren.
+    // that appear to be tokens followed by a parenthesis.
     let cfgs = candidate_cfg_idxs.filter(|i| {
         let pre_idx = i.saturating_sub(*i);
         let succeeds_non_ident = !contents.as_bytes().get(pre_idx)

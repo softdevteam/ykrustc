@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #include "rustllvm.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DebugInfoMetadata.h"
@@ -198,6 +188,8 @@ static Attribute::AttrKind fromRust(LLVMRustAttribute Kind) {
     return Attribute::SanitizeMemory;
   case NonLazyBind:
     return Attribute::NonLazyBind;
+  case OptimizeNone:
+    return Attribute::OptimizeNone;
   }
   report_fatal_error("bad AttributeKind");
 }
@@ -297,18 +289,14 @@ extern "C" void LLVMRustRemoveFunctionAttributes(LLVMValueRef Fn,
 // enable fpmath flag UnsafeAlgebra
 extern "C" void LLVMRustSetHasUnsafeAlgebra(LLVMValueRef V) {
   if (auto I = dyn_cast<Instruction>(unwrap<Value>(V))) {
-#if LLVM_VERSION_GE(6, 0)
     I->setFast(true);
-#else
-    I->setHasUnsafeAlgebra(true);
-#endif
   }
 }
 
 extern "C" LLVMValueRef
 LLVMRustBuildAtomicLoad(LLVMBuilderRef B, LLVMValueRef Source, const char *Name,
                         LLVMAtomicOrdering Order) {
-  LoadInst *LI = new LoadInst(unwrap(Source), 0);
+  LoadInst *LI = new LoadInst(unwrap(Source));
   LI->setAtomic(fromRust(Order));
   return wrap(unwrap(B)->Insert(LI, Name));
 }
@@ -525,6 +513,90 @@ static DINode::DIFlags fromRust(LLVMRustDIFlags Flags) {
   return Result;
 }
 
+// These values **must** match debuginfo::DISPFlags! They also *happen*
+// to match LLVM, but that isn't required as we do giant sets of
+// matching below. The value shouldn't be directly passed to LLVM.
+enum class LLVMRustDISPFlags : uint32_t {
+  SPFlagZero = 0,
+  SPFlagVirtual = 1,
+  SPFlagPureVirtual = 2,
+  SPFlagLocalToUnit = (1 << 2),
+  SPFlagDefinition = (1 << 3),
+  SPFlagOptimized = (1 << 4),
+  // Do not add values that are not supported by the minimum LLVM
+  // version we support! see llvm/include/llvm/IR/DebugInfoFlags.def
+  // (In LLVM < 8, createFunction supported these as separate bool arguments.)
+};
+
+inline LLVMRustDISPFlags operator&(LLVMRustDISPFlags A, LLVMRustDISPFlags B) {
+  return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(A) &
+                                      static_cast<uint32_t>(B));
+}
+
+inline LLVMRustDISPFlags operator|(LLVMRustDISPFlags A, LLVMRustDISPFlags B) {
+  return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(A) |
+                                      static_cast<uint32_t>(B));
+}
+
+inline LLVMRustDISPFlags &operator|=(LLVMRustDISPFlags &A, LLVMRustDISPFlags B) {
+  return A = A | B;
+}
+
+inline bool isSet(LLVMRustDISPFlags F) { return F != LLVMRustDISPFlags::SPFlagZero; }
+
+inline LLVMRustDISPFlags virtuality(LLVMRustDISPFlags F) {
+  return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(F) & 0x3);
+}
+
+#if LLVM_VERSION_GE(8, 0)
+static DISubprogram::DISPFlags fromRust(LLVMRustDISPFlags SPFlags) {
+  DISubprogram::DISPFlags Result = DISubprogram::DISPFlags::SPFlagZero;
+
+  switch (virtuality(SPFlags)) {
+  case LLVMRustDISPFlags::SPFlagVirtual:
+    Result |= DISubprogram::DISPFlags::SPFlagVirtual;
+    break;
+  case LLVMRustDISPFlags::SPFlagPureVirtual:
+    Result |= DISubprogram::DISPFlags::SPFlagPureVirtual;
+    break;
+  default:
+    // The rest are handled below
+    break;
+  }
+
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagLocalToUnit)) {
+    Result |= DISubprogram::DISPFlags::SPFlagLocalToUnit;
+  }
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagDefinition)) {
+    Result |= DISubprogram::DISPFlags::SPFlagDefinition;
+  }
+  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagOptimized)) {
+    Result |= DISubprogram::DISPFlags::SPFlagOptimized;
+  }
+
+  return Result;
+}
+#endif
+
+enum class LLVMRustDebugEmissionKind {
+  NoDebug,
+  FullDebug,
+  LineTablesOnly,
+};
+
+static DICompileUnit::DebugEmissionKind fromRust(LLVMRustDebugEmissionKind Kind) {
+  switch (Kind) {
+  case LLVMRustDebugEmissionKind::NoDebug:
+    return DICompileUnit::DebugEmissionKind::NoDebug;
+  case LLVMRustDebugEmissionKind::FullDebug:
+    return DICompileUnit::DebugEmissionKind::FullDebug;
+  case LLVMRustDebugEmissionKind::LineTablesOnly:
+    return DICompileUnit::DebugEmissionKind::LineTablesOnly;
+  default:
+    report_fatal_error("bad DebugEmissionKind.");
+  }
+}
+
 extern "C" uint32_t LLVMRustDebugMetadataVersion() {
   return DEBUG_METADATA_VERSION;
 }
@@ -532,6 +604,14 @@ extern "C" uint32_t LLVMRustDebugMetadataVersion() {
 extern "C" uint32_t LLVMRustVersionMinor() { return LLVM_VERSION_MINOR; }
 
 extern "C" uint32_t LLVMRustVersionMajor() { return LLVM_VERSION_MAJOR; }
+
+extern "C" bool LLVMRustIsRustLLVM() {
+#ifdef LLVM_RUSTLLVM
+  return 1;
+#else
+  return 0;
+#endif
+}
 
 extern "C" void LLVMRustAddModuleFlag(LLVMModuleRef M, const char *Name,
                                       uint32_t Value) {
@@ -557,11 +637,13 @@ extern "C" void LLVMRustDIBuilderFinalize(LLVMRustDIBuilderRef Builder) {
 extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateCompileUnit(
     LLVMRustDIBuilderRef Builder, unsigned Lang, LLVMMetadataRef FileRef,
     const char *Producer, bool isOptimized, const char *Flags,
-    unsigned RuntimeVer, const char *SplitName) {
+    unsigned RuntimeVer, const char *SplitName,
+    LLVMRustDebugEmissionKind Kind) {
   auto *File = unwrapDI<DIFile>(FileRef);
 
   return wrap(Builder->createCompileUnit(Lang, File, Producer, isOptimized,
-                                         Flags, RuntimeVer, SplitName));
+                                         Flags, RuntimeVer, SplitName,
+                                         fromRust(Kind)));
 }
 
 extern "C" LLVMMetadataRef
@@ -581,16 +663,26 @@ LLVMRustDIBuilderCreateSubroutineType(LLVMRustDIBuilderRef Builder,
 extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
     LLVMRustDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
     const char *LinkageName, LLVMMetadataRef File, unsigned LineNo,
-    LLVMMetadataRef Ty, bool IsLocalToUnit, bool IsDefinition,
-    unsigned ScopeLine, LLVMRustDIFlags Flags, bool IsOptimized,
-    LLVMValueRef Fn, LLVMMetadataRef TParam, LLVMMetadataRef Decl) {
+    LLVMMetadataRef Ty, unsigned ScopeLine, LLVMRustDIFlags Flags,
+    LLVMRustDISPFlags SPFlags, LLVMValueRef Fn, LLVMMetadataRef TParam,
+    LLVMMetadataRef Decl) {
   DITemplateParameterArray TParams =
       DITemplateParameterArray(unwrap<MDTuple>(TParam));
+#if LLVM_VERSION_GE(8, 0)
+  DISubprogram *Sub = Builder->createFunction(
+      unwrapDI<DIScope>(Scope), Name, LinkageName, unwrapDI<DIFile>(File),
+      LineNo, unwrapDI<DISubroutineType>(Ty), ScopeLine, fromRust(Flags),
+      fromRust(SPFlags), TParams, unwrapDIPtr<DISubprogram>(Decl));
+#else
+  bool IsLocalToUnit = isSet(SPFlags & LLVMRustDISPFlags::SPFlagLocalToUnit);
+  bool IsDefinition = isSet(SPFlags & LLVMRustDISPFlags::SPFlagDefinition);
+  bool IsOptimized = isSet(SPFlags & LLVMRustDISPFlags::SPFlagOptimized);
   DISubprogram *Sub = Builder->createFunction(
       unwrapDI<DIScope>(Scope), Name, LinkageName, unwrapDI<DIFile>(File),
       LineNo, unwrapDI<DISubroutineType>(Ty), IsLocalToUnit, IsDefinition,
       ScopeLine, fromRust(Flags), IsOptimized, TParams,
       unwrapDIPtr<DISubprogram>(Decl));
+#endif
   unwrap<Function>(Fn)->setSubprogram(Sub);
   return wrap(Sub);
 }
@@ -708,7 +800,11 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateStaticVariable(
   llvm::DIGlobalVariableExpression *VarExpr = Builder->createGlobalVariableExpression(
       unwrapDI<DIDescriptor>(Context), Name, LinkageName,
       unwrapDI<DIFile>(File), LineNo, unwrapDI<DIType>(Ty), IsLocalToUnit,
-      InitExpr, unwrapDIPtr<MDNode>(Decl), AlignInBits);
+      InitExpr, unwrapDIPtr<MDNode>(Decl),
+#if LLVM_VERSION_GE(8, 0)
+      /* templateParams */ nullptr,
+#endif
+      AlignInBits);
 
   InitVal->setMetadata("dbg", VarExpr);
 
@@ -775,14 +871,14 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateEnumerationType(
     LLVMRustDIBuilderRef Builder, LLVMMetadataRef Scope, const char *Name,
     LLVMMetadataRef File, unsigned LineNumber, uint64_t SizeInBits,
     uint32_t AlignInBits, LLVMMetadataRef Elements,
-    LLVMMetadataRef ClassTy, bool IsFixed) {
+    LLVMMetadataRef ClassTy, bool IsScoped) {
 #if LLVM_VERSION_GE(7, 0)
   return wrap(Builder->createEnumerationType(
       unwrapDI<DIDescriptor>(Scope), Name, unwrapDI<DIFile>(File), LineNumber,
       SizeInBits, AlignInBits, DINodeArray(unwrapDI<MDTuple>(Elements)),
-      unwrapDI<DIType>(ClassTy), "", IsFixed));
+      unwrapDI<DIType>(ClassTy), "", IsScoped));
 #else
-  // Ignore IsFixed on older LLVM.
+  // Ignore IsScoped on older LLVM.
   return wrap(Builder->createEnumerationType(
       unwrapDI<DIDescriptor>(Scope), Name, unwrapDI<DIFile>(File), LineNumber,
       SizeInBits, AlignInBits, DINodeArray(unwrapDI<MDTuple>(Elements)),
@@ -820,11 +916,13 @@ LLVMRustDIBuilderCreateNameSpace(LLVMRustDIBuilderRef Builder,
 }
 
 extern "C" void
-LLVMRustDICompositeTypeSetTypeArray(LLVMRustDIBuilderRef Builder,
-                                    LLVMMetadataRef CompositeTy,
-                                    LLVMMetadataRef TyArray) {
+LLVMRustDICompositeTypeReplaceArrays(LLVMRustDIBuilderRef Builder,
+                                     LLVMMetadataRef CompositeTy,
+                                     LLVMMetadataRef Elements,
+                                     LLVMMetadataRef Params) {
   DICompositeType *Tmp = unwrapDI<DICompositeType>(CompositeTy);
-  Builder->replaceArrays(Tmp, DINodeArray(unwrap<MDTuple>(TyArray)));
+  Builder->replaceArrays(Tmp, DINodeArray(unwrap<MDTuple>(Elements)),
+                         DINodeArray(unwrap<MDTuple>(Params)));
 }
 
 extern "C" LLVMValueRef
@@ -920,7 +1018,11 @@ extern "C" void LLVMRustUnpackOptimizationDiagnostic(
   if (loc.isValid()) {
     *Line = loc.getLine();
     *Column = loc.getColumn();
+#if LLVM_VERSION_GE(8, 0)
+    FilenameOS << loc.getAbsolutePath();
+#else
     FilenameOS << loc.getFilename();
+#endif
   }
 
   RawRustStringOstream MessageOS(MessageOut);
@@ -1423,7 +1525,6 @@ LLVMRustBuildVectorReduceFMax(LLVMBuilderRef B, LLVMValueRef Src, bool NoNaN) {
   return wrap(unwrap(B)->CreateFPMaxReduce(unwrap(Src), NoNaN));
 }
 
-#if LLVM_VERSION_GE(6, 0)
 extern "C" LLVMValueRef
 LLVMRustBuildMinNum(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS) {
     return wrap(unwrap(B)->CreateMinNum(unwrap(LHS),unwrap(RHS)));
@@ -1432,13 +1533,3 @@ extern "C" LLVMValueRef
 LLVMRustBuildMaxNum(LLVMBuilderRef B, LLVMValueRef LHS, LLVMValueRef RHS) {
     return wrap(unwrap(B)->CreateMaxNum(unwrap(LHS),unwrap(RHS)));
 }
-#else
-extern "C" LLVMValueRef
-LLVMRustBuildMinNum(LLVMBuilderRef, LLVMValueRef, LLVMValueRef) {
-   return nullptr;
-}
-extern "C" LLVMValueRef
-LLVMRustBuildMaxNum(LLVMBuilderRef, LLVMValueRef, LLVMValueRef) {
-   return nullptr;
-}
-#endif

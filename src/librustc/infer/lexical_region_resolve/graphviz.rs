@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module provides linkage between libgraphviz traits and
 //! `rustc::middle::typeck::infer::region_constraints`, generating a
 //! rendering of the graph represented by the list of `Constraint`
@@ -31,9 +21,8 @@ use std::borrow::Cow;
 use std::collections::hash_map::Entry::Vacant;
 use std::collections::btree_map::BTreeMap;
 use std::env;
-use std::fs::File;
+use std::fs;
 use std::io;
-use std::io::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn print_help_message() {
@@ -268,5 +257,5 @@ fn dump_region_data_to<'a, 'gcx, 'tcx>(region_rels: &RegionRelations<'a, 'gcx, '
     debug!("dump_region_data calling render");
     let mut v = Vec::new();
     dot::render(&g, &mut v).unwrap();
-    File::create(path).and_then(|mut f| f.write_all(&v))
+    fs::write(path, &v)
 }

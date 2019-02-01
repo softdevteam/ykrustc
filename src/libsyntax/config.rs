@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use attr::HasAttrs;
 use feature_gate::{
     feature_err,
@@ -15,7 +5,6 @@ use feature_gate::{
     Features,
     get_features,
     GateIssue,
-    emit_feature_err,
 };
 use {fold, attr};
 use ast;
@@ -104,13 +93,6 @@ impl<'a> StripUnconfigured<'a> {
             return vec![attr];
         }
 
-        let gate_cfg_attr_multi = if let Some(ref features) = self.features {
-            !features.cfg_attr_multi
-        } else {
-            false
-        };
-        let cfg_attr_span = attr.span;
-
         let (cfg_predicate, expanded_attrs) = match attr.parse(self.sess, |parser| {
             parser.expect(&token::OpenDelim(token::Paren))?;
 
@@ -140,21 +122,8 @@ impl<'a> StripUnconfigured<'a> {
         // Check feature gate and lint on zero attributes in source. Even if the feature is gated,
         // we still compute as if it wasn't, since the emitted error will stop compilation further
         // along the compilation.
-        match (expanded_attrs.len(), gate_cfg_attr_multi) {
-            (0, false) => {
-                // FIXME: Emit unused attribute lint here.
-            },
-            (1, _) => {},
-            (_, true) => {
-                emit_feature_err(
-                    self.sess,
-                    "cfg_attr_multi",
-                    cfg_attr_span,
-                    GateIssue::Language,
-                    "cfg_attr with zero or more than one attributes is experimental",
-                );
-            },
-            (_, false) => {}
+        if expanded_attrs.len() == 0 {
+            // FIXME: Emit unused attribute lint here.
         }
 
         if attr::cfg_matches(&cfg_predicate, self.sess, self.features) {
@@ -186,7 +155,7 @@ impl<'a> StripUnconfigured<'a> {
             let error = |span, msg, suggestion: &str| {
                 let mut err = self.sess.span_diagnostic.struct_span_err(span, msg);
                 if !suggestion.is_empty() {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         span,
                         "expected syntax is",
                         suggestion.into(),
@@ -197,12 +166,9 @@ impl<'a> StripUnconfigured<'a> {
                 true
             };
 
-            let meta_item = if let Some(meta_item) = attr.meta() {
-                meta_item
-            } else {
-                // Not a well-formed meta-item. Why? We don't know.
-                return error(attr.span, "`cfg` is not a well-formed meta-item",
-                                        "#[cfg(/* predicate */)]");
+            let meta_item = match attr.parse_meta(self.sess) {
+                Ok(meta_item) => meta_item,
+                Err(mut err) => { err.emit(); return true; }
             };
             let nested_meta_items = if let Some(nested_meta_items) = meta_item.meta_item_list() {
                 nested_meta_items
@@ -328,7 +294,7 @@ impl<'a> StripUnconfigured<'a> {
         // Anything else is always required, and thus has to error out
         // in case of a cfg attr.
         //
-        // NB: This is intentionally not part of the fold_expr() function
+        // N.B., this is intentionally not part of the fold_expr() function
         //     in order for fold_opt_expr() to be able to avoid this check
         if let Some(attr) = expr.attrs().iter().find(|a| is_cfg(a)) {
             let msg = "removing an expression is not supported in this position";
@@ -421,7 +387,7 @@ impl<'a> fold::Folder for StripUnconfigured<'a> {
     }
 
     fn fold_mac(&mut self, mac: ast::Mac) -> ast::Mac {
-        // Don't configure interpolated AST (c.f. #34171).
+        // Don't configure interpolated AST (cf. issue #34171).
         // Interpolated AST will get configured once the surrounding tokens are parsed.
         mac
     }

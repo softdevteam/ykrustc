@@ -1,20 +1,10 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 extern crate toml;
 #[macro_use]
 extern crate serde_derive;
 
 use std::collections::BTreeMap;
 use std::env;
-use std::fs::File;
+use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{PathBuf, Path};
 use std::process::{Command, Stdio};
@@ -61,7 +51,9 @@ static TARGETS: &'static [&'static str] = &[
     "armv5te-unknown-linux-musleabi",
     "armv7-apple-ios",
     "armv7-linux-androideabi",
+    "thumbv7neon-linux-androideabi",
     "armv7-unknown-linux-gnueabihf",
+    "thumbv7neon-unknown-linux-gnueabihf",
     "armv7-unknown-linux-musleabihf",
     "armebv7r-none-eabi",
     "armebv7r-none-eabihf",
@@ -98,10 +90,12 @@ static TARGETS: &'static [&'static str] = &[
     "thumbv7em-none-eabi",
     "thumbv7em-none-eabihf",
     "thumbv7m-none-eabi",
+    "thumbv8m.main-none-eabi",
     "wasm32-unknown-emscripten",
     "wasm32-unknown-unknown",
     "x86_64-apple-darwin",
     "x86_64-apple-ios",
+    "x86_64-fortanix-unknown-sgx",
     "x86_64-fuchsia",
     "x86_64-linux-android",
     "x86_64-pc-windows-gnu",
@@ -139,7 +133,8 @@ struct Manifest {
     manifest_version: String,
     date: String,
     pkg: BTreeMap<String, Package>,
-    renames: BTreeMap<String, Rename>
+    renames: BTreeMap<String, Rename>,
+    profiles: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -200,6 +195,7 @@ struct Builder {
     rustfmt_release: String,
     llvm_tools_release: String,
     lldb_release: String,
+    miri_release: String,
 
     input: PathBuf,
     output: PathBuf,
@@ -215,6 +211,7 @@ struct Builder {
     rustfmt_version: Option<String>,
     llvm_tools_version: Option<String>,
     lldb_version: Option<String>,
+    miri_version: Option<String>,
 
     rust_git_commit_hash: Option<String>,
     cargo_git_commit_hash: Option<String>,
@@ -223,6 +220,7 @@ struct Builder {
     rustfmt_git_commit_hash: Option<String>,
     llvm_tools_git_commit_hash: Option<String>,
     lldb_git_commit_hash: Option<String>,
+    miri_git_commit_hash: Option<String>,
 
     should_sign: bool,
 }
@@ -245,13 +243,14 @@ fn main() {
     let output = PathBuf::from(args.next().unwrap());
     let date = args.next().unwrap();
     let rust_release = args.next().unwrap();
+    let s3_address = args.next().unwrap();
     let cargo_release = args.next().unwrap();
     let rls_release = args.next().unwrap();
     let clippy_release = args.next().unwrap();
+    let miri_release = args.next().unwrap();
     let rustfmt_release = args.next().unwrap();
     let llvm_tools_release = args.next().unwrap();
     let lldb_release = args.next().unwrap();
-    let s3_address = args.next().unwrap();
 
     // Do not ask for a passphrase while manually testing
     let mut passphrase = String::new();
@@ -267,6 +266,7 @@ fn main() {
         rustfmt_release,
         llvm_tools_release,
         lldb_release,
+        miri_release,
 
         input,
         output,
@@ -282,6 +282,7 @@ fn main() {
         rustfmt_version: None,
         llvm_tools_version: None,
         lldb_version: None,
+        miri_version: None,
 
         rust_git_commit_hash: None,
         cargo_git_commit_hash: None,
@@ -290,6 +291,7 @@ fn main() {
         rustfmt_git_commit_hash: None,
         llvm_tools_git_commit_hash: None,
         lldb_git_commit_hash: None,
+        miri_git_commit_hash: None,
 
         should_sign,
     }.build();
@@ -305,6 +307,7 @@ impl Builder {
         self.llvm_tools_version = self.version("llvm-tools", "x86_64-unknown-linux-gnu");
         // lldb is only built for macOS.
         self.lldb_version = self.version("lldb", "x86_64-apple-darwin");
+        self.miri_version = self.version("miri", "x86_64-unknown-linux-gnu");
 
         self.rust_git_commit_hash = self.git_commit_hash("rust", "x86_64-unknown-linux-gnu");
         self.cargo_git_commit_hash = self.git_commit_hash("cargo", "x86_64-unknown-linux-gnu");
@@ -314,6 +317,7 @@ impl Builder {
         self.llvm_tools_git_commit_hash = self.git_commit_hash("llvm-tools",
                                                                "x86_64-unknown-linux-gnu");
         self.lldb_git_commit_hash = self.git_commit_hash("lldb", "x86_64-unknown-linux-gnu");
+        self.miri_git_commit_hash = self.git_commit_hash("miri", "x86_64-unknown-linux-gnu");
 
         self.digest_and_sign();
         let manifest = self.build_manifest();
@@ -339,6 +343,7 @@ impl Builder {
             date: self.date.to_string(),
             pkg: BTreeMap::new(),
             renames: BTreeMap::new(),
+            profiles: BTreeMap::new(),
         };
 
         self.package("rustc", &mut manifest.pkg, HOSTS);
@@ -353,6 +358,20 @@ impl Builder {
         self.package("rust-analysis", &mut manifest.pkg, TARGETS);
         self.package("llvm-tools-preview", &mut manifest.pkg, TARGETS);
         self.package("lldb-preview", &mut manifest.pkg, TARGETS);
+
+        self.profile("minimal",
+                     &mut manifest.profiles,
+                     &["rustc", "cargo", "rust-std", "rust-mingw"]);
+        self.profile("default",
+                     &mut manifest.profiles,
+                     &["rustc", "cargo", "rust-std", "rust-mingw",
+                       "rust-docs", "rustfmt-preview", "clippy-preview"]);
+        self.profile("complete",
+                     &mut manifest.profiles,
+                     &["rustc", "cargo", "rust-std", "rust-mingw",
+                       "rust-docs", "rustfmt-preview", "clippy-preview",
+                       "rls-preview", "rust-src", "llvm-tools-preview",
+                       "lldb-preview", "rust-analysis"]);
 
         manifest.renames.insert("rls".to_owned(), Rename { to: "rls-preview".to_owned() });
         manifest.renames.insert("rustfmt".to_owned(), Rename { to: "rustfmt-preview".to_owned() });
@@ -452,6 +471,13 @@ impl Builder {
         return manifest;
     }
 
+    fn profile(&mut self,
+               profile_name: &str,
+               dst: &mut BTreeMap<String, Vec<String>>,
+               pkgs: &[&str]) {
+        dst.insert(profile_name.to_owned(), pkgs.iter().map(|s| (*s).to_owned()).collect());
+    }
+
     fn package(&mut self,
                pkgname: &str,
                dst: &mut BTreeMap<String, Package>,
@@ -524,6 +550,8 @@ impl Builder {
             format!("llvm-tools-{}-{}.tar.gz", self.llvm_tools_release, target)
         } else if component == "lldb" || component == "lldb-preview" {
             format!("lldb-{}-{}.tar.gz", self.lldb_release, target)
+        } else if component == "miri" || component == "miri-preview" {
+            format!("miri-{}-{}.tar.gz", self.miri_release, target)
         } else {
             format!("{}-{}-{}.tar.gz", component, self.rust_release, target)
         }
@@ -542,6 +570,8 @@ impl Builder {
             &self.llvm_tools_version
         } else if component == "lldb" || component == "lldb-preview" {
             &self.lldb_version
+        } else if component == "miri" || component == "miri-preview" {
+            &self.miri_version
         } else {
             &self.rust_version
         }
@@ -560,6 +590,8 @@ impl Builder {
             &self.llvm_tools_git_commit_hash
         } else if component == "lldb" || component == "lldb-preview" {
             &self.lldb_git_commit_hash
+        } else if component == "miri" || component == "miri-preview" {
+            &self.miri_git_commit_hash
         } else {
             &self.rust_git_commit_hash
         }
@@ -606,7 +638,7 @@ impl Builder {
 
         let filename = path.file_name().unwrap().to_str().unwrap();
         let sha256 = self.output.join(format!("{}.sha256", filename));
-        t!(t!(File::create(&sha256)).write_all(&sha.stdout));
+        t!(fs::write(&sha256, &sha.stdout));
 
         let stdout = String::from_utf8_lossy(&sha.stdout);
         stdout.split_whitespace().next().unwrap().to_string()
@@ -621,8 +653,10 @@ impl Builder {
         let asc = self.output.join(format!("{}.asc", filename));
         println!("signing: {:?}", path);
         let mut cmd = Command::new("gpg");
-        cmd.arg("--no-tty")
+        cmd.arg("--pinentry-mode=loopback")
+            .arg("--no-tty")
             .arg("--yes")
+            .arg("--batch")
             .arg("--passphrase-fd").arg("0")
             .arg("--personal-digest-preferences").arg("SHA512")
             .arg("--armor")
@@ -643,7 +677,7 @@ impl Builder {
 
     fn write(&self, contents: &str, channel_name: &str, suffix: &str) {
         let dst = self.output.join(format!("channel-rust-{}{}", channel_name, suffix));
-        t!(t!(File::create(&dst)).write_all(contents.as_bytes()));
+        t!(fs::write(&dst, contents));
         self.hash(&dst);
         self.sign(&dst);
     }

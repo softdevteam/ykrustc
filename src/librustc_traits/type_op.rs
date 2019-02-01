@@ -1,19 +1,7 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::infer::at::ToTrace;
 use rustc::infer::canonical::{Canonical, QueryResponse};
 use rustc::infer::InferCtxt;
 use rustc::hir::def_id::DefId;
-use rustc::mir::ProjectionKind;
-use rustc::mir::tcx::PlaceTy;
 use rustc::traits::query::type_op::ascribe_user_type::AscribeUserType;
 use rustc::traits::query::type_op::eq::Eq;
 use rustc::traits::query::type_op::normalize::Normalize;
@@ -21,10 +9,10 @@ use rustc::traits::query::type_op::prove_predicate::ProvePredicate;
 use rustc::traits::query::type_op::subtype::Subtype;
 use rustc::traits::query::{Fallible, NoSolution};
 use rustc::traits::{
-    FulfillmentContext, Normalized, Obligation, ObligationCause, TraitEngine, TraitEngineExt,
+    Normalized, Obligation, ObligationCause, TraitEngine, TraitEngineExt,
 };
 use rustc::ty::query::Providers;
-use rustc::ty::subst::{Kind, Subst, UserSelfTy, UserSubsts};
+use rustc::ty::subst::{Kind, Subst, UserSubsts, UserSelfTy};
 use rustc::ty::{
     FnSig, Lift, ParamEnv, ParamEnvAnd, PolyFnSig, Predicate, Ty, TyCtxt, TypeFoldable, Variance,
 };
@@ -54,29 +42,16 @@ fn type_op_ascribe_user_type<'tcx>(
     tcx.infer_ctxt()
         .enter_canonical_trait_query(&canonicalized, |infcx, fulfill_cx, key| {
             let (
-                param_env,
-                AscribeUserType {
-                    mir_ty,
-                    variance,
-                    def_id,
-                    user_substs,
-                    projs,
-                },
+                param_env, AscribeUserType { mir_ty, def_id, user_substs }
             ) = key.into_parts();
 
             debug!(
-                "type_op_ascribe_user_type(\
-                 mir_ty={:?}, variance={:?}, def_id={:?}, user_substs={:?}, projs={:?}\
-                 )",
-                mir_ty, variance, def_id, user_substs, projs,
+                "type_op_ascribe_user_type: mir_ty={:?} def_id={:?} user_substs={:?}",
+                mir_ty, def_id, user_substs
             );
 
-            let mut cx = AscribeUserTypeCx {
-                infcx,
-                param_env,
-                fulfill_cx,
-            };
-            cx.relate_mir_and_user_ty(mir_ty, variance, def_id, user_substs, projs)?;
+            let mut cx = AscribeUserTypeCx { infcx, param_env, fulfill_cx };
+            cx.relate_mir_and_user_ty(mir_ty, def_id, user_substs)?;
 
             Ok(())
         })
@@ -85,7 +60,7 @@ fn type_op_ascribe_user_type<'tcx>(
 struct AscribeUserTypeCx<'me, 'gcx: 'tcx, 'tcx: 'me> {
     infcx: &'me InferCtxt<'me, 'gcx, 'tcx>,
     param_env: ParamEnv<'tcx>,
-    fulfill_cx: &'me mut FulfillmentContext<'tcx>,
+    fulfill_cx: &'me mut dyn TraitEngine<'tcx>,
 }
 
 impl AscribeUserTypeCx<'me, 'gcx, 'tcx> {
@@ -134,16 +109,13 @@ impl AscribeUserTypeCx<'me, 'gcx, 'tcx> {
     fn relate_mir_and_user_ty(
         &mut self,
         mir_ty: Ty<'tcx>,
-        variance: Variance,
         def_id: DefId,
         user_substs: UserSubsts<'tcx>,
-        projs: &[ProjectionKind<'tcx>],
     ) -> Result<(), NoSolution> {
         let UserSubsts {
-            substs,
             user_self_ty,
+            substs,
         } = user_substs;
-
         let tcx = self.tcx();
 
         let ty = tcx.type_of(def_id);
@@ -151,49 +123,7 @@ impl AscribeUserTypeCx<'me, 'gcx, 'tcx> {
         debug!("relate_type_and_user_type: ty of def-id is {:?}", ty);
         let ty = self.normalize(ty);
 
-        // We need to follow any provided projetions into the type.
-        //
-        // if we hit a ty var as we descend, then just skip the
-        // attempt to relate the mir local with any type.
-
-        struct HitTyVar;
-        let mut curr_projected_ty: Result<PlaceTy, HitTyVar>;
-        curr_projected_ty = Ok(PlaceTy::from_ty(ty));
-        for proj in projs {
-            let projected_ty = if let Ok(projected_ty) = curr_projected_ty {
-                projected_ty
-            } else {
-                break;
-            };
-            curr_projected_ty = projected_ty.projection_ty_core(
-                tcx, proj, |this, field, &()| {
-                    if this.to_ty(tcx).is_ty_var() {
-                        Err(HitTyVar)
-                    } else {
-                        let ty = this.field_ty(tcx, field);
-                        Ok(self.normalize(ty))
-                    }
-                });
-        }
-
-        if let Ok(projected_ty) = curr_projected_ty {
-            let ty = projected_ty.to_ty(tcx);
-            self.relate(mir_ty, variance, ty)?;
-        }
-
-        if let Some(UserSelfTy {
-            impl_def_id,
-            self_ty,
-        }) = user_self_ty
-        {
-            let impl_self_ty = self.tcx().type_of(impl_def_id);
-            let impl_self_ty = self.subst(impl_self_ty, &substs);
-            let impl_self_ty = self.normalize(impl_self_ty);
-
-            self.relate(self_ty, Variance::Invariant, impl_self_ty)?;
-
-            self.prove_predicate(Predicate::WellFormed(impl_self_ty));
-        }
+        self.relate(mir_ty, Variance::Invariant, ty)?;
 
         // Prove the predicates coming along with `def_id`.
         //
@@ -208,6 +138,19 @@ impl AscribeUserTypeCx<'me, 'gcx, 'tcx> {
             self.prove_predicate(instantiated_predicate);
         }
 
+        if let Some(UserSelfTy {
+            impl_def_id,
+            self_ty,
+        }) = user_self_ty {
+            let impl_self_ty = self.tcx().type_of(impl_def_id);
+            let impl_self_ty = self.subst(impl_self_ty, &substs);
+            let impl_self_ty = self.normalize(impl_self_ty);
+
+            self.relate(self_ty, Variance::Invariant, impl_self_ty)?;
+
+            self.prove_predicate(Predicate::WellFormed(impl_self_ty));
+        }
+
         // In addition to proving the predicates, we have to
         // prove that `ty` is well-formed -- this is because
         // the WF of `ty` is predicated on the substs being
@@ -220,7 +163,6 @@ impl AscribeUserTypeCx<'me, 'gcx, 'tcx> {
         // type were ill-formed but did not appear in `ty`,
         // which...could happen with normalization...
         self.prove_predicate(Predicate::WellFormed(ty));
-
         Ok(())
     }
 }
@@ -241,7 +183,7 @@ fn type_op_eq<'tcx>(
 
 fn type_op_normalize<T>(
     infcx: &InferCtxt<'_, 'gcx, 'tcx>,
-    fulfill_cx: &mut FulfillmentContext<'tcx>,
+    fulfill_cx: &mut dyn TraitEngine<'tcx>,
     key: ParamEnvAnd<'tcx, Normalize<T>>,
 ) -> Fallible<T>
 where

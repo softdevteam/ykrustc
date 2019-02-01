@@ -1,12 +1,12 @@
 warning: private trait `m::PrivTr` in public interface (error E0445)
-  --> $DIR/private-in-public-assoc-ty.rs:25:5
+  --> $DIR/private-in-public-assoc-ty.rs:15:5
    |
 LL | /     pub trait PubTr {
 LL | |         //~^ WARN private trait `m::PrivTr` in public interface
 LL | |         //~| WARN this was previously accepted
 LL | |         //~| WARN private type `m::Priv` in public interface
 ...  |
-LL | |         //~^ ERROR private type `m::Priv` in public interface
+LL | |         fn infer_exist() -> Self::Exist;
 LL | |     }
    | |_____^
    |
@@ -15,14 +15,14 @@ LL | |     }
    = note: for more information, see issue #34537 <https://github.com/rust-lang/rust/issues/34537>
 
 warning: private type `m::Priv` in public interface (error E0446)
-  --> $DIR/private-in-public-assoc-ty.rs:25:5
+  --> $DIR/private-in-public-assoc-ty.rs:15:5
    |
 LL | /     pub trait PubTr {
 LL | |         //~^ WARN private trait `m::PrivTr` in public interface
 LL | |         //~| WARN this was previously accepted
 LL | |         //~| WARN private type `m::Priv` in public interface
 ...  |
-LL | |         //~^ ERROR private type `m::Priv` in public interface
+LL | |         fn infer_exist() -> Self::Exist;
 LL | |     }
    | |_____^
    |
@@ -30,7 +30,7 @@ LL | |     }
    = note: for more information, see issue #34537 <https://github.com/rust-lang/rust/issues/34537>
 
 error[E0446]: private type `m::Priv` in public interface
-  --> $DIR/private-in-public-assoc-ty.rs:34:9
+  --> $DIR/private-in-public-assoc-ty.rs:24:9
    |
 LL |     struct Priv;
    |     - `m::Priv` declared as private
@@ -39,7 +39,7 @@ LL |         type Alias4 = Priv;
    |         ^^^^^^^^^^^^^^^^^^^ can't leak private type
 
 error[E0446]: private type `m::Priv` in public interface
-  --> $DIR/private-in-public-assoc-ty.rs:38:9
+  --> $DIR/private-in-public-assoc-ty.rs:31:9
    |
 LL |     struct Priv;
    |     - `m::Priv` declared as private
@@ -47,6 +47,16 @@ LL |     struct Priv;
 LL |         type Alias1 = Priv;
    |         ^^^^^^^^^^^^^^^^^^^ can't leak private type
 
-error: aborting due to 2 previous errors
+error[E0445]: private trait `m::PrivTr` in public interface
+  --> $DIR/private-in-public-assoc-ty.rs:34:9
+   |
+LL |     trait PrivTr {}
+   |     - `m::PrivTr` declared as private
+...
+LL |         existential type Exist: PrivTr;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ can't leak private trait
 
-For more information about this error, try `rustc --explain E0446`.
+error: aborting due to 3 previous errors
+
+Some errors occurred: E0445, E0446.
+For more information about an error, try `rustc --explain E0445`.

@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // The classification code for the x86_64 ABI is taken from the clay language
 // https://github.com/jckarter/clay/blob/master/compiler/src/externals.cpp
 
@@ -15,7 +5,7 @@ use abi::call::{ArgType, CastTarget, FnType, Reg, RegKind};
 use abi::{self, Abi, HasDataLayout, LayoutOf, Size, TyLayout, TyLayoutMethods};
 
 /// Classification of "eightbyte" components.
-// NB: the order of the variants is from general to specific,
+// N.B., the order of the variants is from general to specific,
 // such that `unify(a, b)` is the "smaller" of `a` and `b`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Class {
@@ -41,7 +31,7 @@ fn classify_arg<'a, Ty, C>(cx: &C, arg: &ArgType<'a, Ty>)
         where Ty: TyLayoutMethods<'a, C> + Copy,
             C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
     {
-        if !off.is_abi_aligned(layout.align) {
+        if !off.is_aligned(layout.align.abi) {
             if !layout.is_zst() {
                 return Err(Memory);
             }

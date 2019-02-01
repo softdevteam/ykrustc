@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::fmt::Write;
 use std::hash::Hash;
 use std::ops::RangeInclusive;
@@ -17,11 +7,11 @@ use rustc::ty::layout::{self, Size, Align, TyLayout, LayoutOf, VariantIdx};
 use rustc::ty;
 use rustc_data_structures::fx::FxHashSet;
 use rustc::mir::interpret::{
-    Scalar, AllocType, EvalResult, EvalErrorKind, InboundsCheck,
+    Scalar, AllocKind, EvalResult, EvalErrorKind,
 };
 
 use super::{
-    OpTy, MPlaceTy, Machine, EvalContext, ValueVisitor
+    OpTy, Machine, EvalContext, ValueVisitor,
 };
 
 macro_rules! validation_failure {
@@ -256,7 +246,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         variant_id: VariantIdx,
         new_op: OpTy<'tcx, M::PointerTag>
     ) -> EvalResult<'tcx> {
-        let name = old_op.layout.ty.ty_adt_def().unwrap().variants[variant_id].name;
+        let name = old_op.layout.ty.ty_adt_def().unwrap().variants[variant_id].ident.name;
         self.visit_elem(new_op, PathElem::Variant(name))
     }
 
@@ -312,12 +302,16 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                 }
             }
             ty::RawPtr(..) => {
-                // No undef allowed here.  Eventually this should be consistent with
-                // the integer types.
-                let _ptr = try_validation!(value.to_scalar_ptr(),
-                    "undefined address in pointer", self.path);
-                let _meta = try_validation!(value.to_meta(),
-                    "uninitialized data in fat pointer metadata", self.path);
+                if self.const_mode {
+                    // Integers/floats in CTFE: For consistency with integers, we do not
+                    // accept undef.
+                    let _ptr = try_validation!(value.to_scalar_ptr(),
+                        "undefined address in raw pointer", self.path);
+                    let _meta = try_validation!(value.to_meta(),
+                        "uninitialized data in raw fat pointer metadata", self.path);
+                } else {
+                    // Remain consistent with `usize`: Accept anything.
+                }
             }
             _ if ty.is_box() || ty.is_region_ptr() => {
                 // Handle fat pointers.
@@ -355,7 +349,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     // for the purpose of validity, consider foreign types to have
                     // alignment and size determined by the layout (size will be 0,
                     // alignment should take attributes into account).
-                    .unwrap_or_else(|| layout.size_and_align());
+                    .unwrap_or_else(|| (layout.size, layout.align.abi));
                 match self.ecx.memory.check_align(ptr, align) {
                     Ok(_) => {},
                     Err(err) => {
@@ -384,7 +378,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                             "integer pointer in non-ZST reference", self.path);
                         // Skip validation entirely for some external statics
                         let alloc_kind = self.ecx.tcx.alloc_map.lock().get(ptr.alloc_id);
-                        if let Some(AllocType::Static(did)) = alloc_kind {
+                        if let Some(AllocKind::Static(did)) = alloc_kind {
                             // `extern static` cannot be validated as they have no body.
                             // FIXME: Statics from other crates are also skipped.
                             // They might be checked at a different type, but for now we
@@ -396,13 +390,15 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                         // Maintain the invariant that the place we are checking is
                         // already verified to be in-bounds.
                         try_validation!(
-                            self.ecx.memory.check_bounds(ptr, size, InboundsCheck::Live),
+                            self.ecx.memory
+                                .get(ptr.alloc_id)?
+                                .check_bounds(self.ecx, ptr, size),
                             "dangling (not entirely in bounds) reference", self.path);
                     }
                     // Check if we have encountered this pointer+layout combination
                     // before.  Proceed recursively even for integer pointers, no
                     // reason to skip them! They are (recursively) valid for some ZST,
-                    // but not for others (e.g. `!` is a ZST).
+                    // but not for others (e.g., `!` is a ZST).
                     let op = place.into();
                     if ref_tracking.seen.insert(op) {
                         trace!("Recursing below ptr {:#?}", *op);
@@ -453,8 +449,13 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         }
         // At least one value is excluded. Get the bits.
         let value = try_validation!(value.not_undef(),
-            value, self.path,
-            format!("something in the range {:?}", layout.valid_range));
+            value,
+            self.path,
+            format!(
+                "something {}",
+                wrapping_range_format(&layout.valid_range, max_hi),
+            )
+        );
         let bits = match value {
             Scalar::Ptr(ptr) => {
                 if lo == 1 && hi == max_hi {
@@ -463,7 +464,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     // for function pointers.
                     let non_null =
                         self.ecx.memory.check_align(
-                            Scalar::Ptr(ptr), Align::from_bytes(1, 1).unwrap()
+                            Scalar::Ptr(ptr), Align::from_bytes(1).unwrap()
                         ).is_ok() ||
                         self.ecx.memory.get_fn(ptr).is_ok();
                     if !non_null {
@@ -520,31 +521,37 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     _ => false,
                 }
             } => {
-                let mplace = if op.layout.is_zst() {
-                    // it's a ZST, the memory content cannot matter
-                    MPlaceTy::dangling(op.layout, self.ecx)
-                } else {
-                    // non-ZST array/slice/str cannot be immediate
-                    op.to_mem_place()
-                };
+                // bailing out for zsts is ok, since the array element type can only be int/float
+                if op.layout.is_zst() {
+                    return Ok(());
+                }
+                // non-ZST array cannot be immediate, slices are never immediate
+                let mplace = op.to_mem_place();
                 // This is the length of the array/slice.
                 let len = mplace.len(self.ecx)?;
+                // zero length slices have nothing to be checked
+                if len == 0 {
+                    return Ok(());
+                }
                 // This is the element type size.
                 let ty_size = self.ecx.layout_of(tys)?.size;
                 // This is the size in bytes of the whole array.
                 let size = ty_size * len;
 
+                let ptr = mplace.ptr.to_ptr()?;
+
                 // NOTE: Keep this in sync with the handling of integer and float
                 // types above, in `visit_primitive`.
                 // In run-time mode, we accept pointers in here.  This is actually more
-                // permissive than a per-element check would be, e.g. we accept
+                // permissive than a per-element check would be, e.g., we accept
                 // an &[u8] that contains a pointer even though bytewise checking would
                 // reject it.  However, that's good: We don't inherently want
                 // to reject those pointers, we just do not have the machinery to
                 // talk about parts of a pointer.
                 // We also accept undef, for consistency with the type-based checks.
-                match self.ecx.memory.check_bytes(
-                    mplace.ptr,
+                match self.ecx.memory.get(ptr.alloc_id)?.check_bytes(
+                    self.ecx,
+                    ptr,
                     size,
                     /*allow_ptr_and_undef*/!self.const_mode,
                 ) {

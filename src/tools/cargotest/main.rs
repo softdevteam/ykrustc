@@ -1,18 +1,7 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::env;
 use std::process::Command;
 use std::path::{Path, PathBuf};
-use std::fs::File;
-use std::io::Write;
+use std::fs;
 
 struct Test {
     repo: &'static str,
@@ -91,10 +80,7 @@ fn test_repo(cargo: &Path, out_dir: &Path, test: &Test) {
     println!("testing {}", test.repo);
     let dir = clone_repo(test, out_dir);
     if let Some(lockfile) = test.lock {
-        File::create(&dir.join("Cargo.lock"))
-            .expect("")
-            .write_all(lockfile.as_bytes())
-            .expect("");
+        fs::write(&dir.join("Cargo.lock"), lockfile).unwrap();
     }
     if !run_cargo_test(cargo, &dir, test.packages) {
         panic!("tests failed for {}", test.repo);

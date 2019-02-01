@@ -1,12 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+// run-pass
 
 fn macros() {
     macro_rules! foo{
@@ -20,16 +12,17 @@ fn macros() {
         }}
     }
 
-    foo!(a, 1, { //~ ERROR irrefutable while-let
+    foo!(a, 1, { //~ WARN irrefutable while-let
         println!("irrefutable pattern");
     });
-    bar!(a, 1, { //~ ERROR irrefutable while-let
+    bar!(a, 1, { //~ WARN irrefutable while-let
         println!("irrefutable pattern");
     });
 }
 
 pub fn main() {
-    while let a = 1 { //~ ERROR irrefutable while-let
+    while let a = 1 { //~ WARN irrefutable while-let
         println!("irrefutable pattern");
+        break;
     }
 }

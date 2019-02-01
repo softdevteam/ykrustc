@@ -1,20 +1,9 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This query borrow-checks the MIR to (further) ensure it is not broken.
 
 use borrow_check::nll::region_infer::RegionInferenceContext;
 use rustc::hir;
 use rustc::hir::Node;
 use rustc::hir::def_id::DefId;
-use rustc::hir::map::definitions::DefPathData;
 use rustc::infer::InferCtxt;
 use rustc::lint::builtin::UNUSED_MUT;
 use rustc::middle::borrowck::SignalledError;
@@ -64,7 +53,7 @@ mod move_errors;
 mod mutability_errors;
 mod path_utils;
 crate mod place_ext;
-mod places_conflict;
+crate mod places_conflict;
 mod prefixes;
 mod used_muts;
 
@@ -138,7 +127,7 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
     let attributes = tcx.get_attrs(def_id);
     let param_env = tcx.param_env(def_id);
     let id = tcx
-        .hir
+        .hir()
         .as_local_node_id(def_id)
         .expect("do_mir_borrowck: non-local DefId");
 
@@ -162,10 +151,6 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
         move_data: move_data,
         param_env: param_env,
     };
-    let body_id = match tcx.def_key(def_id).disambiguated_data.data {
-        DefPathData::StructCtor | DefPathData::EnumVariant(_) => None,
-        _ => Some(tcx.hir.body_owned_by(id)),
-    };
 
     let dead_unwinds = BitSet::new_empty(mir.basic_blocks().len());
     let mut flow_inits = FlowAtLocation::new(do_dataflow(
@@ -178,10 +163,7 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
         |bd, i| DebugFormatted::new(&bd.move_data().move_paths[i]),
     ));
 
-    let locals_are_invalidated_at_exit = match tcx.hir.body_owner_kind(id) {
-            hir::BodyOwnerKind::Const | hir::BodyOwnerKind::Static(_) => false,
-            hir::BodyOwnerKind::Fn => true,
-    };
+    let locals_are_invalidated_at_exit = tcx.hir().body_owner_kind(id).is_fn_or_closure();
     let borrow_set = Rc::new(BorrowSet::build(
             tcx, mir, locals_are_invalidated_at_exit, &mdpe.move_data));
 
@@ -212,7 +194,7 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
         id,
         &attributes,
         &dead_unwinds,
-        Borrows::new(tcx, mir, regioncx.clone(), def_id, body_id, &borrow_set),
+        Borrows::new(tcx, mir, regioncx.clone(), &borrow_set),
         |rs, i| DebugFormatted::new(&rs.location(i)),
     ));
     let flow_uninits = FlowAtLocation::new(do_dataflow(
@@ -234,7 +216,7 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
         |bd, i| DebugFormatted::new(&bd.move_data().inits[i]),
     ));
 
-    let movable_generator = match tcx.hir.get(id) {
+    let movable_generator = match tcx.hir().get(id) {
         Node::Expr(&hir::Expr {
             node: hir::ExprKind::Closure(.., Some(hir::GeneratorMovability::Static)),
             ..
@@ -325,7 +307,7 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
                 span,
                 "variable does not need to be mutable",
             )
-            .span_suggestion_short_with_applicability(
+            .span_suggestion_short(
                 mut_span,
                 "remove this `mut`",
                 String::new(),
@@ -378,10 +360,14 @@ fn do_mir_borrowck<'a, 'gcx, 'tcx>(
                     for err in &mut mbcx.errors_buffer {
                         if err.is_error() {
                             err.level = Level::Warning;
-                            err.warn("This error has been downgraded to a warning \
-                                      for backwards compatibility with previous releases.\n\
-                                      It represents potential unsoundness in your code.\n\
-                                      This warning will become a hard error in the future.");
+                            err.warn(
+                                "this error has been downgraded to a warning for backwards \
+                                 compatibility with previous releases",
+                            );
+                            err.warn(
+                                "this represents potential undefined behavior in your code and \
+                                 this warning will become a hard error in the future",
+                            );
                         }
                     }
                 }
@@ -550,7 +536,7 @@ impl<'cx, 'gcx, 'tcx> DataflowResultsConsumer<'cx, 'tcx> for MirBorrowckCtxt<'cx
                 self.mutate_place(
                     ContextKind::SetDiscrim.new(location),
                     (place, span),
-                    Shallow(Some(ArtificialField::Discriminant)),
+                    Shallow(None),
                     JustWrite,
                     flow_state,
                 );
@@ -592,14 +578,9 @@ impl<'cx, 'gcx, 'tcx> DataflowResultsConsumer<'cx, 'tcx> for MirBorrowckCtxt<'cx
                     self.consume_operand(context, (input, span), flow_state);
                 }
             }
-            StatementKind::EndRegion(ref _rgn) => {
-                // ignored when consuming results (update to
-                // flow_state already handled).
-            }
             StatementKind::Nop
             | StatementKind::AscribeUserType(..)
             | StatementKind::Retag { .. }
-            | StatementKind::EscapeToRaw { .. }
             | StatementKind::StorageLive(..) => {
                 // `Nop`, `AscribeUserType`, `Retag`, and `StorageLive` are irrelevant
                 // to borrow check.
@@ -791,7 +772,6 @@ use self::AccessDepth::{Deep, Shallow};
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum ArtificialField {
-    Discriminant,
     ArrayLength,
     ShallowBorrow,
 }
@@ -1200,14 +1180,14 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
 
             Rvalue::Len(ref place) | Rvalue::Discriminant(ref place) => {
                 let af = match *rvalue {
-                    Rvalue::Len(..) => ArtificialField::ArrayLength,
-                    Rvalue::Discriminant(..) => ArtificialField::Discriminant,
+                    Rvalue::Len(..) => Some(ArtificialField::ArrayLength),
+                    Rvalue::Discriminant(..) => None,
                     _ => unreachable!(),
                 };
                 self.access_place(
                     context,
                     (place, span),
-                    (Shallow(Some(af)), Read(ReadKind::Copy)),
+                    (Shallow(af), Read(ReadKind::Copy)),
                     LocalMutationIsAllowed::No,
                     flow_state,
                 );
@@ -1379,7 +1359,8 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             place,
             borrow.kind,
             root_place,
-            sd
+            sd,
+            places_conflict::PlaceConflictBias::Overlap,
         ) {
             debug!("check_for_invalidation_at_exit({:?}): INVALID", place);
             // FIXME: should be talking about the region lifetime instead
@@ -1535,7 +1516,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
               // ancestors; dataflow recurs on children when parents
               // move (to support partial (re)inits).
               //
-              // (I.e. querying parents breaks scenario 7; but may want
+              // (I.e., querying parents breaks scenario 7; but may want
               // to do such a query based on partial-init feature-gate.)
         }
     }
@@ -1571,7 +1552,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         //
         // (Distinct from handling of scenarios 1+2+4 above because
         // `place` does not interfere with suffixes of its prefixes,
-        // e.g. `a.b.c` does not interfere with `a.b.d`)
+        // e.g., `a.b.c` does not interfere with `a.b.d`)
         //
         // This code covers scenario 1.
 
@@ -1744,7 +1725,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             //
             // This does not use check_if_path_or_subpath_is_moved,
             // because we want to *allow* reinitializations of fields:
-            // e.g. want to allow
+            // e.g., want to allow
             //
             // `let mut s = ...; drop(s.x); s.x=Val;`
             //
@@ -2175,7 +2156,7 @@ enum Overlap {
     /// `u.a.x` and `a.b.y` are.
     Arbitrary,
     /// The places have the same type, and are either completely disjoint
-    /// or equal - i.e. they can't "partially" overlap as can occur with
+    /// or equal - i.e., they can't "partially" overlap as can occur with
     /// unions. This is the "base case" on which we recur for extensions
     /// of the place.
     EqualOrDisjoint,

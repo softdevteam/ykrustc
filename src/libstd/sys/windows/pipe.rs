@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use os::windows::prelude::*;
 
 use ffi::OsStr;
@@ -17,7 +7,7 @@ use path::Path;
 use ptr;
 use slice;
 use sync::atomic::Ordering::SeqCst;
-use sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT};
+use sync::atomic::AtomicUsize;
 use sys::c;
 use sys::fs::{File, OpenOptions};
 use sys::handle::Handle;
@@ -100,23 +90,23 @@ pub fn anon_pipe(ours_readable: bool) -> io::Result<Pipes> {
                                              0,
                                              ptr::null_mut());
 
-            // We pass the FILE_FLAG_FIRST_PIPE_INSTANCE flag above, and we're
+            // We pass the `FILE_FLAG_FIRST_PIPE_INSTANCE` flag above, and we're
             // also just doing a best effort at selecting a unique name. If
-            // ERROR_ACCESS_DENIED is returned then it could mean that we
+            // `ERROR_ACCESS_DENIED` is returned then it could mean that we
             // accidentally conflicted with an already existing pipe, so we try
             // again.
             //
             // Don't try again too much though as this could also perhaps be a
             // legit error.
-            // If ERROR_INVALID_PARAMETER is returned, this probably means we're
-            // running on pre-Vista version where PIPE_REJECT_REMOTE_CLIENTS is
+            // If `ERROR_INVALID_PARAMETER` is returned, this probably means we're
+            // running on pre-Vista version where `PIPE_REJECT_REMOTE_CLIENTS` is
             // not supported, so we continue retrying without it. This implies
             // reduced security on Windows versions older than Vista by allowing
             // connections to this pipe from remote machines.
             // Proper fix would increase the number of FFI imports and introduce
             // significant amount of Windows XP specific code with no clean
             // testing strategy
-            // for more info see https://github.com/rust-lang/rust/pull/37677
+            // For more info, see https://github.com/rust-lang/rust/pull/37677.
             if handle == c::INVALID_HANDLE_VALUE {
                 let err = io::Error::last_os_error();
                 let raw_os_err = err.raw_os_error();
@@ -158,7 +148,7 @@ pub fn anon_pipe(ours_readable: bool) -> io::Result<Pipes> {
 }
 
 fn random_number() -> usize {
-    static N: AtomicUsize = ATOMIC_USIZE_INIT;
+    static N: AtomicUsize = AtomicUsize::new(0);
     loop {
         if N.load(SeqCst) != 0 {
             return N.fetch_add(1, SeqCst)

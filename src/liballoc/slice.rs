@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A dynamically-sized view into a contiguous sequence, `[T]`.
 //!
 //! *[See also the slice primitive type](../../std/primitive.slice.html).*
@@ -177,7 +167,7 @@ mod hack {
 impl<T> [T] {
     /// Sorts the slice.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(n log n)` worst-case.
     ///
     /// When applicable, unstable sorting is preferred because it is generally faster than stable
     /// sorting and it doesn't allocate auxiliary memory.
@@ -211,7 +201,23 @@ impl<T> [T] {
 
     /// Sorts the slice with a comparator function.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(n log n)` worst-case.
+    ///
+    /// The comparator function must define a total ordering for the elements in the slice. If
+    /// the ordering is not total, the order of the elements is unspecified. An order is a
+    /// total order if it is (for all a, b and c):
+    ///
+    /// * total and antisymmetric: exactly one of a < b, a == b or a > b is true; and
+    /// * transitive, a < b and b < c implies a < c. The same must hold for both == and >.
+    ///
+    /// For example, while [`f64`] doesn't implement [`Ord`] because `NaN != NaN`, we can use
+    /// `partial_cmp` as our sort function when we know the slice doesn't contain a `NaN`.
+    ///
+    /// ```
+    /// let mut floats = [5f64, 4.0, 1.0, 3.0, 2.0];
+    /// floats.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    /// assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0]);
+    /// ```
     ///
     /// When applicable, unstable sorting is preferred because it is generally faster than stable
     /// sorting and it doesn't allocate auxiliary memory.
@@ -248,7 +254,7 @@ impl<T> [T] {
 
     /// Sorts the slice with a key extraction function.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(m n log(m n))`
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(m n log(m n))`
     /// worst-case, where the key function is `O(m)`.
     ///
     /// When applicable, unstable sorting is preferred because it is generally faster than stable
@@ -285,10 +291,10 @@ impl<T> [T] {
     ///
     /// During sorting, the key function is called only once per element.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(m n + n log n)`
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(m n + n log n)`
     /// worst-case, where the key function is `O(m)`.
     ///
-    /// For simple key functions (e.g. functions that are property accesses or
+    /// For simple key functions (e.g., functions that are property accesses or
     /// basic operations), [`sort_by_key`](#method.sort_by_key) is likely to be
     /// faster.
     ///
@@ -573,7 +579,7 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
     type Output = Vec<T>;
 
     fn concat(&self) -> Vec<T> {
-        let size = self.iter().fold(0, |acc, v| acc + v.borrow().len());
+        let size = self.iter().map(|slice| slice.borrow().len()).sum();
         let mut result = Vec::with_capacity(size);
         for v in self {
             result.extend_from_slice(v.borrow())
@@ -587,8 +593,8 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
             Some(first) => first,
             None => return vec![],
         };
-        let size = self.iter().fold(0, |acc, v| acc + v.borrow().len());
-        let mut result = Vec::with_capacity(size + self.len());
+        let size = self.iter().map(|slice| slice.borrow().len()).sum::<usize>() + self.len() - 1;
+        let mut result = Vec::with_capacity(size);
         result.extend_from_slice(first.borrow());
 
         for v in iter {

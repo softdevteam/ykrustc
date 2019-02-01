@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Sanity checking performed by rustbuild before actually executing anything.
 //!
 //! This module contains the implementation of ensuring that the build
@@ -21,14 +11,13 @@
 use std::collections::HashMap;
 use std::env;
 use std::ffi::{OsString, OsStr};
-use std::fs::{self, File};
-use std::io::Read;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
 use build_helper::output;
 
-use Build;
+use crate::Build;
 
 struct Finder {
     cache: HashMap<OsString, Option<PathBuf>>,
@@ -235,9 +224,7 @@ $ pacman -R cmake && pacman -S mingw-w64-x86_64-cmake
     }
 
     if build.config.channel == "stable" {
-        let mut stage0 = String::new();
-        t!(t!(File::open(build.src.join("src/stage0.txt")))
-            .read_to_string(&mut stage0));
+        let stage0 = t!(fs::read_to_string(build.src.join("src/stage0.txt")));
         if stage0.contains("\ndev:") {
             panic!("bootstrapping from a dev compiler in a stable release, but \
                     should only be bootstrapping from a released compiler!");

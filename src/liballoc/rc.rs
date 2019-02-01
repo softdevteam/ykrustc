@@ -1,15 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-#![allow(deprecated)]
-
 //! Single-threaded reference-counting pointers. 'Rc' stands for 'Reference
 //! Counted'.
 //!
@@ -43,8 +31,8 @@
 //!
 //! `Rc<T>` automatically dereferences to `T` (via the [`Deref`] trait),
 //! so you can call `T`'s methods on a value of type [`Rc<T>`][`Rc`]. To avoid name
-//! clashes with `T`'s methods, the methods of [`Rc<T>`][`Rc`] itself are [associated
-//! functions][assoc], called using function-like syntax:
+//! clashes with `T`'s methods, the methods of [`Rc<T>`][`Rc`] itself are associated
+//! functions, called using function-like syntax:
 //!
 //! ```
 //! use std::rc::Rc;
@@ -234,7 +222,6 @@
 //! [downgrade]: struct.Rc.html#method.downgrade
 //! [upgrade]: struct.Weak.html#method.upgrade
 //! [`None`]: ../../std/option/enum.Option.html#variant.None
-//! [assoc]: ../../book/first-edition/method-syntax.html#associated-functions
 //! [mutability]: ../../std/cell/index.html#introducing-mutability-inside-of-something-immutable
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -254,7 +241,7 @@ use core::intrinsics::abort;
 use core::marker;
 use core::marker::{Unpin, Unsize, PhantomData};
 use core::mem::{self, align_of_val, forget, size_of_val};
-use core::ops::Deref;
+use core::ops::{Deref, Receiver};
 use core::ops::{CoerceUnsized, DispatchFromDyn};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
@@ -277,7 +264,7 @@ struct RcBox<T: ?Sized> {
 /// See the [module-level documentation](./index.html) for more details.
 ///
 /// The inherent methods of `Rc` are all associated functions, which means
-/// that you have to call them as e.g. [`Rc::get_mut(&mut value)`][get_mut] instead of
+/// that you have to call them as e.g., [`Rc::get_mut(&mut value)`][get_mut] instead of
 /// `value.get_mut()`. This avoids conflicts with methods of the inner
 /// type `T`.
 ///
@@ -326,8 +313,10 @@ impl<T> Rc<T> {
         }
     }
 
-    #[unstable(feature = "pin", issue = "49150")]
-    pub fn pinned(value: T) -> Pin<Rc<T>> {
+    /// Constructs a new `Pin<Rc<T>>`. If `T` does not implement `Unpin`, then
+    /// `value` will be pinned in memory and unable to be moved.
+    #[stable(feature = "pin", since = "1.33.0")]
+    pub fn pin(value: T) -> Pin<Rc<T>> {
         unsafe { Pin::new_unchecked(Rc::new(value)) }
     }
 
@@ -442,6 +431,27 @@ impl<T: ?Sized> Rc<T> {
             ptr: NonNull::new_unchecked(rc_ptr),
             phantom: PhantomData,
         }
+    }
+
+    /// Consumes the `Rc`, returning the wrapped pointer as `NonNull<T>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(rc_into_raw_non_null)]
+    ///
+    /// use std::rc::Rc;
+    ///
+    /// let x = Rc::new(10);
+    /// let ptr = Rc::into_raw_non_null(x);
+    /// let deref = unsafe { *ptr.as_ref() };
+    /// assert_eq!(deref, 10);
+    /// ```
+    #[unstable(feature = "rc_into_raw_non_null", issue = "47336")]
+    #[inline]
+    pub fn into_raw_non_null(this: Self) -> NonNull<T> {
+        // safe because Rc guarantees its pointer is non-null
+        unsafe { NonNull::new_unchecked(Rc::into_raw(this) as *mut _) }
     }
 
     /// Creates a new [`Weak`][weak] pointer to this value.
@@ -634,7 +644,7 @@ impl<T: Clone> Rc<T> {
 impl Rc<dyn Any> {
     #[inline]
     #[stable(feature = "rc_downcast", since = "1.29.0")]
-    /// Attempt to downcast the `Rc<Any>` to a concrete type.
+    /// Attempt to downcast the `Rc<dyn Any>` to a concrete type.
     ///
     /// # Examples
     ///
@@ -642,7 +652,7 @@ impl Rc<dyn Any> {
     /// use std::any::Any;
     /// use std::rc::Rc;
     ///
-    /// fn print_if_string(value: Rc<Any>) {
+    /// fn print_if_string(value: Rc<dyn Any>) {
     ///     if let Ok(string) = value.downcast::<String>() {
     ///         println!("String ({}): {}", string.len(), string);
     ///     }
@@ -814,6 +824,9 @@ impl<T: ?Sized> Deref for Rc<T> {
     }
 }
 
+#[unstable(feature = "receiver_trait", issue = "0")]
+impl<T: ?Sized> Receiver for Rc<T> {}
+
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T: ?Sized> Drop for Rc<T> {
     /// Drops the `Rc`.
@@ -841,6 +854,8 @@ unsafe impl<#[may_dangle] T: ?Sized> Drop for Rc<T> {
     /// drop(foo);    // Doesn't print anything
     /// drop(foo2);   // Prints "dropped!"
     /// ```
+    ///
+    /// [`Weak`]: ../../std/rc/struct.Weak.html
     fn drop(&mut self) {
         unsafe {
             self.dec_strong();
@@ -902,10 +917,45 @@ impl<T: Default> Default for Rc<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
+trait RcEqIdent<T: ?Sized + PartialEq> {
+    fn eq(&self, other: &Rc<T>) -> bool;
+    fn ne(&self, other: &Rc<T>) -> bool;
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T: ?Sized + PartialEq> RcEqIdent<T> for Rc<T> {
+    #[inline]
+    default fn eq(&self, other: &Rc<T>) -> bool {
+        **self == **other
+    }
+
+    #[inline]
+    default fn ne(&self, other: &Rc<T>) -> bool {
+        **self != **other
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T: ?Sized + Eq> RcEqIdent<T> for Rc<T> {
+    #[inline]
+    fn eq(&self, other: &Rc<T>) -> bool {
+        Rc::ptr_eq(self, other) || **self == **other
+    }
+
+    #[inline]
+    fn ne(&self, other: &Rc<T>) -> bool {
+        !Rc::ptr_eq(self, other) && **self != **other
+    }
+}
+
+#[stable(feature = "rust1", since = "1.0.0")]
 impl<T: ?Sized + PartialEq> PartialEq for Rc<T> {
     /// Equality for two `Rc`s.
     ///
     /// Two `Rc`s are equal if their inner values are equal.
+    ///
+    /// If `T` also implements `Eq`, two `Rc`s that point to the same value are
+    /// always equal.
     ///
     /// # Examples
     ///
@@ -916,14 +966,17 @@ impl<T: ?Sized + PartialEq> PartialEq for Rc<T> {
     ///
     /// assert!(five == Rc::new(5));
     /// ```
-    #[inline(always)]
+    #[inline]
     fn eq(&self, other: &Rc<T>) -> bool {
-        **self == **other
+        RcEqIdent::eq(self, other)
     }
 
     /// Inequality for two `Rc`s.
     ///
     /// Two `Rc`s are unequal if their inner values are unequal.
+    ///
+    /// If `T` also implements `Eq`, two `Rc`s that point to the same value are
+    /// never unequal.
     ///
     /// # Examples
     ///
@@ -934,9 +987,9 @@ impl<T: ?Sized + PartialEq> PartialEq for Rc<T> {
     ///
     /// assert!(five != Rc::new(6));
     /// ```
-    #[inline(always)]
+    #[inline]
     fn ne(&self, other: &Rc<T>) -> bool {
-        **self != **other
+        RcEqIdent::ne(self, other)
     }
 }
 
@@ -1188,8 +1241,9 @@ impl<T: ?Sized + Unsize<U>, U: ?Sized> DispatchFromDyn<Weak<U>> for Weak<T> {}
 
 impl<T> Weak<T> {
     /// Constructs a new `Weak<T>`, without allocating any memory.
-    /// Calling [`upgrade`][Weak::upgrade] on the return value always gives [`None`].
+    /// Calling [`upgrade`] on the return value always gives [`None`].
     ///
+    /// [`upgrade`]: #method.upgrade
     /// [`None`]: ../../std/option/enum.Option.html
     ///
     /// # Examples
@@ -1251,8 +1305,40 @@ impl<T: ?Sized> Weak<T> {
         }
     }
 
+    /// Gets the number of strong (`Rc`) pointers pointing to this value.
+    ///
+    /// If `self` was created using [`Weak::new`], this will return 0.
+    ///
+    /// [`Weak::new`]: #method.new
+    #[unstable(feature = "weak_counts", issue = "57977")]
+    pub fn strong_count(&self) -> usize {
+        if let Some(inner) = self.inner() {
+            inner.strong()
+        } else {
+            0
+        }
+    }
+
+    /// Gets the number of `Weak` pointers pointing to this value.
+    ///
+    /// If `self` was created using [`Weak::new`], this will return `None`. If
+    /// not, the returned value is at least 1, since `self` still points to the
+    /// value.
+    ///
+    /// [`Weak::new`]: #method.new
+    #[unstable(feature = "weak_counts", issue = "57977")]
+    pub fn weak_count(&self) -> Option<usize> {
+        self.inner().map(|inner| {
+            if inner.strong() > 0 {
+                inner.weak() - 1  // subtract the implicit weak ptr
+            } else {
+                inner.weak()
+            }
+        })
+    }
+
     /// Return `None` when the pointer is dangling and there is no allocated `RcBox`,
-    /// i.e. this `Weak` was created by `Weak::new`
+    /// i.e., this `Weak` was created by `Weak::new`
     #[inline]
     fn inner(&self) -> Option<&RcBox<T>> {
         if is_dangling(self.ptr) {
@@ -1260,6 +1346,52 @@ impl<T: ?Sized> Weak<T> {
         } else {
             Some(unsafe { self.ptr.as_ref() })
         }
+    }
+
+    /// Returns true if the two `Weak`s point to the same value (not just values
+    /// that compare as equal).
+    ///
+    /// # Notes
+    ///
+    /// Since this compares pointers it means that `Weak::new()` will equal each
+    /// other, even though they don't point to any value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(weak_ptr_eq)]
+    /// use std::rc::{Rc, Weak};
+    ///
+    /// let first_rc = Rc::new(5);
+    /// let first = Rc::downgrade(&first_rc);
+    /// let second = Rc::downgrade(&first_rc);
+    ///
+    /// assert!(Weak::ptr_eq(&first, &second));
+    ///
+    /// let third_rc = Rc::new(5);
+    /// let third = Rc::downgrade(&third_rc);
+    ///
+    /// assert!(!Weak::ptr_eq(&first, &third));
+    /// ```
+    ///
+    /// Comparing `Weak::new`.
+    ///
+    /// ```
+    /// #![feature(weak_ptr_eq)]
+    /// use std::rc::{Rc, Weak};
+    ///
+    /// let first = Weak::new();
+    /// let second = Weak::new();
+    /// assert!(Weak::ptr_eq(&first, &second));
+    ///
+    /// let third_rc = Rc::new(());
+    /// let third = Rc::downgrade(&third_rc);
+    /// assert!(!Weak::ptr_eq(&first, &third));
+    /// ```
+    #[inline]
+    #[unstable(feature = "weak_ptr_eq", issue = "55981")]
+    pub fn ptr_eq(this: &Self, other: &Self) -> bool {
+        this.ptr.as_ptr() == other.ptr.as_ptr()
     }
 }
 
@@ -1335,9 +1467,10 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Weak<T> {
 #[stable(feature = "downgraded_weak", since = "1.10.0")]
 impl<T> Default for Weak<T> {
     /// Constructs a new `Weak<T>`, allocating memory for `T` without initializing
-    /// it. Calling [`upgrade`][Weak::upgrade] on the return value always gives [`None`].
+    /// it. Calling [`upgrade`] on the return value always gives [`None`].
     ///
     /// [`None`]: ../../std/option/enum.Option.html
+    /// [`upgrade`]: ../../std/rc/struct.Weak.html#method.upgrade
     ///
     /// # Examples
     ///
@@ -1540,6 +1673,33 @@ mod tests {
         assert!(Rc::strong_count(&a) == 2);
         assert!(Rc::weak_count(&a) == 0);
         drop(c);
+    }
+
+    #[test]
+    fn weak_counts() {
+        assert_eq!(Weak::weak_count(&Weak::<u64>::new()), None);
+        assert_eq!(Weak::strong_count(&Weak::<u64>::new()), 0);
+
+        let a = Rc::new(0);
+        let w = Rc::downgrade(&a);
+        assert_eq!(Weak::strong_count(&w), 1);
+        assert_eq!(Weak::weak_count(&w), Some(1));
+        let w2 = w.clone();
+        assert_eq!(Weak::strong_count(&w), 1);
+        assert_eq!(Weak::weak_count(&w), Some(2));
+        assert_eq!(Weak::strong_count(&w2), 1);
+        assert_eq!(Weak::weak_count(&w2), Some(2));
+        drop(w);
+        assert_eq!(Weak::strong_count(&w2), 1);
+        assert_eq!(Weak::weak_count(&w2), Some(1));
+        let a2 = a.clone();
+        assert_eq!(Weak::strong_count(&w2), 2);
+        assert_eq!(Weak::weak_count(&w2), Some(1));
+        drop(a2);
+        drop(a);
+        assert_eq!(Weak::strong_count(&w2), 0);
+        assert_eq!(Weak::weak_count(&w2), Some(1));
+        drop(w2);
     }
 
     #[test]
@@ -1844,5 +2004,5 @@ impl<T: ?Sized> AsRef<T> for Rc<T> {
     }
 }
 
-#[unstable(feature = "pin", issue = "49150")]
+#[stable(feature = "pin", since = "1.33.0")]
 impl<T: ?Sized> Unpin for Rc<T> { }
