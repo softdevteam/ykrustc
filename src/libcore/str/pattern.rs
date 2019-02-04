@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The string Pattern API.
 //!
 //! For more details, see the traits `Pattern`, `Searcher`,
@@ -397,7 +387,7 @@ unsafe impl<'a> ReverseSearcher<'a> for CharSearcher<'a> {
                     let found_char = index - shift;
                     if let Some(slice) = haystack.get(found_char..(found_char + self.utf8_size)) {
                         if slice == &self.utf8_encoded[0..self.utf8_size] {
-                            // move finger to before the character found (i.e. at its start index)
+                            // move finger to before the character found (i.e., at its start index)
                             self.finger_back = found_char;
                             return Some((self.finger_back, self.finger_back + self.utf8_size));
                         }
@@ -435,8 +425,7 @@ impl<'a> Pattern<'a> for char {
     #[inline]
     fn into_searcher(self, haystack: &'a str) -> Self::Searcher {
         let mut utf8_encoded = [0; 4];
-        self.encode_utf8(&mut utf8_encoded);
-        let utf8_size = self.len_utf8();
+        let utf8_size = self.encode_utf8(&mut utf8_encoded).len();
         CharSearcher {
             haystack,
             finger: 0,
@@ -1016,7 +1005,7 @@ struct TwoWaySearcher {
     It can be proven that the following is an equivalent definition of a local period
     for a factorization (u, v): any positive integer r such that x[i] == x[i+r] for
     all i such that |u| - r <= i <= |u| - 1 and such that both x[i] and x[i+r] are
-    defined. (i.e. i > 0 and i + r < |x|).
+    defined. (i.e., i > 0 and i + r < |x|).
 
     Using the above reformulation, it is easy to prove that
 

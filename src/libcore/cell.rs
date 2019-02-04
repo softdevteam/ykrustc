@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Shareable mutable containers.
 //!
 //! Rust memory safety is based on this rule: Given an object `T`, it is only possible to
@@ -97,7 +87,7 @@
 //! ## Implementation details of logically-immutable methods
 //!
 //! Occasionally it may be desirable not to expose in an API that there is mutation happening
-//! "under the hood". This may be because logically the operation is immutable, but e.g. caching
+//! "under the hood". This may be because logically the operation is immutable, but e.g., caching
 //! forces the implementation to perform mutation; or because you must employ mutation to implement
 //! a trait method that was originally defined to take `&self`.
 //!
@@ -1227,7 +1217,7 @@ impl<T: ?Sized + fmt::Display> fmt::Display for Ref<'_, T> {
 }
 
 impl<'b, T: ?Sized> RefMut<'b, T> {
-    /// Make a new `RefMut` for a component of the borrowed data, e.g. an enum
+    /// Make a new `RefMut` for a component of the borrowed data, e.g., an enum
     /// variant.
     ///
     /// The `RefCell` is already mutably borrowed, so this cannot fail.

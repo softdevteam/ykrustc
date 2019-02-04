@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
@@ -121,6 +111,11 @@ impl EarlyProps {
                 if ignore_llvm(config, ln) {
                     props.ignore = Ignore::Ignore;
                 }
+
+                if config.run_clang_based_tests_with.is_none() &&
+                   config.parse_needs_matching_clang(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
             }
 
             if (config.mode == common::DebugInfoGdb || config.mode == common::DebugInfoBoth) &&
@@ -205,7 +200,7 @@ impl EarlyProps {
         fn ignore_lldb(config: &Config, line: &str) -> bool {
             if let Some(ref actual_version) = config.lldb_version {
                 if line.starts_with("min-lldb-version") {
-                    let min_version = line.trim_right()
+                    let min_version = line.trim_end()
                         .rsplit(' ')
                         .next()
                         .expect("Malformed lldb version directive");
@@ -228,7 +223,7 @@ impl EarlyProps {
             }
             if let Some(ref actual_version) = config.llvm_version {
                 if line.starts_with("min-llvm-version") {
-                    let min_version = line.trim_right()
+                    let min_version = line.trim_end()
                         .rsplit(' ')
                         .next()
                         .expect("Malformed llvm version directive");
@@ -236,7 +231,7 @@ impl EarlyProps {
                     // version
                     &actual_version[..] < min_version
                 } else if line.starts_with("min-system-llvm-version") {
-                    let min_version = line.trim_right()
+                    let min_version = line.trim_end()
                         .rsplit(' ')
                         .next()
                         .expect("Malformed llvm version directive");
@@ -552,6 +547,8 @@ fn iter_header(testfile: &Path, cfg: Option<&str>, it: &mut dyn FnMut(&str)) {
         "#"
     };
 
+    // FIXME: would be nice to allow some whitespace between comment and brace :)
+    // It took me like 2 days to debug why compile-flags weren’t taken into account for my test :)
     let comment_with_brace = comment.to_string() + "[";
 
     let rdr = BufReader::new(File::open(testfile).unwrap());
@@ -573,14 +570,14 @@ fn iter_header(testfile: &Path, cfg: Option<&str>, it: &mut dyn FnMut(&str)) {
                     None => false,
                 };
                 if matches {
-                    it(ln[(close_brace + 1)..].trim_left());
+                    it(ln[(close_brace + 1)..].trim_start());
                 }
             } else {
                 panic!("malformed condition directive: expected `{}foo]`, found `{}`",
                         comment_with_brace, ln)
             }
         } else if ln.starts_with(comment) {
-            it(ln[comment.len() ..].trim_left());
+            it(ln[comment.len() ..].trim_start());
         }
     }
     return;
@@ -707,21 +704,19 @@ impl Config {
 
     fn parse_custom_normalization(&self, mut line: &str, prefix: &str) -> Option<(String, String)> {
         if self.parse_cfg_name_directive(line, prefix) == ParsedNameDirective::Match {
-            let from = match parse_normalization_string(&mut line) {
-                Some(s) => s,
-                None => return None,
-            };
-            let to = match parse_normalization_string(&mut line) {
-                Some(s) => s,
-                None => return None,
-            };
+            let from = parse_normalization_string(&mut line)?;
+            let to = parse_normalization_string(&mut line)?;
             Some((from, to))
         } else {
             None
         }
     }
 
-    /// Parses a name-value directive which contains config-specific information, e.g. `ignore-x86`
+    fn parse_needs_matching_clang(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "needs-matching-clang")
+    }
+
+    /// Parses a name-value directive which contains config-specific information, e.g., `ignore-x86`
     /// or `normalize-stderr-32bit`.
     fn parse_cfg_name_directive(&self, line: &str, prefix: &str) -> ParsedNameDirective {
         if line.starts_with(prefix) && line.as_bytes().get(prefix.len()) == Some(&b'-') {
@@ -873,15 +868,35 @@ fn expand_variables(mut value: String, config: &Config) -> String {
 /// ```
 fn parse_normalization_string(line: &mut &str) -> Option<String> {
     // FIXME support escapes in strings.
-    let begin = match line.find('"') {
-        Some(i) => i + 1,
-        None => return None,
-    };
-    let end = match line[begin..].find('"') {
-        Some(i) => i + begin,
-        None => return None,
-    };
+    let begin = line.find('"')? + 1;
+    let end = line[begin..].find('"')? + begin;
     let result = line[begin..end].to_owned();
     *line = &line[end + 1..];
     Some(result)
+}
+
+#[test]
+fn test_parse_normalization_string() {
+    let mut s = "normalize-stderr-32bit: \"something (32 bits)\" -> \"something ($WORD bits)\".";
+    let first = parse_normalization_string(&mut s);
+    assert_eq!(first, Some("something (32 bits)".to_owned()));
+    assert_eq!(s, " -> \"something ($WORD bits)\".");
+
+    // Nothing to normalize (No quotes)
+    let mut s = "normalize-stderr-32bit: something (32 bits) -> something ($WORD bits).";
+    let first = parse_normalization_string(&mut s);
+    assert_eq!(first, None);
+    assert_eq!(s, r#"normalize-stderr-32bit: something (32 bits) -> something ($WORD bits)."#);
+
+    // Nothing to normalize (Only a single quote)
+    let mut s = "normalize-stderr-32bit: \"something (32 bits) -> something ($WORD bits).";
+    let first = parse_normalization_string(&mut s);
+    assert_eq!(first, None);
+    assert_eq!(s, "normalize-stderr-32bit: \"something (32 bits) -> something ($WORD bits).");
+
+    // Nothing to normalize (Three quotes)
+    let mut s = "normalize-stderr-32bit: \"something (32 bits)\" -> \"something ($WORD bits).";
+    let first = parse_normalization_string(&mut s);
+    assert_eq!(first, Some("something (32 bits)".to_owned()));
+    assert_eq!(s, " -> \"something ($WORD bits).");
 }

@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // See doc.rs for documentation.
 mod doc;
 
@@ -23,9 +13,9 @@ use self::source_loc::InternalDebugLocation::{self, UnknownLocation};
 
 use llvm;
 use llvm::debuginfo::{DIFile, DIType, DIScope, DIBuilder, DISubprogram, DIArray, DIFlags,
-    DILexicalBlock};
+    DISPFlags, DILexicalBlock};
 use rustc::hir::CodegenFnAttrFlags;
-use rustc::hir::def_id::{DefId, CrateNum};
+use rustc::hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
 use rustc::ty::subst::{Substs, UnpackedKind};
 
 use abi::Abi;
@@ -202,7 +192,7 @@ impl DebugInfoBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                         cx.sess().opts.optimize != config::OptLevel::No,
                         DIFlags::FlagZero,
                         argument_index,
-                        align.abi() as u32,
+                        align.bytes() as u32,
                     )
                 };
                 source_loc::set_debug_location(self,
@@ -294,22 +284,28 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         let linkage_name = mangled_name_of_instance(self, instance);
 
         let scope_line = span_start(self, span).line;
-        let is_local_to_unit = is_node_local_to_unit(self, def_id);
 
         let function_name = CString::new(name).unwrap();
         let linkage_name = SmallCStr::new(&linkage_name.as_str());
 
         let mut flags = DIFlags::FlagPrototyped;
 
-        let local_id = self.tcx().hir.as_local_node_id(def_id);
-        if let Some((id, _, _)) = *self.sess().entry_fn.borrow() {
-            if local_id == Some(id) {
+        if let Some((id, _)) = self.tcx.entry_fn(LOCAL_CRATE) {
+            if id == def_id {
                 flags |= DIFlags::FlagMainSubprogram;
             }
         }
 
         if self.layout_of(sig.output()).abi.is_uninhabited() {
             flags |= DIFlags::FlagNoReturn;
+        }
+
+        let mut spflags = DISPFlags::SPFlagDefinition;
+        if is_node_local_to_unit(self, def_id) {
+            spflags |= DISPFlags::SPFlagLocalToUnit;
+        }
+        if self.sess().opts.optimize != config::OptLevel::No {
+            spflags |= DISPFlags::SPFlagOptimized;
         }
 
         let fn_metadata = unsafe {
@@ -321,11 +317,9 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 file_metadata,
                 loc.line as c_uint,
                 function_type_metadata,
-                is_local_to_unit,
-                true,
                 scope_line as c_uint,
                 flags,
-                self.sess().opts.optimize != config::OptLevel::No,
+                spflags,
                 llfn,
                 template_parameters,
                 None)
@@ -489,7 +483,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                     );
 
                     // Only "class" methods are generally understood by LLVM,
-                    // so avoid methods on other types (e.g. `<*mut T>::null`).
+                    // so avoid methods on other types (e.g., `<*mut T>::null`).
                     match impl_self_ty.sty {
                         ty::Adt(def, ..) if !def.is_box() => {
                             Some(type_metadata(cx, impl_self_ty, syntax_pos::DUMMY_SP))

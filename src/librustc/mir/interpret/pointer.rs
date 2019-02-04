@@ -2,7 +2,7 @@ use mir;
 use ty::layout::{self, HasDataLayout, Size};
 
 use super::{
-    AllocId, EvalResult,
+    AllocId, EvalResult, InboundsCheck,
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -76,6 +76,8 @@ pub struct Pointer<Tag=(),Id=AllocId> {
     pub tag: Tag,
 }
 
+static_assert!(POINTER_SIZE: ::std::mem::size_of::<Pointer>() == 16);
+
 /// Produces a `Pointer` which points to the beginning of the Allocation
 impl From<AllocId> for Pointer {
     #[inline(always)]
@@ -147,5 +149,22 @@ impl<'tcx, Tag> Pointer<Tag> {
     #[inline(always)]
     pub fn erase_tag(self) -> Pointer {
         Pointer { alloc_id: self.alloc_id, offset: self.offset, tag: () }
+    }
+
+    #[inline(always)]
+    pub fn check_in_alloc(
+        self,
+        allocation_size: Size,
+        check: InboundsCheck,
+    ) -> EvalResult<'tcx, ()> {
+        if self.offset > allocation_size {
+            err!(PointerOutOfBounds {
+                ptr: self.erase_tag(),
+                check,
+                allocation_size,
+            })
+        } else {
+            Ok(())
+        }
     }
 }

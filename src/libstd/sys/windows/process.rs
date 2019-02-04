@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![unstable(feature = "process_internals", issue = "0")]
 
 use collections::BTreeMap;
@@ -403,7 +393,16 @@ impl From<c::DWORD> for ExitStatus {
 
 impl fmt::Display for ExitStatus {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "exit code: {}", self.0)
+        // Windows exit codes with the high bit set typically mean some form of
+        // unhandled exception or warning. In this scenario printing the exit
+        // code in decimal doesn't always make sense because it's a very large
+        // and somewhat gibberish number. The hex code is a bit more
+        // recognizable and easier to search for, so print that.
+        if self.0 & 0x80000000 != 0 {
+            write!(f, "exit code: {:#x}", self.0)
+        } else {
+            write!(f, "exit code: {}", self.0)
+        }
     }
 }
 
@@ -487,7 +486,7 @@ fn make_command_line(prog: &OsStr, args: &[OsString]) -> io::Result<Vec<u16>> {
             } else {
                 if x == '"' as u16 {
                     // Add n+1 backslashes to total 2n+1 before internal '"'.
-                    cmd.extend((0..(backslashes + 1)).map(|_| '\\' as u16));
+                    cmd.extend((0..=backslashes).map(|_| '\\' as u16));
                 }
                 backslashes = 0;
             }

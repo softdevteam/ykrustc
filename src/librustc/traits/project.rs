@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Code for projecting associated types out of trait references.
 
 use super::elaborate_predicates;
@@ -23,9 +13,8 @@ use super::{VtableImplData, VtableClosureData, VtableGeneratorData, VtableFnPoin
 use super::util;
 
 use hir::def_id::DefId;
-use infer::{InferCtxt, InferOk};
+use infer::{InferCtxt, InferOk, LateBoundRegionConversionTime};
 use infer::type_variable::TypeVariableOrigin;
-use mir::interpret::ConstValue;
 use mir::interpret::{GlobalId};
 use rustc_data_structures::snapshot_map::{Snapshot, SnapshotMap};
 use syntax::ast::Ident;
@@ -70,7 +59,7 @@ pub enum Reveal {
     /// be observable directly by the user, `Reveal::All`
     /// should not be used by checks which may expose
     /// type equality or type contents to the user.
-    /// There are some exceptions, e.g. around OIBITS and
+    /// There are some exceptions, e.g., around OIBITS and
     /// transmute-checking, which expose some details, but
     /// not the whole concrete type of the `impl Trait`.
     All,
@@ -202,28 +191,12 @@ pub fn poly_project_and_unify_type<'cx, 'gcx, 'tcx>(
            obligation);
 
     let infcx = selcx.infcx();
-    infcx.commit_if_ok(|snapshot| {
-        let (placeholder_predicate, placeholder_map) =
-            infcx.replace_late_bound_regions_with_placeholders(&obligation.predicate);
+    infcx.commit_if_ok(|_| {
+        let (placeholder_predicate, _) =
+            infcx.replace_bound_vars_with_placeholders(&obligation.predicate);
 
-        let skol_obligation = obligation.with(placeholder_predicate);
-        let r = match project_and_unify_type(selcx, &skol_obligation) {
-            Ok(result) => {
-                let span = obligation.cause.span;
-                match infcx.leak_check(false, span, &placeholder_map, snapshot) {
-                    Ok(()) => Ok(infcx.plug_leaks(placeholder_map, snapshot, result)),
-                    Err(e) => {
-                        debug!("poly_project_and_unify_type: leak check encountered error {:?}", e);
-                        Err(MismatchedProjectionTypes { err: e })
-                    }
-                }
-            }
-            Err(e) => {
-                Err(e)
-            }
-        };
-
-        r
+        let placeholder_obligation = obligation.with(placeholder_predicate);
+        project_and_unify_type(selcx, &placeholder_obligation)
     })
 }
 
@@ -420,11 +393,11 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
         }
     }
 
-    fn fold_const(&mut self, constant: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
-        if let ConstValue::Unevaluated(def_id, substs) = constant.val {
+    fn fold_const(&mut self, constant: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
+        if let ty::LazyConst::Unevaluated(def_id, substs) = *constant {
             let tcx = self.selcx.tcx().global_tcx();
             if let Some(param_env) = self.tcx().lift_to_global(&self.param_env) {
-                if substs.needs_infer() || substs.has_skol() {
+                if substs.needs_infer() || substs.has_placeholders() {
                     let identity_substs = Substs::identity_for_item(tcx, def_id);
                     let instance = ty::Instance::resolve(tcx, param_env, def_id, identity_substs);
                     if let Some(instance) = instance {
@@ -433,8 +406,9 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
                             promoted: None
                         };
                         if let Ok(evaluated) = tcx.const_eval(param_env.and(cid)) {
-                            let evaluated = evaluated.subst(self.tcx(), substs);
-                            return self.fold_const(evaluated);
+                            let substs = tcx.lift_to_global(&substs).unwrap();
+                            let evaluated = evaluated.subst(tcx, substs);
+                            return tcx.intern_lazy_const(ty::LazyConst::Evaluated(evaluated));
                         }
                     }
                 } else {
@@ -446,7 +420,7 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
                                 promoted: None
                             };
                             if let Ok(evaluated) = tcx.const_eval(param_env.and(cid)) {
-                                return self.fold_const(evaluated)
+                                return tcx.intern_lazy_const(ty::LazyConst::Evaluated(evaluated));
                             }
                         }
                     }
@@ -608,7 +582,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
             // created (and hence the new ones will quickly be
             // discarded as duplicated). But when doing trait
             // evaluation this is not the case, and dropping the trait
-            // evaluations can causes ICEs (e.g. #43132).
+            // evaluations can causes ICEs (e.g., #43132).
             debug!("opt_normalize_projection_type: \
                     found normalized ty `{:?}`",
                    ty);
@@ -1453,17 +1427,25 @@ fn confirm_callable_candidate<'cx, 'gcx, 'tcx>(
 fn confirm_param_env_candidate<'cx, 'gcx, 'tcx>(
     selcx: &mut SelectionContext<'cx, 'gcx, 'tcx>,
     obligation: &ProjectionTyObligation<'tcx>,
-    poly_projection: ty::PolyProjectionPredicate<'tcx>)
+    poly_cache_entry: ty::PolyProjectionPredicate<'tcx>)
     -> Progress<'tcx>
 {
     let infcx = selcx.infcx();
-    let cause = obligation.cause.clone();
+    let cause = &obligation.cause;
     let param_env = obligation.param_env;
-    let trait_ref = obligation.predicate.trait_ref(infcx.tcx);
-    match infcx.match_poly_projection_predicate(cause, param_env, poly_projection, trait_ref) {
-        Ok(InferOk { value: ty_match, obligations }) => {
+
+    let (cache_entry, _) =
+        infcx.replace_bound_vars_with_fresh_vars(
+            cause.span,
+            LateBoundRegionConversionTime::HigherRankedType,
+            &poly_cache_entry);
+
+    let cache_trait_ref = cache_entry.projection_ty.trait_ref(infcx.tcx);
+    let obligation_trait_ref = obligation.predicate.trait_ref(infcx.tcx);
+    match infcx.at(cause, param_env).eq(cache_trait_ref, obligation_trait_ref) {
+        Ok(InferOk { value: _, obligations }) => {
             Progress {
-                ty: ty_match.value,
+                ty: cache_entry.ty,
                 obligations,
             }
         }
@@ -1473,7 +1455,7 @@ fn confirm_param_env_candidate<'cx, 'gcx, 'tcx>(
                 "Failed to unify obligation `{:?}` \
                  with poly_projection `{:?}`: {:?}",
                 obligation,
-                poly_projection,
+                poly_cache_entry,
                 e);
         }
     }
@@ -1589,7 +1571,7 @@ fn assoc_ty_def<'cx, 'gcx, 'tcx>(
 /// When working with a fulfillment context, the derived obligations of each
 /// projection cache entry will be registered on the fulfillcx, so any users
 /// that can wait for a fulfillcx fixed point need not care about this. However,
-/// users that don't wait for a fixed point (e.g. trait evaluation) have to
+/// users that don't wait for a fixed point (e.g., trait evaluation) have to
 /// resolve the obligations themselves to make sure the projected result is
 /// ok and avoid issues like #43132.
 ///
@@ -1637,7 +1619,7 @@ enum ProjectionCacheEntry<'tcx> {
     NormalizedTy(NormalizedTy<'tcx>),
 }
 
-// NB: intentionally not Clone
+// N.B., intentionally not Clone
 pub struct ProjectionCacheSnapshot {
     snapshot: Snapshot,
 }
@@ -1652,15 +1634,15 @@ impl<'tcx> ProjectionCache<'tcx> {
     }
 
     pub fn rollback_to(&mut self, snapshot: ProjectionCacheSnapshot) {
-        self.map.rollback_to(&snapshot.snapshot);
+        self.map.rollback_to(snapshot.snapshot);
     }
 
     pub fn rollback_placeholder(&mut self, snapshot: &ProjectionCacheSnapshot) {
-        self.map.partial_rollback(&snapshot.snapshot, &|k| k.ty.has_re_skol());
+        self.map.partial_rollback(&snapshot.snapshot, &|k| k.ty.has_re_placeholders());
     }
 
-    pub fn commit(&mut self, snapshot: &ProjectionCacheSnapshot) {
-        self.map.commit(&snapshot.snapshot);
+    pub fn commit(&mut self, snapshot: ProjectionCacheSnapshot) {
+        self.map.commit(snapshot.snapshot);
     }
 
     /// Try to start normalize `key`; returns an error if
@@ -1714,12 +1696,8 @@ impl<'tcx> ProjectionCache<'tcx> {
     /// to be a NormalizedTy.
     pub fn complete_normalized(&mut self, key: ProjectionCacheKey<'tcx>, ty: &NormalizedTy<'tcx>) {
         // We want to insert `ty` with no obligations. If the existing value
-        // already has no obligations (as is common) we can use `insert_noop`
-        // to do a minimal amount of work -- the HashMap insertion is skipped,
-        // and minimal changes are made to the undo log.
-        if ty.obligations.is_empty() {
-            self.map.insert_noop();
-        } else {
+        // already has no obligations (as is common) we don't insert anything.
+        if !ty.obligations.is_empty() {
             self.map.insert(key, ProjectionCacheEntry::NormalizedTy(Normalized {
                 value: ty.value,
                 obligations: vec![]

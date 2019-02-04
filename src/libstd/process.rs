@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A module for working with processes.
 //!
 //! This module is mostly concerned with spawning and interacting with child
@@ -628,7 +618,7 @@ impl Command {
     ///
     /// # Platform-specific behavior
     ///
-    /// If the program path is relative (e.g. `"./script.sh"`), it's ambiguous
+    /// If the program path is relative (e.g., `"./script.sh"`), it's ambiguous
     /// whether it should be interpreted relative to the parent's working
     /// directory or relative to `current_dir`. The behavior in this case is
     /// platform specific and unstable, and it's recommended to use
@@ -1887,42 +1877,6 @@ mod tests {
         let mut cmd = Command::new("cmd");
         cmd.arg("/c").arg("set");
         cmd
-    }
-
-    #[test]
-    fn test_inherit_env() {
-        use env;
-
-        let result = env_cmd().output().unwrap();
-        let output = String::from_utf8(result.stdout).unwrap();
-
-        for (ref k, ref v) in env::vars() {
-            // Don't check android RANDOM variable which seems to change
-            // whenever the shell runs, and our `env_cmd` is indeed running a
-            // shell which means it'll get a different RANDOM than we probably
-            // have.
-            //
-            // Also skip env vars with `-` in the name on android because, well,
-            // I'm not sure. It appears though that the `set` command above does
-            // not print env vars with `-` in the name, so we just skip them
-            // here as we won't find them in the output. Note that most env vars
-            // use `_` instead of `-`, but our build system sets a few env vars
-            // with `-` in the name.
-            if cfg!(target_os = "android") &&
-               (*k == "RANDOM" || k.contains("-")) {
-                continue
-            }
-
-            // Windows has hidden environment variables whose names start with
-            // equals signs (`=`). Those do not show up in the output of the
-            // `set` command.
-            assert!((cfg!(windows) && k.starts_with("=")) ||
-                    k.starts_with("DYLD") ||
-                    output.contains(&format!("{}={}", *k, *v)) ||
-                    output.contains(&format!("{}='{}'", *k, *v)),
-                    "output doesn't contain `{}={}`\n{}",
-                    k, v, output);
-        }
     }
 
     #[test]

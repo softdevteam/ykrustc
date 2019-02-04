@@ -1,13 +1,4 @@
 #!/usr/bin/env python
-# Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
 
 # ignore-tidy-linelength
 
@@ -44,7 +35,7 @@ o("debug", "rust.debug", "enables debugging environment; does not affect optimiz
 o("docs", "build.docs", "build standard library documentation")
 o("compiler-docs", "build.compiler-docs", "build compiler documentation")
 o("optimize-tests", "rust.optimize-tests", "build tests with optimizations")
-o("experimental-parallel-queries", "rust.experimental-parallel-queries", "build rustc with experimental parallelization")
+o("parallel-compiler", "rust.parallel-compiler", "build a multi-threaded rustc")
 o("test-miri", "rust.test-miri", "run miri's test suite")
 o("debuginfo-tests", "rust.debuginfo-tests", "build tests with debugger metadata")
 o("verbose-tests", "rust.verbose-tests", "enable verbose output when running tests")
@@ -71,6 +62,11 @@ o("full-tools", None, "enable all tools")
 o("lld", "rust.lld", "build lld")
 o("lldb", "rust.lldb", "build lldb")
 o("missing-tools", "dist.missing-tools", "allow failures when building tools")
+o("use-libcxx", "llvm.use_libcxx", "build LLVM with libc++")
+
+o("cflags", "llvm.cflags", "build LLVM with these extra compiler flags")
+o("cxxflags", "llvm.cxxflags", "build LLVM with these extra compiler flags")
+o("ldflags", "llvm.ldflags", "build LLVM with these extra linker flags")
 
 # Optimization and debugging options. These may be overridden by the release
 # channel, etc.
@@ -107,6 +103,8 @@ v("arm-linux-androideabi-ndk", "target.arm-linux-androideabi.android-ndk",
   "arm-linux-androideabi NDK standalone path")
 v("armv7-linux-androideabi-ndk", "target.armv7-linux-androideabi.android-ndk",
   "armv7-linux-androideabi NDK standalone path")
+v("thumbv7neon-linux-androideabi-ndk", "target.thumbv7neon-linux-androideabi.android-ndk",
+  "thumbv7neon-linux-androideabi NDK standalone path")
 v("aarch64-linux-android-ndk", "target.aarch64-linux-android.android-ndk",
   "aarch64-linux-android NDK standalone path")
 v("x86_64-linux-android-ndk", "target.x86_64-linux-android.android-ndk",

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Compilation of native dependencies like LLVM.
 //!
 //! Native projects like LLVM unfortunately aren't suited just yet for
@@ -21,7 +11,6 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,11 +18,11 @@ use build_helper::output;
 use cmake;
 use cc;
 
-use util::{self, exe};
+use crate::util::{self, exe};
 use build_helper::up_to_date;
-use builder::{Builder, RunConfig, ShouldRun, Step};
-use cache::Interned;
-use GitRepo;
+use crate::builder::{Builder, RunConfig, ShouldRun, Step};
+use crate::cache::Interned;
+use crate::GitRepo;
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct Llvm {
@@ -47,7 +36,10 @@ impl Step for Llvm {
     const ONLY_HOSTS: bool = true;
 
     fn should_run(run: ShouldRun) -> ShouldRun {
-        run.path("src/llvm").path("src/llvm-emscripten")
+        run.path("src/llvm-project")
+            .path("src/llvm-project/llvm")
+            .path("src/llvm")
+            .path("src/llvm-emscripten")
     }
 
     fn make_run(run: RunConfig) {
@@ -75,8 +67,7 @@ impl Step for Llvm {
         }
 
         let rebuild_trigger = builder.src.join("src/rustllvm/llvm-rebuild-trigger");
-        let mut rebuild_trigger_contents = String::new();
-        t!(t!(File::open(&rebuild_trigger)).read_to_string(&mut rebuild_trigger_contents));
+        let rebuild_trigger_contents = t!(fs::read_to_string(&rebuild_trigger));
 
         let (out_dir, llvm_config_ret_dir) = if emscripten {
             let dir = builder.emscripten_llvm_out(target);
@@ -93,8 +84,7 @@ impl Step for Llvm {
         let build_llvm_config = llvm_config_ret_dir
             .join(exe("llvm-config", &*builder.config.build));
         if done_stamp.exists() {
-            let mut done_contents = String::new();
-            t!(t!(File::open(&done_stamp)).read_to_string(&mut done_contents));
+            let done_contents = t!(fs::read_to_string(&done_stamp));
 
             // If LLVM was already built previously and contents of the rebuild-trigger file
             // didn't change from the previous build, then no action is required.
@@ -110,7 +100,7 @@ impl Step for Llvm {
         t!(fs::create_dir_all(&out_dir));
 
         // http://llvm.org/docs/CMake.html
-        let root = if self.emscripten { "src/llvm-emscripten" } else { "src/llvm" };
+        let root = if self.emscripten { "src/llvm-emscripten" } else { "src/llvm-project/llvm" };
         let mut cfg = cmake::Config::new(builder.src.join(root));
 
         let profile = match (builder.config.llvm_optimize, builder.config.llvm_release_debuginfo) {
@@ -202,10 +192,10 @@ impl Step for Llvm {
         }
 
         if want_lldb {
-            cfg.define("LLVM_EXTERNAL_CLANG_SOURCE_DIR", builder.src.join("src/tools/clang"));
-            cfg.define("LLVM_EXTERNAL_LLDB_SOURCE_DIR", builder.src.join("src/tools/lldb"));
+            cfg.define("LLVM_ENABLE_PROJECTS", "clang;lldb");
             // For the time being, disable code signing.
             cfg.define("LLDB_CODESIGN_IDENTITY", "");
+            cfg.define("LLDB_NO_DEBUGSERVER", "ON");
         } else {
             // LLDB requires libxml2; but otherwise we want it to be disabled.
             // See https://github.com/rust-lang/rust/pull/50104
@@ -244,14 +234,18 @@ impl Step for Llvm {
             cfg.define("LLVM_VERSION_SUFFIX", suffix);
         }
 
+        if let Some(ref linker) = builder.config.llvm_use_linker {
+            cfg.define("LLVM_USE_LINKER", linker);
+        }
+
         if let Some(ref python) = builder.config.python {
             cfg.define("PYTHON_EXECUTABLE", python);
         }
 
-        configure_cmake(builder, target, &mut cfg, false);
+        configure_cmake(builder, target, &mut cfg);
 
         // FIXME: we don't actually need to build all LLVM tools and all LLVM
-        //        libraries here, e.g. we just want a few components and a few
+        //        libraries here, e.g., we just want a few components and a few
         //        tools. Figure out how to filter them down and only build the right
         //        tools and libs on all platforms.
 
@@ -261,7 +255,7 @@ impl Step for Llvm {
 
         cfg.build();
 
-        t!(t!(File::create(&done_stamp)).write_all(rebuild_trigger_contents.as_bytes()));
+        t!(fs::write(&done_stamp, &rebuild_trigger_contents));
 
         build_llvm_config
     }
@@ -281,17 +275,16 @@ fn check_llvm_version(builder: &Builder, llvm_config: &Path) {
     let mut parts = version.split('.').take(2)
         .filter_map(|s| s.parse::<u32>().ok());
     if let (Some(major), Some(_minor)) = (parts.next(), parts.next()) {
-        if major >= 5 {
+        if major >= 6 {
             return
         }
     }
-    panic!("\n\nbad LLVM version: {}, need >=5.0\n\n", version)
+    panic!("\n\nbad LLVM version: {}, need >=6.0\n\n", version)
 }
 
 fn configure_cmake(builder: &Builder,
                    target: Interned<String>,
-                   cfg: &mut cmake::Config,
-                   building_dist_binaries: bool) {
+                   cfg: &mut cmake::Config) {
     if builder.config.ninja {
         cfg.generator("Ninja");
     }
@@ -360,26 +353,32 @@ fn configure_cmake(builder: &Builder,
        if builder.config.llvm_clang_cl.is_some() && target.contains("i686") {
            cfg.env("SCCACHE_EXTRA_ARGS", "-m32");
        }
-
-    // If ccache is configured we inform the build a little differently how
-    // to invoke ccache while also invoking our compilers.
-    } else if let Some(ref ccache) = builder.config.ccache {
-       cfg.define("CMAKE_C_COMPILER", ccache)
-          .define("CMAKE_C_COMPILER_ARG1", sanitize_cc(cc))
-          .define("CMAKE_CXX_COMPILER", ccache)
-          .define("CMAKE_CXX_COMPILER_ARG1", sanitize_cc(cxx));
     } else {
+       // If ccache is configured we inform the build a little differently how
+       // to invoke ccache while also invoking our compilers.
+       if let Some(ref ccache) = builder.config.ccache {
+         cfg.define("CMAKE_C_COMPILER_LAUNCHER", ccache)
+            .define("CMAKE_CXX_COMPILER_LAUNCHER", ccache);
+       }
        cfg.define("CMAKE_C_COMPILER", sanitize_cc(cc))
           .define("CMAKE_CXX_COMPILER", sanitize_cc(cxx));
     }
 
     cfg.build_arg("-j").build_arg(builder.jobs().to_string());
-    cfg.define("CMAKE_C_FLAGS", builder.cflags(target, GitRepo::Llvm).join(" "));
+    let mut cflags = builder.cflags(target, GitRepo::Llvm).join(" ");
+    if let Some(ref s) = builder.config.llvm_cxxflags {
+        cflags.push_str(&format!(" {}", s));
+    }
+    cfg.define("CMAKE_C_FLAGS", cflags);
     let mut cxxflags = builder.cflags(target, GitRepo::Llvm).join(" ");
-    if building_dist_binaries {
-        if builder.config.llvm_static_stdcpp && !target.contains("windows") {
-            cxxflags.push_str(" -static-libstdc++");
-        }
+    if builder.config.llvm_static_stdcpp &&
+        !target.contains("windows") &&
+        !target.contains("netbsd")
+    {
+        cxxflags.push_str(" -static-libstdc++");
+    }
+    if let Some(ref s) = builder.config.llvm_cxxflags {
+        cxxflags.push_str(&format!(" {}", s));
     }
     cfg.define("CMAKE_CXX_FLAGS", cxxflags);
     if let Some(ar) = builder.ar(target) {
@@ -398,6 +397,12 @@ fn configure_cmake(builder: &Builder,
         }
     }
 
+    if let Some(ref s) = builder.config.llvm_ldflags {
+        cfg.define("CMAKE_SHARED_LINKER_FLAGS", s);
+        cfg.define("CMAKE_MODULE_LINKER_FLAGS", s);
+        cfg.define("CMAKE_EXE_LINKER_FLAGS", s);
+    }
+
     if env::var_os("SCCACHE_ERROR_LOG").is_some() {
         cfg.env("RUST_LOG", "sccache=warn");
     }
@@ -413,7 +418,7 @@ impl Step for Lld {
     const ONLY_HOSTS: bool = true;
 
     fn should_run(run: ShouldRun) -> ShouldRun {
-        run.path("src/tools/lld")
+        run.path("src/llvm-project/lld").path("src/tools/lld")
     }
 
     fn make_run(run: RunConfig) {
@@ -443,8 +448,8 @@ impl Step for Lld {
         let _time = util::timeit(&builder);
         t!(fs::create_dir_all(&out_dir));
 
-        let mut cfg = cmake::Config::new(builder.src.join("src/tools/lld"));
-        configure_cmake(builder, target, &mut cfg, true);
+        let mut cfg = cmake::Config::new(builder.src.join("src/llvm-project/lld"));
+        configure_cmake(builder, target, &mut cfg);
 
         // This is an awful, awful hack. Discovered when we migrated to using
         // clang-cl to compile LLVM/LLD it turns out that LLD, when built out of

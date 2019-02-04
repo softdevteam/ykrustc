@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Various checks that stability attributes are used correctly, per RFC 507
 
 #![feature(const_fn, staged_api, rustc_const_unstable)]
@@ -28,28 +18,6 @@ mod bogus_attribute_types_1 {
     fn f5() { }
 
     #[stable(feature(b), since = "a")] //~ ERROR incorrect meta item [E0539]
-    fn f6() { }
-}
-
-mod bogus_attribute_types_2 {
-    #[unstable] //~ ERROR incorrect stability attribute type [E0548]
-    fn f1() { }
-
-    #[unstable = "b"] //~ ERROR incorrect stability attribute type [E0548]
-    fn f2() { }
-
-    #[stable] //~ ERROR incorrect stability attribute type [E0548]
-    fn f3() { }
-
-    #[stable = "a"] //~ ERROR incorrect stability attribute type [E0548]
-    fn f4() { }
-
-    #[stable(feature = "a", since = "b")]
-    #[rustc_deprecated] //~ ERROR incorrect stability attribute type [E0548]
-    fn f5() { }
-
-    #[stable(feature = "a", since = "b")]
-    #[rustc_deprecated = "a"] //~ ERROR incorrect stability attribute type [E0548]
     fn f6() { }
 }
 

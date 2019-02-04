@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use {Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
 use {Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
@@ -571,7 +561,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
             }
             // Fill with zeros up to precision.
             if !truncate_zero && precision > digits - 1 {
-                for _ in 0..precision - digits + 1 {
+                for _ in 0..=precision - digits {
                     f.write_char('0')?;
                 }
             }
@@ -926,7 +916,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
         // In case MSB resides at the left-hand side of radix point, shift the
         // mantissa right by some amount to make sure the MSB reside right before
-        // the radix point (i.e. "MSB . rest-significant-bits").
+        // the radix point (i.e., "MSB . rest-significant-bits").
         if omsb > S::PRECISION {
             let bits = omsb - S::PRECISION;
             loss = sig::shift_right(&mut wide_sig, &mut self.exp, bits).combine(loss);
@@ -1969,7 +1959,7 @@ impl<S: Semantics> IeeeFloat<S> {
         // in a Limb. When this would overflow do we do a single
         // bignum multiplication, and then revert again to multiplication
         // in a Limb.
-        let mut chars = s[first_sig_digit..last_sig_digit + 1].chars();
+        let mut chars = s[first_sig_digit..=last_sig_digit].chars();
         loop {
             let mut val = 0;
             let mut multiplier = 1;
@@ -2351,7 +2341,7 @@ mod sig {
             // Our exponent should not underflow.
             *exp = exp.checked_sub(bits as ExpInt).unwrap();
 
-            // Jump is the inter-limb jump; shift is is intra-limb shift.
+            // Jump is the inter-limb jump; shift is the intra-limb shift.
             let jump = bits / LIMB_BITS;
             let shift = bits % LIMB_BITS;
 
@@ -2385,7 +2375,7 @@ mod sig {
             // Our exponent should not overflow.
             *exp = exp.checked_add(bits as ExpInt).unwrap();
 
-            // Jump is the inter-limb jump; shift is is intra-limb shift.
+            // Jump is the inter-limb jump; shift is the intra-limb shift.
             let jump = bits / LIMB_BITS;
             let shift = bits % LIMB_BITS;
 
@@ -2674,7 +2664,7 @@ mod sig {
 
         // In case MSB resides at the left-hand side of radix point, shift the
         // mantissa right by some amount to make sure the MSB reside right before
-        // the radix point (i.e. "MSB . rest-significant-bits").
+        // the radix point (i.e., "MSB . rest-significant-bits").
         //
         // Note that the result is not normalized when "omsb < precision". So, the
         // caller needs to call IeeeFloat::normalize() if normalized value is

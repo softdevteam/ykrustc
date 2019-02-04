@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir::intravisit::{Visitor, NestedVisitorMap};
 use rustc::hir::{self, HirId};
 use rustc::lint::builtin::UNUSED_MUT;
@@ -88,11 +78,12 @@ impl<'a, 'tcx> UnusedMutCx<'a, 'tcx> {
                                      hir_id,
                                      span,
                                      "variable does not need to be mutable")
-                .span_suggestion_short_with_applicability(
+                .span_suggestion_short(
                     mut_span,
                     "remove this `mut`",
                     String::new(),
-                    Applicability::MachineApplicable)
+                    Applicability::MachineApplicable,
+                )
                 .emit();
         }
     }
@@ -100,7 +91,7 @@ impl<'a, 'tcx> UnusedMutCx<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for UnusedMutCx<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.bccx.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.bccx.tcx.hir())
     }
 
     fn visit_arm(&mut self, arm: &hir::Arm) {
@@ -114,12 +105,12 @@ impl<'a, 'tcx> Visitor<'tcx> for UnusedMutCx<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for UsedMutFinder<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.bccx.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.bccx.tcx.hir())
     }
 
     fn visit_nested_body(&mut self, id: hir::BodyId) {
-        let def_id = self.bccx.tcx.hir.body_owner_def_id(id);
+        let def_id = self.bccx.tcx.hir().body_owner_def_id(id);
         self.set.extend(self.bccx.tcx.borrowck(def_id).used_mut_nodes.iter().cloned());
-        self.visit_body(self.bccx.tcx.hir.body(id));
+        self.visit_body(self.bccx.tcx.hir().body(id));
     }
 }

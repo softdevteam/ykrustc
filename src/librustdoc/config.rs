@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
@@ -20,7 +10,7 @@ use rustc::session::early_error;
 use rustc::session::config::{CodegenOptions, DebuggingOptions, ErrorOutputType, Externs};
 use rustc::session::config::{nightly_options, build_codegen_options, build_debugging_options,
                              get_cmd_lint_options};
-use rustc::session::search_paths::SearchPaths;
+use rustc::session::search_paths::SearchPath;
 use rustc_driver;
 use rustc_target::spec::TargetTriple;
 use syntax::edition::Edition;
@@ -46,7 +36,7 @@ pub struct Options {
     /// How to format errors and warnings.
     pub error_format: ErrorOutputType,
     /// Library search paths to hand to the compiler.
-    pub libs: SearchPaths,
+    pub libs: Vec<SearchPath>,
     /// The list of external crates to link against.
     pub externs: Externs,
     /// List of `cfg` flags to hand to the compiler. Always includes `rustdoc`.
@@ -78,6 +68,9 @@ pub struct Options {
     pub should_test: bool,
     /// List of arguments to pass to the test harness, if running tests.
     pub test_args: Vec<String>,
+    /// Optional path to persist the doctest executables to, defaults to a
+    /// temporary directory if not set.
+    pub persist_doctests: Option<PathBuf>,
 
     // Options that affect the documentation process
 
@@ -131,6 +124,7 @@ impl fmt::Debug for Options {
             .field("lint_cap", &self.lint_cap)
             .field("should_test", &self.should_test)
             .field("test_args", &self.test_args)
+            .field("persist_doctests", &self.persist_doctests)
             .field("default_passes", &self.default_passes)
             .field("manual_passes", &self.manual_passes)
             .field("display_warnings", &self.display_warnings)
@@ -181,6 +175,9 @@ pub struct RenderOptions {
     /// A file to use as the index page at the root of the output directory. Overrides
     /// `enable_index_page` to be true if set.
     pub index_page: Option<PathBuf>,
+    /// An optional path to use as the location of static files. If not set, uses combinations of
+    /// `../` to reach the documentation root.
+    pub static_root_path: Option<String>,
 
     // Options specific to reading standalone Markdown files
 
@@ -192,6 +189,9 @@ pub struct RenderOptions {
     /// If present, playground URL to use in the "Run" button added to code samples generated from
     /// standalone Markdown files. If not present, `playground_url` is used.
     pub markdown_playground_url: Option<String>,
+    /// If false, the `select` element to have search filtering by crates on rendered docs
+    /// won't be generated.
+    pub generate_search_filter: bool,
 }
 
 impl Options {
@@ -295,10 +295,9 @@ impl Options {
         }
         let input = PathBuf::from(&matches.free[0]);
 
-        let mut libs = SearchPaths::new();
-        for s in &matches.opt_strs("L") {
-            libs.add_path(s, error_format);
-        }
+        let libs = matches.opt_strs("L").iter()
+            .map(|s| SearchPath::from_cli_opt(s, error_format))
+            .collect();
         let externs = match parse_externs(&matches) {
             Ok(ex) => ex,
             Err(err) => {
@@ -434,6 +433,9 @@ impl Options {
         let markdown_playground_url = matches.opt_str("markdown-playground-url");
         let crate_version = matches.opt_str("crate-version");
         let enable_index_page = matches.opt_present("enable-index-page") || index_page.is_some();
+        let static_root_path = matches.opt_str("static-root-path");
+        let generate_search_filter = !matches.opt_present("disable-per-crate-search");
+        let persist_doctests = matches.opt_str("persist-doctests").map(PathBuf::from);
 
         let (lint_opts, describe_lints, lint_cap) = get_cmd_lint_options(matches, error_format);
 
@@ -459,6 +461,7 @@ impl Options {
             manual_passes,
             display_warnings,
             crate_version,
+            persist_doctests,
             render_options: RenderOptions {
                 output,
                 external_html,
@@ -472,9 +475,11 @@ impl Options {
                 enable_minification,
                 enable_index_page,
                 index_page,
+                static_root_path,
                 markdown_no_toc,
                 markdown_css,
                 markdown_playground_url,
+                generate_search_filter,
             }
         })
     }

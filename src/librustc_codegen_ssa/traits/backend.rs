@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::layout::{HasTyCtxt, LayoutOf, TyLayout};
 use rustc::ty::Ty;
 
@@ -16,7 +6,7 @@ use super::CodegenObject;
 use rustc::middle::allocator::AllocatorKind;
 use rustc::middle::cstore::EncodedMetadata;
 use rustc::mir::mono::Stats;
-use rustc::session::Session;
+use rustc::session::{Session, config};
 use rustc::ty::TyCtxt;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 use std::sync::Arc;
@@ -26,7 +16,6 @@ pub trait BackendTypes {
     type Value: CodegenObject;
     type BasicBlock: Copy;
     type Type: CodegenObject;
-    type Context;
     type Funclet;
 
     type DIScope: Copy;
@@ -39,10 +28,11 @@ pub trait Backend<'tcx>:
 
 impl<'tcx, T> Backend<'tcx> for T where
     Self: BackendTypes + HasTyCtxt<'tcx> + LayoutOf<Ty = Ty<'tcx>, TyLayout = TyLayout<'tcx>>
-{}
+{
+}
 
 pub trait ExtraBackendMethods: CodegenBackend + WriteBackendMethods + Sized + Send {
-    fn new_metadata(&self, sess: &Session, mod_name: &str) -> Self::Module;
+    fn new_metadata(&self, sess: TyCtxt, mod_name: &str) -> Self::Module;
     fn write_metadata<'b, 'gcx>(
         &self,
         tcx: TyCtxt<'b, 'gcx, 'gcx>,
@@ -60,6 +50,7 @@ pub trait ExtraBackendMethods: CodegenBackend + WriteBackendMethods + Sized + Se
     fn target_machine_factory(
         &self,
         sess: &Session,
+        opt_level: config::OptLevel,
         find_features: bool,
     ) -> Arc<dyn Fn() -> Result<Self::TargetMachine, String> + Send + Sync>;
     fn target_cpu<'b>(&self, sess: &'b Session) -> &'b str;

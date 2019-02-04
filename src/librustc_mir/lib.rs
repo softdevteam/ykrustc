@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /*!
 
 Rust MIR: a lowered representation of Rust. Also: an experiment!
@@ -34,10 +24,8 @@ Rust MIR: a lowered representation of Rust. Also: an experiment!
 #![feature(unicode_internals)]
 #![feature(step_trait)]
 #![feature(slice_concat_ext)]
-#![feature(if_while_or_patterns)]
 #![feature(try_from)]
 #![feature(reverse_bits)]
-#![feature(underscore_imports)]
 
 #![recursion_limit="256"]
 

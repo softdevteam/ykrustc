@@ -1,25 +1,19 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Syntax extensions in the Rust compiler.
 
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
        html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
        html_root_url = "https://doc.rust-lang.org/nightly/")]
 
+#![feature(in_band_lifetimes)]
+#![feature(proc_macro_diagnostic)]
 #![feature(proc_macro_internals)]
+#![feature(proc_macro_span)]
 #![feature(decl_macro)]
 #![feature(nll)]
 #![feature(str_escape)]
-#![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
+
+#![recursion_limit="256"]
 
 extern crate fmt_macros;
 #[macro_use]
@@ -36,10 +30,6 @@ extern crate log;
 
 mod diagnostics;
 
-#[macro_use]
-// for custom_derive
-pub mod deriving;
-
 mod asm;
 mod assert;
 mod cfg;
@@ -51,13 +41,13 @@ mod format;
 mod format_foreign;
 mod global_asm;
 mod log_syntax;
-mod trace_macros;
+mod proc_macro_server;
 mod test;
 mod test_case;
+mod trace_macros;
 
-pub mod proc_macro_registrar;
-
-
+pub mod deriving;
+pub mod proc_macro_decls;
 pub mod proc_macro_impl;
 
 use rustc_data_structures::sync::Lrc;
@@ -67,8 +57,7 @@ use syntax::ext::hygiene;
 use syntax::symbol::Symbol;
 
 pub fn register_builtins(resolver: &mut dyn syntax::ext::base::Resolver,
-                         user_exts: Vec<NamedSyntaxExtension>,
-                         enable_quotes: bool) {
+                         user_exts: Vec<NamedSyntaxExtension>) {
     deriving::register_builtin_derives(resolver);
 
     let mut register = |name, ext| {
@@ -88,24 +77,6 @@ pub fn register_builtins(resolver: &mut dyn syntax::ext::base::Resolver,
                         edition: hygiene::default_edition(),
                     });
         )* }
-    }
-
-    if enable_quotes {
-        use syntax::ext::quote::*;
-        register! {
-            quote_tokens: expand_quote_tokens,
-            quote_expr: expand_quote_expr,
-            quote_ty: expand_quote_ty,
-            quote_item: expand_quote_item,
-            quote_pat: expand_quote_pat,
-            quote_arm: expand_quote_arm,
-            quote_stmt: expand_quote_stmt,
-            quote_attr: expand_quote_attr,
-            quote_arg: expand_quote_arg,
-            quote_block: expand_quote_block,
-            quote_meta_item: expand_quote_meta_item,
-            quote_path: expand_quote_path,
-        }
     }
 
     use syntax::ext::source_util::*;

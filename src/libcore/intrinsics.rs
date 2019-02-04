@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! rustc compiler intrinsics.
 //!
 //! The corresponding definitions are in librustc_codegen_llvm/intrinsic.rs.
@@ -52,7 +42,7 @@
 pub use ptr::drop_in_place;
 
 extern "rust-intrinsic" {
-    // NB: These intrinsics take raw pointers because they mutate aliased
+    // N.B., these intrinsics take raw pointers because they mutate aliased
     // memory, which is not valid for either `&` or `&mut`.
 
     /// Stores a value if the current value is the same as the `old` value.
@@ -635,7 +625,7 @@ extern "rust-intrinsic" {
     /// Tells LLVM that this point in the code is not reachable, enabling
     /// further optimizations.
     ///
-    /// NB: This is very different from the `unreachable!()` macro: Unlike the
+    /// N.B., this is very different from the `unreachable!()` macro: Unlike the
     /// macro, which panics when it is executed, it is *undefined behavior* to
     /// reach code marked with this function.
     ///
@@ -700,6 +690,10 @@ extern "rust-intrinsic" {
     /// crate it is invoked in.
     pub fn type_id<T: ?Sized + 'static>() -> u64;
 
+    /// A guard for unsafe functions that cannot ever be executed if `T` is uninhabited:
+    /// This will statically either panic, or do nothing.
+    pub fn panic_if_uninhabited<T>();
+
     /// Creates a value initialized to zero.
     ///
     /// `init` is unsafe because it returns a zeroed-out datum,
@@ -718,7 +712,6 @@ extern "rust-intrinsic" {
     pub fn uninit<T>() -> T;
 
     /// Moves a value out of scope without running drop glue.
-    #[cfg(not(stage0))]
     pub fn forget<T: ?Sized>(_: T);
 
     /// Reinterprets the bits of a value of one type as another type.
@@ -1354,7 +1347,7 @@ extern "rust-intrinsic" {
     /// use std::intrinsics::ctlz;
     ///
     /// let x = 0b0001_1100_u8;
-    /// let num_leading = unsafe { ctlz(x) };
+    /// let num_leading = ctlz(x);
     /// assert_eq!(num_leading, 3);
     /// ```
     ///
@@ -1366,7 +1359,7 @@ extern "rust-intrinsic" {
     /// use std::intrinsics::ctlz;
     ///
     /// let x = 0u16;
-    /// let num_leading = unsafe { ctlz(x) };
+    /// let num_leading = ctlz(x);
     /// assert_eq!(num_leading, 16);
     /// ```
     pub fn ctlz<T>(x: T) -> T;
@@ -1397,7 +1390,7 @@ extern "rust-intrinsic" {
     /// use std::intrinsics::cttz;
     ///
     /// let x = 0b0011_1000_u8;
-    /// let num_trailing = unsafe { cttz(x) };
+    /// let num_trailing = cttz(x);
     /// assert_eq!(num_trailing, 3);
     /// ```
     ///
@@ -1409,7 +1402,7 @@ extern "rust-intrinsic" {
     /// use std::intrinsics::cttz;
     ///
     /// let x = 0u16;
-    /// let num_trailing = unsafe { cttz(x) };
+    /// let num_trailing = cttz(x);
     /// assert_eq!(num_trailing, 16);
     /// ```
     pub fn cttz<T>(x: T) -> T;
@@ -1476,14 +1469,12 @@ extern "rust-intrinsic" {
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `rotate_left` method. For example,
     /// [`std::u32::rotate_left`](../../std/primitive.u32.html#method.rotate_left)
-    #[cfg(not(stage0))]
     pub fn rotate_left<T>(x: T, y: T) -> T;
 
     /// Performs rotate right.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `rotate_right` method. For example,
     /// [`std::u32::rotate_right`](../../std/primitive.u32.html#method.rotate_right)
-    #[cfg(not(stage0))]
     pub fn rotate_right<T>(x: T, y: T) -> T;
 
     /// Returns (a + b) mod 2<sup>N</sup>, where N is the width of T in bits.
@@ -1501,6 +1492,19 @@ extern "rust-intrinsic" {
     /// primitives via the `wrapping_mul` method. For example,
     /// [`std::u32::wrapping_mul`](../../std/primitive.u32.html#method.wrapping_mul)
     pub fn overflowing_mul<T>(a: T, b: T) -> T;
+
+    /// Computes `a + b`, while saturating at numeric bounds.
+    /// The stabilized versions of this intrinsic are available on the integer
+    /// primitives via the `saturating_add` method. For example,
+    /// [`std::u32::saturating_add`](../../std/primitive.u32.html#method.saturating_add)
+    #[cfg(not(stage0))]
+    pub fn saturating_add<T>(a: T, b: T) -> T;
+    /// Computes `a - b`, while saturating at numeric bounds.
+    /// The stabilized versions of this intrinsic are available on the integer
+    /// primitives via the `saturating_sub` method. For example,
+    /// [`std::u32::saturating_sub`](../../std/primitive.u32.html#method.saturating_sub)
+    #[cfg(not(stage0))]
+    pub fn saturating_sub<T>(a: T, b: T) -> T;
 
     /// Returns the value of the discriminant for the variant in 'v',
     /// cast to a `u64`; if `T` has no discriminant, returns 0.

@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementations of serialization for structures found in liballoc
 
 use std::hash::{Hash, BuildHasher};
@@ -86,7 +76,7 @@ impl<T: Encodable> Encodable for VecDeque<T> {
 impl<T:Decodable> Decodable for VecDeque<T> {
     fn decode<D: Decoder>(d: &mut D) -> Result<VecDeque<T>, D::Error> {
         d.read_seq(|d, len| {
-            let mut deque: VecDeque<T> = VecDeque::new();
+            let mut deque: VecDeque<T> = VecDeque::with_capacity(len);
             for i in 0..len {
                 deque.push_back(d.read_seq_elt(i, |d| Decodable::decode(d))?);
             }

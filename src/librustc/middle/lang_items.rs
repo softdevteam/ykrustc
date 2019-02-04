@@ -1,21 +1,11 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Detecting language items.
 //
 // Language items are items that represent concepts intrinsic to the language
 // itself. Examples are:
 //
-// * Traits that specify "kinds"; e.g. "Sync", "Send".
+// * Traits that specify "kinds"; e.g., "Sync", "Send".
 //
-// * Traits that represent operators; e.g. "Add", "Sub", "Index".
+// * Traits that represent operators; e.g., "Add", "Sub", "Index".
 //
 // * Functions called by the compiler itself.
 
@@ -108,7 +98,7 @@ impl<'a, 'v, 'tcx> ItemLikeVisitor<'v> for LanguageItemCollector<'a, 'tcx> {
             match self.item_refs.get(&*value.as_str()).cloned() {
                 // Known lang item with attribute on correct target.
                 Some((item_index, expected_target)) if actual_target == expected_target => {
-                    let def_id = self.tcx.hir.local_def_id(item.id);
+                    let def_id = self.tcx.hir().local_def_id(item.id);
                     self.collect_item(item_index, def_id);
                 },
                 // Known lang item with attribute on incorrect target.
@@ -171,7 +161,7 @@ impl<'a, 'tcx> LanguageItemCollector<'a, 'tcx> {
         if let Some(original_def_id) = self.items.items[item_index] {
             if original_def_id != item_def_id {
                 let name = LangItem::from_u32(item_index as u32).unwrap().name();
-                let mut err = match self.tcx.hir.span_if_local(item_def_id) {
+                let mut err = match self.tcx.hir().span_if_local(item_def_id) {
                     Some(span) => struct_span_err!(
                         self.tcx.sess,
                         span,
@@ -183,7 +173,7 @@ impl<'a, 'tcx> LanguageItemCollector<'a, 'tcx> {
                             self.tcx.crate_name(item_def_id.krate),
                             name)),
                 };
-                if let Some(span) = self.tcx.hir.span_if_local(original_def_id) {
+                if let Some(span) = self.tcx.hir().span_if_local(original_def_id) {
                     span_note!(&mut err, span, "first defined here.");
                 } else {
                     err.note(&format!("first defined in crate `{}`.",
@@ -221,7 +211,7 @@ pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> LanguageItems {
             collector.collect_item(item_index, def_id);
         }
     }
-    tcx.hir.krate().visit_all_item_likes(&mut collector);
+    tcx.hir().krate().visit_all_item_likes(&mut collector);
     let LanguageItemCollector { mut items, .. } = collector;
     weak_lang_items::check_crate(tcx, &mut items);
     items
@@ -297,9 +287,11 @@ language_item_table! {
     IndexMutTraitLangItem,       "index_mut",          index_mut_trait,         Target::Trait;
 
     UnsafeCellTypeLangItem,      "unsafe_cell",        unsafe_cell_type,        Target::Struct;
+    VaListTypeLangItem,          "va_list",            va_list,                 Target::Struct;
 
     DerefTraitLangItem,          "deref",              deref_trait,             Target::Trait;
     DerefMutTraitLangItem,       "deref_mut",          deref_mut_trait,         Target::Trait;
+    ReceiverTraitLangItem,       "receiver",           receiver_trait,          Target::Trait;
 
     FnTraitLangItem,             "fn",                 fn_trait,                Target::Trait;
     FnMutTraitLangItem,          "fn_mut",             fn_mut_trait,            Target::Trait;
@@ -307,6 +299,8 @@ language_item_table! {
 
     GeneratorStateLangItem,      "generator_state",    gen_state,               Target::Enum;
     GeneratorTraitLangItem,      "generator",          gen_trait,               Target::Trait;
+    UnpinTraitLangItem,          "unpin",              unpin_trait,             Target::Trait;
+    PinTypeLangItem,             "pin",                pin_type,                Target::Struct;
 
     EqTraitLangItem,             "eq",                 eq_trait,                Target::Trait;
     PartialOrdTraitLangItem,     "partial_ord",        partial_ord_trait,       Target::Trait;

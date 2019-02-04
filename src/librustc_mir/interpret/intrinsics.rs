@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Intrinsics and other functions that the miri engine executes without
 //! looking at their MIR.  Intrinsics/functions supported here are shared by CTFE
 //! and miri.
@@ -60,7 +50,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         match intrinsic_name {
             "min_align_of" => {
                 let elem_ty = substs.type_at(0);
-                let elem_align = self.layout_of(elem_ty)?.align.abi();
+                let elem_align = self.layout_of(elem_ty)?.align.abi.bytes();
                 let align_val = Scalar::from_uint(elem_align, dest.layout.size);
                 self.write_scalar(align_val, dest)?;
             }
@@ -103,7 +93,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     if bits == 0 {
                         return err!(Intrinsic(format!("{} called on 0", intrinsic_name)));
                     }
-                    numeric_intrinsic(intrinsic_name.trim_right_matches("_nonzero"), bits, kind)?
+                    numeric_intrinsic(intrinsic_name.trim_end_matches("_nonzero"), bits, kind)?
                 } else {
                     numeric_intrinsic(intrinsic_name, bits, kind)?
                 };

@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module provides constants which are specific to the implementation
 //! of the `f32` floating point data type.
 //!
@@ -171,6 +161,14 @@ impl f32 {
         self != self
     }
 
+    // FIXME(#50145): `abs` is publicly unavailable in libcore due to
+    // concerns about portability, so this implementation is for
+    // private use internally.
+    #[inline]
+    fn abs_private(self) -> f32 {
+        f32::from_bits(self.to_bits() & 0x7fff_ffff)
+    }
+
     /// Returns `true` if this value is positive infinity or negative infinity and
     /// false otherwise.
     ///
@@ -191,7 +189,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn is_infinite(self) -> bool {
-        self == INFINITY || self == NEG_INFINITY
+        self.abs_private() == INFINITY
     }
 
     /// Returns `true` if this number is neither infinite nor `NaN`.
@@ -213,7 +211,9 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn is_finite(self) -> bool {
-        !(self.is_nan() || self.is_infinite())
+        // There's no need to handle NaN separately: if self is NaN,
+        // the comparison is not true, exactly as desired.
+        self.abs_private() < INFINITY
     }
 
     /// Returns `true` if the number is neither zero, infinite,

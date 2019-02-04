@@ -1,8 +1,12 @@
 error[E0423]: expected function, found trait `Bar`
-  --> $DIR/privacy-ns1.rs:30:5
+  --> $DIR/privacy-ns1.rs:20:5
    |
 LL |     Bar();  //~ ERROR expected function, found trait `Bar`
-   |     ^^^ did you mean `Baz`?
+   |     ^^^
+help: a unit struct with a similar name exists
+   |
+LL |     Baz();  //~ ERROR expected function, found trait `Bar`
+   |     ^^^
 help: possible better candidates are found in other modules, you can import them into scope
    |
 LL | use foo1::Bar;
@@ -13,10 +17,14 @@ LL | use foo3::Bar;
    |
 
 error[E0573]: expected type, found function `Bar`
-  --> $DIR/privacy-ns1.rs:45:17
+  --> $DIR/privacy-ns1.rs:35:17
    |
 LL |     let _x: Box<Bar>;  //~ ERROR expected type, found function `Bar`
-   |                 ^^^ did you mean `Baz`?
+   |                 ^^^
+help: a struct with a similar name exists
+   |
+LL |     let _x: Box<Baz>;  //~ ERROR expected type, found function `Bar`
+   |                 ^^^
 help: possible better candidates are found in other modules, you can import them into scope
    |
 LL | use foo1::Bar;
@@ -27,10 +35,14 @@ LL | use foo3::Bar;
    |
 
 error[E0425]: cannot find function `Bar` in this scope
-  --> $DIR/privacy-ns1.rs:60:5
+  --> $DIR/privacy-ns1.rs:50:5
    |
 LL |     Bar();  //~ ERROR cannot find function `Bar` in this scope
-   |     ^^^ did you mean `Baz`?
+   |     ^^^
+help: a unit struct with a similar name exists
+   |
+LL |     Baz();  //~ ERROR cannot find function `Bar` in this scope
+   |     ^^^
 help: possible candidates are found in other modules, you can import them into scope
    |
 LL | use foo1::Bar;
@@ -41,10 +53,14 @@ LL | use foo3::Bar;
    |
 
 error[E0412]: cannot find type `Bar` in this scope
-  --> $DIR/privacy-ns1.rs:61:17
+  --> $DIR/privacy-ns1.rs:51:17
    |
 LL |     let _x: Box<Bar>;  //~ ERROR cannot find type `Bar` in this scope
-   |                 ^^^ did you mean `Baz`?
+   |                 ^^^
+help: a struct with a similar name exists
+   |
+LL |     let _x: Box<Baz>;  //~ ERROR cannot find type `Bar` in this scope
+   |                 ^^^
 help: possible candidates are found in other modules, you can import them into scope
    |
 LL | use foo1::Bar;

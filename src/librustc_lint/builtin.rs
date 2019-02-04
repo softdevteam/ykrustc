@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Lints in the Rust compiler.
 //!
 //! This contains lints which can feasibly be implemented as their own
@@ -29,7 +19,7 @@
 //! a `pub fn new()`.
 
 use rustc::hir::def::Def;
-use rustc::hir::def_id::DefId;
+use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::ty::{self, Ty};
 use hir::Node;
 use util::nodemap::NodeSet;
@@ -45,14 +35,15 @@ use syntax::ast::Expr;
 use syntax::attr;
 use syntax::source_map::Spanned;
 use syntax::edition::Edition;
-use syntax::feature_gate::{AttributeGate, AttributeType, Stability, deprecated_attributes};
+use syntax::feature_gate::{AttributeGate, AttributeTemplate, AttributeType};
+use syntax::feature_gate::{Stability, deprecated_attributes};
 use syntax_pos::{BytePos, Span, SyntaxContext};
 use syntax::symbol::keywords;
 use syntax::errors::{Applicability, DiagnosticBuilder};
 use syntax::print::pprust::expr_to_string;
+use syntax::visit::FnKind;
 
 use rustc::hir::{self, GenericParamKind, PatKind};
-use rustc::hir::intravisit::FnKind;
 
 use nonstandard_style::{MethodLateContext, method_context};
 
@@ -69,6 +60,10 @@ declare_lint! {
 pub struct WhileTrue;
 
 impl LintPass for WhileTrue {
+    fn name(&self) -> &'static str {
+        "WhileTrue"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(WHILE_TRUE)
     }
@@ -83,7 +78,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for WhileTrue {
                         let msg = "denote infinite loops with `loop { ... }`";
                         let condition_span = cx.tcx.sess.source_map().def_span(e.span);
                         let mut err = cx.struct_span_lint(WHILE_TRUE, condition_span, msg);
-                        err.span_suggestion_short_with_applicability(
+                        err.span_suggestion_short(
                             condition_span,
                             "use `loop`",
                             "loop".to_owned(),
@@ -118,6 +113,10 @@ impl BoxPointers {
 }
 
 impl LintPass for BoxPointers {
+    fn name(&self) -> &'static str {
+        "BoxPointers"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(BOX_POINTERS)
     }
@@ -131,7 +130,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoxPointers {
             hir::ItemKind::Enum(..) |
             hir::ItemKind::Struct(..) |
             hir::ItemKind::Union(..) => {
-                let def_id = cx.tcx.hir.local_def_id(it.id);
+                let def_id = cx.tcx.hir().local_def_id(it.id);
                 self.check_heap_type(cx, it.span, cx.tcx.type_of(def_id))
             }
             _ => ()
@@ -142,7 +141,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoxPointers {
             hir::ItemKind::Struct(ref struct_def, _) |
             hir::ItemKind::Union(ref struct_def, _) => {
                 for struct_field in struct_def.fields() {
-                    let def_id = cx.tcx.hir.local_def_id(struct_field.id);
+                    let def_id = cx.tcx.hir().local_def_id(struct_field.id);
                     self.check_heap_type(cx, struct_field.span,
                                          cx.tcx.type_of(def_id));
                 }
@@ -167,6 +166,10 @@ declare_lint! {
 pub struct NonShorthandFieldPatterns;
 
 impl LintPass for NonShorthandFieldPatterns {
+    fn name(&self) -> &'static str {
+        "NonShorthandFieldPatterns"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(NON_SHORTHAND_FIELD_PATTERNS)
     }
@@ -196,7 +199,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonShorthandFieldPatterns {
                                      &format!("the `{}:` in this pattern is redundant", ident));
                         let subspan = cx.tcx.sess.source_map().span_through_char(fieldpat.span,
                                                                                  ':');
-                        err.span_suggestion_short_with_applicability(
+                        err.span_suggestion_short(
                             subspan,
                             "remove this",
                             ident.to_string(),
@@ -220,13 +223,17 @@ declare_lint! {
 pub struct UnsafeCode;
 
 impl LintPass for UnsafeCode {
+    fn name(&self) -> &'static str {
+        "UnsafeCode"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(UNSAFE_CODE)
     }
 }
 
 impl UnsafeCode {
-    fn report_unsafe(&self, cx: &LateContext, span: Span, desc: &'static str) {
+    fn report_unsafe(&self, cx: &EarlyContext, span: Span, desc: &'static str) {
         // This comes from a macro that has #[allow_internal_unsafe].
         if span.allows_unsafe() {
             return;
@@ -236,23 +243,31 @@ impl UnsafeCode {
     }
 }
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
-    fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
-        if let hir::ExprKind::Block(ref blk, _) = e.node {
+impl EarlyLintPass for UnsafeCode {
+    fn check_attribute(&mut self, cx: &EarlyContext, attr: &ast::Attribute) {
+        if attr.check_name("allow_internal_unsafe") {
+            self.report_unsafe(cx, attr.span, "`allow_internal_unsafe` allows defining \
+                                               macros using unsafe without triggering \
+                                               the `unsafe_code` lint at their call site");
+        }
+    }
+
+    fn check_expr(&mut self, cx: &EarlyContext, e: &ast::Expr) {
+        if let ast::ExprKind::Block(ref blk, _) = e.node {
             // Don't warn about generated blocks, that'll just pollute the output.
-            if blk.rules == hir::UnsafeBlock(hir::UserProvided) {
+            if blk.rules == ast::BlockCheckMode::Unsafe(ast::UserProvided) {
                 self.report_unsafe(cx, blk.span, "usage of an `unsafe` block");
             }
         }
     }
 
-    fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
+    fn check_item(&mut self, cx: &EarlyContext, it: &ast::Item) {
         match it.node {
-            hir::ItemKind::Trait(_, hir::Unsafety::Unsafe, ..) => {
+            ast::ItemKind::Trait(_, ast::Unsafety::Unsafe, ..) => {
                 self.report_unsafe(cx, it.span, "declaration of an `unsafe` trait")
             }
 
-            hir::ItemKind::Impl(hir::Unsafety::Unsafe, ..) => {
+            ast::ItemKind::Impl(ast::Unsafety::Unsafe, ..) => {
                 self.report_unsafe(cx, it.span, "implementation of an `unsafe` trait")
             }
 
@@ -261,19 +276,18 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
     }
 
     fn check_fn(&mut self,
-                cx: &LateContext,
-                fk: FnKind<'tcx>,
-                _: &hir::FnDecl,
-                _: &hir::Body,
+                cx: &EarlyContext,
+                fk: FnKind,
+                _: &ast::FnDecl,
                 span: Span,
                 _: ast::NodeId) {
         match fk {
-            FnKind::ItemFn(_, _, hir::FnHeader { unsafety: hir::Unsafety::Unsafe, .. }, ..) => {
+            FnKind::ItemFn(_, ast::FnHeader { unsafety: ast::Unsafety::Unsafe, .. }, ..) => {
                 self.report_unsafe(cx, span, "declaration of an `unsafe` function")
             }
 
             FnKind::Method(_, sig, ..) => {
-                if sig.header.unsafety == hir::Unsafety::Unsafe {
+                if sig.header.unsafety == ast::Unsafety::Unsafe {
                     self.report_unsafe(cx, span, "implementation of an `unsafe` method")
                 }
             }
@@ -282,9 +296,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnsafeCode {
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext, item: &hir::TraitItem) {
-        if let hir::TraitItemKind::Method(ref sig, hir::TraitMethod::Required(_)) = item.node {
-            if sig.header.unsafety == hir::Unsafety::Unsafe {
+    fn check_trait_item(&mut self, cx: &EarlyContext, item: &ast::TraitItem) {
+        if let ast::TraitItemKind::Method(ref sig, None) = item.node {
+            if sig.header.unsafety == ast::Unsafety::Unsafe {
                 self.report_unsafe(cx, item.span, "declaration of an `unsafe` method")
             }
         }
@@ -305,6 +319,26 @@ pub struct MissingDoc {
 
     /// Private traits or trait items that leaked through. Don't check their methods.
     private_traits: FxHashSet<ast::NodeId>,
+}
+
+fn has_doc(attr: &ast::Attribute) -> bool {
+    if !attr.check_name("doc") {
+        return false;
+    }
+
+    if attr.is_value_str() {
+        return true;
+    }
+
+    if let Some(list) = attr.meta_item_list() {
+        for meta in list {
+            if meta.check_name("include") || meta.check_name("hidden") {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 impl MissingDoc {
@@ -345,26 +379,6 @@ impl MissingDoc {
             }
         }
 
-        fn has_doc(attr: &ast::Attribute) -> bool {
-            if !attr.check_name("doc") {
-                return false;
-            }
-
-            if attr.is_value_str() {
-                return true;
-            }
-
-            if let Some(list) = attr.meta_item_list() {
-                for meta in list {
-                    if meta.check_name("include") {
-                        return true;
-                    }
-                }
-            }
-
-            false
-        }
-
         let has_doc = attrs.iter().any(|a| has_doc(a));
         if !has_doc {
             cx.span_lint(MISSING_DOCS,
@@ -375,6 +389,10 @@ impl MissingDoc {
 }
 
 impl LintPass for MissingDoc {
+    fn name(&self) -> &'static str {
+        "MissingDoc"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(MISSING_DOCS)
     }
@@ -399,6 +417,15 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
 
     fn check_crate(&mut self, cx: &LateContext, krate: &hir::Crate) {
         self.check_missing_docs_attrs(cx, None, &krate.attrs, krate.span, "crate");
+
+        for macro_def in &krate.exported_macros {
+            let has_doc = macro_def.attrs.iter().any(|a| has_doc(a));
+            if !has_doc {
+                cx.span_lint(MISSING_DOCS,
+                             cx.tcx.sess.source_map().def_span(macro_def.span),
+                             "missing documentation for macro");
+            }
+        }
     }
 
     fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
@@ -424,8 +451,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
                 // If the trait is private, add the impl items to private_traits so they don't get
                 // reported for missing docs.
                 let real_trait = trait_ref.path.def.def_id();
-                if let Some(node_id) = cx.tcx.hir.as_local_node_id(real_trait) {
-                    match cx.tcx.hir.find(node_id) {
+                if let Some(node_id) = cx.tcx.hir().as_local_node_id(real_trait) {
+                    match cx.tcx.hir().find(node_id) {
                         Some(Node::Item(item)) => {
                             if let hir::VisibilityKind::Inherited = item.vis.node {
                                 for impl_item_ref in impl_item_refs {
@@ -512,6 +539,10 @@ declare_lint! {
 pub struct MissingCopyImplementations;
 
 impl LintPass for MissingCopyImplementations {
+    fn name(&self) -> &'static str {
+        "MissingCopyImplementations"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(MISSING_COPY_IMPLEMENTATIONS)
     }
@@ -527,21 +558,21 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingCopyImplementations {
                 if !ast_generics.params.is_empty() {
                     return;
                 }
-                let def = cx.tcx.adt_def(cx.tcx.hir.local_def_id(item.id));
+                let def = cx.tcx.adt_def(cx.tcx.hir().local_def_id(item.id));
                 (def, cx.tcx.mk_adt(def, cx.tcx.intern_substs(&[])))
             }
             hir::ItemKind::Union(_, ref ast_generics) => {
                 if !ast_generics.params.is_empty() {
                     return;
                 }
-                let def = cx.tcx.adt_def(cx.tcx.hir.local_def_id(item.id));
+                let def = cx.tcx.adt_def(cx.tcx.hir().local_def_id(item.id));
                 (def, cx.tcx.mk_adt(def, cx.tcx.intern_substs(&[])))
             }
             hir::ItemKind::Enum(_, ref ast_generics) => {
                 if !ast_generics.params.is_empty() {
                     return;
                 }
-                let def = cx.tcx.adt_def(cx.tcx.hir.local_def_id(item.id));
+                let def = cx.tcx.adt_def(cx.tcx.hir().local_def_id(item.id));
                 (def, cx.tcx.mk_adt(def, cx.tcx.intern_substs(&[])))
             }
             _ => return,
@@ -550,7 +581,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingCopyImplementations {
             return;
         }
         let param_env = ty::ParamEnv::empty();
-        if !ty.moves_by_default(cx.tcx, param_env, item.span) {
+        if ty.is_copy_modulo_regions(cx.tcx, param_env, item.span) {
             return;
         }
         if param_env.can_type_implement_copy(cx.tcx, ty).is_ok() {
@@ -579,6 +610,10 @@ impl MissingDebugImplementations {
 }
 
 impl LintPass for MissingDebugImplementations {
+    fn name(&self) -> &'static str {
+        "MissingDebugImplementations"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(MISSING_DEBUG_IMPLEMENTATIONS)
     }
@@ -606,7 +641,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDebugImplementations {
             let mut impls = NodeSet::default();
             cx.tcx.for_each_impl(debug, |d| {
                 if let Some(ty_def) = cx.tcx.type_of(d).ty_adt_def() {
-                    if let Some(node_id) = cx.tcx.hir.as_local_node_id(ty_def.did) {
+                    if let Some(node_id) = cx.tcx.hir().as_local_node_id(ty_def.did) {
                         impls.insert(node_id);
                     }
                 }
@@ -636,6 +671,10 @@ declare_lint! {
 pub struct AnonymousParameters;
 
 impl LintPass for AnonymousParameters {
+    fn name(&self) -> &'static str {
+        "AnonymousParameters"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(ANONYMOUS_PARAMETERS)
     }
@@ -665,7 +704,7 @@ impl EarlyLintPass for AnonymousParameters {
                                     arg.pat.span,
                                     "anonymous parameters are deprecated and will be \
                                      removed in the next edition."
-                                ).span_suggestion_with_applicability(
+                                ).span_suggestion(
                                     arg.pat.span,
                                     "Try naming the parameter or explicitly \
                                     ignoring it",
@@ -683,86 +722,12 @@ impl EarlyLintPass for AnonymousParameters {
     }
 }
 
-/// Checks for incorrect use use of `repr` attributes.
-#[derive(Clone)]
-pub struct BadRepr;
-
-impl LintPass for BadRepr {
-    fn get_lints(&self) -> LintArray {
-        lint_array!()
-    }
-}
-
-impl EarlyLintPass for BadRepr {
-    fn check_attribute(&mut self, cx: &EarlyContext, attr: &ast::Attribute) {
-        if attr.name() == "repr" {
-            let list = attr.meta_item_list();
-
-            let repr_str = |lit: &str| { format!("#[repr({})]", lit) };
-
-            // Emit warnings with `repr` either has a literal assignment (`#[repr = "C"]`) or
-            // no hints (``#[repr]`)
-            let has_hints = list.as_ref().map(|ref list| !list.is_empty()).unwrap_or(false);
-            if !has_hints {
-                let mut suggested = false;
-                let mut warn = if let Some(ref lit) = attr.value_str() {
-                    // avoid warning about empty `repr` on `#[repr = "foo"]`
-                    let mut warn = cx.struct_span_lint(
-                        BAD_REPR,
-                        attr.span,
-                        "`repr` attribute isn't configurable with a literal",
-                    );
-                    match lit.to_string().as_ref() {
-                        | "C" | "packed" | "rust" | "transparent"
-                        | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-                        | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => {
-                            // if the literal could have been a valid `repr` arg,
-                            // suggest the correct syntax
-                            warn.span_suggestion_with_applicability(
-                                attr.span,
-                                "give `repr` a hint",
-                                repr_str(&lit.as_str()),
-                                Applicability::MachineApplicable
-                            );
-                            suggested = true;
-                        }
-                        _ => {  // the literal wasn't a valid `repr` arg
-                            warn.span_label(attr.span, "needs a hint");
-                        }
-                    };
-                    warn
-                } else {
-                    let mut warn = cx.struct_span_lint(
-                        BAD_REPR,
-                        attr.span,
-                        "`repr` attribute must have a hint",
-                    );
-                    warn.span_label(attr.span, "needs a hint");
-                    warn
-                };
-                if !suggested {
-                    warn.help(&format!(
-                        "valid hints include `{}`, `{}`, `{}` and `{}`",
-                        repr_str("C"),
-                        repr_str("packed"),
-                        repr_str("rust"),
-                        repr_str("transparent"),
-                    ));
-                    warn.note("for more information, visit \
-                               <https://doc.rust-lang.org/reference/type-layout.html>");
-                }
-                warn.emit();
-            }
-        }
-    }
-}
-
 /// Checks for use of attributes which have been deprecated.
 #[derive(Clone)]
 pub struct DeprecatedAttr {
     // This is not free to compute, so we want to keep it around, rather than
     // compute it for every attribute.
-    depr_attrs: Vec<&'static (&'static str, AttributeType, AttributeGate)>,
+    depr_attrs: Vec<&'static (&'static str, AttributeType, AttributeTemplate, AttributeGate)>,
 }
 
 impl DeprecatedAttr {
@@ -774,6 +739,10 @@ impl DeprecatedAttr {
 }
 
 impl LintPass for DeprecatedAttr {
+    fn name(&self) -> &'static str {
+        "DeprecatedAttr"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!()
     }
@@ -781,7 +750,7 @@ impl LintPass for DeprecatedAttr {
 
 impl EarlyLintPass for DeprecatedAttr {
     fn check_attribute(&mut self, cx: &EarlyContext, attr: &ast::Attribute) {
-        for &&(n, _, ref g) in &self.depr_attrs {
+        for &&(n, _, _, ref g) in &self.depr_attrs {
             if attr.name() == n {
                 if let &AttributeGate::Gated(Stability::Deprecated(link, suggestion),
                                              ref name,
@@ -790,7 +759,7 @@ impl EarlyLintPass for DeprecatedAttr {
                     let msg = format!("use of deprecated attribute `{}`: {}. See {}",
                                       name, reason, link);
                     let mut err = cx.struct_span_lint(DEPRECATED, attr.span, &msg);
-                    err.span_suggestion_short_with_applicability(
+                    err.span_suggestion_short(
                         attr.span,
                         suggestion.unwrap_or("remove this attribute"),
                         String::new(),
@@ -814,6 +783,10 @@ declare_lint! {
 pub struct UnusedDocComment;
 
 impl LintPass for UnusedDocComment {
+    fn name(&self) -> &'static str {
+        "UnusedDocComment"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array![UNUSED_DOC_COMMENTS]
     }
@@ -854,6 +827,10 @@ declare_lint! {
 pub struct PluginAsLibrary;
 
 impl LintPass for PluginAsLibrary {
+    fn name(&self) -> &'static str {
+        "PluginAsLibrary"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array![PLUGIN_AS_LIBRARY]
     }
@@ -861,7 +838,7 @@ impl LintPass for PluginAsLibrary {
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PluginAsLibrary {
     fn check_item(&mut self, cx: &LateContext, it: &hir::Item) {
-        if cx.sess().plugin_registrar_fn.get().is_some() {
+        if cx.tcx.plugin_registrar_fn(LOCAL_CRATE).is_some() {
             // We're compiling a plugin; it's fine to link other plugins.
             return;
         }
@@ -871,7 +848,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PluginAsLibrary {
             _ => return,
         };
 
-        let def_id = cx.tcx.hir.local_def_id(it.id);
+        let def_id = cx.tcx.hir().local_def_id(it.id);
         let prfn = match cx.tcx.extern_mod_stmt_cnum(def_id) {
             Some(cnum) => cx.tcx.plugin_registrar_fn(cnum),
             None => {
@@ -906,6 +883,10 @@ declare_lint! {
 pub struct InvalidNoMangleItems;
 
 impl LintPass for InvalidNoMangleItems {
+    fn name(&self) -> &'static str {
+        "InvalidNoMangleItems"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(NO_MANGLE_CONST_ITEMS,
                     NO_MANGLE_GENERIC_ITEMS)
@@ -925,7 +906,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InvalidNoMangleItems {
                                                                   it.span,
                                                                   "functions generic over \
                                                                    types must be mangled");
-                                err.span_suggestion_short_with_applicability(
+                                err.span_suggestion_short(
                                     no_mangle_attr.span,
                                     "remove this attribute",
                                     String::new(),
@@ -953,7 +934,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InvalidNoMangleItems {
                         .unwrap_or(0) as u32;
                     // `const` is 5 chars
                     let const_span = it.span.with_hi(BytePos(it.span.lo().0 + start + 5));
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         const_span,
                         "try a static value",
                         "pub static".to_owned(),
@@ -977,6 +958,10 @@ declare_lint! {
 }
 
 impl LintPass for MutableTransmutes {
+    fn name(&self) -> &'static str {
+        "MutableTransmutes"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(MUTABLE_TRANSMUTES)
     }
@@ -1037,6 +1022,10 @@ declare_lint! {
 }
 
 impl LintPass for UnstableFeatures {
+    fn name(&self) -> &'static str {
+        "UnstableFeatures"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(UNSTABLE_FEATURES)
     }
@@ -1064,6 +1053,10 @@ declare_lint! {
 }
 
 impl LintPass for UnionsWithDropFields {
+    fn name(&self) -> &'static str {
+        "UnionsWithDropFields"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(UNIONS_WITH_DROP_FIELDS)
     }
@@ -1073,7 +1066,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnionsWithDropFields {
     fn check_item(&mut self, ctx: &LateContext, item: &hir::Item) {
         if let hir::ItemKind::Union(ref vdata, _) = item.node {
             for field in vdata.fields() {
-                let field_ty = ctx.tcx.type_of(ctx.tcx.hir.local_def_id(field.id));
+                let field_ty = ctx.tcx.type_of(ctx.tcx.hir().local_def_id(field.id));
                 if field_ty.needs_drop(ctx.tcx, ctx.param_env) {
                     ctx.span_lint(UNIONS_WITH_DROP_FIELDS,
                                   field.span,
@@ -1096,6 +1089,10 @@ declare_lint! {
 }
 
 impl LintPass for UnreachablePub {
+    fn name(&self) -> &'static str {
+        "UnreachablePub"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(UNREACHABLE_PUB)
     }
@@ -1119,10 +1116,12 @@ impl UnreachablePub {
                     "pub(crate)"
                 }.to_owned();
 
-                err.span_suggestion_with_applicability(vis.span,
-                                                       "consider restricting its visibility",
-                                                       replacement,
-                                                       applicability);
+                err.span_suggestion(
+                    vis.span,
+                    "consider restricting its visibility",
+                    replacement,
+                    applicability,
+                );
                 if exportable {
                     err.help("or consider exporting it for use by other crates");
                 }
@@ -1166,6 +1165,10 @@ declare_lint! {
 }
 
 impl LintPass for TypeAliasBounds {
+    fn name(&self) -> &'static str {
+        "TypeAliasBounds"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(TYPE_ALIAS_BOUNDS)
     }
@@ -1270,12 +1273,16 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeAliasBounds {
 pub struct UnusedBrokenConst;
 
 impl LintPass for UnusedBrokenConst {
+    fn name(&self) -> &'static str {
+        "UnusedBrokenConst"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!()
     }
 }
 fn check_const(cx: &LateContext, body_id: hir::BodyId) {
-    let def_id = cx.tcx.hir.body_owner_def_id(body_id);
+    let def_id = cx.tcx.hir().body_owner_def_id(body_id);
     let is_static = cx.tcx.is_static(def_id).is_some();
     let param_env = if is_static {
         // Use the same param_env as `codegen_static_initializer`, to reuse the cache.
@@ -1316,6 +1323,10 @@ declare_lint! {
 }
 
 impl LintPass for TrivialConstraints {
+    fn name(&self) -> &'static str {
+        "TrivialConstraints"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(TRIVIAL_BOUNDS)
     }
@@ -1332,7 +1343,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TrivialConstraints {
 
 
         if cx.tcx.features().trivial_bounds {
-            let def_id = cx.tcx.hir.local_def_id(item.id);
+            let def_id = cx.tcx.hir().local_def_id(item.id);
             let predicates = cx.tcx.predicates_of(def_id);
             for &(predicate, span) in &predicates.predicates {
                 let predicate_kind_name = match predicate {
@@ -1370,6 +1381,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TrivialConstraints {
 pub struct SoftLints;
 
 impl LintPass for SoftLints {
+    fn name(&self) -> &'static str {
+        "SoftLints"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(
             WHILE_TRUE,
@@ -1404,6 +1419,10 @@ declare_lint! {
 pub struct EllipsisInclusiveRangePatterns;
 
 impl LintPass for EllipsisInclusiveRangePatterns {
+    fn name(&self) -> &'static str {
+        "EllipsisInclusiveRangePatterns"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS)
     }
@@ -1435,7 +1454,7 @@ impl EarlyLintPass for EllipsisInclusiveRangePatterns {
             if parenthesise {
                 *visit_subpats = false;
                 let mut err = cx.struct_span_lint(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS, pat.span, msg);
-                err.span_suggestion_with_applicability(
+                err.span_suggestion(
                     pat.span,
                     suggestion,
                     format!("&({}..={})", expr_to_string(&start), expr_to_string(&end)),
@@ -1444,7 +1463,7 @@ impl EarlyLintPass for EllipsisInclusiveRangePatterns {
                 err.emit();
             } else {
                 let mut err = cx.struct_span_lint(ELLIPSIS_INCLUSIVE_RANGE_PATTERNS, join, msg);
-                err.span_suggestion_short_with_applicability(
+                err.span_suggestion_short(
                     join,
                     suggestion,
                     "..=".to_owned(),
@@ -1478,6 +1497,10 @@ impl UnnameableTestItems {
 }
 
 impl LintPass for UnnameableTestItems {
+    fn name(&self) -> &'static str {
+        "UnnameableTestItems"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(UNNAMEABLE_TEST_ITEMS)
     }
@@ -1521,6 +1544,10 @@ declare_lint! {
 pub struct KeywordIdents;
 
 impl LintPass for KeywordIdents {
+    fn name(&self) -> &'static str {
+        "KeywordIdents"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array!(KEYWORD_IDENTS)
     }
@@ -1540,8 +1567,8 @@ impl KeywordIdents {
                     }
                     _ => {},
                 }
-                TokenTree::Delimited(_, ref delim) => {
-                    self.check_tokens(cx, delim.tts.clone().into())
+                TokenTree::Delimited(_, _, tts) => {
+                    self.check_tokens(cx, tts)
                 },
             }
         }
@@ -1573,7 +1600,7 @@ impl EarlyLintPass for KeywordIdents {
                 }
             }
 
-            // no new keywords yet for 2018 edition and beyond
+            // There are no new keywords yet for the 2018 edition and beyond.
             // However, `await` is a "false" keyword in the 2018 edition,
             // and can only be used if the `async_await` feature is enabled.
             // Otherwise, we emit an error.
@@ -1588,7 +1615,7 @@ impl EarlyLintPass for KeywordIdents {
                         E0721,
                         "`await` is a keyword in the {} edition", cur_edition,
                     );
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         ident.span,
                         "you can use a raw identifier to stay compatible",
                         "r#await".to_string(),
@@ -1612,7 +1639,7 @@ impl EarlyLintPass for KeywordIdents {
                      ident.as_str(),
                      next_edition),
         );
-        lint.span_suggestion_with_applicability(
+        lint.span_suggestion(
             ident.span,
             "you can use a raw identifier to stay compatible",
             format!("r#{}", ident.as_str()),
@@ -1626,6 +1653,10 @@ impl EarlyLintPass for KeywordIdents {
 pub struct ExplicitOutlivesRequirements;
 
 impl LintPass for ExplicitOutlivesRequirements {
+    fn name(&self) -> &'static str {
+        "ExplicitOutlivesRequirements"
+    }
+
     fn get_lints(&self) -> LintArray {
         lint_array![EXPLICIT_OUTLIVES_REQUIREMENTS]
     }
@@ -1746,7 +1777,7 @@ impl ExplicitOutlivesRequirements {
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExplicitOutlivesRequirements {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
         let infer_static = cx.tcx.features().infer_static_outlives_requirements;
-        let def_id = cx.tcx.hir.local_def_id(item.id);
+        let def_id = cx.tcx.hir().local_def_id(item.id);
         if let hir::ItemKind::Struct(_, ref generics) = item.node {
             let mut bound_count = 0;
             let mut lint_spans = Vec::new();
@@ -1836,7 +1867,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExplicitOutlivesRequirements {
                     lint_spans.clone(),
                     "outlives requirements can be inferred"
                 );
-                err.multipart_suggestion_with_applicability(
+                err.multipart_suggestion(
                     if bound_count == 1 {
                         "remove this bound"
                     } else {

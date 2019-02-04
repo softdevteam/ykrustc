@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::symbol_export;
 use super::command::Command;
 use super::archive;
@@ -91,11 +81,7 @@ impl LinkerInfo {
             }
 
             LinkerFlavor::Lld(LldFlavor::Wasm) => {
-                Box::new(WasmLd {
-                    cmd,
-                    sess,
-                    info: self
-                }) as Box<dyn Linker>
+                Box::new(WasmLd::new(cmd, sess, self)) as Box<dyn Linker>
             }
         }
     }
@@ -107,7 +93,7 @@ impl LinkerInfo {
 /// This trait is the total list of requirements needed by `back::link` and
 /// represents the meaning of each option being passed down. This trait is then
 /// used to dispatch on whether a GNU-like linker (generally `ld.exe`) or an
-/// MSVC linker (e.g. `link.exe`) is being used.
+/// MSVC linker (e.g., `link.exe`) is being used.
 pub trait Linker {
     fn link_dylib(&mut self, lib: &str);
     fn link_rust_dylib(&mut self, lib: &str, path: &Path);
@@ -606,8 +592,7 @@ impl<'a> Linker for MsvcLinker<'a> {
         self.cmd.arg("/DEBUG");
 
         // This will cause the Microsoft linker to embed .natvis info into the PDB file
-        let sysroot = self.sess.sysroot();
-        let natvis_dir_path = sysroot.join("lib\\rustlib\\etc");
+        let natvis_dir_path = self.sess.sysroot.join("lib\\rustlib\\etc");
         if let Ok(natvis_dir) = fs::read_dir(&natvis_dir_path) {
             // LLVM 5.0.0's lld-link frontend doesn't yet recognize, and chokes
             // on, the /NATVIS:... flags.  LLVM 6 (or earlier) should at worst ignore
@@ -887,6 +872,64 @@ pub struct WasmLd<'a> {
     info: &'a LinkerInfo,
 }
 
+impl<'a> WasmLd<'a> {
+    fn new(mut cmd: Command, sess: &'a Session, info: &'a LinkerInfo) -> WasmLd<'a> {
+        // There have been reports in the wild (rustwasm/wasm-bindgen#119) of
+        // using threads causing weird hangs and bugs. Disable it entirely as
+        // this isn't yet the bottleneck of compilation at all anyway.
+        cmd.arg("--no-threads");
+
+        // By default LLD only gives us one page of stack (64k) which is a
+        // little small. Default to a larger stack closer to other PC platforms
+        // (1MB) and users can always inject their own link-args to override this.
+        cmd.arg("-z").arg("stack-size=1048576");
+
+        // By default LLD's memory layout is:
+        //
+        // 1. First, a blank page
+        // 2. Next, all static data
+        // 3. Finally, the main stack (which grows down)
+        //
+        // This has the unfortunate consequence that on stack overflows you
+        // corrupt static data and can cause some exceedingly weird bugs. To
+        // help detect this a little sooner we instead request that the stack is
+        // placed before static data.
+        //
+        // This means that we'll generate slightly larger binaries as references
+        // to static data will take more bytes in the ULEB128 encoding, but
+        // stack overflow will be guaranteed to trap as it underflows instead of
+        // corrupting static data.
+        cmd.arg("--stack-first");
+
+        // FIXME we probably shouldn't pass this but instead pass an explicit
+        // whitelist of symbols we'll allow to be undefined. Unfortunately
+        // though we can't handle symbols like `log10` that LLVM injects at a
+        // super late date without actually parsing object files. For now let's
+        // stick to this and hopefully fix it before stabilization happens.
+        cmd.arg("--allow-undefined");
+
+        // For now we just never have an entry symbol
+        cmd.arg("--no-entry");
+
+        // Rust code should never have warnings, and warnings are often
+        // indicative of bugs, let's prevent them.
+        cmd.arg("--fatal-warnings");
+
+        // The symbol visibility story is a bit in flux right now with LLD.
+        // It's... not entirely clear to me what's going on, but this looks to
+        // make everything work when `export_symbols` isn't otherwise called for
+        // things like executables.
+        cmd.arg("--export-dynamic");
+
+        // LLD only implements C++-like demangling, which doesn't match our own
+        // mangling scheme. Tell LLD to not demangle anything and leave it up to
+        // us to demangle these symbols later.
+        cmd.arg("--no-demangle");
+
+        WasmLd { cmd, sess, info }
+    }
+}
+
 impl<'a> Linker for WasmLd<'a> {
     fn link_dylib(&mut self, lib: &str) {
         self.cmd.arg("-l").arg(lib);
@@ -993,50 +1036,6 @@ impl<'a> Linker for WasmLd<'a> {
     }
 
     fn finalize(&mut self) -> Command {
-        // There have been reports in the wild (rustwasm/wasm-bindgen#119) of
-        // using threads causing weird hangs and bugs. Disable it entirely as
-        // this isn't yet the bottleneck of compilation at all anyway.
-        self.cmd.arg("--no-threads");
-
-        // By default LLD only gives us one page of stack (64k) which is a
-        // little small. Default to a larger stack closer to other PC platforms
-        // (1MB) and users can always inject their own link-args to override this.
-        self.cmd.arg("-z").arg("stack-size=1048576");
-
-        // By default LLD's memory layout is:
-        //
-        // 1. First, a blank page
-        // 2. Next, all static data
-        // 3. Finally, the main stack (which grows down)
-        //
-        // This has the unfortunate consequence that on stack overflows you
-        // corrupt static data and can cause some exceedingly weird bugs. To
-        // help detect this a little sooner we instead request that the stack is
-        // placed before static data.
-        //
-        // This means that we'll generate slightly larger binaries as references
-        // to static data will take more bytes in the ULEB128 encoding, but
-        // stack overflow will be guaranteed to trap as it underflows instead of
-        // corrupting static data.
-        self.cmd.arg("--stack-first");
-
-        // FIXME we probably shouldn't pass this but instead pass an explicit
-        // whitelist of symbols we'll allow to be undefined. Unfortunately
-        // though we can't handle symbols like `log10` that LLVM injects at a
-        // super late date without actually parsing object files. For now let's
-        // stick to this and hopefully fix it before stabilization happens.
-        self.cmd.arg("--allow-undefined");
-
-        // For now we just never have an entry symbol
-        self.cmd.arg("--no-entry");
-
-        // Make the default table accessible
-        self.cmd.arg("--export-table");
-
-        // Rust code should never have warnings, and warnings are often
-        // indicative of bugs, let's prevent them.
-        self.cmd.arg("--fatal-warnings");
-
         ::std::mem::replace(&mut self.cmd, Command::new(""))
     }
 
@@ -1050,6 +1049,10 @@ impl<'a> Linker for WasmLd<'a> {
 }
 
 fn exported_symbols(tcx: TyCtxt, crate_type: CrateType) -> Vec<String> {
+    if let Some(ref exports) = tcx.sess.target.target.options.override_export_symbols {
+        return exports.clone()
+    }
+
     let mut symbols = Vec::new();
 
     let export_threshold = symbol_export::crates_export_threshold(&[crate_type]);

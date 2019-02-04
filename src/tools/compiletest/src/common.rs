@@ -1,12 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 pub use self::Mode::*;
 
 use std::fmt;
@@ -152,6 +143,10 @@ pub struct Config {
     /// Whether to fail if we can't run run-pass-valgrind tests under valgrind
     /// (or, alternatively, to silently run them like regular run-pass tests).
     pub force_valgrind: bool,
+
+    /// The path to the Clang executable to run Clang-based tests with. If
+    /// `None` then these tests will be ignored.
+    pub run_clang_based_tests_with: Option<String>,
 
     /// The directory containing the tests to run
     pub src_base: PathBuf,

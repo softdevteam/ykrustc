@@ -1,12 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 //! Set and unset common attributes on LLVM values.
 
 use std::ffi::CString;
@@ -14,20 +5,22 @@ use std::ffi::CString;
 use rustc::hir::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::session::Session;
-use rustc::session::config::Sanitizer;
-use rustc::ty::TyCtxt;
+use rustc::session::config::{Sanitizer, OptLevel};
+use rustc::ty::{self, TyCtxt, PolyFnSig};
 use rustc::ty::layout::HasTyCtxt;
 use rustc::ty::query::Providers;
+use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_target::spec::PanicStrategy;
 use rustc_codegen_ssa::traits::*;
 
+use abi::Abi;
 use attributes;
 use llvm::{self, Attribute};
 use llvm::AttributePlace::Function;
 use llvm_util;
-pub use syntax::attr::{self, InlineAttr};
+pub use syntax::attr::{self, InlineAttr, OptimizeAttr};
 
 use context::CodegenCx;
 use value::Value;
@@ -60,18 +53,11 @@ pub fn emit_uwtable(val: &'ll Value, emit: bool) {
 
 /// Tell LLVM whether the function can or cannot unwind.
 #[inline]
-pub fn unwind(val: &'ll Value, can_unwind: bool) {
+fn unwind(val: &'ll Value, can_unwind: bool) {
     Attribute::NoUnwind.toggle_llfn(Function, val, !can_unwind);
 }
 
-/// Tell LLVM whether it should optimize function for size.
-#[inline]
-#[allow(dead_code)] // possibly useful function
-pub fn set_optimize_for_size(val: &'ll Value, optimize: bool) {
-    Attribute::OptimizeForSize.toggle_llfn(Function, val, optimize);
-}
-
-/// Tell LLVM if this function should be 'naked', i.e. skip the epilogue and prologue.
+/// Tell LLVM if this function should be 'naked', i.e., skip the epilogue and prologue.
 #[inline]
 pub fn naked(val: &'ll Value, is_naked: bool) {
     Attribute::Naked.toggle_llfn(Function, val, is_naked);
@@ -82,6 +68,18 @@ pub fn set_frame_pointer_elimination(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) 
         llvm::AddFunctionAttrStringValue(
             llfn, llvm::AttributePlace::Function,
             const_cstr!("no-frame-pointer-elim"), const_cstr!("true"));
+    }
+}
+
+/// Tell LLVM what instrument function to insert.
+#[inline]
+pub fn set_instrument_function(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
+    if cx.sess().instrument_mcount() {
+        // Similar to `clang -pg` behavior. Handled by the
+        // `post-inline-ee-instrument` LLVM pass.
+        llvm::AddFunctionAttrStringValue(
+            llfn, llvm::AttributePlace::Function,
+            const_cstr!("instrument-function-entry-inlined"), const_cstr!("mcount"));
     }
 }
 
@@ -129,8 +127,7 @@ pub fn llvm_target_features(sess: &Session) -> impl Iterator<Item = &str> {
 }
 
 pub fn apply_target_cpu_attr(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
-    let cpu = llvm_util::target_cpu(cx.tcx.sess);
-    let target_cpu = CString::new(cpu).unwrap();
+    let target_cpu = SmallCStr::new(llvm_util::target_cpu(cx.tcx.sess));
     llvm::AddFunctionAttrStringValue(
             llfn,
             llvm::AttributePlace::Function,
@@ -147,15 +144,54 @@ pub fn non_lazy_bind(sess: &Session, llfn: &'ll Value) {
     }
 }
 
-/// Composite function which sets LLVM attributes for function depending on its AST (#[attribute])
+pub(crate) fn default_optimisation_attrs(sess: &Session, llfn: &'ll Value) {
+    match sess.opts.optimize {
+        OptLevel::Size => {
+            llvm::Attribute::MinSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        },
+        OptLevel::SizeMin => {
+            llvm::Attribute::MinSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+        OptLevel::No => {
+            llvm::Attribute::MinSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+        _ => {}
+    }
+}
+
+
+/// Composite function which sets LLVM attributes for function depending on its AST (`#[attribute]`)
 /// attributes.
 pub fn from_fn_attrs(
-    cx: &CodegenCx<'ll, '_>,
+    cx: &CodegenCx<'ll, 'tcx>,
     llfn: &'ll Value,
     id: Option<DefId>,
+    sig: PolyFnSig<'tcx>,
 ) {
     let codegen_fn_attrs = id.map(|id| cx.tcx.codegen_fn_attrs(id))
         .unwrap_or_else(|| CodegenFnAttrs::new());
+
+    match codegen_fn_attrs.optimize {
+        OptimizeAttr::None => {
+            default_optimisation_attrs(cx.tcx.sess, llfn);
+        }
+        OptimizeAttr::Speed => {
+            llvm::Attribute::MinSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+        OptimizeAttr::Size => {
+            llvm::Attribute::MinSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+    }
 
     inline(cx, llfn, codegen_fn_attrs.inline);
 
@@ -181,6 +217,7 @@ pub fn from_fn_attrs(
     }
 
     set_frame_pointer_elimination(cx, llfn);
+    set_instrument_function(cx, llfn);
     set_probestack(cx, llfn);
 
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
@@ -194,37 +231,42 @@ pub fn from_fn_attrs(
             llvm::AttributePlace::ReturnValue, llfn);
     }
 
-    let can_unwind = if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::UNWIND) {
-        Some(true)
+    unwind(llfn, if cx.tcx.sess.panic_strategy() != PanicStrategy::Unwind {
+        // In panic=abort mode we assume nothing can unwind anywhere, so
+        // optimize based on this!
+        false
+    } else if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::UNWIND) {
+        // If a specific #[unwind] attribute is present, use that
+        true
     } else if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::RUSTC_ALLOCATOR_NOUNWIND) {
-        Some(false)
-
-    // Perhaps questionable, but we assume that anything defined
-    // *in Rust code* may unwind. Foreign items like `extern "C" {
-    // fn foo(); }` are assumed not to unwind **unless** they have
-    // a `#[unwind]` attribute.
-    } else if id.map(|id| !cx.tcx.is_foreign_item(id)).unwrap_or(false) {
-        Some(true)
-    } else {
-        None
-    };
-
-    match can_unwind {
-        Some(false) => attributes::unwind(llfn, false),
-        Some(true) if cx.tcx.sess.panic_strategy() == PanicStrategy::Unwind => {
-            attributes::unwind(llfn, true);
+        // Special attribute for allocator functions, which can't unwind
+        false
+    } else if let Some(id) = id {
+        let sig = cx.tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &sig);
+        if cx.tcx.is_foreign_item(id) {
+            // Foreign items like `extern "C" { fn foo(); }` are assumed not to
+            // unwind
+            false
+        } else if sig.abi != Abi::Rust && sig.abi != Abi::RustCall {
+            // Any items defined in Rust that *don't* have the `extern` ABI are
+            // defined to not unwind. We insert shims to abort if an unwind
+            // happens to enforce this.
+            false
+        } else {
+            // Anything else defined in Rust is assumed that it can possibly
+            // unwind
+            true
         }
-        Some(true) | None => {}
-    }
+    } else {
+        // assume this can possibly unwind, avoiding the application of a
+        // `nounwind` attribute below.
+        true
+    });
 
     // Always annotate functions with the target-cpu they are compiled for.
     // Without this, ThinLTO won't inline Rust functions into Clang generated
     // functions (because Clang annotates functions this way too).
-    // NOTE: For now we just apply this if -Zcross-lang-lto is specified, since
-    //       it introduce a little overhead and isn't really necessary otherwise.
-    if cx.tcx.sess.opts.debugging_opts.cross_lang_lto.enabled() {
-        apply_target_cpu_attr(cx, llfn);
-    }
+    apply_target_cpu_attr(cx, llfn);
 
     let features = llvm_target_features(cx.tcx.sess)
         .map(|s| s.to_string())

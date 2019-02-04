@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Memory allocation APIs
 
 #![stable(feature = "alloc_module", since = "1.28.0")]
@@ -69,7 +59,7 @@ impl Layout {
     /// * `align` must be a power of two,
     ///
     /// * `size`, when rounded up to the nearest multiple of `align`,
-    ///    must not overflow (i.e. the rounded value must be less than
+    ///    must not overflow (i.e., the rounded value must be less than
     ///    `usize::MAX`).
     #[stable(feature = "alloc_layout", since = "1.28.0")]
     #[inline]
@@ -177,7 +167,7 @@ impl Layout {
     /// to ensure that the following address will satisfy `align`
     /// (measured in bytes).
     ///
-    /// E.g. if `self.size()` is 9, then `self.padding_needed_for(4)`
+    /// e.g., if `self.size()` is 9, then `self.padding_needed_for(4)`
     /// returns 3, because that is the minimum number of bytes of
     /// padding required to get a 4-aligned address (assuming that the
     /// corresponding memory block starts at a 4-aligned address).
@@ -455,7 +445,7 @@ pub unsafe trait GlobalAlloc {
     /// if the caller does not ensure that `layout` has non-zero size.
     ///
     /// (Extension subtraits might provide more specific bounds on
-    /// behavior, e.g. guarantee a sentinel address or a null pointer
+    /// behavior, e.g., guarantee a sentinel address or a null pointer
     /// in response to a zero-size allocation request.)
     ///
     /// The allocated block of memory may or may not be initialized.
@@ -550,10 +540,10 @@ pub unsafe trait GlobalAlloc {
     /// * `new_size` must be greater than zero.
     ///
     /// * `new_size`, when rounded up to the nearest multiple of `layout.align()`,
-    ///   must not overflow (i.e. the rounded value must be less than `usize::MAX`).
+    ///   must not overflow (i.e., the rounded value must be less than `usize::MAX`).
     ///
     /// (Extension subtraits might provide more specific bounds on
-    /// behavior, e.g. guarantee a sentinel address or a null pointer
+    /// behavior, e.g., guarantee a sentinel address or a null pointer
     /// in response to a zero-size allocation request.)
     ///
     /// # Errors
@@ -616,7 +606,7 @@ pub unsafe trait GlobalAlloc {
 ///   whether to return `Err`, or to return `Ok` with some pointer.
 ///
 /// * If an `Alloc` implementation chooses to return `Ok` in this
-///   case (i.e. the pointer denotes a zero-sized inaccessible block)
+///   case (i.e., the pointer denotes a zero-sized inaccessible block)
 ///   then that returned pointer must be considered "currently
 ///   allocated". On such an allocator, *all* methods that take
 ///   currently-allocated pointers as inputs must accept these
@@ -651,7 +641,7 @@ pub unsafe trait GlobalAlloc {
 ///
 ///  * if a layout `k` fits a memory block (denoted by `ptr`)
 ///    currently allocated via an allocator `a`, then it is legal to
-///    use that layout to deallocate it, i.e. `a.dealloc(ptr, k);`.
+///    use that layout to deallocate it, i.e., `a.dealloc(ptr, k);`.
 ///
 /// # Unsafety
 ///
@@ -673,7 +663,7 @@ pub unsafe trait Alloc {
 
     // (Note: some existing allocators have unspecified but well-defined
     // behavior in response to a zero size allocation request ;
-    // e.g. in C, `malloc` of 0 will either return a null pointer or a
+    // e.g., in C, `malloc` of 0 will either return a null pointer or a
     // unique pointer, but will not have arbitrary undefined
     // behavior.
     // However in jemalloc for example,
@@ -688,7 +678,7 @@ pub unsafe trait Alloc {
     ///
     /// The returned block of storage may or may not have its contents
     /// initialized. (Extension subtraits might restrict this
-    /// behavior, e.g. to ensure initialization to particular sets of
+    /// behavior, e.g., to ensure initialization to particular sets of
     /// bit patterns.)
     ///
     /// # Safety
@@ -697,7 +687,7 @@ pub unsafe trait Alloc {
     /// if the caller does not ensure that `layout` has non-zero size.
     ///
     /// (Extension subtraits might provide more specific bounds on
-    /// behavior, e.g. guarantee a sentinel address or a null pointer
+    /// behavior, e.g., guarantee a sentinel address or a null pointer
     /// in response to a zero-size allocation request.)
     ///
     /// # Errors
@@ -803,10 +793,10 @@ pub unsafe trait Alloc {
     /// * `new_size` must be greater than zero.
     ///
     /// * `new_size`, when rounded up to the nearest multiple of `layout.align()`,
-    ///   must not overflow (i.e. the rounded value must be less than `usize::MAX`).
+    ///   must not overflow (i.e., the rounded value must be less than `usize::MAX`).
     ///
     /// (Extension subtraits might provide more specific bounds on
-    /// behavior, e.g. guarantee a sentinel address or a null pointer
+    /// behavior, e.g., guarantee a sentinel address or a null pointer
     /// in response to a zero-size allocation request.)
     ///
     /// # Errors

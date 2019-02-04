@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Various utility functions used throughout rustbuild.
 //!
 //! Simple things like testing the various filesystem operations here and there,
@@ -21,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, Instant};
 
-use config::Config;
-use builder::Builder;
+use crate::config::Config;
+use crate::builder::Builder;
 
 /// Returns the `name` as the filename of a static library for `target`.
 pub fn staticlib(name: &str, target: &str) -> String {
@@ -80,7 +70,11 @@ pub fn dylib_path_var() -> &'static str {
 /// Parses the `dylib_path_var()` environment variable, returning a list of
 /// paths that are members of this lookup path.
 pub fn dylib_path() -> Vec<PathBuf> {
-    env::split_paths(&env::var_os(dylib_path_var()).unwrap_or_default()).collect()
+    let var = match env::var_os(dylib_path_var()) {
+        Some(v) => v,
+        None => return vec![],
+    };
+    env::split_paths(&var).collect()
 }
 
 /// `push` all components to `buf`. On windows, append `.exe` to the last component.
@@ -203,11 +197,11 @@ pub fn symlink_dir(config: &Config, src: &Path, dest: &Path) -> io::Result<()> {
         // We're using low-level APIs to create the junction, and these are more
         // picky about paths. For example, forward slashes cannot be used as a
         // path separator, so we should try to canonicalize the path first.
-        let target = try!(fs::canonicalize(target));
+        let target = fs::canonicalize(target)?;
 
-        try!(fs::create_dir(junction));
+        fs::create_dir(junction)?;
 
-        let path = try!(to_u16s(junction));
+        let path = to_u16s(junction)?;
 
         unsafe {
             let h = CreateFileW(path.as_ptr(),

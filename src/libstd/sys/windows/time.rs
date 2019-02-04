@@ -1,20 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use cmp::Ordering;
 use fmt;
 use mem;
-use sync::Once;
 use sys::c;
-use sys::cvt;
-use sys_common::mul_div_u64;
 use time::Duration;
 use convert::TryInto;
 use core::hash::{Hash, Hasher};
@@ -24,7 +11,9 @@ const INTERVALS_PER_SEC: u64 = NANOS_PER_SEC / 100;
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Hash)]
 pub struct Instant {
-    t: c::LARGE_INTEGER,
+    // This duration is relative to an arbitrary microsecond epoch
+    // from the winapi QueryPerformanceCounter function.
+    t: Duration,
 }
 
 #[derive(Copy, Clone)]
@@ -43,55 +32,45 @@ pub const UNIX_EPOCH: SystemTime = SystemTime {
 
 impl Instant {
     pub fn now() -> Instant {
-        let mut t = Instant { t: 0 };
-        cvt(unsafe {
-            c::QueryPerformanceCounter(&mut t.t)
-        }).unwrap();
-        t
+        // High precision timing on windows operates in "Performance Counter"
+        // units, as returned by the WINAPI QueryPerformanceCounter function.
+        // These relate to seconds by a factor of QueryPerformanceFrequency.
+        // In order to keep unit conversions out of normal interval math, we
+        // measure in QPC units and immediately convert to nanoseconds.
+        perf_counter::PerformanceCounterInstant::now().into()
+    }
+
+    pub fn actually_monotonic() -> bool {
+        false
+    }
+
+    pub const fn zero() -> Instant {
+        Instant { t: Duration::from_secs(0) }
     }
 
     pub fn sub_instant(&self, other: &Instant) -> Duration {
-        // Values which are +- 1 need to be considered as basically the same
-        // units in time due to various measurement oddities, according to
-        // Windows [1]
-        //
-        // [1]:
-        // https://msdn.microsoft.com/en-us/library/windows/desktop
-        //                           /dn553408%28v=vs.85%29.aspx#guidance
-        if other.t > self.t && other.t - self.t == 1 {
+        // On windows there's a threshold below which we consider two timestamps
+        // equivalent due to measurement error. For more details + doc link,
+        // check the docs on epsilon.
+        let epsilon =
+            perf_counter::PerformanceCounterInstant::epsilon();
+        if other.t > self.t && other.t - self.t <= epsilon {
             return Duration::new(0, 0)
         }
-        let diff = (self.t as u64).checked_sub(other.t as u64)
-                                  .expect("specified instant was later than \
-                                           self");
-        let nanos = mul_div_u64(diff, NANOS_PER_SEC, frequency() as u64);
-        Duration::new(nanos / NANOS_PER_SEC, (nanos % NANOS_PER_SEC) as u32)
+        self.t.checked_sub(other.t)
+              .expect("specified instant was later than self")
     }
 
-    pub fn add_duration(&self, other: &Duration) -> Instant {
-        let freq = frequency() as u64;
-        let t = other.as_secs().checked_mul(freq).and_then(|i| {
-            (self.t as u64).checked_add(i)
-        }).and_then(|i| {
-            i.checked_add(mul_div_u64(other.subsec_nanos() as u64, freq,
-                                      NANOS_PER_SEC))
-        }).expect("overflow when adding duration to time");
-        Instant {
-            t: t as c::LARGE_INTEGER,
-        }
+    pub fn checked_add_duration(&self, other: &Duration) -> Option<Instant> {
+        Some(Instant {
+            t: self.t.checked_add(*other)?
+        })
     }
 
-    pub fn sub_duration(&self, other: &Duration) -> Instant {
-        let freq = frequency() as u64;
-        let t = other.as_secs().checked_mul(freq).and_then(|i| {
-            (self.t as u64).checked_sub(i)
-        }).and_then(|i| {
-            i.checked_sub(mul_div_u64(other.subsec_nanos() as u64, freq,
-                                      NANOS_PER_SEC))
-        }).expect("overflow when subtracting duration from time");
-        Instant {
-            t: t as c::LARGE_INTEGER,
-        }
+    pub fn checked_sub_duration(&self, other: &Duration) -> Option<Instant> {
+        Some(Instant {
+            t: self.t.checked_sub(*other)?
+        })
     }
 }
 
@@ -127,16 +106,14 @@ impl SystemTime {
         }
     }
 
-    pub fn add_duration(&self, other: &Duration) -> SystemTime {
-        let intervals = self.intervals().checked_add(dur2intervals(other))
-                            .expect("overflow when adding duration to time");
-        SystemTime::from_intervals(intervals)
+    pub fn checked_add_duration(&self, other: &Duration) -> Option<SystemTime> {
+        let intervals = self.intervals().checked_add(checked_dur2intervals(other)?)?;
+        Some(SystemTime::from_intervals(intervals))
     }
 
-    pub fn sub_duration(&self, other: &Duration) -> SystemTime {
-        let intervals = self.intervals().checked_sub(dur2intervals(other))
-                            .expect("overflow when subtracting from time");
-        SystemTime::from_intervals(intervals)
+    pub fn checked_sub_duration(&self, other: &Duration) -> Option<SystemTime> {
+        let intervals = self.intervals().checked_sub(checked_dur2intervals(other)?)?;
+        Some(SystemTime::from_intervals(intervals))
     }
 }
 
@@ -180,12 +157,12 @@ impl Hash for SystemTime {
     }
 }
 
-fn dur2intervals(d: &Duration) -> i64 {
-    d.as_secs()
-        .checked_mul(INTERVALS_PER_SEC)
-        .and_then(|i| i.checked_add(d.subsec_nanos() as u64 / 100))
-        .and_then(|i| i.try_into().ok())
-        .expect("overflow when converting duration to intervals")
+fn checked_dur2intervals(dur: &Duration) -> Option<i64> {
+    dur.as_secs()
+        .checked_mul(INTERVALS_PER_SEC)?
+        .checked_add(dur.subsec_nanos() as u64 / 100)?
+        .try_into()
+        .ok()
 }
 
 fn intervals2dur(intervals: u64) -> Duration {
@@ -193,14 +170,60 @@ fn intervals2dur(intervals: u64) -> Duration {
                   ((intervals % INTERVALS_PER_SEC) * 100) as u32)
 }
 
-fn frequency() -> c::LARGE_INTEGER {
-    static mut FREQUENCY: c::LARGE_INTEGER = 0;
-    static ONCE: Once = Once::new();
+mod perf_counter {
+    use super::{NANOS_PER_SEC};
+    use sync::Once;
+    use sys_common::mul_div_u64;
+    use sys::c;
+    use sys::cvt;
+    use time::Duration;
 
-    unsafe {
-        ONCE.call_once(|| {
-            cvt(c::QueryPerformanceFrequency(&mut FREQUENCY)).unwrap();
-        });
-        FREQUENCY
+    pub struct PerformanceCounterInstant {
+        ts: c::LARGE_INTEGER
+    }
+    impl PerformanceCounterInstant {
+        pub fn now() -> Self {
+            Self {
+                ts: query()
+            }
+        }
+
+        // Per microsoft docs, the margin of error for cross-thread time comparisons
+        // using QueryPerformanceCounter is 1 "tick" -- defined as 1/frequency().
+        // Reference: https://docs.microsoft.com/en-us/windows/desktop/SysInfo
+        //                   /acquiring-high-resolution-time-stamps
+        pub fn epsilon() -> Duration {
+            let epsilon = NANOS_PER_SEC / (frequency() as u64);
+            Duration::from_nanos(epsilon)
+        }
+    }
+    impl From<PerformanceCounterInstant> for super::Instant {
+        fn from(other: PerformanceCounterInstant) -> Self {
+            let freq = frequency() as u64;
+            let instant_nsec = mul_div_u64(other.ts as u64, NANOS_PER_SEC, freq);
+            Self {
+                t: Duration::from_nanos(instant_nsec)
+            }
+        }
+    }
+
+    fn frequency() -> c::LARGE_INTEGER {
+        static mut FREQUENCY: c::LARGE_INTEGER = 0;
+        static ONCE: Once = Once::new();
+
+        unsafe {
+            ONCE.call_once(|| {
+                cvt(c::QueryPerformanceFrequency(&mut FREQUENCY)).unwrap();
+            });
+            FREQUENCY
+        }
+    }
+
+    fn query() -> c::LARGE_INTEGER {
+        let mut qpc_value: c::LARGE_INTEGER = 0;
+        cvt(unsafe {
+            c::QueryPerformanceCounter(&mut qpc_value)
+        }).unwrap();
+        qpc_value
     }
 }

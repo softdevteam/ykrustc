@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains code to equate the input/output types appearing
 //! in the MIR with the expected input/output types from the function
 //! signature. This requires a bit of processing, as the expected types
@@ -40,7 +30,7 @@ impl<'a, 'gcx, 'tcx> TypeChecker<'a, 'gcx, 'tcx> {
         // If the user explicitly annotated the input types, extract
         // those.
         //
-        // e.g. `|x: FxHashMap<_, &'static u32>| ...`
+        // e.g., `|x: FxHashMap<_, &'static u32>| ...`
         let user_provided_sig;
         if !self.tcx().is_closure(self.mir_def_id) {
             user_provided_sig = None;
@@ -50,7 +40,7 @@ impl<'a, 'gcx, 'tcx> TypeChecker<'a, 'gcx, 'tcx> {
                 None => None,
                 Some(user_provided_poly_sig) => {
                     // Instantiate the canonicalized variables from
-                    // user-provided signature (e.g. the `_` in the code
+                    // user-provided signature (e.g., the `_` in the code
                     // above) with fresh variables.
                     let (poly_sig, _) = self.infcx.instantiate_canonical_with_fresh_inference_vars(
                         mir.span,

@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_data_structures::bit_set::BitSet;
 
 use super::*;
@@ -253,7 +243,7 @@ impl<'a, 'tcx> Iterator for Postorder<'a, 'tcx> {
 /// ```
 ///
 /// A reverse postorder traversal of this graph is either `A B C D` or `A C B D`
-/// Note that for a graph containing no loops (i.e. A DAG), this is equivalent to
+/// Note that for a graph containing no loops (i.e., A DAG), this is equivalent to
 /// a topological sort.
 ///
 /// Construction of a `ReversePostorder` traversal requires doing a full

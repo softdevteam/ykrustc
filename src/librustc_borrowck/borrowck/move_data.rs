@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Data structures used for tracking moves. Please see the extensive
 //! comments in the section "Moves and initialization" in `README.md`.
 
@@ -25,7 +15,6 @@ use std::rc::Rc;
 use std::usize;
 use syntax_pos::Span;
 use rustc::hir;
-use rustc::hir::intravisit::IdRange;
 
 #[derive(Default)]
 pub struct MoveData<'tcx> {
@@ -569,7 +558,6 @@ impl<'a, 'tcx> FlowedMoveData<'a, 'tcx> {
     pub fn new(move_data: MoveData<'tcx>,
                bccx: &BorrowckCtxt<'a, 'tcx>,
                cfg: &cfg::CFG,
-               id_range: IdRange,
                body: &hir::Body)
                -> FlowedMoveData<'a, 'tcx> {
         let tcx = bccx.tcx;
@@ -580,7 +568,6 @@ impl<'a, 'tcx> FlowedMoveData<'a, 'tcx> {
                                  Some(body),
                                  cfg,
                                  MoveDataFlowOperator,
-                                 id_range,
                                  move_data.moves.borrow().len());
         let mut dfcx_assign =
             DataFlowContext::new(tcx,
@@ -588,7 +575,6 @@ impl<'a, 'tcx> FlowedMoveData<'a, 'tcx> {
                                  Some(body),
                                  cfg,
                                  AssignDataFlowOperator,
-                                 id_range,
                                  move_data.var_assignments.borrow().len());
 
         move_data.add_gen_kills(bccx,

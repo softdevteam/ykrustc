@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use abi::{self, Abi, Align, FieldPlacement, Size};
 use abi::{HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
 use spec::HasTargetSpec;
@@ -142,29 +132,29 @@ impl Reg {
         match self.kind {
             RegKind::Integer => {
                 match self.size.bits() {
-                    1 => dl.i1_align,
-                    2..=8 => dl.i8_align,
-                    9..=16 => dl.i16_align,
-                    17..=32 => dl.i32_align,
-                    33..=64 => dl.i64_align,
-                    65..=128 => dl.i128_align,
+                    1 => dl.i1_align.abi,
+                    2..=8 => dl.i8_align.abi,
+                    9..=16 => dl.i16_align.abi,
+                    17..=32 => dl.i32_align.abi,
+                    33..=64 => dl.i64_align.abi,
+                    65..=128 => dl.i128_align.abi,
                     _ => panic!("unsupported integer: {:?}", self)
                 }
             }
             RegKind::Float => {
                 match self.size.bits() {
-                    32 => dl.f32_align,
-                    64 => dl.f64_align,
+                    32 => dl.f32_align.abi,
+                    64 => dl.f64_align.abi,
                     _ => panic!("unsupported float: {:?}", self)
                 }
             }
-            RegKind::Vector => dl.vector_align(self.size)
+            RegKind::Vector => dl.vector_align(self.size).abi,
         }
     }
 }
 
 /// An argument passed entirely registers with the
-/// same kind (e.g. HFA / HVA on PPC64 and AArch64).
+/// same kind (e.g., HFA / HVA on PPC64 and AArch64).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Uniform {
     pub unit: Reg,
@@ -173,7 +163,7 @@ pub struct Uniform {
     /// * equal to `unit.size` (one scalar/vector)
     /// * a multiple of `unit.size` (an array of scalar/vectors)
     /// * if `unit.kind` is `Integer`, the last element
-    ///   can be shorter, i.e. `{ i64, i64, i32 }` for
+    ///   can be shorter, i.e., `{ i64, i64, i32 }` for
     ///   64-bit integers with a total size of 20 bytes
     pub total: Size,
 }
@@ -227,14 +217,41 @@ impl CastTarget {
 
     pub fn size<C: HasDataLayout>(&self, cx: &C) -> Size {
         (self.prefix_chunk * self.prefix.iter().filter(|x| x.is_some()).count() as u64)
-             .abi_align(self.rest.align(cx)) + self.rest.total
+             .align_to(self.rest.align(cx)) + self.rest.total
     }
 
     pub fn align<C: HasDataLayout>(&self, cx: &C) -> Align {
         self.prefix.iter()
             .filter_map(|x| x.map(|kind| Reg { kind, size: self.prefix_chunk }.align(cx)))
-            .fold(cx.data_layout().aggregate_align.max(self.rest.align(cx)),
+            .fold(cx.data_layout().aggregate_align.abi.max(self.rest.align(cx)),
                 |acc, align| acc.max(align))
+    }
+}
+
+/// Return value from the `homogeneous_aggregate` test function.
+#[derive(Copy, Clone, Debug)]
+pub enum HomogeneousAggregate {
+    /// Yes, all the "leaf fields" of this struct are passed in the
+    /// same way (specified in the `Reg` value).
+    Homogeneous(Reg),
+
+    /// There are distinct leaf fields passed in different ways,
+    /// or this is uninhabited.
+    Heterogeneous,
+
+    /// There are no leaf fields at all.
+    NoData,
+}
+
+impl HomogeneousAggregate {
+    /// If this is a homogeneous aggregate, returns the homogeneous
+    /// unit, else `None`.
+    pub fn unit(self) -> Option<Reg> {
+        if let HomogeneousAggregate::Homogeneous(r) = self {
+            Some(r)
+        } else {
+            None
+        }
     }
 }
 
@@ -249,11 +266,21 @@ impl<'a, Ty> TyLayout<'a, Ty> {
         }
     }
 
-    fn homogeneous_aggregate<C>(&self, cx: &C) -> Option<Reg>
+    /// True if this layout is an aggregate containing fields of only
+    /// a single type (e.g., `(u32, u32)`). Such aggregates are often
+    /// special-cased in ABIs.
+    ///
+    /// Note: We generally ignore fields of zero-sized type when computing
+    /// this value (cc #56877).
+    ///
+    /// This is public so that it can be used in unit tests, but
+    /// should generally only be relevant to the ABI details of
+    /// specific targets.
+    pub fn homogeneous_aggregate<C>(&self, cx: &C) -> HomogeneousAggregate
         where Ty: TyLayoutMethods<'a, C> + Copy, C: LayoutOf<Ty = Ty, TyLayout = Self>
     {
         match self.abi {
-            Abi::Uninhabited => None,
+            Abi::Uninhabited => HomogeneousAggregate::Heterogeneous,
 
             // The primitive for this algorithm.
             Abi::Scalar(ref scalar) => {
@@ -262,14 +289,15 @@ impl<'a, Ty> TyLayout<'a, Ty> {
                     abi::Pointer => RegKind::Integer,
                     abi::Float(_) => RegKind::Float,
                 };
-                Some(Reg {
+                HomogeneousAggregate::Homogeneous(Reg {
                     kind,
                     size: self.size
                 })
             }
 
             Abi::Vector { .. } => {
-                Some(Reg {
+                assert!(!self.is_zst());
+                HomogeneousAggregate::Homogeneous(Reg {
                     kind: RegKind::Vector,
                     size: self.size
                 })
@@ -285,7 +313,7 @@ impl<'a, Ty> TyLayout<'a, Ty> {
                         if count > 0 {
                             return self.field(cx, 0).homogeneous_aggregate(cx);
                         } else {
-                            return None;
+                            return HomogeneousAggregate::NoData;
                         }
                     }
                     FieldPlacement::Union(_) => true,
@@ -294,21 +322,27 @@ impl<'a, Ty> TyLayout<'a, Ty> {
 
                 for i in 0..self.fields.count() {
                     if !is_union && total != self.fields.offset(i) {
-                        return None;
+                        return HomogeneousAggregate::Heterogeneous;
                     }
 
                     let field = self.field(cx, i);
+
                     match (result, field.homogeneous_aggregate(cx)) {
-                        // The field itself must be a homogeneous aggregate.
-                        (_, None) => return None,
+                        (_, HomogeneousAggregate::NoData) => {
+                            // Ignore fields that have no data
+                        }
+                        (_, HomogeneousAggregate::Heterogeneous) => {
+                            // The field itself must be a homogeneous aggregate.
+                            return HomogeneousAggregate::Heterogeneous;
+                        }
                         // If this is the first field, record the unit.
-                        (None, Some(unit)) => {
+                        (None, HomogeneousAggregate::Homogeneous(unit)) => {
                             result = Some(unit);
                         }
                         // For all following fields, the unit must be the same.
-                        (Some(prev_unit), Some(unit)) => {
+                        (Some(prev_unit), HomogeneousAggregate::Homogeneous(unit)) => {
                             if prev_unit != unit {
-                                return None;
+                                return HomogeneousAggregate::Heterogeneous;
                             }
                         }
                     }
@@ -324,9 +358,18 @@ impl<'a, Ty> TyLayout<'a, Ty> {
 
                 // There needs to be no padding.
                 if total != self.size {
-                    None
+                    HomogeneousAggregate::Heterogeneous
                 } else {
-                    result
+                    match result {
+                        Some(reg) => {
+                            assert_ne!(total, Size::ZERO);
+                            HomogeneousAggregate::Homogeneous(reg)
+                        }
+                        None => {
+                            assert_eq!(total, Size::ZERO);
+                            HomogeneousAggregate::NoData
+                        }
+                    }
                 }
             }
         }
@@ -369,7 +412,7 @@ impl<'a, Ty> ArgType<'a, Ty> {
         attrs.pointee_size = self.layout.size;
         // FIXME(eddyb) We should be doing this, but at least on
         // i686-pc-windows-msvc, it results in wrong stack offsets.
-        // attrs.pointee_align = Some(self.layout.align);
+        // attrs.pointee_align = Some(self.layout.align.abi);
 
         let extra_attrs = if self.layout.is_unsized() {
             Some(ArgAttributes::new())

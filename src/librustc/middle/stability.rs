@@ -1,35 +1,26 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A pass that annotates every item and method with its stability level,
 //! propagating default levels lexically from parent to children ast nodes.
 
 pub use self::StabilityLevel::*;
 
-use lint;
+use lint::{self, Lint};
+use hir::{self, Item, Generics, StructField, Variant, HirId};
 use hir::def::Def;
 use hir::def_id::{CrateNum, CRATE_DEF_INDEX, DefId, LOCAL_CRATE};
-use ty::{self, TyCtxt};
+use hir::intravisit::{self, Visitor, NestedVisitorMap};
+use ty::query::Providers;
+use ty::query::queries;
 use middle::privacy::AccessLevels;
 use session::{DiagnosticMessageId, Session};
 use syntax::symbol::Symbol;
 use syntax_pos::{Span, MultiSpan};
 use syntax::ast;
 use syntax::ast::{NodeId, Attribute};
+use syntax::errors::Applicability;
 use syntax::feature_gate::{GateIssue, emit_feature_err};
 use syntax::attr::{self, Stability, Deprecation};
+use ty::{self, TyCtxt};
 use util::nodemap::{FxHashSet, FxHashMap};
-
-use hir;
-use hir::{Item, Generics, StructField, Variant, HirId};
-use hir::intravisit::{self, Visitor, NestedVisitorMap};
 
 use std::mem::replace;
 use std::cmp::Ordering;
@@ -188,7 +179,7 @@ impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
                     }
                 }
 
-                let hir_id = self.tcx.hir.node_to_hir_id(id);
+                let hir_id = self.tcx.hir().node_to_hir_id(id);
                 self.index.stab_map.insert(hir_id, stab);
 
                 let orig_parent_stab = replace(&mut self.parent_stab, Some(stab));
@@ -198,7 +189,7 @@ impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
                 debug!("annotate: not found, parent = {:?}", self.parent_stab);
                 if let Some(stab) = self.parent_stab {
                     if stab.level.is_unstable() {
-                        let hir_id = self.tcx.hir.node_to_hir_id(id);
+                        let hir_id = self.tcx.hir().node_to_hir_id(id);
                         self.index.stab_map.insert(hir_id, stab);
                     }
                 }
@@ -219,7 +210,7 @@ impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
             // -Zforce-unstable-if-unmarked is set.
             if let Some(stab) = self.parent_stab {
                 if stab.level.is_unstable() {
-                    let hir_id = self.tcx.hir.node_to_hir_id(id);
+                    let hir_id = self.tcx.hir().node_to_hir_id(id);
                     self.index.stab_map.insert(hir_id, stab);
                 }
             }
@@ -230,7 +221,7 @@ impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
                 }
 
                 // `Deprecation` is just two pointers, no need to intern it
-                let hir_id = self.tcx.hir.node_to_hir_id(id);
+                let hir_id = self.tcx.hir().node_to_hir_id(id);
                 let depr_entry = DeprecationEntry::local(depr, hir_id);
                 self.index.depr_map.insert(hir_id, depr_entry.clone());
 
@@ -239,7 +230,7 @@ impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
                 visit_children(self);
                 self.parent_depr = orig_parent_depr;
             } else if let Some(parent_depr) = self.parent_depr.clone() {
-                let hir_id = self.tcx.hir.node_to_hir_id(id);
+                let hir_id = self.tcx.hir().node_to_hir_id(id);
                 self.index.depr_map.insert(hir_id, parent_depr);
                 visit_children(self);
             } else {
@@ -254,7 +245,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Annotator<'a, 'tcx> {
     /// nested items in the context of the outer item, so enable
     /// deep-walking.
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::All(&self.tcx.hir)
+        NestedVisitorMap::All(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, i: &'tcx Item) {
@@ -333,7 +324,7 @@ struct MissingStabilityAnnotations<'a, 'tcx: 'a> {
 
 impl<'a, 'tcx: 'a> MissingStabilityAnnotations<'a, 'tcx> {
     fn check_missing_stability(&self, id: NodeId, span: Span) {
-        let hir_id = self.tcx.hir.node_to_hir_id(id);
+        let hir_id = self.tcx.hir().node_to_hir_id(id);
         let stab = self.tcx.stability().local_stability(hir_id);
         let is_error = !self.tcx.sess.opts.test &&
                         stab.is_none() &&
@@ -346,7 +337,7 @@ impl<'a, 'tcx: 'a> MissingStabilityAnnotations<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, i: &'tcx Item) {
@@ -369,7 +360,7 @@ impl<'a, 'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'a, 'tcx> {
     }
 
     fn visit_impl_item(&mut self, ii: &'tcx hir::ImplItem) {
-        let impl_def_id = self.tcx.hir.local_def_id(self.tcx.hir.get_parent(ii.id));
+        let impl_def_id = self.tcx.hir().local_def_id(self.tcx.hir().get_parent(ii.id));
         if self.tcx.impl_trait_ref(impl_def_id).is_none() {
             self.check_missing_stability(ii.id, ii.span);
         }
@@ -416,7 +407,7 @@ impl<'a, 'tcx> Index<'tcx> {
         index.active_features = active_lib_features.iter().map(|&(ref s, _)| s.clone()).collect();
 
         {
-            let krate = tcx.hir.krate();
+            let krate = tcx.hir().krate();
             let mut annotator = Annotator {
                 tcx,
                 index: &mut index,
@@ -466,18 +457,30 @@ impl<'a, 'tcx> Index<'tcx> {
     }
 }
 
+pub fn check_unstable_api_usage<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+    for &module in tcx.hir().krate().modules.keys() {
+        queries::check_mod_unstable_api_usage::ensure(tcx, tcx.hir().local_def_id(module));
+    }
+}
+
 /// Cross-references the feature names of unstable APIs with enabled
 /// features and possibly prints errors.
-pub fn check_unstable_api_usage<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    let mut checker = Checker { tcx };
-    tcx.hir.krate().visit_all_item_likes(&mut checker.as_deep_visitor());
+fn check_mod_unstable_api_usage<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+    tcx.hir().visit_item_likes_in_module(module_def_id, &mut Checker { tcx }.as_deep_visitor());
+}
+
+pub fn provide(providers: &mut Providers<'_>) {
+    *providers = Providers {
+        check_mod_unstable_api_usage,
+        ..*providers
+    };
 }
 
 /// Check whether an item marked with `deprecated(since="X")` is currently
-/// deprecated (i.e. whether X is not greater than the current rustc version).
+/// deprecated (i.e., whether X is not greater than the current rustc version).
 pub fn deprecation_in_effect(since: &str) -> bool {
     fn parse_version(ver: &str) -> Vec<u32> {
-        // We ignore non-integer components of the version (e.g. "nightly").
+        // We ignore non-integer components of the version (e.g., "nightly").
         ver.split(|c| c == '.' || c == '-').flat_map(|s| s.parse()).collect()
     }
 
@@ -518,7 +521,7 @@ pub enum EvalResult {
 }
 
 impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
-    // (See issue #38412)
+    // See issue #38412.
     fn skip_stability_check_due_to_privacy(self, mut def_id: DefId) -> bool {
         // Check if `def_id` is a trait method.
         match self.describe_def(def_id) {
@@ -528,8 +531,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 if let ty::TraitContainer(trait_def_id) = self.associated_item(def_id).container {
                     // Trait methods do not declare visibility (even
                     // for visibility info in cstore). Use containing
-                    // trait instead, so methods of pub traits are
-                    // themselves considered pub.
+                    // trait instead, so methods of `pub` traits are
+                    // themselves considered `pub`.
                     def_id = trait_def_id;
                 }
             }
@@ -539,10 +542,10 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         let visibility = self.visibility(def_id);
 
         match visibility {
-            // must check stability for pub items.
+            // Must check stability for `pub` items.
             ty::Visibility::Public => false,
 
-            // these are not visible outside crate; therefore
+            // These are not visible outside crate; therefore
             // stability markers are irrelevant, if even present.
             ty::Visibility::Restricted(..) |
             ty::Visibility::Invisible => true,
@@ -564,18 +567,32 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             return EvalResult::Allow;
         }
 
-        let lint_deprecated = |def_id: DefId, id: NodeId, note: Option<Symbol>| {
-            let path = self.item_path_str(def_id);
-
+        let lint_deprecated = |def_id: DefId,
+                               id: NodeId,
+                               note: Option<Symbol>,
+                               suggestion: Option<Symbol>,
+                               message: &str,
+                               lint: &'static Lint| {
             let msg = if let Some(note) = note {
-                format!("use of deprecated item '{}': {}", path, note)
+                format!("{}: {}", message, note)
             } else {
-                format!("use of deprecated item '{}'", path)
+                format!("{}", message)
             };
 
-            self.lint_node(lint::builtin::DEPRECATED, id, span, &msg);
+            let mut diag = self.struct_span_lint_node(lint, id, span, &msg);
+            if let Some(suggestion) = suggestion {
+                if let hir::Node::Expr(_) = self.hir().get(id) {
+                    diag.span_suggestion(
+                        span,
+                        &msg,
+                        suggestion.to_string(),
+                        Applicability::MachineApplicable,
+                    );
+                }
+            }
+            diag.emit();
             if id == ast::DUMMY_NODE_ID {
-                span_bug!(span, "emitted a deprecated lint with dummy node id: {:?}", def_id);
+                span_bug!(span, "emitted a {} lint with dummy node id: {:?}", lint.name, def_id);
             }
         };
 
@@ -586,17 +603,41 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 // version, then we should display no warning message.
                 let deprecated_in_future_version = if let Some(sym) = depr_entry.attr.since {
                     let since = sym.as_str();
-                    !deprecation_in_effect(&since)
+                    if !deprecation_in_effect(&since) {
+                        Some(since)
+                    } else {
+                        None
+                    }
                 } else {
-                    false
+                    None
                 };
 
-                let parent_def_id = self.hir.local_def_id(self.hir.get_parent(id));
-                let skip = deprecated_in_future_version ||
-                           self.lookup_deprecation_entry(parent_def_id)
+                let parent_def_id = self.hir().local_def_id(self.hir().get_parent(id));
+                let skip = self.lookup_deprecation_entry(parent_def_id)
                                .map_or(false, |parent_depr| parent_depr.same_origin(&depr_entry));
-                if !skip {
-                    lint_deprecated(def_id, id, depr_entry.attr.note);
+
+                if let Some(since) = deprecated_in_future_version {
+                    let path = self.item_path_str(def_id);
+                    let message = format!("use of item '{}' \
+                                           that will be deprecated in future version {}",
+                                          path,
+                                          since);
+
+                    lint_deprecated(def_id,
+                                    id,
+                                    depr_entry.attr.note,
+                                    None,
+                                    &message,
+                                    lint::builtin::DEPRECATED_IN_FUTURE);
+                } else if !skip {
+                    let path = self.item_path_str(def_id);
+                    let message = format!("use of deprecated item '{}'", path);
+                    lint_deprecated(def_id,
+                                    id,
+                                    depr_entry.attr.note,
+                                    None,
+                                    &message,
+                                    lint::builtin::DEPRECATED);
                 }
             };
         }
@@ -613,11 +654,30 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         debug!("stability: \
                 inspecting def_id={:?} span={:?} of stability={:?}", def_id, span, stability);
 
-        if let Some(&Stability{rustc_depr: Some(attr::RustcDeprecation { reason, since }), ..})
-                = stability {
-            if let Some(id) = id {
-                if deprecation_in_effect(&since.as_str()) {
-                    lint_deprecated(def_id, id, Some(reason));
+        if let Some(id) = id {
+            if let Some(stability) = stability {
+                if let Some(depr) = &stability.rustc_depr {
+                    let path = self.item_path_str(def_id);
+                    if deprecation_in_effect(&depr.since.as_str()) {
+                        let message = format!("use of deprecated item '{}'", path);
+                        lint_deprecated(def_id,
+                                        id,
+                                        Some(depr.reason),
+                                        depr.suggestion,
+                                        &message,
+                                        lint::builtin::DEPRECATED);
+                    } else {
+                        let message = format!("use of item '{}' \
+                                                that will be deprecated in future version {}",
+                                                path,
+                                                depr.since);
+                        lint_deprecated(def_id,
+                                        id,
+                                        Some(depr.reason),
+                                        depr.suggestion,
+                                        &message,
+                                        lint::builtin::DEPRECATED_IN_FUTURE);
+                    }
                 }
             }
         }
@@ -628,7 +688,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             return EvalResult::Allow;
         }
 
-        // Issue 38412: private items lack stability markers.
+        // Issue #38412: private items lack stability markers.
         if self.skip_stability_check_due_to_privacy(def_id) {
             return EvalResult::Allow;
         }
@@ -644,7 +704,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 // crates also pulled in from crates.io. We want to ideally be
                 // able to compile everything without requiring upstream
                 // modifications, so in the case that this looks like a
-                // rustc_private crate (e.g. a compiler crate) and we also have
+                // `rustc_private` crate (e.g., a compiler crate) and we also have
                 // the `-Z force-unstable-if-unmarked` flag present (we're
                 // compiling a compiler crate), then let this missing feature
                 // annotation slide.
@@ -717,7 +777,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
     /// nested items in the context of the outer item, so enable
     /// deep-walking.
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -726,7 +786,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
                 // compiler-generated `extern crate` items have a dummy span.
                 if item.span.is_dummy() { return }
 
-                let def_id = self.tcx.hir.local_def_id(item.id);
+                let def_id = self.tcx.hir().local_def_id(item.id);
                 let cnum = match self.tcx.extern_mod_stmt_cnum(def_id) {
                     Some(cnum) => cnum,
                     None => return,
@@ -741,7 +801,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
             hir::ItemKind::Impl(.., Some(ref t), _, ref impl_item_refs) => {
                 if let Def::Trait(trait_did) = t.path.def {
                     for impl_item_ref in impl_item_refs {
-                        let impl_item = self.tcx.hir.impl_item(impl_item_ref.id);
+                        let impl_item = self.tcx.hir().impl_item(impl_item_ref.id);
                         let trait_item_def_id = self.tcx.associated_items(trait_did)
                             .find(|item| item.ident.name == impl_item.ident.name)
                             .map(|item| item.def_id);
@@ -756,7 +816,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
             // There's no good place to insert stability check for non-Copy unions,
             // so semi-randomly perform it here in stability.rs
             hir::ItemKind::Union(..) if !self.tcx.features().untagged_unions => {
-                let def_id = self.tcx.hir.local_def_id(item.id);
+                let def_id = self.tcx.hir().local_def_id(item.id);
                 let adt_def = self.tcx.adt_def(def_id);
                 let ty = self.tcx.type_of(def_id);
 
@@ -780,7 +840,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
     }
 
     fn visit_path(&mut self, path: &'tcx hir::Path, id: hir::HirId) {
-        let id = self.tcx.hir.hir_to_node_id(id);
+        let id = self.tcx.hir().hir_to_node_id(id);
         if let Some(def_id) = path.def.opt_def_id() {
             self.tcx.check_stability(def_id, Some(id), path.span)
         }
@@ -794,14 +854,14 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 }
 
-/// Given the list of enabled features that were not language features (i.e. that
+/// Given the list of enabled features that were not language features (i.e., that
 /// were expected to be library features), and the list of features used from
 /// libraries, identify activated features that don't exist and error about them.
 pub fn check_unused_or_stable_features<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     let access_levels = &tcx.privacy_access_levels(LOCAL_CRATE);
 
     if tcx.stability().staged_api[&LOCAL_CRATE] {
-        let krate = tcx.hir.krate();
+        let krate = tcx.hir().krate();
         let mut missing = MissingStabilityAnnotations {
             tcx,
             access_levels,

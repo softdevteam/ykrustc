@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /// The expansion from a test function to the appropriate test struct for libtest
 /// Ideally, this code would be in libtest but for efficiency and error messages it lives here.
 
@@ -134,14 +124,14 @@ pub fn expand_test_or_bench(
         ])
     };
 
-    let mut test_const = cx.item(sp, item.ident.gensym(),
+    let mut test_const = cx.item(sp, ast::Ident::new(item.ident.name.gensymed(), sp),
         vec![
             // #[cfg(test)]
             cx.attribute(attr_sp, cx.meta_list(attr_sp, Symbol::intern("cfg"), vec![
                 cx.meta_list_item_word(attr_sp, Symbol::intern("test"))
             ])),
             // #[rustc_test_marker]
-            cx.attribute(attr_sp, cx.meta_word(attr_sp, Symbol::intern("rustc_test_marker")))
+            cx.attribute(attr_sp, cx.meta_word(attr_sp, Symbol::intern("rustc_test_marker"))),
         ],
         // const $ident: test::TestDescAndFn =
         ast::ItemKind::Const(cx.ty(sp, ast::TyKind::Path(None, test_path("TestDescAndFn"))),
@@ -224,20 +214,8 @@ fn should_panic(cx: &ExtCtxt, i: &ast::Item) -> ShouldPanic {
     match attr::find_by_name(&i.attrs, "should_panic") {
         Some(attr) => {
             let ref sd = cx.parse_sess.span_diagnostic;
-            if attr.is_value_str() {
-                sd.struct_span_warn(
-                    attr.span(),
-                    "attribute must be of the form: \
-                     `#[should_panic]` or \
-                     `#[should_panic(expected = \"error message\")]`"
-                ).note("Errors in this attribute were erroneously allowed \
-                        and will become a hard error in a future release.")
-                .emit();
-                return ShouldPanic::Yes(None);
-            }
+
             match attr.meta_item_list() {
-                // Handle #[should_panic]
-                None => ShouldPanic::Yes(None),
                 // Handle #[should_panic(expected = "foo")]
                 Some(list) => {
                     let msg = list.iter()
@@ -257,6 +235,8 @@ fn should_panic(cx: &ExtCtxt, i: &ast::Item) -> ShouldPanic {
                         ShouldPanic::Yes(msg)
                     }
                 },
+                // Handle #[should_panic] and #[should_panic = "expected"]
+                None => ShouldPanic::Yes(attr.value_str())
             }
         }
         None => ShouldPanic::No,
@@ -318,7 +298,7 @@ fn has_test_signature(cx: &ExtCtxt, i: &ast::Item) -> bool {
 
 fn has_bench_signature(cx: &ExtCtxt, i: &ast::Item) -> bool {
     let has_sig = if let ast::ItemKind::Fn(ref decl, _, _, _) = i.node {
-        // NB: inadequate check, but we're running
+        // N.B., inadequate check, but we're running
         // well before resolve, can't get too deep.
         decl.inputs.len() == 1
     } else {

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use cstore::{self, LoadedMacro};
 use encoder;
 use link_args;
@@ -203,8 +193,8 @@ provide! { <'tcx> tcx, def_id, other, cdata,
             DefId { krate: def_id.krate, index }
         })
     }
-    derive_registrar_fn => {
-        cdata.root.macro_derive_registrar.map(|index| {
+    proc_macro_decls_static => {
+        cdata.root.proc_macro_decls_static.map(|index| {
             DefId { krate: def_id.krate, index }
         })
     }
@@ -307,7 +297,7 @@ pub fn provide<'tcx>(providers: &mut Providers<'tcx>) {
             Lrc::new(link_args::collect(tcx))
         },
 
-        // Returns a map from a sufficiently visible external item (i.e. an
+        // Returns a map from a sufficiently visible external item (i.e., an
         // external item that is visible from at least one local module) to a
         // sufficiently visible parent (considering modules that re-export the
         // external item to be parents).
@@ -431,8 +421,9 @@ impl cstore::CStore {
             use syntax::ext::base::SyntaxExtension;
             use syntax_ext::proc_macro_impl::BangProcMacro;
 
+            let client = ::proc_macro::bridge::client::Client::expand1(::proc_macro::quote);
             let ext = SyntaxExtension::ProcMacro {
-                expander: Box::new(BangProcMacro { inner: ::proc_macro::quote }),
+                expander: Box::new(BangProcMacro { client }),
                 allow_internal_unstable: true,
                 edition: data.root.edition,
             };

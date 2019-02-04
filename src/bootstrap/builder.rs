@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
@@ -21,20 +11,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cache::{Cache, Interned, INTERNER};
-use check;
-use compile;
-use dist;
-use doc;
-use flags::Subcommand;
-use install;
-use native;
-use test;
-use tool;
-use util::{add_lib_path, exe, libdir};
-use {Build, DocTests, Mode, GitRepo};
+use crate::cache::{Cache, Interned, INTERNER};
+use crate::check;
+use crate::compile;
+use crate::dist;
+use crate::doc;
+use crate::flags::Subcommand;
+use crate::install;
+use crate::native;
+use crate::test;
+use crate::tool;
+use crate::util::{self, add_lib_path, exe, libdir};
+use crate::{Build, DocTests, Mode, GitRepo};
 
-pub use Compiler;
+pub use crate::Compiler;
 
 use petgraph::graph::NodeIndex;
 use petgraph::Graph;
@@ -388,16 +378,11 @@ impl<'a> Builder<'a> {
                 test::Debuginfo,
                 test::UiFullDeps,
                 test::RunPassFullDeps,
-                test::RunFailFullDeps,
-                test::CompileFailFullDeps,
-                test::IncrementalFullDeps,
                 test::Rustdoc,
                 test::Pretty,
                 test::RunPassPretty,
                 test::RunFailPretty,
                 test::RunPassValgrindPretty,
-                test::RunPassFullDepsPretty,
-                test::RunFailFullDepsPretty,
                 test::Crate,
                 test::CrateLibrustc,
                 test::CrateRustdoc,
@@ -418,6 +403,7 @@ impl<'a> Builder<'a> {
                 test::Rustfmt,
                 test::Miri,
                 test::Clippy,
+                test::CompiletestTest,
                 test::RustdocJS,
                 test::RustdocTheme,
                 // Run bootstrap close to the end as it's unlikely to fail
@@ -443,7 +429,8 @@ impl<'a> Builder<'a> {
                 doc::RustdocBook,
                 doc::RustByExample,
                 doc::RustcBook,
-                doc::CargoBook
+                doc::CargoBook,
+                doc::EditionGuide,
             ),
             Kind::Dist => describe!(
                 dist::Docs,
@@ -459,6 +446,7 @@ impl<'a> Builder<'a> {
                 dist::Rls,
                 dist::Rustfmt,
                 dist::Clippy,
+                dist::Miri,
                 dist::LlvmTools,
                 dist::Lldb,
                 dist::Extended,
@@ -471,6 +459,7 @@ impl<'a> Builder<'a> {
                 install::Rls,
                 install::Rustfmt,
                 install::Clippy,
+                install::Miri,
                 install::Analysis,
                 install::Src,
                 install::Rustc
@@ -668,6 +657,15 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Get the paths to all of the compiler's codegen backends.
+    fn codegen_backends(&self, compiler: Compiler) -> impl Iterator<Item = PathBuf> {
+        fs::read_dir(self.sysroot_codegen_backends(compiler))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+    }
+
     pub fn rustdoc(&self, host: Interned<String>) -> PathBuf {
         self.ensure(tool::Rustdoc { host })
     }
@@ -685,6 +683,11 @@ impl<'a> Builder<'a> {
             .env("RUSTDOC_REAL", self.rustdoc(host))
             .env("RUSTDOC_CRATE_VERSION", self.rust_version())
             .env("RUSTC_BOOTSTRAP", "1");
+
+        // Remove make-related flags that can cause jobserver problems.
+        cmd.env_remove("MAKEFLAGS");
+        cmd.env_remove("MFLAGS");
+
         if let Some(linker) = self.linker(host) {
             cmd.env("RUSTC_TARGET_LINKER", linker);
         }
@@ -753,6 +756,9 @@ impl<'a> Builder<'a> {
             match mode {
                 Mode::Std => {
                     self.clear_if_dirty(&my_out, &self.rustc(compiler));
+                    for backend in self.codegen_backends(compiler) {
+                        self.clear_if_dirty(&my_out, &backend);
+                    }
                 },
                 Mode::Test => {
                     self.clear_if_dirty(&my_out, &libstd_stamp);
@@ -785,6 +791,13 @@ impl<'a> Builder<'a> {
             .env("CARGO_TARGET_DIR", out_dir)
             .arg(cmd);
 
+        // See comment in librustc_llvm/build.rs for why this is necessary, largely llvm-config
+        // needs to not accidentally link to libLLVM in stage0/lib.
+        cargo.env("REAL_LIBRARY_PATH_VAR", &util::dylib_path_var());
+        if let Some(e) = env::var_os(util::dylib_path_var()) {
+            cargo.env("REAL_LIBRARY_PATH", e);
+        }
+
         if cmd != "install" {
             cargo.arg("--target")
                  .arg(target);
@@ -793,7 +806,7 @@ impl<'a> Builder<'a> {
         }
 
         // Set a flag for `check` so that certain build scripts can do less work
-        // (e.g. not building/requiring LLVM).
+        // (e.g., not building/requiring LLVM).
         if cmd == "check" {
             cargo.env("RUST_CHECK", "1");
         }
@@ -923,12 +936,12 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_FORCE_UNSTABLE", "1");
 
             // Currently the compiler depends on crates from crates.io, and
-            // then other crates can depend on the compiler (e.g. proc-macro
+            // then other crates can depend on the compiler (e.g., proc-macro
             // crates). Let's say, for example that rustc itself depends on the
             // bitflags crate. If an external crate then depends on the
             // bitflags crate as well, we need to make sure they don't
             // conflict, even if they pick the same version of bitflags. We'll
-            // want to make sure that e.g. a plugin and rustc each get their
+            // want to make sure that e.g., a plugin and rustc each get their
             // own copy of bitflags.
 
             // Cargo ensures that this works in general through the -C metadata
@@ -985,6 +998,9 @@ impl<'a> Builder<'a> {
 
         if self.config.incremental {
             cargo.env("CARGO_INCREMENTAL", "1");
+        } else {
+            // Don't rely on any default setting for incr. comp. in Cargo
+            cargo.env("CARGO_INCREMENTAL", "0");
         }
 
         if let Some(ref on_fail) = self.config.on_fail {
@@ -1035,29 +1051,24 @@ impl<'a> Builder<'a> {
                 }
             };
             let cc = ccacheify(&self.cc(target));
-            cargo.env(format!("CC_{}", target), &cc).env("CC", &cc);
+            cargo.env(format!("CC_{}", target), &cc);
 
             let cflags = self.cflags(target, GitRepo::Rustc).join(" ");
             cargo
-                .env(format!("CFLAGS_{}", target), cflags.clone())
-                .env("CFLAGS", cflags.clone());
+                .env(format!("CFLAGS_{}", target), cflags.clone());
 
             if let Some(ar) = self.ar(target) {
                 let ranlib = format!("{} s", ar.display());
                 cargo
                     .env(format!("AR_{}", target), ar)
-                    .env("AR", ar)
-                    .env(format!("RANLIB_{}", target), ranlib.clone())
-                    .env("RANLIB", ranlib);
+                    .env(format!("RANLIB_{}", target), ranlib);
             }
 
             if let Ok(cxx) = self.cxx(target) {
                 let cxx = ccacheify(&cxx);
                 cargo
                     .env(format!("CXX_{}", target), &cxx)
-                    .env("CXX", &cxx)
-                    .env(format!("CXXFLAGS_{}", target), cflags.clone())
-                    .env("CXXFLAGS", cflags);
+                    .env(format!("CXXFLAGS_{}", target), cflags);
             }
         }
 
@@ -1247,7 +1258,7 @@ impl<'a> Builder<'a> {
 #[cfg(test)]
 mod __test {
     use super::*;
-    use config::Config;
+    use crate::config::Config;
     use std::thread;
 
     fn configure(host: &[&str], target: &[&str]) -> Config {

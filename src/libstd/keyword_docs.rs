@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #[doc(keyword = "as")]
 //
 /// The keyword for casting a value to a type.
@@ -57,15 +47,15 @@ mod as_keyword { }
 ///
 /// Constants must be explicitly typed, unlike with `let` you can't ignore its type and let the
 /// compiler figure it out. Any constant value can be defined in a const, which in practice happens
-/// to be most things that would be reasonable to have a constant (barring `const fn`s, coming
-/// soon). For example, you can't have a File as a `const`.
+/// to be most things that would be reasonable to have a constant (barring `const fn`s). For
+/// example, you can't have a File as a `const`.
 ///
 /// The only lifetime allowed in a constant is `'static`, which is the lifetime that encompasses
 /// all others in a Rust program. For example, if you wanted to define a constant string, it would
 /// look like this:
 ///
 /// ```rust
-/// const WORDS: &'static str = "hello rust!";
+/// const WORDS: &str = "hello rust!";
 /// ```
 ///
 /// Thanks to static lifetime elision, you usually don't have to explicitly use 'static:
@@ -179,7 +169,7 @@ mod crate_keyword { }
 ///
 /// [Algebraic Data Types]: https://en.wikipedia.org/wiki/Algebraic_data_type
 /// [`Option`]: option/enum.Option.html
-/// [Rust Book]: https://doc.rust-lang.org/book/second-edition/ch06-01-defining-an-enum.html
+/// [Rust Book]: https://doc.rust-lang.org/book/ch06-01-defining-an-enum.html
 /// [Reference]: https://doc.rust-lang.org/reference/items/enumerations.html
 mod enum_keyword { }
 
@@ -188,7 +178,7 @@ mod enum_keyword { }
 /// For external connections in Rust code.
 ///
 /// The `extern` keyword is used in two places in Rust. One is in conjunction with the [`crate`]
-/// keyword to make your Rust code aware of other Rust crates in your project, i.e. `extern crate
+/// keyword to make your Rust code aware of other Rust crates in your project, i.e., `extern crate
 /// lazy_static;`. The other use is in foreign function interfaces (FFI).
 ///
 /// `extern` is used in two different contexts within FFI. The first is in the form of external
@@ -221,7 +211,7 @@ mod enum_keyword { }
 /// For more information on FFI, check the [Rust book] or the [Reference].
 ///
 /// [Rust book]:
-/// https://doc.rust-lang.org/book/second-edition/ch19-01-unsafe-rust.html#using-extern-functions-to-call-external-code
+/// https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html#using-extern-functions-to-call-external-code
 /// [Reference]: https://doc.rust-lang.org/reference/items/external-blocks.html
 mod extern_keyword { }
 
@@ -288,7 +278,7 @@ mod extern_keyword { }
 ///
 /// [`impl`]: keyword.impl.html
 /// [`extern`]: keyword.extern.html
-/// [Rust book]: https://doc.rust-lang.org/book/second-edition/ch03-03-how-functions-work.html
+/// [Rust book]: https://doc.rust-lang.org/book/ch03-03-how-functions-work.html
 /// [Reference]: https://doc.rust-lang.org/reference/items/functions.html
 mod fn_keyword { }
 
@@ -715,6 +705,6 @@ mod loop_keyword { }
 /// [Reference][reference].
 ///
 /// [`PhantomData`]: marker/struct.PhantomData.html
-/// [book]: https://doc.rust-lang.org/book/second-edition/ch05-01-defining-structs.html
+/// [book]: https://doc.rust-lang.org/book/ch05-01-defining-structs.html
 /// [reference]: https://doc.rust-lang.org/reference/items/structs.html
 mod struct_keyword { }

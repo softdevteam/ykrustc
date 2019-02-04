@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Custom arbitrary-precision number (bignum) implementation.
 //!
 //! This is designed to avoid the heap allocation at expense of stack memory.
@@ -57,24 +47,25 @@ macro_rules! impl_full_ops {
         $(
             impl FullOps for $ty {
                 fn full_add(self, other: $ty, carry: bool) -> (bool, $ty) {
-                    // this cannot overflow, the output is between 0 and 2*2^nbits - 1
-                    // FIXME will LLVM optimize this into ADC or similar???
-                    let (v, carry1) = unsafe { intrinsics::add_with_overflow(self, other) };
-                    let (v, carry2) = unsafe {
-                        intrinsics::add_with_overflow(v, if carry {1} else {0})
-                    };
+                    // This cannot overflow; the output is between `0` and `2 * 2^nbits - 1`.
+                    // FIXME: will LLVM optimize this into ADC or similar?
+                    let (v, carry1) = intrinsics::add_with_overflow(self, other);
+                    let (v, carry2) = intrinsics::add_with_overflow(v, if carry {1} else {0});
                     (carry1 || carry2, v)
                 }
 
                 fn full_mul(self, other: $ty, carry: $ty) -> ($ty, $ty) {
-                    // this cannot overflow, the output is between 0 and 2^nbits * (2^nbits - 1)
+                    // This cannot overflow;
+                    // the output is between `0` and `2^nbits * (2^nbits - 1)`.
+                    // FIXME: will LLVM optimize this into ADC or similar?
                     let nbits = mem::size_of::<$ty>() * 8;
                     let v = (self as $bigty) * (other as $bigty) + (carry as $bigty);
                     ((v >> nbits) as $ty, v as $ty)
                 }
 
                 fn full_mul_add(self, other: $ty, other2: $ty, carry: $ty) -> ($ty, $ty) {
-                    // this cannot overflow, the output is between 0 and 2^(2*nbits) - 1
+                    // This cannot overflow;
+                    // the output is between `0` and `2^nbits * (2^nbits - 1)`.
                     let nbits = mem::size_of::<$ty>() * 8;
                     let v = (self as $bigty) * (other as $bigty) + (other2 as $bigty) +
                             (carry as $bigty);
@@ -83,7 +74,7 @@ macro_rules! impl_full_ops {
 
                 fn full_div_rem(self, other: $ty, borrow: $ty) -> ($ty, $ty) {
                     debug_assert!(borrow < other);
-                    // this cannot overflow, the dividend is between 0 and other * 2^nbits - 1
+                    // This cannot overflow; the output is between `0` and `other * (2^nbits - 1)`.
                     let nbits = mem::size_of::<$ty>() * 8;
                     let lhs = ((borrow as $bigty) << nbits) | (self as $bigty);
                     let rhs = other as $bigty;
@@ -98,7 +89,8 @@ impl_full_ops! {
     u8:  add(intrinsics::u8_add_with_overflow),  mul/div(u16);
     u16: add(intrinsics::u16_add_with_overflow), mul/div(u32);
     u32: add(intrinsics::u32_add_with_overflow), mul/div(u64);
-//  u64: add(intrinsics::u64_add_with_overflow), mul/div(u128); // see RFC #521 for enabling this.
+    // See RFC #521 for enabling this.
+    // u64: add(intrinsics::u64_add_with_overflow), mul/div(u128);
 }
 
 /// Table of powers of 5 representable in digits. Specifically, the largest {u8, u16, u32} value
@@ -183,7 +175,7 @@ macro_rules! define_bignum {
                 let nonzero = &digits[..end];
 
                 if nonzero.is_empty() {
-                    // There are no non-zero digits, i.e. the number is zero.
+                    // There are no non-zero digits, i.e., the number is zero.
                     return 0;
                 }
                 // This could be optimized with leading_zeros() and bit shifts, but that's

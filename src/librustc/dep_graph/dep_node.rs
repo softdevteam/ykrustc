@@ -1,14 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-
 //! This module defines the `DepNode` type which the compiler uses to represent
 //! nodes in the dependency graph. A `DepNode` consists of a `DepKind` (which
 //! specifies the kind of thing it represents, like a piece of HIR, MIR, etc)
@@ -17,7 +6,7 @@
 //! fully identify a dependency node, even across multiple compilation sessions.
 //! In other words, the value of the fingerprint does not depend on anything
 //! that is specific to a given compilation session, like an unpredictable
-//! interning key (e.g. NodeId, DefId, Symbol) or the numeric value of a
+//! interning key (e.g., NodeId, DefId, Symbol) or the numeric value of a
 //! pointer. The concept behind this could be compared to how git commit hashes
 //! uniquely identify a given commit and has a few advantages:
 //!
@@ -28,7 +17,7 @@
 //! * A `Fingerprint` is just a bunch of bits, which allows `DepNode` to
 //!   implement `Copy`, `Sync`, `Send`, `Freeze`, etc.
 //! * Since we just have a bit pattern, `DepNode` can be mapped from disk into
-//!   memory without any post-processing (e.g. "abomination-style" pointer
+//!   memory without any post-processing (e.g., "abomination-style" pointer
 //!   reconstruction).
 //! * Because a `DepNode` is self-contained, we can instantiate `DepNodes` that
 //!   refer to things that do not exist anymore. In previous implementations
@@ -81,7 +70,7 @@ use ty::{TyCtxt, FnSig, Instance, InstanceDef,
 use ty::subst::Substs;
 
 // erase!() just makes tokens go away. It's used to specify which macro argument
-// is repeated (i.e. which sub-expression of the macro we are in) but don't need
+// is repeated (i.e., which sub-expression of the macro we are in) but don't need
 // to actually use any of the arguments.
 macro_rules! erase {
     ($x:tt) => ({})
@@ -162,7 +151,9 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            #[inline]
+            // FIXME: Make `is_anon`, `is_input`, `is_eval_always` and `has_params` properties
+            // of queries
+            #[inline(always)]
             pub fn is_anon(&self) -> bool {
                 match *self {
                     $(
@@ -171,7 +162,7 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            #[inline]
+            #[inline(always)]
             pub fn is_input(&self) -> bool {
                 match *self {
                     $(
@@ -180,7 +171,7 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            #[inline]
+            #[inline(always)]
             pub fn is_eval_always(&self) -> bool {
                 match *self {
                     $(
@@ -190,7 +181,7 @@ macro_rules! define_dep_nodes {
             }
 
             #[allow(unreachable_code)]
-            #[inline]
+            #[inline(always)]
             pub fn has_params(&self) -> bool {
                 match *self {
                     $(
@@ -230,6 +221,7 @@ macro_rules! define_dep_nodes {
 
         impl DepNode {
             #[allow(unreachable_code, non_snake_case)]
+            #[inline(always)]
             pub fn new<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                        dep: DepConstructor<'gcx>)
                                        -> DepNode
@@ -299,11 +291,11 @@ macro_rules! define_dep_nodes {
             /// Construct a DepNode from the given DepKind and DefPathHash. This
             /// method will assert that the given DepKind actually requires a
             /// single DefId/DefPathHash parameter.
-            #[inline]
+            #[inline(always)]
             pub fn from_def_path_hash(kind: DepKind,
                                       def_path_hash: DefPathHash)
                                       -> DepNode {
-                assert!(kind.can_reconstruct_query_key() && kind.has_params());
+                debug_assert!(kind.can_reconstruct_query_key() && kind.has_params());
                 DepNode {
                     kind,
                     hash: def_path_hash.0,
@@ -313,9 +305,9 @@ macro_rules! define_dep_nodes {
             /// Create a new, parameterless DepNode. This method will assert
             /// that the DepNode corresponding to the given DepKind actually
             /// does not require any parameters.
-            #[inline]
+            #[inline(always)]
             pub fn new_no_params(kind: DepKind) -> DepNode {
-                assert!(!kind.has_params());
+                debug_assert!(!kind.has_params());
                 DepNode {
                     kind,
                     hash: Fingerprint::ZERO,
@@ -381,7 +373,7 @@ macro_rules! define_dep_nodes {
         #[allow(dead_code, non_upper_case_globals)]
         pub mod label_strs {
            $(
-                pub const $variant: &'static str = stringify!($variant);
+                pub const $variant: &str = stringify!($variant);
             )*
         }
     );
@@ -418,27 +410,16 @@ impl fmt::Debug for DepNode {
 
 
 impl DefPathHash {
-    #[inline]
+    #[inline(always)]
     pub fn to_dep_node(self, kind: DepKind) -> DepNode {
         DepNode::from_def_path_hash(kind, self)
     }
 }
 
 impl DefId {
-    #[inline]
+    #[inline(always)]
     pub fn to_dep_node(self, tcx: TyCtxt<'_, '_, '_>, kind: DepKind) -> DepNode {
         DepNode::from_def_path_hash(kind, tcx.def_path_hash(self))
-    }
-}
-
-impl DepKind {
-    #[inline]
-    pub fn fingerprint_needed_for_crate_hash(self) -> bool {
-        match self {
-            DepKind::HirBody |
-            DepKind::Krate => true,
-            _ => false,
-        }
     }
 }
 
@@ -449,10 +430,10 @@ define_dep_nodes!( <'tcx>
     // Represents the `Krate` as a whole (the `hir::Krate` value) (as
     // distinct from the krate module). This is basically a hash of
     // the entire krate, so if you read from `Krate` (e.g., by calling
-    // `tcx.hir.krate()`), we will have to assume that any change
+    // `tcx.hir().krate()`), we will have to assume that any change
     // means that you need to be recompiled. This is because the
     // `Krate` value gives you access to all other items. To avoid
-    // this fate, do not call `tcx.hir.krate()`; instead, prefer
+    // this fate, do not call `tcx.hir().krate()`; instead, prefer
     // wrappers like `tcx.visit_all_items_in_krate()`.  If there is no
     // suitable wrapper, you can use `tcx.dep_graph.ignore()` to gain
     // access to the krate, but you must remember to add suitable
@@ -491,6 +472,15 @@ define_dep_nodes!( <'tcx>
     [] UnsafetyCheckResult(DefId),
     [] UnsafeDeriveOnReprPacked(DefId),
 
+    [] CheckModAttrs(DefId),
+    [] CheckModLoops(DefId),
+    [] CheckModUnstableApiUsage(DefId),
+    [] CheckModItemTypes(DefId),
+    [] CheckModPrivacy(DefId),
+    [] CheckModIntrinsics(DefId),
+    [] CheckModLiveness(DefId),
+    [] CollectModItemTypes(DefId),
+
     [] Reachability,
     [] MirKeys,
     [eval_always] CrateVariances,
@@ -511,6 +501,7 @@ define_dep_nodes!( <'tcx>
     [] AdtDefOfItem(DefId),
     [] ImplTraitRef(DefId),
     [] ImplPolarity(DefId),
+    [] Issue33140SelfTy(DefId),
     [] FnSignature(DefId),
     [] CoerceUnsizedInfo(DefId),
 
@@ -595,8 +586,9 @@ define_dep_nodes!( <'tcx>
     [] CheckImplItemWellFormed(DefId),
     [] ReachableNonGenerics(CrateNum),
     [] NativeLibraries(CrateNum),
+    [] EntryFn(CrateNum),
     [] PluginRegistrarFn(CrateNum),
-    [] DeriveRegistrarFn(CrateNum),
+    [] ProcMacroDeclsStatic(CrateNum),
     [input] CrateDisambiguator(CrateNum),
     [input] CrateHash(CrateNum),
     [input] OriginalCrateName(CrateNum),
@@ -642,6 +634,7 @@ define_dep_nodes!( <'tcx>
     [input] Freevars(DefId),
     [input] MaybeUnusedTraitImport(DefId),
     [input] MaybeUnusedExternCrates,
+    [input] NamesImportedByGlobUse(DefId),
     [eval_always] StabilityIndex,
     [eval_always] AllTraits,
     [input] AllCrateNums,
@@ -649,6 +642,7 @@ define_dep_nodes!( <'tcx>
     [eval_always] CollectAndPartitionMonoItems,
     [] IsCodegenedItem(DefId),
     [] CodegenUnit(InternedString),
+    [] BackendOptimizationLevel(CrateNum),
     [] CompileCodegenUnit(InternedString),
     [input] OutputFilenames,
     [] NormalizeProjectionTy(CanonicalProjectionGoal<'tcx>),
@@ -656,6 +650,7 @@ define_dep_nodes!( <'tcx>
     [] ImpliedOutlivesBounds(CanonicalTyGoal<'tcx>),
     [] DropckOutlives(CanonicalTyGoal<'tcx>),
     [] EvaluateObligation(CanonicalPredicateGoal<'tcx>),
+    [] EvaluateGoal(traits::ChalkCanonicalGoal<'tcx>),
     [] TypeOpAscribeUserType(CanonicalTypeOpAscribeUserTypeGoal<'tcx>),
     [] TypeOpEq(CanonicalTypeOpEqGoal<'tcx>),
     [] TypeOpSubtype(CanonicalTypeOpSubtypeGoal<'tcx>),
@@ -666,6 +661,7 @@ define_dep_nodes!( <'tcx>
     [] TypeOpNormalizeFnSig(CanonicalTypeOpNormalizeGoal<'tcx, FnSig<'tcx>>),
 
     [] SubstituteNormalizeAndTestPredicates { key: (DefId, &'tcx Substs<'tcx>) },
+    [] MethodAutoderefSteps(CanonicalTyGoal<'tcx>),
 
     [input] TargetFeaturesWhitelist,
 
@@ -733,7 +729,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefIndex {
     const CAN_RECONSTRUCT_QUERY_KEY: bool = true;
 
     fn to_fingerprint(&self, tcx: TyCtxt<'_, '_, '_>) -> Fingerprint {
-        tcx.hir.definitions().def_path_hash(*self).0
+        tcx.hir().definitions().def_path_hash(*self).0
     }
 
     fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {

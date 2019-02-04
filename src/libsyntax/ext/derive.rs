@@ -1,13 +1,3 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use attr::HasAttrs;
 use ast;
 use source_map::{hygiene, ExpnInfo, ExpnFormat};
@@ -24,6 +14,11 @@ pub fn collect_derives(cx: &mut ExtCtxt, attrs: &mut Vec<ast::Attribute>) -> Vec
     attrs.retain(|attr| {
         if attr.path != "derive" {
             return true;
+        }
+        if !attr.is_meta_item_list() {
+            cx.span_err(attr.span,
+                        "attribute must be of the form `#[derive(Trait1, Trait2, ...)]`");
+            return false;
         }
 
         match attr.parse_list(cx.parse_sess,

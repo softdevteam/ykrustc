@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
@@ -335,11 +325,13 @@ match Some(42) {
 "##,
 
 E0162: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 An if-let pattern attempts to match the pattern, and enters the body if the
 match was successful. If the match is irrefutable (when it cannot fail to
 match), use a regular `let`-binding instead. For instance:
 
-```compile_fail,E0162
+```compile_pass
 struct Irrefutable(i32);
 let irr = Irrefutable(0);
 
@@ -362,11 +354,13 @@ println!("{}", x);
 "##,
 
 E0165: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 A while-let pattern attempts to match the pattern, and enters the body if the
 match was successful. If the match is irrefutable (when it cannot fail to
 match), use a regular `let`-binding inside a `loop` instead. For instance:
 
-```compile_fail,E0165
+```compile_pass,no_run
 struct Irrefutable(i32);
 let irr = Irrefutable(0);
 
@@ -579,7 +573,7 @@ const Y: i32 = A;
 ```
 "##,
 
-// FIXME(#24111) Change the language here when const fn stabilizes
+// FIXME(#57563) Change the language here when const fn stabilizes
 E0015: r##"
 The only functions that can be called in static or constant expressions are
 `const` functions, and struct/enum constructors. `const` functions are only
@@ -606,7 +600,7 @@ static X: i32 = 1;
 const C: i32 = 2;
 
 // these three are not allowed:
-const CR: &'static mut i32 = &mut C;
+const CR: &mut i32 = &mut C;
 static STATIC_REF: &'static mut i32 = &mut X;
 static CONST_REF: &'static mut i32 = &mut C;
 ```
@@ -1133,9 +1127,9 @@ A borrow of a constant containing interior mutability was attempted. Erroneous
 code example:
 
 ```compile_fail,E0492
-use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT};
+use std::sync::atomic::AtomicUsize;
 
-const A: AtomicUsize = ATOMIC_USIZE_INIT;
+const A: AtomicUsize = AtomicUsize::new(0);
 static B: &'static AtomicUsize = &A;
 // error: cannot borrow a constant which may contain interior mutability,
 //        create a static instead
@@ -1151,9 +1145,9 @@ explicitly a single memory location, which can be mutated at will.
 So, in order to solve this error, either use statics which are `Sync`:
 
 ```
-use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT};
+use std::sync::atomic::AtomicUsize;
 
-static A: AtomicUsize = ATOMIC_USIZE_INIT;
+static A: AtomicUsize = AtomicUsize::new(0);
 static B: &'static AtomicUsize = &A; // ok!
 ```
 
@@ -1163,7 +1157,7 @@ You can also have this error while using a cell type:
 use std::cell::Cell;
 
 const A: Cell<usize> = Cell::new(1);
-const B: &'static Cell<usize> = &A;
+const B: &Cell<usize> = &A;
 // error: cannot borrow a constant which may contain interior mutability,
 //        create a static instead
 
@@ -1171,10 +1165,10 @@ const B: &'static Cell<usize> = &A;
 struct C { a: Cell<usize> }
 
 const D: C = C { a: Cell::new(1) };
-const E: &'static Cell<usize> = &D.a; // error
+const E: &Cell<usize> = &D.a; // error
 
 // or:
-const F: &'static C = &D; // error
+const F: &C = &D; // error
 ```
 
 This is because cell types do operations that are not thread-safe. Due to this,
@@ -2125,14 +2119,15 @@ This error occurs because a borrow in a generator persists across a
 yield point.
 
 ```compile_fail,E0626
-# #![feature(generators, generator_trait)]
+# #![feature(generators, generator_trait, pin)]
 # use std::ops::Generator;
+# use std::pin::Pin;
 let mut b = || {
     let a = &String::new(); // <-- This borrow...
     yield (); // ...is still in scope here, when the yield occurs.
     println!("{}", a);
 };
-unsafe { b.resume() };
+Pin::new(&mut b).resume();
 ```
 
 At present, it is not permitted to have a yield that occurs while a
@@ -2143,14 +2138,15 @@ resolve the previous example by removing the borrow and just storing
 the integer by value:
 
 ```
-# #![feature(generators, generator_trait)]
+# #![feature(generators, generator_trait, pin)]
 # use std::ops::Generator;
+# use std::pin::Pin;
 let mut b = || {
     let a = 3;
     yield ();
     println!("{}", a);
 };
-unsafe { b.resume() };
+Pin::new(&mut b).resume();
 ```
 
 This is a very simple case, of course. In more complex cases, we may
@@ -2160,37 +2156,40 @@ in those cases, something like the `Rc` or `Arc` types may be useful.
 This error also frequently arises with iteration:
 
 ```compile_fail,E0626
-# #![feature(generators, generator_trait)]
+# #![feature(generators, generator_trait, pin)]
 # use std::ops::Generator;
+# use std::pin::Pin;
 let mut b = || {
   let v = vec![1,2,3];
   for &x in &v { // <-- borrow of `v` is still in scope...
     yield x; // ...when this yield occurs.
   }
 };
-unsafe { b.resume() };
+Pin::new(&mut b).resume();
 ```
 
 Such cases can sometimes be resolved by iterating "by value" (or using
 `into_iter()`) to avoid borrowing:
 
 ```
-# #![feature(generators, generator_trait)]
+# #![feature(generators, generator_trait, pin)]
 # use std::ops::Generator;
+# use std::pin::Pin;
 let mut b = || {
   let v = vec![1,2,3];
   for x in v { // <-- Take ownership of the values instead!
     yield x; // <-- Now yield is OK.
   }
 };
-unsafe { b.resume() };
+Pin::new(&mut b).resume();
 ```
 
 If taking ownership is not an option, using indices can work too:
 
 ```
-# #![feature(generators, generator_trait)]
+# #![feature(generators, generator_trait, pin)]
 # use std::ops::Generator;
+# use std::pin::Pin;
 let mut b = || {
   let v = vec![1,2,3];
   let len = v.len(); // (*)
@@ -2199,7 +2198,7 @@ let mut b = || {
     yield x; // <-- Now yield is OK.
   }
 };
-unsafe { b.resume() };
+Pin::new(&mut b).resume();
 
 // (*) -- Unfortunately, these temporaries are currently required.
 // See <https://github.com/rust-lang/rust/issues/43122>.
@@ -2344,7 +2343,7 @@ local variable that already exists, and hence no temporary is created.
 Temporaries are not always dropped at the end of the enclosing
 statement. In simple cases where the `&` expression is immediately
 stored into a variable, the compiler will automatically extend
-the lifetime of the temporary until the end of the enclosinb
+the lifetime of the temporary until the end of the enclosing
 block. Therefore, an alternative way to fix the original
 program is to write `let tmp = &foo()` and not `let tmp = foo()`:
 

@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::session::config::BorrowckMode;
 use rustc::ty::{self, TyCtxt};
 use rustc_errors::{DiagnosticBuilder, DiagnosticId};
@@ -148,13 +138,15 @@ pub trait BorrowckErrors<'cx>: Sized + Copy {
         old_load_end_span: Option<Span>,
         o: Origin,
     ) -> DiagnosticBuilder<'cx> {
+        let via = |msg: &str|
+            if msg.is_empty() { msg.to_string() } else { format!(" (via `{}`)", msg) };
         let mut err = struct_span_err!(
             self,
             new_loan_span,
             E0499,
             "cannot borrow `{}`{} as mutable more than once at a time{OGN}",
             desc,
-            opt_via,
+            via(opt_via),
             OGN = o
         );
         if old_loan_span == new_loan_span {
@@ -174,11 +166,11 @@ pub trait BorrowckErrors<'cx>: Sized + Copy {
         } else {
             err.span_label(
                 old_loan_span,
-                format!("first mutable borrow occurs here{}", old_opt_via),
+                format!("first mutable borrow occurs here{}", via(old_opt_via)),
             );
             err.span_label(
                 new_loan_span,
-                format!("second mutable borrow occurs here{}", opt_via),
+                format!("second mutable borrow occurs here{}", via(opt_via)),
             );
             if let Some(old_load_end_span) = old_load_end_span {
                 err.span_label(old_load_end_span, "first borrow ends here");
@@ -261,6 +253,7 @@ pub trait BorrowckErrors<'cx>: Sized + Copy {
         old_loan_span: Span,
         old_opt_via: &str,
         previous_end_span: Option<Span>,
+        second_borrow_desc: &str,
         o: Origin,
     ) -> DiagnosticBuilder<'cx> {
         let mut err = struct_span_err!(
@@ -274,7 +267,10 @@ pub trait BorrowckErrors<'cx>: Sized + Copy {
             kind_new,
             OGN = o
         );
-        err.span_label(new_loan_span, format!("borrow occurs here{}", opt_via));
+        err.span_label(
+            new_loan_span,
+            format!("{}borrow occurs here{}", second_borrow_desc, opt_via),
+        );
         err.span_label(
             old_loan_span,
             format!("{} construction occurs here{}", container_name, old_opt_via),
@@ -298,27 +294,46 @@ pub trait BorrowckErrors<'cx>: Sized + Copy {
         old_load_end_span: Option<Span>,
         o: Origin,
     ) -> DiagnosticBuilder<'cx> {
+        let via = |msg: &str|
+            if msg.is_empty() { msg.to_string() } else { format!(" (via `{}`)", msg) };
         let mut err = struct_span_err!(
             self,
             span,
             E0502,
-            "cannot borrow `{}`{} as {} because {} is also borrowed as {}{}{OGN}",
+            "cannot borrow `{}`{} as {} because {} is also borrowed \
+             as {}{}{OGN}",
             desc_new,
-            msg_new,
+            via(msg_new),
             kind_new,
             noun_old,
             kind_old,
-            msg_old,
+            via(msg_old),
             OGN = o
         );
-        err.span_label(span, format!("{} borrow occurs here{}", kind_new, msg_new));
-        err.span_label(
-            old_span,
-            format!("{} borrow occurs here{}", kind_old, msg_old),
-        );
+
+        if msg_new == "" {
+            // If `msg_new` is empty, then this isn't a borrow of a union field.
+            err.span_label(span, format!("{} borrow occurs here", kind_new));
+            err.span_label(old_span, format!("{} borrow occurs here", kind_old));
+        } else {
+            // If `msg_new` isn't empty, then this a borrow of a union field.
+            err.span_label(
+                span,
+                format!(
+                    "{} borrow of `{}` -- which overlaps with `{}` -- occurs here",
+                    kind_new, msg_new, msg_old,
+                )
+            );
+            err.span_label(
+                old_span,
+                format!("{} borrow occurs here{}", kind_old, via(msg_old)),
+            );
+        }
+
         if let Some(old_load_end_span) = old_load_end_span {
             err.span_label(old_load_end_span, format!("{} borrow ends here", kind_old));
         }
+
         self.cancel_if_wrong_origin(err, o)
     }
 

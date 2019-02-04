@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
       html_root_url = "https://doc.rust-lang.org/nightly/")]
@@ -36,15 +26,13 @@ use self::Level::*;
 
 use emitter::{Emitter, EmitterWriter};
 
-use rustc_data_structures::sync::{self, Lrc, Lock, LockCell};
+use rustc_data_structures::sync::{self, Lrc, Lock, AtomicUsize, AtomicBool, SeqCst};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::stable_hasher::StableHasher;
 
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::{error, fmt};
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering::SeqCst;
 use std::panic;
 
 use termcolor::{ColorSpec, Color};
@@ -66,12 +54,28 @@ use syntax_pos::{BytePos,
                  Span,
                  NO_EXPANSION};
 
+/// Indicates the confidence in the correctness of a suggestion.
+///
+/// All suggestions are marked with an `Applicability`. Tools use the applicability of a suggestion
+/// to determine whether it should be automatically applied or if the user should be consulted
+/// before applying the suggestion.
 #[derive(Copy, Clone, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
 pub enum Applicability {
+    /// The suggestion is definitely what the user intended. This suggestion should be
+    /// automatically applied.
     MachineApplicable,
-    HasPlaceholders,
+
+    /// The suggestion may be what the user intended, but it is uncertain. The suggestion should
+    /// result in valid Rust code if it is applied.
     MaybeIncorrect,
-    Unspecified
+
+    /// The suggestion contains placeholders like `(...)` or `{ /* fields */ }`. The suggestion
+    /// cannot be applied automatically because it will not result in valid Rust code. The user
+    /// will need to fill in the placeholders.
+    HasPlaceholders,
+
+    /// The applicability of the suggestion is unknown.
+    Unspecified,
 }
 
 #[derive(Clone, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
@@ -130,7 +134,7 @@ pub trait SourceMapper {
     fn merge_spans(&self, sp_lhs: Span, sp_rhs: Span) -> Option<Span>;
     fn call_span_if_macro(&self, sp: Span) -> Span;
     fn ensure_source_file_source_present(&self, source_file: Lrc<SourceFile>) -> bool;
-    fn doctest_offset_line(&self, line: usize) -> usize;
+    fn doctest_offset_line(&self, file: &FileName, line: usize) -> usize;
 }
 
 impl CodeSuggestion {
@@ -147,10 +151,11 @@ impl CodeSuggestion {
             if let Some(line) = line_opt {
                 if let Some(lo) = line.char_indices().map(|(i, _)| i).nth(lo) {
                     let hi_opt = hi_opt.and_then(|hi| line.char_indices().map(|(i, _)| i).nth(hi));
-                    buf.push_str(match hi_opt {
-                        Some(hi) => &line[lo..hi],
-                        None => &line[lo..],
-                    });
+                    match hi_opt {
+                        Some(hi) if hi > lo => buf.push_str(&line[lo..hi]),
+                        Some(_) => (),
+                        None => buf.push_str(&line[lo..]),
+                    }
                 }
                 if let None = hi_opt {
                     buf.push('\n');
@@ -281,7 +286,7 @@ pub struct Handler {
 
     err_count: AtomicUsize,
     emitter: Lock<Box<dyn Emitter + sync::Send>>,
-    continue_after_error: LockCell<bool>,
+    continue_after_error: AtomicBool,
     delayed_span_bugs: Lock<Vec<Diagnostic>>,
 
     // This set contains the `DiagnosticId` of all emitted diagnostics to avoid
@@ -380,7 +385,7 @@ impl Handler {
             flags,
             err_count: AtomicUsize::new(0),
             emitter: Lock::new(e),
-            continue_after_error: LockCell::new(true),
+            continue_after_error: AtomicBool::new(true),
             delayed_span_bugs: Lock::new(Vec::new()),
             taught_diagnostics: Default::default(),
             emitted_diagnostic_codes: Default::default(),
@@ -389,7 +394,7 @@ impl Handler {
     }
 
     pub fn set_continue_after_error(&self, continue_after_error: bool) {
-        self.continue_after_error.set(continue_after_error);
+        self.continue_after_error.store(continue_after_error, SeqCst);
     }
 
     /// Resets the diagnostic error count as well as the cached emitted diagnostics.
@@ -668,7 +673,7 @@ impl Handler {
         let mut db = DiagnosticBuilder::new(self, lvl, msg);
         db.set_span(msp.clone());
         db.emit();
-        if !self.continue_after_error.get() {
+        if !self.continue_after_error.load(SeqCst) {
             self.abort_if_errors();
         }
     }
@@ -679,7 +684,7 @@ impl Handler {
         let mut db = DiagnosticBuilder::new_with_code(self, lvl, Some(code), msg);
         db.set_span(msp.clone());
         db.emit();
-        if !self.continue_after_error.get() {
+        if !self.continue_after_error.load(SeqCst) {
             self.abort_if_errors();
         }
     }

@@ -1,16 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use {ast, attr};
 use syntax_pos::{Span, DUMMY_SP};
 use edition::Edition;
+use errors::FatalError;
 use ext::base::{DummyResult, ExtCtxt, MacResult, SyntaxExtension};
 use ext::base::{NormalTT, TTMacroExpander};
 use ext::expand::{AstFragment, AstFragmentKind};
@@ -19,7 +10,7 @@ use ext::tt::macro_parser::{MatchedSeq, MatchedNonterminal};
 use ext::tt::macro_parser::{parse, parse_failure_msg};
 use ext::tt::quoted;
 use ext::tt::transcribe::transcribe;
-use feature_gate::{self, emit_feature_err, Features, GateIssue};
+use feature_gate::Features;
 use parse::{Directory, ParseSess};
 use parse::parser::Parser;
 use parse::token::{self, NtTT};
@@ -44,22 +35,41 @@ pub struct ParserAnyMacro<'a> {
     /// Span of the expansion site of the macro this parser is for
     site_span: Span,
     /// The ident of the macro we're parsing
-    macro_ident: ast::Ident
+    macro_ident: ast::Ident,
+    arm_span: Span,
 }
 
 impl<'a> ParserAnyMacro<'a> {
     pub fn make(mut self: Box<ParserAnyMacro<'a>>, kind: AstFragmentKind) -> AstFragment {
-        let ParserAnyMacro { site_span, macro_ident, ref mut parser } = *self;
+        let ParserAnyMacro { site_span, macro_ident, ref mut parser, arm_span } = *self;
         let fragment = panictry!(parser.parse_ast_fragment(kind, true).map_err(|mut e| {
+            if parser.token == token::Eof && e.message().ends_with(", found `<eof>`") {
+                if !e.span.is_dummy() {  // early end of macro arm (#52866)
+                    e.replace_span_with(parser.sess.source_map().next_point(parser.span));
+                }
+                let msg = &e.message[0];
+                e.message[0] = (
+                    format!(
+                        "macro expansion ends with an incomplete expression: {}",
+                        msg.0.replace(", found `<eof>`", ""),
+                    ),
+                    msg.1,
+                );
+            }
             if e.span.is_dummy() {  // Get around lack of span in error (#30128)
-                e.set_span(site_span);
+                e.replace_span_with(site_span);
+                if parser.sess.source_map().span_to_filename(arm_span).is_real() {
+                    e.span_label(arm_span, "in this macro arm");
+                }
+            } else if !parser.sess.source_map().span_to_filename(parser.span).is_real() {
+                e.span_label(site_span, "in this macro invocation");
             }
             e
         }));
 
-        // We allow semicolons at the end of expressions -- e.g. the semicolon in
+        // We allow semicolons at the end of expressions -- e.g., the semicolon in
         // `macro_rules! m { () => { panic!(); } }` isn't parsed by `.parse_expr()`,
-        // but `m!()` is allowed in expression positions (c.f. issue #34706).
+        // but `m!()` is allowed in expression positions (cf. issue #34706).
         if kind == AstFragmentKind::Expr && parser.token == token::Semi {
             parser.bump();
         }
@@ -120,6 +130,7 @@ fn generic_extension<'cx>(cx: &'cx mut ExtCtxt,
     // Which arm's failure should we report? (the one furthest along)
     let mut best_fail_spot = DUMMY_SP;
     let mut best_fail_tok = None;
+    let mut best_fail_text = None;
 
     for (i, lhs) in lhses.iter().enumerate() { // try each arm's matchers
         let lhs_tt = match *lhs {
@@ -134,6 +145,7 @@ fn generic_extension<'cx>(cx: &'cx mut ExtCtxt,
                     quoted::TokenTree::Delimited(_, ref delimed) => delimed.tts.clone(),
                     _ => cx.span_bug(sp, "malformed macro rhs"),
                 };
+                let arm_span = rhses[i].span();
 
                 let rhs_spans = rhs.iter().map(|t| t.span()).collect::<Vec<_>>();
                 // rhs has holes ( `$id` and `$(...)` that need filled)
@@ -172,12 +184,14 @@ fn generic_extension<'cx>(cx: &'cx mut ExtCtxt,
                     // so we can print a useful error message if the parse of the expanded
                     // macro leaves unparsed tokens.
                     site_span: sp,
-                    macro_ident: name
+                    macro_ident: name,
+                    arm_span,
                 })
             }
-            Failure(sp, tok) => if sp.lo() >= best_fail_spot.lo() {
+            Failure(sp, tok, t) => if sp.lo() >= best_fail_spot.lo() {
                 best_fail_spot = sp;
                 best_fail_tok = Some(tok);
+                best_fail_text = Some(t);
             },
             Error(err_sp, ref msg) => {
                 cx.span_fatal(err_sp.substitute_dummy(sp), &msg[..])
@@ -188,7 +202,7 @@ fn generic_extension<'cx>(cx: &'cx mut ExtCtxt,
     let best_fail_msg = parse_failure_msg(best_fail_tok.expect("ran no matchers"));
     let span = best_fail_spot.substitute_dummy(sp);
     let mut err = cx.struct_span_err(span, &best_fail_msg);
-    err.span_label(span, best_fail_msg);
+    err.span_label(span, best_fail_text.unwrap_or(&best_fail_msg));
     if let Some(sp) = def_span {
         if cx.source_map().span_to_filename(sp).is_real() && !sp.is_dummy() {
             err.span_label(cx.source_map().def_span(sp), "when calling this macro");
@@ -207,7 +221,7 @@ fn generic_extension<'cx>(cx: &'cx mut ExtCtxt,
                     if comma_span.is_dummy() {
                         err.note("you might be missing a comma");
                     } else {
-                        err.span_suggestion_short_with_applicability(
+                        err.span_suggestion_short(
                             comma_span,
                             "missing comma here",
                             ", ".to_string(),
@@ -268,9 +282,13 @@ pub fn compile(sess: &ParseSess, features: &Features, def: &ast::Item, edition: 
 
     let argument_map = match parse(sess, body.stream(), &argument_gram, None, true) {
         Success(m) => m,
-        Failure(sp, tok) => {
+        Failure(sp, tok, t) => {
             let s = parse_failure_msg(tok);
-            sess.span_diagnostic.span_fatal(sp.substitute_dummy(def.span), &s).raise();
+            let sp = sp.substitute_dummy(def.span);
+            let mut err = sess.span_diagnostic.struct_span_fatal(sp, &s);
+            err.span_label(sp, t);
+            err.emit();
+            FatalError.raise();
         }
         Error(sp, s) => {
             sess.span_diagnostic.span_fatal(sp.substitute_dummy(def.span), &s).raise();
@@ -417,7 +435,8 @@ fn check_lhs_no_empty_seq(sess: &ParseSess, tts: &[quoted::TokenTree]) -> bool {
                     match *seq_tt {
                         TokenTree::MetaVarDecl(_, _, id) => id.name == "vis",
                         TokenTree::Sequence(_, ref sub_seq) =>
-                            sub_seq.op == quoted::KleeneOp::ZeroOrMore,
+                            sub_seq.op == quoted::KleeneOp::ZeroOrMore
+                            || sub_seq.op == quoted::KleeneOp::ZeroOrOne,
                         _ => false,
                     }
                 }) {
@@ -454,15 +473,15 @@ fn check_matcher(sess: &ParseSess,
     err == sess.span_diagnostic.err_count()
 }
 
-// The FirstSets for a matcher is a mapping from subsequences in the
+// `The FirstSets` for a matcher is a mapping from subsequences in the
 // matcher to the FIRST set for that subsequence.
 //
 // This mapping is partially precomputed via a backwards scan over the
 // token trees of the matcher, which provides a mapping from each
-// repetition sequence to its FIRST set.
+// repetition sequence to its *first* set.
 //
-// (Hypothetically sequences should be uniquely identifiable via their
-// spans, though perhaps that is false e.g. for macro-generated macros
+// (Hypothetically, sequences should be uniquely identifiable via their
+// spans, though perhaps that is false, e.g., for macro-generated macros
 // that do not try to inject artificial span information. My plan is
 // to try to catch such cases ahead of time and not include them in
 // the precomputed mapping.)
@@ -525,7 +544,10 @@ impl FirstSets {
                         }
 
                         // Reverse scan: Sequence comes before `first`.
-                        if subfirst.maybe_empty || seq_rep.op == quoted::KleeneOp::ZeroOrMore {
+                        if subfirst.maybe_empty
+                           || seq_rep.op == quoted::KleeneOp::ZeroOrMore
+                           || seq_rep.op == quoted::KleeneOp::ZeroOrOne
+                        {
                             // If sequence is potentially empty, then
                             // union them (preserving first emptiness).
                             first.add_all(&TokenSet { maybe_empty: true, ..subfirst });
@@ -573,8 +595,10 @@ impl FirstSets {
 
                             assert!(first.maybe_empty);
                             first.add_all(subfirst);
-                            if subfirst.maybe_empty ||
-                               seq_rep.op == quoted::KleeneOp::ZeroOrMore {
+                            if subfirst.maybe_empty
+                               || seq_rep.op == quoted::KleeneOp::ZeroOrMore
+                               || seq_rep.op == quoted::KleeneOp::ZeroOrOne
+                            {
                                 // continue scanning for more first
                                 // tokens, but also make sure we
                                 // restore empty-tracking state
@@ -1027,26 +1051,21 @@ fn has_legal_fragment_specifier(sess: &ParseSess,
     Ok(())
 }
 
-fn is_legal_fragment_specifier(sess: &ParseSess,
-                               features: &Features,
-                               attrs: &[ast::Attribute],
+fn is_legal_fragment_specifier(_sess: &ParseSess,
+                               _features: &Features,
+                               _attrs: &[ast::Attribute],
                                frag_name: &str,
-                               frag_span: Span) -> bool {
+                               _frag_span: Span) -> bool {
+    /*
+     * If new fragment specifiers are invented in nightly, `_sess`,
+     * `_features`, `_attrs`, and `_frag_span` will be useful here
+     * for checking against feature gates. See past versions of
+     * this function.
+     */
     match frag_name {
         "item" | "block" | "stmt" | "expr" | "pat" | "lifetime" |
-        "path" | "ty" | "ident" | "meta" | "tt" | "vis" | "" => true,
-        "literal" => {
-            if !features.macro_literal_matcher &&
-               !attr::contains_name(attrs, "allow_internal_unstable") {
-                let explain = feature_gate::EXPLAIN_LITERAL_MATCHER;
-                emit_feature_err(sess,
-                                 "macro_literal_matcher",
-                                 frag_span,
-                                 GateIssue::Language,
-                                 explain);
-            }
-            true
-        },
+        "path" | "ty" | "ident" | "meta" | "tt" | "vis" | "literal" |
+        "" => true,
         _ => false,
     }
 }

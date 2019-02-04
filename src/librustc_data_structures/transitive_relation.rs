@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use bit_set::BitMatrix;
 use fx::FxHashMap;
 use sync::Lock;
@@ -304,7 +294,7 @@ impl<T: Clone + Debug + Eq + Hash> TransitiveRelation<T> {
     ///
     /// The intuition is that this moves "one step up" through a lattice
     /// (where the relation is encoding the `<=` relation for the lattice).
-    /// So e.g. if the relation is `->` and we have
+    /// So e.g., if the relation is `->` and we have
     ///
     /// ```
     /// a -> b -> d -> f

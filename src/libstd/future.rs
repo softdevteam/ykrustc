@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Asynchronous values.
 
 use core::cell::Cell;
@@ -21,7 +11,7 @@ use core::ops::{Drop, Generator, GeneratorState};
 #[doc(inline)]
 pub use core::future::*;
 
-/// Wrap a future in a generator.
+/// Wrap a generator in a future.
 ///
 /// This function returns a `GenFuture` underneath, but hides it in `impl Trait` to give
 /// better error messages (`impl Future` rather than `GenFuture<[closure.....]>`).
@@ -43,7 +33,9 @@ impl<T: Generator<Yield = ()>> !Unpin for GenFuture<T> {}
 impl<T: Generator<Yield = ()>> Future for GenFuture<T> {
     type Output = T::Return;
     fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
-        set_task_waker(lw, || match unsafe { Pin::get_mut_unchecked(self).0.resume() } {
+        // Safe because we're !Unpin + !Drop mapping to a ?Unpin value
+        let gen = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.0) };
+        set_task_waker(lw, || match gen.resume() {
             GeneratorState::Yielded(()) => Poll::Pending,
             GeneratorState::Complete(x) => Poll::Ready(x),
         })
@@ -95,10 +87,10 @@ where
     });
     let _reset_waker = SetOnDrop(waker_ptr);
 
-    let mut waker_ptr = waker_ptr.expect(
+    let waker_ptr = waker_ptr.expect(
         "TLS LocalWaker not set. This is a rustc bug. \
         Please file an issue on https://github.com/rust-lang/rust.");
-    unsafe { f(waker_ptr.as_mut()) }
+    unsafe { f(waker_ptr.as_ref()) }
 }
 
 #[unstable(feature = "gen_future", issue = "50547")]

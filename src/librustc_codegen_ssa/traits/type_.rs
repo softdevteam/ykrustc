@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::misc::MiscMethods;
 use super::Backend;
 use super::HasCodegen;
@@ -20,6 +10,8 @@ use rustc_target::abi::call::{ArgType, CastTarget, FnType, Reg};
 use std::cell::RefCell;
 use syntax::ast;
 
+// This depends on `Backend` and not `BackendTypes`, because consumers will probably want to use
+// `LayoutOf` or `HasTyCtxt`. This way, they don't have to add a constraint on it themselves.
 pub trait BaseTypeMethods<'tcx>: Backend<'tcx> {
     fn type_void(&self) -> Self::Type;
     fn type_metadata(&self) -> Self::Type;
@@ -30,7 +22,7 @@ pub trait BaseTypeMethods<'tcx>: Backend<'tcx> {
     fn type_i64(&self) -> Self::Type;
     fn type_i128(&self) -> Self::Type;
 
-    // Creates an integer type with the given number of bits, e.g. i24
+    // Creates an integer type with the given number of bits, e.g., i24
     fn type_ix(&self, num_bits: u64) -> Self::Type;
     fn type_isize(&self) -> Self::Type;
 
@@ -41,11 +33,9 @@ pub trait BaseTypeMethods<'tcx>: Backend<'tcx> {
     fn type_func(&self, args: &[Self::Type], ret: Self::Type) -> Self::Type;
     fn type_variadic_func(&self, args: &[Self::Type], ret: Self::Type) -> Self::Type;
     fn type_struct(&self, els: &[Self::Type], packed: bool) -> Self::Type;
-    fn type_named_struct(&self, name: &str) -> Self::Type;
     fn type_array(&self, ty: Self::Type, len: u64) -> Self::Type;
     fn type_vector(&self, ty: Self::Type, len: u64) -> Self::Type;
     fn type_kind(&self, ty: Self::Type) -> TypeKind;
-    fn set_struct_body(&self, ty: Self::Type, els: &[Self::Type], packed: bool);
     fn type_ptr_to(&self, ty: Self::Type) -> Self::Type;
     fn element_type(&self, ty: Self::Type) -> Self::Type;
 
@@ -120,16 +110,16 @@ pub trait DerivedTypeMethods<'tcx>: BaseTypeMethods<'tcx> + MiscMethods<'tcx> {
         }
     }
 
-    fn type_pointee_for_abi_align(&self, align: Align) -> Self::Type {
+    fn type_pointee_for_align(&self, align: Align) -> Self::Type {
         // FIXME(eddyb) We could find a better approximation if ity.align < align.
-        let ity = layout::Integer::approximate_abi_align(self, align);
+        let ity = layout::Integer::approximate_align(self, align);
         self.type_from_integer(ity)
     }
 
     /// Return a LLVM type that has at most the required alignment,
     /// and exactly the required size, as a best-effort padding array.
     fn type_padding_filler(&self, size: Size, align: Align) -> Self::Type {
-        let unit = layout::Integer::approximate_abi_align(self, align);
+        let unit = layout::Integer::approximate_align(self, align);
         let size = size.bytes();
         let unit_size = unit.size().bytes();
         assert_eq!(size % unit_size, 0);

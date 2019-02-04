@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::{self, Local, Pat, Body, HirId};
 use hir::intravisit::{self, Visitor, NestedVisitorMap};
 use infer::InferCtxt;
@@ -109,13 +99,13 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         let mut local_visitor = FindLocalByTypeVisitor {
             infcx: &self,
             target_ty: &ty,
-            hir_map: &self.tcx.hir,
+            hir_map: &self.tcx.hir(),
             found_local_pattern: None,
             found_arg_pattern: None,
         };
 
         if let Some(body_id) = body_id {
-            let expr = self.tcx.hir.expect_expr(body_id.node_id);
+            let expr = self.tcx.hir().expect_expr(body_id.node_id);
             local_visitor.visit_expr(expr);
         }
 

@@ -76,25 +76,31 @@ impl MirPass for AddYkSWTCalls {
             let ret_place = Place::Local(Local::new(num_orig_local_decls + new_local_decls.len()));
             new_local_decls.push(ret_val);
 
+            let crate_hash_const = tcx.intern_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::from_u64(tcx, local_crate_hash)));
             let crate_hash_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u64_ty,
                 user_ty: None,
-                literal: ty::Const::from_u64(tcx, local_crate_hash),
+                literal: crate_hash_const,
             });
 
+            let def_idx_const = tcx.intern_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::from_u32(tcx, self.0.as_raw_u32())));
             let def_idx_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u32_ty,
                 user_ty: None,
-                literal: ty::Const::from_u32(tcx, self.0.as_raw_u32()),
+                literal: def_idx_const,
             });
 
+            let bb_const = tcx.intern_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::from_u32(tcx, bb.index() as u32)));
             let bb_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u32_ty,
                 user_ty: None,
-                literal: ty::Const::from_u32(tcx, bb.index() as u32),
+                literal: bb_const,
             });
 
             let rec_fn_oper = Operand::function_handle(tcx, rec_fn_defid,
@@ -151,7 +157,7 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
     }
 
     // Similar to `#[no_trace]`, don't transform anything inside a crate marked `#![no_trace]`.
-    for attr in tcx.hir.krate_attrs() {
+    for attr in tcx.hir().krate_attrs() {
         if attr.check_name("no_trace") {
             return true;
         }
@@ -159,7 +165,7 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
 
     // We can't call the software tracing function if the crate doesn't depend upon libcore because
     // that's where the entry point to the trace recorder function lives.
-    if attr::contains_name(tcx.hir.krate_attrs(), "no_core") {
+    if attr::contains_name(tcx.hir().krate_attrs(), "no_core") {
         return true;
     }
 
@@ -176,9 +182,9 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
     }
 
     // For the same reason as above, regular const functions can't be transformed.
-    let node_id = tcx.hir.as_local_node_id(src.def_id)
+    let node_id = tcx.hir().as_local_node_id(src.def_id)
         .expect("Failed to get node id");
-    if let Some(fn_like) = FnLikeNode::from_node(tcx.hir.get(node_id)) {
+    if let Some(fn_like) = FnLikeNode::from_node(tcx.hir().get(node_id)) {
         fn_like.constness() == hir::Constness::Const
     } else {
         true

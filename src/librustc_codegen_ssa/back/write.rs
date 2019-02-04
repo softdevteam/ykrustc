@@ -1,13 +1,3 @@
-// Copyright 2013-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use {ModuleCodegen, ModuleKind, CachedModuleCodegen, CompiledModule, CrateInfo, CodegenResults,
     RLIB_BYTECODE_EXTENSION};
 use super::linker::LinkerInfo;
@@ -34,6 +24,7 @@ use rustc_fs_util::link_or_copy;
 use rustc_data_structures::svh::Svh;
 use rustc_errors::{Handler, Level, DiagnosticBuilder, FatalError, DiagnosticId};
 use rustc_errors::emitter::{Emitter};
+use rustc_target::spec::MergeFunctions;
 use syntax::attr;
 use syntax::ext::hygiene::Mark;
 use syntax_pos::MultiSpan;
@@ -162,8 +153,24 @@ impl ModuleConfig {
                             sess.opts.optimize == config::OptLevel::Aggressive &&
                             !sess.target.target.options.is_like_emscripten;
 
-        self.merge_functions = sess.opts.optimize == config::OptLevel::Default ||
-                               sess.opts.optimize == config::OptLevel::Aggressive;
+        // Some targets (namely, NVPTX) interact badly with the MergeFunctions
+        // pass. This is because MergeFunctions can generate new function calls
+        // which may interfere with the target calling convention; e.g. for the
+        // NVPTX target, PTX kernels should not call other PTX kernels.
+        // MergeFunctions can also be configured to generate aliases instead,
+        // but aliases are not supported by some backends (again, NVPTX).
+        // Therefore, allow targets to opt out of the MergeFunctions pass,
+        // but otherwise keep the pass enabled (at O2 and O3) since it can be
+        // useful for reducing code size.
+        self.merge_functions = match sess.opts.debugging_opts.merge_functions
+                                     .unwrap_or(sess.target.target.options.merge_functions) {
+            MergeFunctions::Disabled => false,
+            MergeFunctions::Trampolines |
+            MergeFunctions::Aliases => {
+                sess.opts.optimize == config::OptLevel::Default ||
+                sess.opts.optimize == config::OptLevel::Aggressive
+            }
+        };
     }
 
     pub fn bitcode_needed(&self) -> bool {
@@ -252,7 +259,8 @@ impl<B: WriteBackendMethods> CodegenContext<B> {
 
 fn generate_lto_work<B: ExtraBackendMethods>(
     cgcx: &CodegenContext<B>,
-    modules: Vec<ModuleCodegen<B::Module>>,
+    needs_fat_lto: Vec<ModuleCodegen<B::Module>>,
+    needs_thin_lto: Vec<(String, B::ThinBuffer)>,
     import_only_modules: Vec<(SerializedModule<B::ModuleBuffer>, WorkProduct)>
 ) -> Vec<(WorkItem<B>, u64)> {
     let mut timeline = cgcx.time_graph.as_ref().map(|tg| {
@@ -260,22 +268,28 @@ fn generate_lto_work<B: ExtraBackendMethods>(
                  CODEGEN_WORK_PACKAGE_KIND,
                  "generate lto")
     }).unwrap_or(Timeline::noop());
-    let (lto_modules, copy_jobs) = B::run_lto(cgcx, modules, import_only_modules, &mut timeline)
-        .unwrap_or_else(|e| e.raise());
 
-    let lto_modules = lto_modules.into_iter().map(|module| {
+    let (lto_modules, copy_jobs) = if !needs_fat_lto.is_empty() {
+        assert!(needs_thin_lto.is_empty());
+        assert!(import_only_modules.is_empty());
+        let lto_module = B::run_fat_lto(cgcx, needs_fat_lto, &mut timeline)
+            .unwrap_or_else(|e| e.raise());
+        (vec![lto_module], vec![])
+    } else {
+        assert!(needs_fat_lto.is_empty());
+        B::run_thin_lto(cgcx, needs_thin_lto, import_only_modules, &mut timeline)
+            .unwrap_or_else(|e| e.raise())
+    };
+
+    lto_modules.into_iter().map(|module| {
         let cost = module.cost();
         (WorkItem::LTO(module), cost)
-    });
-
-    let copy_jobs = copy_jobs.into_iter().map(|wp| {
+    }).chain(copy_jobs.into_iter().map(|wp| {
         (WorkItem::CopyPostLtoArtifacts(CachedModuleCodegen {
             name: wp.cgu_name.clone(),
             source: wp,
         }), 0)
-    });
-
-    lto_modules.chain(copy_jobs).collect()
+    })).collect()
 }
 
 pub struct CompiledModules {
@@ -313,8 +327,8 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     let sess = tcx.sess;
     let crate_name = tcx.crate_name(LOCAL_CRATE);
     let crate_hash = tcx.crate_hash(LOCAL_CRATE);
-    let no_builtins = attr::contains_name(&tcx.hir.krate().attrs, "no_builtins");
-    let subsystem = attr::first_attr_value_str_by_name(&tcx.hir.krate().attrs,
+    let no_builtins = attr::contains_name(&tcx.hir().krate().attrs, "no_builtins");
+    let subsystem = attr::first_attr_value_str_by_name(&tcx.hir().krate().attrs,
                                                        "windows_subsystem");
     let windows_subsystem = subsystem.map(|subsystem| {
         if subsystem != "windows" && subsystem != "console" {
@@ -671,16 +685,17 @@ impl<B: WriteBackendMethods> WorkItem<B> {
     }
 }
 
-enum WorkItemResult<M> {
+enum WorkItemResult<B: WriteBackendMethods> {
     Compiled(CompiledModule),
-    NeedsLTO(ModuleCodegen<M>),
+    NeedsFatLTO(ModuleCodegen<B::Module>),
+    NeedsThinLTO(String, B::ThinBuffer),
 }
 
 fn execute_work_item<B: ExtraBackendMethods>(
     cgcx: &CodegenContext<B>,
     work_item: WorkItem<B>,
     timeline: &mut Timeline
-) -> Result<WorkItemResult<B::Module>, FatalError> {
+) -> Result<WorkItemResult<B>, FatalError> {
     let module_config = cgcx.config(work_item.module_kind());
 
     match work_item {
@@ -696,67 +711,80 @@ fn execute_work_item<B: ExtraBackendMethods>(
     }
 }
 
+// Actual LTO type we end up chosing based on multiple factors.
+enum ComputedLtoType {
+    No,
+    Thin,
+    Fat,
+}
+
 fn execute_optimize_work_item<B: ExtraBackendMethods>(
     cgcx: &CodegenContext<B>,
     module: ModuleCodegen<B::Module>,
     module_config: &ModuleConfig,
     timeline: &mut Timeline
-) -> Result<WorkItemResult<B::Module>, FatalError> {
+) -> Result<WorkItemResult<B>, FatalError> {
     let diag_handler = cgcx.create_diag_handler();
 
     unsafe {
         B::optimize(cgcx, &diag_handler, &module, module_config, timeline)?;
     }
 
-    let linker_does_lto = cgcx.opts.debugging_opts.cross_lang_lto.enabled();
-
     // After we've done the initial round of optimizations we need to
     // decide whether to synchronously codegen this module or ship it
     // back to the coordinator thread for further LTO processing (which
     // has to wait for all the initial modules to be optimized).
+
+    // If the linker does LTO, we don't have to do it. Note that we
+    // keep doing full LTO, if it is requested, as not to break the
+    // assumption that the output will be a single module.
+    let linker_does_lto = cgcx.opts.debugging_opts.cross_lang_lto.enabled();
+
+    // When we're automatically doing ThinLTO for multi-codegen-unit
+    // builds we don't actually want to LTO the allocator modules if
+    // it shows up. This is due to various linker shenanigans that
+    // we'll encounter later.
+    let is_allocator = module.kind == ModuleKind::Allocator;
+
+    // We ignore a request for full crate grath LTO if the cate type
+    // is only an rlib, as there is no full crate graph to process,
+    // that'll happen later.
     //
-    // Here we dispatch based on the `cgcx.lto` and kind of module we're
-    // codegenning...
-    let needs_lto = match cgcx.lto {
-        Lto::No => false,
-
-        // If the linker does LTO, we don't have to do it. Note that we
-        // keep doing full LTO, if it is requested, as not to break the
-        // assumption that the output will be a single module.
-        Lto::Thin | Lto::ThinLocal if linker_does_lto => false,
-
-        // Here we've got a full crate graph LTO requested. We ignore
-        // this, however, if the crate type is only an rlib as there's
-        // no full crate graph to process, that'll happen later.
-        //
-        // This use case currently comes up primarily for targets that
-        // require LTO so the request for LTO is always unconditionally
-        // passed down to the backend, but we don't actually want to do
-        // anything about it yet until we've got a final product.
-        Lto::Fat | Lto::Thin => {
-            cgcx.crate_types.len() != 1 ||
-                cgcx.crate_types[0] != config::CrateType::Rlib
-        }
-
-        // When we're automatically doing ThinLTO for multi-codegen-unit
-        // builds we don't actually want to LTO the allocator modules if
-        // it shows up. This is due to various linker shenanigans that
-        // we'll encounter later.
-        Lto::ThinLocal => {
-            module.kind != ModuleKind::Allocator
-        }
-    };
+    // This use case currently comes up primarily for targets that
+    // require LTO so the request for LTO is always unconditionally
+    // passed down to the backend, but we don't actually want to do
+    // anything about it yet until we've got a final product.
+    let is_rlib = cgcx.crate_types.len() == 1
+        && cgcx.crate_types[0] == config::CrateType::Rlib;
 
     // Metadata modules never participate in LTO regardless of the lto
     // settings.
-    let needs_lto = needs_lto && module.kind != ModuleKind::Metadata;
-
-    if needs_lto {
-        Ok(WorkItemResult::NeedsLTO(module))
+    let lto_type = if module.kind == ModuleKind::Metadata {
+        ComputedLtoType::No
     } else {
-        let module = unsafe { B::codegen(cgcx, &diag_handler, module, module_config, timeline)? };
-        Ok(WorkItemResult::Compiled(module))
-    }
+        match cgcx.lto {
+            Lto::ThinLocal if !linker_does_lto && !is_allocator
+                => ComputedLtoType::Thin,
+            Lto::Thin if !linker_does_lto && !is_rlib
+                => ComputedLtoType::Thin,
+            Lto::Fat if !is_rlib => ComputedLtoType::Fat,
+            _ => ComputedLtoType::No,
+        }
+    };
+
+    Ok(match lto_type {
+        ComputedLtoType::No => {
+            let module = unsafe {
+                B::codegen(cgcx, &diag_handler, module, module_config, timeline)?
+            };
+            WorkItemResult::Compiled(module)
+        }
+        ComputedLtoType::Thin => {
+            let (name, thin_buffer) = B::prepare_thin(cgcx, module);
+            WorkItemResult::NeedsThinLTO(name, thin_buffer)
+        }
+        ComputedLtoType::Fat => WorkItemResult::NeedsFatLTO(module),
+    })
 }
 
 fn execute_copy_from_cache_work_item<B: ExtraBackendMethods>(
@@ -764,7 +792,7 @@ fn execute_copy_from_cache_work_item<B: ExtraBackendMethods>(
     module: CachedModuleCodegen,
     module_config: &ModuleConfig,
     _: &mut Timeline
-) -> Result<WorkItemResult<B::Module>, FatalError> {
+) -> Result<WorkItemResult<B>, FatalError> {
     let incr_comp_session_dir = cgcx.incr_comp_session_dir
                                     .as_ref()
                                     .unwrap();
@@ -826,7 +854,7 @@ fn execute_lto_work_item<B: ExtraBackendMethods>(
     mut module: lto::LtoModuleCodegen<B>,
     module_config: &ModuleConfig,
     timeline: &mut Timeline
-) -> Result<WorkItemResult<B::Module>, FatalError> {
+) -> Result<WorkItemResult<B>, FatalError> {
     let diag_handler = cgcx.create_diag_handler();
 
     unsafe {
@@ -838,8 +866,13 @@ fn execute_lto_work_item<B: ExtraBackendMethods>(
 
 pub enum Message<B: WriteBackendMethods> {
     Token(io::Result<Acquired>),
-    NeedsLTO {
+    NeedsFatLTO {
         result: ModuleCodegen<B::Module>,
+        worker_id: usize,
+    },
+    NeedsThinLTO {
+        name: String,
+        thin_buffer: B::ThinBuffer,
         worker_id: usize,
     },
     Done {
@@ -949,6 +982,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         None
     };
 
+    let ol = tcx.backend_optimization_level(LOCAL_CRATE);
     let cgcx = CodegenContext::<B> {
         backend: backend.clone(),
         crate_types: sess.crate_types.borrow().clone(),
@@ -972,7 +1006,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         regular_module_config: modules_config,
         metadata_module_config: metadata_config,
         allocator_module_config: allocator_config,
-        tm_factory: TargetMachineFactory(backend.target_machine_factory(tcx.sess, false)),
+        tm_factory: TargetMachineFactory(backend.target_machine_factory(tcx.sess, ol, false)),
         total_cgus,
         msvc_imps_needed: msvc_imps_needed(tcx),
         target_pointer_width: tcx.sess.target.target.target_pointer_width.clone(),
@@ -1137,7 +1171,8 @@ fn start_executing_work<B: ExtraBackendMethods>(
         let mut compiled_modules = vec![];
         let mut compiled_metadata_module = None;
         let mut compiled_allocator_module = None;
-        let mut needs_lto = Vec::new();
+        let mut needs_fat_lto = Vec::new();
+        let mut needs_thin_lto = Vec::new();
         let mut lto_import_only_modules = Vec::new();
         let mut started_lto = false;
         let mut codegen_aborted = false;
@@ -1166,7 +1201,8 @@ fn start_executing_work<B: ExtraBackendMethods>(
               running > 0 ||
               (!codegen_aborted && (
                   work_items.len() > 0 ||
-                  needs_lto.len() > 0 ||
+                  needs_fat_lto.len() > 0 ||
+                  needs_thin_lto.len() > 0 ||
                   lto_import_only_modules.len() > 0 ||
                   main_thread_worker_state != MainThreadWorkerState::Idle
               ))
@@ -1212,12 +1248,17 @@ fn start_executing_work<B: ExtraBackendMethods>(
                    running == 0 &&
                    main_thread_worker_state == MainThreadWorkerState::Idle {
                     assert!(!started_lto);
-                    assert!(needs_lto.len() + lto_import_only_modules.len() > 0);
                     started_lto = true;
-                    let modules = mem::replace(&mut needs_lto, Vec::new());
+
+                    let needs_fat_lto =
+                        mem::replace(&mut needs_fat_lto, Vec::new());
+                    let needs_thin_lto =
+                        mem::replace(&mut needs_thin_lto, Vec::new());
                     let import_only_modules =
                         mem::replace(&mut lto_import_only_modules, Vec::new());
-                    for (work, cost) in generate_lto_work(&cgcx, modules, import_only_modules) {
+
+                    for (work, cost) in generate_lto_work(&cgcx, needs_fat_lto,
+                                                          needs_thin_lto, import_only_modules) {
                         let insertion_index = work_items
                             .binary_search_by_key(&cost, |&(_, cost)| cost)
                             .unwrap_or_else(|e| e);
@@ -1283,6 +1324,21 @@ fn start_executing_work<B: ExtraBackendMethods>(
 
             // Relinquish accidentally acquired extra tokens
             tokens.truncate(running);
+
+            // If a thread exits successfully then we drop a token associated
+            // with that worker and update our `running` count. We may later
+            // re-acquire a token to continue running more work. We may also not
+            // actually drop a token here if the worker was running with an
+            // "ephemeral token"
+            let mut free_worker = |worker_id| {
+                if main_thread_worker_state == MainThreadWorkerState::LLVMing {
+                    main_thread_worker_state = MainThreadWorkerState::Idle;
+                } else {
+                    running -= 1;
+                }
+
+                free_worker_ids.push(worker_id);
+            };
 
             let msg = coordinator_receive.recv().unwrap();
             match *msg.downcast::<Message<B>>().ok().unwrap() {
@@ -1358,24 +1414,8 @@ fn start_executing_work<B: ExtraBackendMethods>(
                     assert_eq!(main_thread_worker_state,
                                MainThreadWorkerState::Codegenning);
                 }
-
-                // If a thread exits successfully then we drop a token associated
-                // with that worker and update our `running` count. We may later
-                // re-acquire a token to continue running more work. We may also not
-                // actually drop a token here if the worker was running with an
-                // "ephemeral token"
-                //
-                // Note that if the thread failed that means it panicked, so we
-                // abort immediately.
                 Message::Done { result: Ok(compiled_module), worker_id } => {
-                    if main_thread_worker_state == MainThreadWorkerState::LLVMing {
-                        main_thread_worker_state = MainThreadWorkerState::Idle;
-                    } else {
-                        running -= 1;
-                    }
-
-                    free_worker_ids.push(worker_id);
-
+                    free_worker(worker_id);
                     match compiled_module.kind {
                         ModuleKind::Regular => {
                             compiled_modules.push(compiled_module);
@@ -1390,15 +1430,15 @@ fn start_executing_work<B: ExtraBackendMethods>(
                         }
                     }
                 }
-                Message::NeedsLTO { result, worker_id } => {
+                Message::NeedsFatLTO { result, worker_id } => {
                     assert!(!started_lto);
-                    if main_thread_worker_state == MainThreadWorkerState::LLVMing {
-                        main_thread_worker_state = MainThreadWorkerState::Idle;
-                    } else {
-                        running -= 1;
-                    }
-                    free_worker_ids.push(worker_id);
-                    needs_lto.push(result);
+                    free_worker(worker_id);
+                    needs_fat_lto.push(result);
+                }
+                Message::NeedsThinLTO { name, thin_buffer, worker_id } => {
+                    assert!(!started_lto);
+                    free_worker(worker_id);
+                    needs_thin_lto.push((name, thin_buffer));
                 }
                 Message::AddImportOnlyModule { module_data, work_product } => {
                     assert!(!started_lto);
@@ -1408,6 +1448,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
                     lto_import_only_modules.push((module_data, work_product));
                     main_thread_worker_state = MainThreadWorkerState::Idle;
                 }
+                // If the thread failed that means it panicked, so we abort immediately.
                 Message::Done { result: Err(()), worker_id: _ } => {
                     bug!("worker thread panicked");
                 }
@@ -1485,7 +1526,7 @@ fn spawn_work<B: ExtraBackendMethods>(
         // we exit.
         struct Bomb<B: ExtraBackendMethods> {
             coordinator_send: Sender<Box<dyn Any + Send>>,
-            result: Option<WorkItemResult<B::Module>>,
+            result: Option<WorkItemResult<B>>,
             worker_id: usize,
         }
         impl<B: ExtraBackendMethods> Drop for Bomb<B> {
@@ -1495,8 +1536,11 @@ fn spawn_work<B: ExtraBackendMethods>(
                     Some(WorkItemResult::Compiled(m)) => {
                         Message::Done::<B> { result: Ok(m), worker_id }
                     }
-                    Some(WorkItemResult::NeedsLTO(m)) => {
-                        Message::NeedsLTO::<B> { result: m, worker_id }
+                    Some(WorkItemResult::NeedsFatLTO(m)) => {
+                        Message::NeedsFatLTO::<B> { result: m, worker_id }
+                    }
+                    Some(WorkItemResult::NeedsThinLTO(name, thin_buffer)) => {
+                        Message::NeedsThinLTO::<B> { name, thin_buffer, worker_id }
                     }
                     None => Message::Done::<B> { result: Err(()), worker_id }
                 };

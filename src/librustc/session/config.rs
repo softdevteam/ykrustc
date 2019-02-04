@@ -1,22 +1,12 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Contains infrastructure for configuring the compiler, including parsing
 //! command line options.
 
 use std::str::FromStr;
 
 use session::{early_error, early_warn, Session};
-use session::search_paths::SearchPaths;
+use session::search_paths::SearchPath;
 
-use rustc_target::spec::{LinkerFlavor, PanicStrategy, RelroLevel};
+use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel};
 use rustc_target::spec::{Target, TargetTriple};
 use lint;
 use middle::cstore;
@@ -67,6 +57,8 @@ pub enum OptLevel {
     Size,       // -Os
     SizeMin,    // -Oz
 }
+
+impl_stable_hash_via_hash!(OptLevel);
 
 /// This is what the `LtoCli` values get mapped to after resolving defaults and
 /// and taking other command line options into account.
@@ -374,7 +366,7 @@ top_level_options!(
         lint_cap: Option<lint::Level> [TRACKED],
         describe_lints: bool [UNTRACKED],
         output_types: OutputTypes [TRACKED],
-        search_paths: SearchPaths [UNTRACKED],
+        search_paths: Vec<SearchPath> [UNTRACKED],
         libs: Vec<(String, Option<String>, Option<cstore::NativeLibraryKind>)> [TRACKED],
         maybe_sysroot: Option<PathBuf> [TRACKED],
 
@@ -593,7 +585,7 @@ impl Default for Options {
             lint_cap: None,
             describe_lints: false,
             output_types: OutputTypes(BTreeMap::new()),
-            search_paths: SearchPaths::new(),
+            search_paths: vec![],
             maybe_sysroot: None,
             target_triple: TargetTriple::from_triple(host_triple()),
             test: false,
@@ -659,14 +651,14 @@ impl Options {
     }
 }
 
-// The type of entry function, so
-// users can have their own entry
-// functions
-#[derive(Copy, Clone, PartialEq)]
+// The type of entry function, so users can have their own entry functions
+#[derive(Copy, Clone, PartialEq, Hash, Debug)]
 pub enum EntryFnType {
     Main,
     Start,
 }
+
+impl_stable_hash_via_hash!(EntryFnType);
 
 #[derive(Copy, PartialEq, PartialOrd, Clone, Ord, Eq, Hash, Debug)]
 pub enum CrateType {
@@ -780,52 +772,54 @@ macro_rules! options {
     }
 
     pub type $setter_name = fn(&mut $struct_name, v: Option<&str>) -> bool;
-    pub const $stat: &'static [(&'static str, $setter_name,
-                                Option<&'static str>, &'static str)] =
+    pub const $stat: &[(&str, $setter_name, Option<&str>, &str)] =
         &[ $( (stringify!($opt), $mod_set::$opt, $mod_desc::$parse, $desc) ),* ];
 
     #[allow(non_upper_case_globals, dead_code)]
     mod $mod_desc {
-        pub const parse_bool: Option<&'static str> = None;
-        pub const parse_opt_bool: Option<&'static str> =
+        pub const parse_bool: Option<&str> = None;
+        pub const parse_opt_bool: Option<&str> =
             Some("one of: `y`, `yes`, `on`, `n`, `no`, or `off`");
-        pub const parse_string: Option<&'static str> = Some("a string");
-        pub const parse_string_push: Option<&'static str> = Some("a string");
-        pub const parse_pathbuf_push: Option<&'static str> = Some("a path");
-        pub const parse_opt_string: Option<&'static str> = Some("a string");
-        pub const parse_opt_pathbuf: Option<&'static str> = Some("a path");
-        pub const parse_list: Option<&'static str> = Some("a space-separated list of strings");
-        pub const parse_opt_list: Option<&'static str> = Some("a space-separated list of strings");
-        pub const parse_uint: Option<&'static str> = Some("a number");
-        pub const parse_passes: Option<&'static str> =
+        pub const parse_string: Option<&str> = Some("a string");
+        pub const parse_string_push: Option<&str> = Some("a string");
+        pub const parse_pathbuf_push: Option<&str> = Some("a path");
+        pub const parse_opt_string: Option<&str> = Some("a string");
+        pub const parse_opt_pathbuf: Option<&str> = Some("a path");
+        pub const parse_list: Option<&str> = Some("a space-separated list of strings");
+        pub const parse_opt_list: Option<&str> = Some("a space-separated list of strings");
+        pub const parse_uint: Option<&str> = Some("a number");
+        pub const parse_passes: Option<&str> =
             Some("a space-separated list of passes, or `all`");
-        pub const parse_opt_uint: Option<&'static str> =
+        pub const parse_opt_uint: Option<&str> =
             Some("a number");
-        pub const parse_panic_strategy: Option<&'static str> =
-            Some("either `panic` or `abort`");
-        pub const parse_relro_level: Option<&'static str> =
+        pub const parse_panic_strategy: Option<&str> =
+            Some("either `unwind` or `abort`");
+        pub const parse_relro_level: Option<&str> =
             Some("one of: `full`, `partial`, or `off`");
-        pub const parse_sanitizer: Option<&'static str> =
+        pub const parse_sanitizer: Option<&str> =
             Some("one of: `address`, `leak`, `memory` or `thread`");
-        pub const parse_linker_flavor: Option<&'static str> =
+        pub const parse_linker_flavor: Option<&str> =
             Some(::rustc_target::spec::LinkerFlavor::one_of());
-        pub const parse_optimization_fuel: Option<&'static str> =
+        pub const parse_optimization_fuel: Option<&str> =
             Some("crate=integer");
-        pub const parse_unpretty: Option<&'static str> =
+        pub const parse_unpretty: Option<&str> =
             Some("`string` or `string=string`");
-        pub const parse_lto: Option<&'static str> =
+        pub const parse_lto: Option<&str> =
             Some("either a boolean (`yes`, `no`, `on`, `off`, etc), `thin`, \
                   `fat`, or omitted");
-        pub const parse_cross_lang_lto: Option<&'static str> =
+        pub const parse_cross_lang_lto: Option<&str> =
             Some("either a boolean (`yes`, `no`, `on`, `off`, etc), \
                   or the path to the linker plugin");
+        pub const parse_merge_functions: Option<&str> =
+            Some("one of: `disabled`, `trampolines`, or `aliases`");
     }
 
     #[allow(dead_code)]
     mod $mod_set {
         use super::{$struct_name, Passes, Sanitizer, LtoCli, CrossLangLto};
-        use rustc_target::spec::{LinkerFlavor, PanicStrategy, RelroLevel};
+        use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel};
         use std::path::PathBuf;
+        use std::str::FromStr;
 
         $(
             pub fn $opt(cg: &mut $struct_name, v: Option<&str>) -> bool {
@@ -1057,6 +1051,14 @@ macro_rules! options {
             };
             true
         }
+
+        fn parse_merge_functions(slot: &mut Option<MergeFunctions>, v: Option<&str>) -> bool {
+            match v.and_then(|s| MergeFunctions::from_str(s).ok()) {
+                Some(mergefunc) => *slot = Some(mergefunc),
+                _ => return false,
+            }
+            true
+        }
     }
 ) }
 
@@ -1136,6 +1138,8 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "enable incremental compilation"),
     default_linker_libraries: Option<bool> = (None, parse_opt_bool, [UNTRACKED],
         "allow the linker to link its default libraries"),
+    linker_flavor: Option<LinkerFlavor> = (None, parse_linker_flavor, [UNTRACKED],
+                                           "Linker flavor"),
 }
 
 options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
@@ -1149,8 +1153,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "when debug-printing compiler state, do not include spans"), // o/w tests have closure@path
     identify_regions: bool = (false, parse_bool, [UNTRACKED],
         "make unnamed regions display as '# (where # is some non-ident unique id)"),
-    emit_end_regions: bool = (false, parse_bool, [UNTRACKED],
-        "emit EndRegion as part of MIR; enable transforms that solely process EndRegion"),
     borrowck: Option<String> = (None, parse_opt_string, [UNTRACKED],
         "select which borrowck is used (`ast`, `mir`, `migrate`, or `compare`)"),
     two_phase_borrows: bool = (false, parse_bool, [UNTRACKED],
@@ -1192,8 +1194,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "prints the llvm optimization passes being run"),
     ast_json: bool = (false, parse_bool, [UNTRACKED],
         "print the AST as JSON and halt"),
-    query_threads: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
-        "execute queries on a thread pool with N threads"),
+    threads: Option<usize> = (None, parse_opt_uint, [UNTRACKED],
+        "use a thread pool with N threads"),
     ast_json_noexpand: bool = (false, parse_bool, [UNTRACKED],
         "print the pre-expansion AST as JSON and halt"),
     ls: bool = (false, parse_bool, [UNTRACKED],
@@ -1238,6 +1240,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "verify incr. comp. hashes of green query instances"),
     incremental_ignore_spans: bool = (false, parse_bool, [UNTRACKED],
         "ignore spans during ICH computation -- used for testing"),
+    instrument_mcount: bool = (false, parse_bool, [TRACKED],
+        "insert function instrument code for mcount-based tracing"),
     dump_dep_graph: bool = (false, parse_bool, [UNTRACKED],
         "dump the dependency graph to $RUST_DEP_GRAPH (default: /tmp/dep_graph.gv)"),
     query_dep_graph: bool = (false, parse_bool, [UNTRACKED],
@@ -1272,10 +1276,14 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "set the MIR optimization level (0-3, default: 1)"),
     mutable_noalias: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "emit noalias metadata for mutable references (default: yes on LLVM >= 6)"),
-    arg_align_attributes: bool = (false, parse_bool, [TRACKED],
-        "emit align metadata for reference arguments"),
     dump_mir: Option<String> = (None, parse_opt_string, [UNTRACKED],
-        "dump MIR state at various points in transforms"),
+        "dump MIR state to file.
+        `val` is used to select which passes and functions to dump. For example:
+        `all` matches all passes and functions,
+        `foo` matches all passes for functions whose name contains 'foo',
+        `foo & ConstProp` only the 'ConstProp' pass for function names containing 'foo',
+        `foo | bar` all passes for function names containing 'foo' or 'bar'."),
+
     dump_mir_dir: String = (String::from("mir_dump"), parse_string, [UNTRACKED],
         "the directory the MIR is dumped into"),
     dump_mir_graphviz: bool = (false, parse_bool, [UNTRACKED],
@@ -1283,21 +1291,19 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     dump_mir_exclude_pass_number: bool = (false, parse_bool, [UNTRACKED],
         "if set, exclude the pass number when dumping MIR (used in tests)"),
     mir_emit_retag: bool = (false, parse_bool, [TRACKED],
-        "emit Retagging MIR statements, interpreted e.g. by miri; implies -Zmir-opt-level=0"),
+        "emit Retagging MIR statements, interpreted e.g., by miri; implies -Zmir-opt-level=0"),
     perf_stats: bool = (false, parse_bool, [UNTRACKED],
         "print some performance-related statistics"),
+    query_stats: bool = (false, parse_bool, [UNTRACKED],
+        "print some statistics about the query system"),
     hir_stats: bool = (false, parse_bool, [UNTRACKED],
         "print some statistics about AST and HIR"),
-    mir_stats: bool = (false, parse_bool, [UNTRACKED],
-        "print some statistics about MIR"),
     always_encode_mir: bool = (false, parse_bool, [TRACKED],
         "encode MIR of all functions into the crate metadata"),
     osx_rpath_install_name: bool = (false, parse_bool, [TRACKED],
         "pass `-install_name @rpath/...` to the macOS linker"),
     sanitizer: Option<Sanitizer> = (None, parse_sanitizer, [TRACKED],
                                     "Use a sanitizer"),
-    linker_flavor: Option<LinkerFlavor> = (None, parse_linker_flavor, [UNTRACKED],
-                                           "Linker flavor"),
     fuel: Option<(String, u64)> = (None, parse_optimization_fuel, [TRACKED],
         "set the optimization fuel quota for a crate"),
     print_fuel: Option<String> = (None, parse_opt_string, [TRACKED],
@@ -1318,12 +1324,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "Disable the instrumentation pre-inliner, useful for profiling / PGO."),
     relro_level: Option<RelroLevel> = (None, parse_relro_level, [TRACKED],
         "choose which RELRO level to use"),
-    nll_subminimal_causes: bool = (false, parse_bool, [UNTRACKED],
-        "when tracking region error causes, accept subminimal results for faster execution."),
     nll_facts: bool = (false, parse_bool, [UNTRACKED],
                        "dump facts from NLL analysis into side files"),
-    disable_nll_user_type_assert: bool = (false, parse_bool, [UNTRACKED],
-        "disable user provided type assertion in NLL"),
     nll_dont_emit_read_for_match: bool = (false, parse_bool, [UNTRACKED],
         "in match codegen, do not include FakeRead statements (used by mir-borrowck)"),
     dont_buffer_diagnostics: bool = (false, parse_bool, [UNTRACKED],
@@ -1353,10 +1355,15 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     unpretty: Option<String> = (None, parse_unpretty, [UNTRACKED],
         "Present the input source, unstable (and less-pretty) variants;
         valid types are any of the types for `--pretty`, as well as:
+        `expanded`, `expanded,identified`,
+        `expanded,hygiene` (with internal representations),
         `flowgraph=<nodeid>` (graphviz formatted flowgraph for node),
+        `flowgraph,unlabelled=<nodeid>` (unlabelled graphviz formatted flowgraph for node),
         `everybody_loops` (all function bodies replaced with `loop {}`),
-        `hir` (the HIR), `hir,identified`, or
-        `hir,typed` (HIR with types for each node)."),
+        `hir` (the HIR), `hir,identified`,
+        `hir,typed` (HIR with types for each node),
+        `hir-tree` (dump the raw HIR),
+        `mir` (the MIR), or `mir-cfg` (graphviz formatted MIR)"),
     run_dsymutil: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "run `dsymutil` and delete intermediate object files"),
     ui_testing: bool = (false, parse_bool, [UNTRACKED],
@@ -1375,6 +1382,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "don't run LLVM in parallel (while keeping codegen-units and ThinLTO)"),
     no_leak_check: bool = (false, parse_bool, [UNTRACKED],
         "disables the 'leak check' for subtyping; unsound, but useful for tests"),
+    no_interleave_lints: bool = (false, parse_bool, [UNTRACKED],
+        "don't interleave execution of lints; allows benchmarking individual lints"),
     crate_attr: Vec<String> = (Vec::new(), parse_string_push, [TRACKED],
         "inject the given attribute in the crate"),
     self_profile: bool = (false, parse_bool, [UNTRACKED],
@@ -1387,6 +1396,9 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
           "whether to use the PLT when calling into shared libraries;
           only has effect for PIC code on systems with ELF binaries
           (default: PLT is disabled if full relro is enabled)"),
+    merge_functions: Option<MergeFunctions> = (None, parse_merge_functions, [TRACKED],
+        "control the operation of the MergeFunctions LLVM pass, taking
+         the same values as the target option of the same name"),
 }
 
 pub fn default_lib_output() -> CrateType {
@@ -1537,7 +1549,7 @@ impl RustcOptGroup {
 // adds extra rustc-specific metadata to each option; such metadata
 // is exposed by .  The public
 // functions below ending with `_u` are the functions that return
-// *unstable* options, i.e. options that are only enabled when the
+// *unstable* options, i.e., options that are only enabled when the
 // user also passes the `-Z unstable-options` debugging flag.
 mod opt {
     // The `fn opt_u` etc below are written so that we can use them
@@ -1760,8 +1772,8 @@ pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> ast::CrateConfig {
         .into_iter()
         .map(|s| {
             let sess = parse::ParseSess::new(FilePathMapping::empty());
-            let mut parser =
-                parse::new_parser_from_source_str(&sess, FileName::CfgSpec, s.to_string());
+            let filename = FileName::cfg_spec_source_code(&s);
+            let mut parser = parse::new_parser_from_source_str(&sess, filename, s.to_string());
 
             macro_rules! error {($reason: expr) => {
                 early_error(ErrorOutputType::default(),
@@ -1974,17 +1986,17 @@ pub fn build_session_options_and_crate_config(
         }
     }
 
-    if debugging_opts.query_threads == Some(0) {
+    if debugging_opts.threads == Some(0) {
         early_error(
             error_format,
-            "Value for query threads must be a positive nonzero integer",
+            "Value for threads must be a positive nonzero integer",
         );
     }
 
-    if debugging_opts.query_threads.unwrap_or(1) > 1 && debugging_opts.fuel.is_some() {
+    if debugging_opts.threads.unwrap_or(1) > 1 && debugging_opts.fuel.is_some() {
         early_error(
             error_format,
-            "Optimization fuel is incompatible with multiple query threads",
+            "Optimization fuel is incompatible with multiple threads",
         );
     }
 
@@ -2114,9 +2126,9 @@ pub fn build_session_options_and_crate_config(
         }
     };
 
-    let mut search_paths = SearchPaths::new();
+    let mut search_paths = vec![];
     for s in &matches.opt_strs("L") {
-        search_paths.add_path(&s[..], error_format);
+        search_paths.push(SearchPath::from_cli_opt(&s[..], error_format));
     }
 
     let libs = matches
@@ -2385,7 +2397,7 @@ impl fmt::Display for CrateType {
 /// tracking are hashed into a single value that determines whether the
 /// incremental compilation cache can be re-used or not. This hashing is done
 /// via the DepTrackingHash trait defined below, since the standard Hash
-/// implementation might not be suitable (e.g. arguments are stored in a Vec,
+/// implementation might not be suitable (e.g., arguments are stored in a Vec,
 /// the hash of which is order dependent, but we might not want the order of
 /// arguments to make a difference for the hash).
 ///
@@ -2405,7 +2417,7 @@ mod dep_tracking {
     use super::{CrateType, DebugInfo, ErrorOutputType, OptLevel, OutputTypes,
                 Passes, Sanitizer, LtoCli, CrossLangLto};
     use syntax::feature_gate::UnstableFeatures;
-    use rustc_target::spec::{PanicStrategy, RelroLevel, TargetTriple};
+    use rustc_target::spec::{MergeFunctions, PanicStrategy, RelroLevel, TargetTriple};
     use syntax::edition::Edition;
 
     pub trait DepTrackingHash {
@@ -2448,12 +2460,14 @@ mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(Option<usize>);
     impl_dep_tracking_hash_via_hash!(Option<String>);
     impl_dep_tracking_hash_via_hash!(Option<(String, u64)>);
+    impl_dep_tracking_hash_via_hash!(Option<MergeFunctions>);
     impl_dep_tracking_hash_via_hash!(Option<PanicStrategy>);
     impl_dep_tracking_hash_via_hash!(Option<RelroLevel>);
     impl_dep_tracking_hash_via_hash!(Option<lint::Level>);
     impl_dep_tracking_hash_via_hash!(Option<PathBuf>);
     impl_dep_tracking_hash_via_hash!(Option<cstore::NativeLibraryKind>);
     impl_dep_tracking_hash_via_hash!(CrateType);
+    impl_dep_tracking_hash_via_hash!(MergeFunctions);
     impl_dep_tracking_hash_via_hash!(PanicStrategy);
     impl_dep_tracking_hash_via_hash!(RelroLevel);
     impl_dep_tracking_hash_via_hash!(Passes);
@@ -2534,11 +2548,12 @@ mod tests {
     use session::config::{build_configuration, build_session_options_and_crate_config};
     use session::config::{LtoCli, CrossLangLto};
     use session::build_session;
+    use session::search_paths::SearchPath;
     use std::collections::{BTreeMap, BTreeSet};
     use std::iter::FromIterator;
     use std::path::PathBuf;
     use super::{Externs, OutputType, OutputTypes};
-    use rustc_target::spec::{PanicStrategy, RelroLevel};
+    use rustc_target::spec::{MergeFunctions, PanicStrategy, RelroLevel};
     use syntax::symbol::Symbol;
     use syntax::edition::{Edition, DEFAULT_EDITION};
     use syntax;
@@ -2789,48 +2804,48 @@ mod tests {
 
         // Reference
         v1.search_paths
-            .add_path("native=abc", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
         v1.search_paths
-            .add_path("crate=def", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
         v1.search_paths
-            .add_path("dependency=ghi", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
         v1.search_paths
-            .add_path("framework=jkl", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
         v1.search_paths
-            .add_path("all=mno", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
 
         v2.search_paths
-            .add_path("native=abc", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
         v2.search_paths
-            .add_path("dependency=ghi", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
         v2.search_paths
-            .add_path("crate=def", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
         v2.search_paths
-            .add_path("framework=jkl", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
         v2.search_paths
-            .add_path("all=mno", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
 
         v3.search_paths
-            .add_path("crate=def", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
         v3.search_paths
-            .add_path("framework=jkl", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
         v3.search_paths
-            .add_path("native=abc", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
         v3.search_paths
-            .add_path("dependency=ghi", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
         v3.search_paths
-            .add_path("all=mno", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
 
         v4.search_paths
-            .add_path("all=mno", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("all=mno", super::ErrorOutputType::Json(false)));
         v4.search_paths
-            .add_path("native=abc", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("native=abc", super::ErrorOutputType::Json(false)));
         v4.search_paths
-            .add_path("crate=def", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("crate=def", super::ErrorOutputType::Json(false)));
         v4.search_paths
-            .add_path("dependency=ghi", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("dependency=ghi", super::ErrorOutputType::Json(false)));
         v4.search_paths
-            .add_path("framework=jkl", super::ErrorOutputType::Json(false));
+            .push(SearchPath::from_cli_opt("framework=jkl", super::ErrorOutputType::Json(false)));
 
         assert!(v1.dep_tracking_hash() == v2.dep_tracking_hash());
         assert!(v1.dep_tracking_hash() == v3.dep_tracking_hash());
@@ -3192,6 +3207,10 @@ mod tests {
 
         opts = reference.clone();
         opts.debugging_opts.cross_lang_lto = CrossLangLto::LinkerPluginAuto;
+        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
+
+        opts = reference.clone();
+        opts.debugging_opts.merge_functions = Some(MergeFunctions::Disabled);
         assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
     }
 

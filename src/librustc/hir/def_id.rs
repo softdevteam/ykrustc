@@ -1,14 +1,5 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use ty;
+use ty::TyCtxt;
 use hir::map::definitions::FIRST_FREE_HIGH_DEF_INDEX;
 use rustc_data_structures::indexed_vec::Idx;
 use serialize;
@@ -27,8 +18,6 @@ pub enum CrateNum {
     // FIXME(jseyfried): this is also used for custom derives until proc-macro crates get
     // `CrateNum`s.
     BuiltinMacros,
-    /// A CrateNum value that indicates that something is wrong.
-    Invalid,
     /// A special CrateNum that we use for the tcx.rcache when decoding from
     /// the incr. comp. cache.
     ReservedForIncrCompCache,
@@ -39,7 +28,6 @@ impl ::std::fmt::Debug for CrateNum {
     fn fmt(&self, fmt: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         match self {
             CrateNum::Index(id) => write!(fmt, "crate{}", id.private),
-            CrateNum::Invalid => write!(fmt, "invalid crate"),
             CrateNum::BuiltinMacros => write!(fmt, "builtin macros crate"),
             CrateNum::ReservedForIncrCompCache => write!(fmt, "crate for decoding incr comp cache"),
         }
@@ -100,7 +88,6 @@ impl fmt::Display for CrateNum {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CrateNum::Index(id) => fmt::Display::fmt(&id.private, f),
-            CrateNum::Invalid => write!(f, "invalid crate"),
             CrateNum::BuiltinMacros => write!(f, "builtin macros crate"),
             CrateNum::ReservedForIncrCompCache => write!(f, "crate for decoding incr comp cache"),
         }
@@ -256,6 +243,14 @@ impl DefId {
     #[inline]
     pub fn to_local(self) -> LocalDefId {
         LocalDefId::from_def_id(self)
+    }
+
+    pub fn describe_as_module(&self, tcx: TyCtxt<'_, '_, '_>) -> String {
+        if self.is_local() && self.index == CRATE_DEF_INDEX {
+            format!("top-level module")
+        } else {
+            format!("module `{}`", tcx.item_path_str(*self))
+        }
     }
 }
 

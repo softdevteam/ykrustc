@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Propagates constants for early reporting of statically known
 //! assertion failures
 
@@ -30,7 +20,8 @@ use rustc::ty::layout::{
 
 use interpret::{self, EvalContext, ScalarMaybeUndef, Immediate, OpTy, MemoryKind};
 use const_eval::{
-    CompileTimeInterpreter, const_to_op, error_to_const_error, eval_promoted, mk_borrowck_eval_cx
+    CompileTimeInterpreter, error_to_const_error, eval_promoted, mk_eval_cx,
+    lazy_const_to_op,
 };
 use transform::{MirPass, MirSource};
 
@@ -47,10 +38,10 @@ impl MirPass for ConstProp {
         }
 
         use rustc::hir::map::blocks::FnLikeNode;
-        let node_id = tcx.hir.as_local_node_id(source.def_id)
+        let node_id = tcx.hir().as_local_node_id(source.def_id)
                              .expect("Non-local call to local provider is_const_fn");
 
-        let is_fn_like = FnLikeNode::from_node(tcx.hir.get(node_id)).is_some();
+        let is_fn_like = FnLikeNode::from_node(tcx.hir().get(node_id)).is_some();
         let is_assoc_const = match tcx.describe_def(source.def_id) {
             Some(Def::AssociatedConst(_)) => true,
             _ => false,
@@ -119,9 +110,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         source: MirSource,
     ) -> ConstPropagator<'a, 'mir, 'tcx> {
         let param_env = tcx.param_env(source.def_id);
-        let substs = Substs::identity_for_item(tcx, source.def_id);
-        let instance = Instance::new(source.def_id, substs);
-        let ecx = mk_borrowck_eval_cx(tcx, instance, mir, DUMMY_SP).unwrap();
+        let ecx = mk_eval_cx(tcx, tcx.def_span(source.def_id), param_env);
         ConstPropagator {
             ecx,
             mir,
@@ -199,6 +188,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                     | CalledClosureAsFunction
                     | VtableForArgumentlessMethod
                     | ModifiedConstantMemory
+                    | ModifiedStatic
                     | AssumptionNotHeld
                     // FIXME: should probably be removed and turned into a bug! call
                     | TypeNotPrimitive(_)
@@ -264,7 +254,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         source_info: SourceInfo,
     ) -> Option<Const<'tcx>> {
         self.ecx.tcx.span = source_info.span;
-        match const_to_op(&self.ecx, c.literal) {
+        match lazy_const_to_op(&self.ecx, *c.literal, c.ty) {
             Ok(op) => {
                 Some((op, c.span))
             },
@@ -288,7 +278,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                     })?;
                     Some((res, span))
                 },
-                // We could get more projections by using e.g. `operand_projection`,
+                // We could get more projections by using e.g., `operand_projection`,
                 // but we do not even have the stack frame set up properly so
                 // an `Index` projection would throw us off-track.
                 _ => None,
@@ -345,7 +335,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
             Rvalue::Cast(kind, ref operand, _) => {
                 let (op, span) = self.eval_operand(operand, source_info)?;
                 self.use_ecx(source_info, |this| {
-                    let dest = this.ecx.allocate(place_layout, MemoryKind::Stack)?;
+                    let dest = this.ecx.allocate(place_layout, MemoryKind::Stack);
                     this.ecx.cast(op, kind, dest.into())?;
                     Ok((dest.into(), span))
                 })
@@ -617,7 +607,7 @@ impl<'b, 'a, 'tcx> Visitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
                         .span;
                     let node_id = self
                         .tcx
-                        .hir
+                        .hir()
                         .as_local_node_id(self.source.def_id)
                         .expect("some part of a failing const eval must be local");
                     use rustc::mir::interpret::EvalErrorKind::*;

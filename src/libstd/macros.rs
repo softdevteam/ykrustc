@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Standard library macros
 //!
 //! This modules contains a set of macros which are exported from the standard
@@ -32,7 +22,7 @@
 ///
 /// [`Result`] enum is often a better solution for recovering from errors than
 /// using the `panic!` macro.  This macro should be used to avoid proceeding using
-/// incorrect values, such as from external sources.  Detailed information about
+/// incorrect values, such as from external sources. Detailed information about
 /// error handling is found in the [book].
 ///
 /// The multi-argument form of this macro panics with a string and has the
@@ -45,7 +35,7 @@
 /// [`Result`]: ../std/result/enum.Result.html
 /// [`format!`]: ../std/macro.format.html
 /// [`compile_error!`]: ../std/macro.compile_error.html
-/// [book]: ../book/second-edition/ch09-01-unrecoverable-errors-with-panic.html
+/// [book]: ../book/ch09-00-error-handling.html
 ///
 /// # Current implementation
 ///
@@ -224,11 +214,9 @@ macro_rules! eprintln {
 /// the value of a given expression. An example:
 ///
 /// ```rust
-/// #![feature(dbg_macro)]
-///
 /// let a = 2;
 /// let b = dbg!(a * 2) + 1;
-/// //      ^-- prints: [src/main.rs:4] a * 2 = 4
+/// //      ^-- prints: [src/main.rs:2] a * 2 = 4
 /// assert_eq!(b, 5);
 /// ```
 ///
@@ -262,8 +250,6 @@ macro_rules! eprintln {
 /// With a method call:
 ///
 /// ```rust
-/// #![feature(dbg_macro)]
-///
 /// fn foo(n: usize) {
 ///     if let Some(_) = dbg!(n.checked_sub(4)) {
 ///         // ...
@@ -282,8 +268,6 @@ macro_rules! eprintln {
 /// Naive factorial implementation:
 ///
 /// ```rust
-/// #![feature(dbg_macro)]
-///
 /// fn factorial(n: u32) -> u32 {
 ///     if dbg!(n <= 1) {
 ///         dbg!(1)
@@ -312,8 +296,6 @@ macro_rules! eprintln {
 /// The `dbg!(..)` macro moves the input:
 ///
 /// ```compile_fail
-/// #![feature(dbg_macro)]
-///
 /// /// A wrapper around `usize` which importantly is not Copyable.
 /// #[derive(Debug)]
 /// struct NoCopy(usize);
@@ -325,7 +307,7 @@ macro_rules! eprintln {
 ///
 /// [stderr]: https://en.wikipedia.org/wiki/Standard_streams#Standard_error_(stderr)
 #[macro_export]
-#[unstable(feature = "dbg_macro", issue = "54306")]
+#[stable(feature = "dbg_macro", since = "1.32.0")]
 macro_rules! dbg {
     ($val:expr) => {
         // Use of `match` here is intentional because it affects the lifetimes
@@ -340,6 +322,7 @@ macro_rules! dbg {
     }
 }
 
+/// A macro to await on an async call.
 #[macro_export]
 #[unstable(feature = "await_macro", issue = "50547")]
 #[allow_internal_unstable]
@@ -839,8 +822,8 @@ mod builtin {
     /// boolean expression evaluation of configuration flags. This frequently
     /// leads to less duplicated code.
     ///
-    /// The syntax given to this macro is the same syntax as [the `cfg`
-    /// attribute](../book/first-edition/conditional-compilation.html).
+    /// The syntax given to this macro is the same syntax as the `cfg`
+    /// attribute.
     ///
     /// # Examples
     ///
@@ -915,7 +898,7 @@ mod builtin {
     /// Unsafe code relies on `assert!` to enforce run-time invariants that, if
     /// violated could lead to unsafety.
     ///
-    /// Other use-cases of `assert!` include [testing] and enforcing run-time
+    /// Other use-cases of `assert!` include testing and enforcing run-time
     /// invariants in safe code (whose violation cannot result in unsafety).
     ///
     /// # Custom Messages
@@ -926,7 +909,6 @@ mod builtin {
     ///
     /// [`panic!`]: macro.panic.html
     /// [`debug_assert!`]: macro.debug_assert.html
-    /// [testing]: ../book/second-edition/ch11-01-writing-tests.html#checking-results-with-the-assert-macro
     /// [`std::fmt`]: ../std/fmt/index.html
     ///
     /// # Examples

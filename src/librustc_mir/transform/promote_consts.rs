@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A pass that promotes borrows of constant rvalues.
 //!
 //! The rvalues considered constant are trees of temps,
@@ -123,7 +113,7 @@ impl<'tcx> Visitor<'tcx> for TempCollector<'tcx> {
             }
         } else if let TempState::Defined { ref mut uses, .. } = *temp {
             // We always allow borrows, even mutable ones, as we need
-            // to promote mutable borrows of some ZSTs e.g. `&mut []`.
+            // to promote mutable borrows of some ZSTs e.g., `&mut []`.
             let allowed_use = context.is_borrow() || context.is_nonmutating_use();
             debug!("visit_local: allowed_use={:?}", allowed_use);
             if allowed_use {
@@ -410,9 +400,11 @@ pub fn promote_candidates<'a, 'tcx>(mir: &mut Mir<'tcx>,
                 IndexVec::new(),
                 None,
                 initial_locals,
+                IndexVec::new(),
                 0,
                 vec![],
-                mir.span
+                mir.span,
+                vec![],
             ),
             tcx,
             source: mir,

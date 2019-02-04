@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::nll::type_check;
 use build;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
@@ -36,7 +26,7 @@ pub mod elaborate_drops;
 pub mod add_call_guards;
 pub mod promote_consts;
 pub mod qualify_consts;
-mod qualify_min_const_fn;
+pub mod qualify_min_const_fn;
 pub mod remove_noop_landing_pads;
 pub mod dump_mir;
 pub mod deaggregator;
@@ -92,7 +82,7 @@ fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
                               _: ast::NodeId,
                               _: Span) {
             if let hir::VariantData::Tuple(_, node_id) = *v {
-                self.set.insert(self.tcx.hir.local_def_id(node_id));
+                self.set.insert(self.tcx.hir().local_def_id(node_id));
             }
             intravisit::walk_struct_def(self, v)
         }
@@ -100,7 +90,7 @@ fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
             NestedVisitorMap::None
         }
     }
-    tcx.hir.krate().visit_all_item_likes(&mut GatherCtors {
+    tcx.hir().krate().visit_all_item_likes(&mut GatherCtors {
         tcx,
         set: &mut set,
     }.as_deep_visitor());
@@ -210,9 +200,6 @@ fn mir_const<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Stea
 
     let mut mir = tcx.mir_built(def_id).steal();
     run_passes(tcx, &mut mir, def_id, MirPhase::Const, &[
-        // Remove all `EndRegion` statements that are not involved in borrows.
-        &cleanup_post_borrowck::CleanEndRegions,
-
         // What we need to do constant evaluation.
         &simplify::SimplifyCfg::new("initial"),
         &type_check::TypeckMir,
@@ -223,8 +210,8 @@ fn mir_const<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Stea
 }
 
 fn mir_validated<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Steal<Mir<'tcx>> {
-    let node_id = tcx.hir.as_local_node_id(def_id).unwrap();
-    if let hir::BodyOwnerKind::Const = tcx.hir.body_owner_kind(node_id) {
+    let node_id = tcx.hir().as_local_node_id(def_id).unwrap();
+    if let hir::BodyOwnerKind::Const = tcx.hir().body_owner_kind(node_id) {
         // Ensure that we compute the `mir_const_qualif` for constants at
         // this point, before we steal the mir-const result.
         let _ = tcx.mir_const_qualif(def_id);

@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow::Borrow;
 use fmt;
 use hash::{Hash, BuildHasher};
@@ -189,7 +179,7 @@ impl<T, S> HashSet<T, S>
         HashSet { map: HashMap::with_hasher(hasher) }
     }
 
-    /// Creates an empty `HashSet` with with the specified capacity, using
+    /// Creates an empty `HashSet` with the specified capacity, using
     /// `hasher` to hash the keys.
     ///
     /// The hash set will be able to hold at least `capacity` elements without
@@ -315,7 +305,7 @@ impl<T, S> HashSet<T, S>
     /// assert!(set.capacity() >= 2);
     /// ```
     #[inline]
-    #[unstable(feature = "shrink_to", reason = "new API", issue="0")]
+    #[unstable(feature = "shrink_to", reason = "new API", issue="56431")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         self.map.shrink_to(min_capacity)
     }
@@ -342,7 +332,7 @@ impl<T, S> HashSet<T, S>
     }
 
     /// Visits the values representing the difference,
-    /// i.e. the values that are in `self` but not in `other`.
+    /// i.e., the values that are in `self` but not in `other`.
     ///
     /// # Examples
     ///
@@ -373,7 +363,7 @@ impl<T, S> HashSet<T, S>
     }
 
     /// Visits the values representing the symmetric difference,
-    /// i.e. the values that are in `self` or in `other` but not in both.
+    /// i.e., the values that are in `self` or in `other` but not in both.
     ///
     /// # Examples
     ///
@@ -401,7 +391,7 @@ impl<T, S> HashSet<T, S>
     }
 
     /// Visits the values representing the intersection,
-    /// i.e. the values that are both in `self` and `other`.
+    /// i.e., the values that are both in `self` and `other`.
     ///
     /// # Examples
     ///
@@ -420,14 +410,21 @@ impl<T, S> HashSet<T, S>
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn intersection<'a>(&'a self, other: &'a HashSet<T, S>) -> Intersection<'a, T, S> {
-        Intersection {
-            iter: self.iter(),
-            other,
+        if self.len() <= other.len() {
+            Intersection {
+                iter: self.iter(),
+                other,
+            }
+        } else {
+            Intersection {
+                iter: other.iter(),
+                other: self,
+            }
         }
     }
 
     /// Visits the values representing the union,
-    /// i.e. all the values in `self` or `other`, without duplicates.
+    /// i.e., all the values in `self` or `other`, without duplicates.
     ///
     /// # Examples
     ///
@@ -446,7 +443,15 @@ impl<T, S> HashSet<T, S>
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn union<'a>(&'a self, other: &'a HashSet<T, S>) -> Union<'a, T, S> {
-        Union { iter: self.iter().chain(other.difference(self)) }
+        if self.len() <= other.len() {
+            Union {
+                iter: self.iter().chain(other.difference(self)),
+            }
+        } else {
+            Union {
+                iter: other.iter().chain(self.difference(other)),
+            }
+        }
     }
 
     /// Returns the number of elements in the set.
@@ -594,11 +599,15 @@ impl<T, S> HashSet<T, S>
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_disjoint(&self, other: &HashSet<T, S>) -> bool {
-        self.iter().all(|v| !other.contains(v))
+        if self.len() <= other.len() {
+            self.iter().all(|v| !other.contains(v))
+        } else {
+            other.iter().all(|v| !self.contains(v))
+        }
     }
 
     /// Returns `true` if the set is a subset of another,
-    /// i.e. `other` contains at least all the values in `self`.
+    /// i.e., `other` contains at least all the values in `self`.
     ///
     /// # Examples
     ///
@@ -620,7 +629,7 @@ impl<T, S> HashSet<T, S>
     }
 
     /// Returns `true` if the set is a superset of another,
-    /// i.e. `self` contains at least all the values in `other`.
+    /// i.e., `self` contains at least all the values in `other`.
     ///
     /// # Examples
     ///
@@ -1504,6 +1513,7 @@ mod test_set {
     fn test_intersection() {
         let mut a = HashSet::new();
         let mut b = HashSet::new();
+        assert!(a.intersection(&b).next().is_none());
 
         assert!(a.insert(11));
         assert!(a.insert(1));
@@ -1524,6 +1534,22 @@ mod test_set {
         let mut i = 0;
         let expected = [3, 5, 11, 77];
         for x in a.intersection(&b) {
+            assert!(expected.contains(x));
+            i += 1
+        }
+        assert_eq!(i, expected.len());
+
+        assert!(a.insert(9)); // make a bigger than b
+
+        i = 0;
+        for x in a.intersection(&b) {
+            assert!(expected.contains(x));
+            i += 1
+        }
+        assert_eq!(i, expected.len());
+
+        i = 0;
+        for x in b.intersection(&a) {
             assert!(expected.contains(x));
             i += 1
         }
@@ -1583,11 +1609,11 @@ mod test_set {
     fn test_union() {
         let mut a = HashSet::new();
         let mut b = HashSet::new();
+        assert!(a.union(&b).next().is_none());
+        assert!(b.union(&a).next().is_none());
 
         assert!(a.insert(1));
         assert!(a.insert(3));
-        assert!(a.insert(5));
-        assert!(a.insert(9));
         assert!(a.insert(11));
         assert!(a.insert(16));
         assert!(a.insert(19));
@@ -1603,6 +1629,23 @@ mod test_set {
         let mut i = 0;
         let expected = [-2, 1, 3, 5, 9, 11, 13, 16, 19, 24];
         for x in a.union(&b) {
+            assert!(expected.contains(x));
+            i += 1
+        }
+        assert_eq!(i, expected.len());
+
+        assert!(a.insert(9)); // make a bigger than b
+        assert!(a.insert(5));
+
+        i = 0;
+        for x in a.union(&b) {
+            assert!(expected.contains(x));
+            i += 1
+        }
+        assert_eq!(i, expected.len());
+
+        i = 0;
+        for x in b.union(&a) {
             assert!(expected.contains(x));
             i += 1
         }

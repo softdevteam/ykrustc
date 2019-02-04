@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Tidy check to verify the validity of long error diagnostic codes.
 //!
 //! This ensures that error codes are used at most once and also prints out some
@@ -32,11 +22,13 @@ pub fn check(path: &Path, bad: &mut bool) {
         contents.truncate(0);
         t!(t!(File::open(file)).read_to_string(&mut contents));
 
-        // In the register_long_diagnostics! macro, entries look like this:
+        // In the `register_long_diagnostics!` macro, entries look like this:
         //
+        // ```
         // EXXXX: r##"
         // <Long diagnostic message>
         // "##,
+        // ```
         //
         // and these long messages often have error codes themselves inside
         // them, but we don't want to report duplicates in these cases. This

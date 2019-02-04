@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // run-pass
 
 // aux-build:custom.rs
@@ -20,10 +10,10 @@ extern crate custom;
 extern crate helper;
 
 use std::alloc::{Global, Alloc, System, Layout};
-use std::sync::atomic::{Ordering, ATOMIC_USIZE_INIT};
+use std::sync::atomic::{Ordering, AtomicUsize};
 
 #[global_allocator]
-static GLOBAL: custom::A = custom::A(ATOMIC_USIZE_INIT);
+static GLOBAL: custom::A = custom::A(AtomicUsize::new(0));
 
 fn main() {
     unsafe {

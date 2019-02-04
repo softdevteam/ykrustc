@@ -1,18 +1,9 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! See docs in build/expr/mod.rs
 
 use build::Builder;
 use hair::*;
 use rustc::mir::*;
+use rustc::ty::CanonicalUserTypeAnnotation;
 
 impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     /// Compile `expr`, yielding a compile-time constant. Assumes that
@@ -39,11 +30,20 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 lint_level: _,
                 value,
             } => this.as_constant(value),
-            ExprKind::Literal { literal, user_ty } => Constant {
-                span,
-                ty,
-                user_ty,
-                literal,
+            ExprKind::Literal { literal, user_ty } => {
+                let user_ty = user_ty.map(|user_ty| {
+                    this.canonical_user_type_annotations.push(CanonicalUserTypeAnnotation {
+                        span,
+                        user_ty,
+                        inferred_ty: ty,
+                    })
+                });
+                Constant {
+                    span,
+                    ty,
+                    user_ty,
+                    literal,
+                }
             },
             _ => span_bug!(span, "expression is not a valid constant {:?}", kind),
         }

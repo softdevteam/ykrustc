@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use rustc::hir;
 use rustc::middle::cstore::{self, NativeLibrary};
@@ -25,7 +15,7 @@ pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Vec<NativeLibrary> {
         tcx,
         libs: Vec::new(),
     };
-    tcx.hir.krate().visit_all_item_likes(&mut collector);
+    tcx.hir().krate().visit_all_item_likes(&mut collector);
     collector.process_command_line();
     return collector.libs
 }
@@ -65,7 +55,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
                 name: None,
                 kind: cstore::NativeUnknown,
                 cfg: None,
-                foreign_module: Some(self.tcx.hir.local_def_id(it.id)),
+                foreign_module: Some(self.tcx.hir().local_def_id(it.id)),
                 wasm_import_module: None,
             };
             let mut kind_specified = false;
@@ -173,7 +163,7 @@ impl<'a, 'tcx> Collector<'a, 'tcx> {
            !self.tcx.features().static_nobundle {
             feature_gate::emit_feature_err(&self.tcx.sess.parse_sess,
                                            "static_nobundle",
-                                           span.unwrap(),
+                                           span.unwrap_or_else(|| syntax_pos::DUMMY_SP),
                                            GateIssue::Language,
                                            "kind=\"static-nobundle\" is feature gated");
         }

@@ -1,16 +1,4 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use Span;
-
-use rustc_errors as errors;
 
 /// An enum representing a diagnostic level.
 #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
@@ -180,22 +168,22 @@ impl Diagnostic {
     /// Emit the diagnostic.
     #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
     pub fn emit(self) {
-        fn to_internal(spans: Vec<Span>) -> ::syntax_pos::MultiSpan {
-            let spans: Vec<_> = spans.into_iter().map(|s| s.0).collect();
-            ::syntax_pos::MultiSpan::from_spans(spans)
+        fn to_internal(spans: Vec<Span>) -> ::bridge::client::MultiSpan {
+            let mut multi_span = ::bridge::client::MultiSpan::new();
+            for span in spans {
+                multi_span.push(span.0);
+            }
+            multi_span
         }
 
-        let level = self.level.to_internal();
-        let mut diag = errors::Diagnostic::new(level, &*self.message);
-        diag.set_span(to_internal(self.spans));
-
-        for child in self.children {
-            let level = child.level.to_internal();
-            diag.sub(level, &*child.message, to_internal(child.spans), None);
+        let mut diag = ::bridge::client::Diagnostic::new(
+            self.level,
+            &self.message[..],
+            to_internal(self.spans),
+        );
+        for c in self.children {
+            diag.sub(c.level, &c.message[..], to_internal(c.spans));
         }
-
-        ::__internal::with_sess(move |sess, _| {
-            errors::DiagnosticBuilder::new_diagnostic(&sess.span_diagnostic, diag).emit();
-        });
+        diag.emit();
     }
 }

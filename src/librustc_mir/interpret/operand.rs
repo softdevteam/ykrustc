@@ -1,25 +1,15 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Functions concerning immediate values and operands, and reading from operands.
 //! All high-level functions to read from memory work on operands as sources.
 
 use std::convert::TryInto;
 
-use rustc::mir;
+use rustc::{mir, ty};
 use rustc::ty::layout::{self, Size, LayoutOf, TyLayout, HasDataLayout, IntegerExt, VariantIdx};
 
 use rustc::mir::interpret::{
-    GlobalId, AllocId,
+    GlobalId, AllocId, InboundsCheck,
     ConstValue, Pointer, Scalar,
-    EvalResult, EvalErrorKind, InboundsCheck,
+    EvalResult, EvalErrorKind,
 };
 use super::{EvalContext, Machine, MemPlace, MPlaceTy, MemoryKind};
 pub use rustc::mir::interpret::ScalarMaybeUndef;
@@ -237,7 +227,7 @@ impl<'tcx, Tag> OpTy<'tcx, Tag>
 // Use the existing layout if given (but sanity check in debug mode),
 // or compute the layout.
 #[inline(always)]
-fn from_known_layout<'tcx>(
+pub(super) fn from_known_layout<'tcx>(
     layout: Option<TyLayout<'tcx>>,
     compute: impl FnOnce() -> EvalResult<'tcx, TyLayout<'tcx>>
 ) -> EvalResult<'tcx, TyLayout<'tcx>> {
@@ -275,21 +265,31 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             return Ok(Some(Immediate::Scalar(Scalar::zst().into())));
         }
 
+        // check for integer pointers before alignment to report better errors
         let ptr = ptr.to_ptr()?;
+        self.memory.check_align(ptr.into(), ptr_align)?;
         match mplace.layout.abi {
             layout::Abi::Scalar(..) => {
-                let scalar = self.memory.read_scalar(ptr, ptr_align, mplace.layout.size)?;
+                let scalar = self.memory
+                    .get(ptr.alloc_id)?
+                    .read_scalar(self, ptr, mplace.layout.size)?;
                 Ok(Some(Immediate::Scalar(scalar)))
             }
             layout::Abi::ScalarPair(ref a, ref b) => {
                 let (a, b) = (&a.value, &b.value);
                 let (a_size, b_size) = (a.size(self), b.size(self));
                 let a_ptr = ptr;
-                let b_offset = a_size.abi_align(b.align(self));
+                let b_offset = a_size.align_to(b.align(self).abi);
                 assert!(b_offset.bytes() > 0); // we later use the offset to test which field to use
-                let b_ptr = ptr.offset(b_offset, self)?.into();
-                let a_val = self.memory.read_scalar(a_ptr, ptr_align, a_size)?;
-                let b_val = self.memory.read_scalar(b_ptr, ptr_align, b_size)?;
+                let b_ptr = ptr.offset(b_offset, self)?;
+                let a_val = self.memory
+                    .get(ptr.alloc_id)?
+                    .read_scalar(self, a_ptr, a_size)?;
+                let b_align = ptr_align.restrict_for_offset(b_offset);
+                self.memory.check_align(b_ptr.into(), b_align)?;
+                let b_val = self.memory
+                    .get(ptr.alloc_id)?
+                    .read_scalar(self, b_ptr, b_size)?;
                 Ok(Some(Immediate::ScalarPair(a_val, b_val)))
             }
             _ => Ok(None),
@@ -372,7 +372,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             _ => {
                 trace!("Forcing allocation for local of type {:?}", layout.ty);
                 Operand::Indirect(
-                    *self.allocate(layout, MemoryKind::Stack)?
+                    *self.allocate(layout, MemoryKind::Stack)
                 )
             }
         })
@@ -457,24 +457,20 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     }
 
     /// This is used by [priroda](https://github.com/oli-obk/priroda) to get an OpTy from a local
-    ///
-    /// When you know the layout of the local in advance, you can pass it as last argument
     pub fn access_local(
         &self,
-        frame: &super::Frame<'mir, 'tcx, M::PointerTag>,
+        frame: &super::Frame<'mir, 'tcx, M::PointerTag, M::FrameExtra>,
         local: mir::Local,
         layout: Option<TyLayout<'tcx>>,
     ) -> EvalResult<'tcx, OpTy<'tcx, M::PointerTag>> {
         assert_ne!(local, mir::RETURN_PLACE);
         let op = *frame.locals[local].access()?;
-        let layout = from_known_layout(layout,
-                    || self.layout_of_local(frame, local))?;
+        let layout = self.layout_of_local(frame, local, layout)?;
         Ok(OpTy { op, layout })
     }
 
     // Evaluate a place with the goal of reading from it.  This lets us sometimes
-    // avoid allocations.  If you already know the layout, you can pass it in
-    // to avoid looking it up again.
+    // avoid allocations.
     fn eval_place_to_op(
         &self,
         mir_place: &mir::Place<'tcx>,
@@ -514,10 +510,10 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
 
             Constant(ref constant) => {
                 let layout = from_known_layout(layout, || {
-                    let ty = self.monomorphize(mir_op.ty(self.mir(), *self.tcx), self.substs());
+                    let ty = self.monomorphize(mir_op.ty(self.mir(), *self.tcx))?;
                     self.layout_of(ty)
                 })?;
-                let op = self.const_value_to_op(constant.literal.val)?;
+                let op = self.const_value_to_op(*constant.literal)?;
                 OpTy { op, layout }
             }
         };
@@ -540,17 +536,20 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     // `eval_operand`, ideally).
     pub(crate) fn const_value_to_op(
         &self,
-        val: ConstValue<'tcx>,
+        val: ty::LazyConst<'tcx>,
     ) -> EvalResult<'tcx, Operand<M::PointerTag>> {
         trace!("const_value_to_op: {:?}", val);
-        match val {
-            ConstValue::Unevaluated(def_id, substs) => {
+        let val = match val {
+            ty::LazyConst::Unevaluated(def_id, substs) => {
                 let instance = self.resolve(def_id, substs)?;
-                Ok(*OpTy::from(self.const_eval_raw(GlobalId {
+                return Ok(*OpTy::from(self.const_eval_raw(GlobalId {
                     instance,
                     promoted: None,
-                })?))
-            }
+                })?));
+            },
+            ty::LazyConst::Evaluated(c) => c,
+        };
+        match val.val {
             ConstValue::ByRef(id, alloc, offset) => {
                 // We rely on mutability being set correctly in that allocation to prevent writes
                 // where none should happen -- and for `static mut`, we copy on demand anyway.
@@ -558,10 +557,10 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     MemPlace::from_ptr(Pointer::new(id, offset), alloc.align)
                 ).with_default_tag())
             },
-            ConstValue::ScalarPair(a, b) =>
+            ConstValue::Slice(a, b) =>
                 Ok(Operand::Immediate(Immediate::ScalarPair(
                     a.into(),
-                    b.into(),
+                    Scalar::from_uint(b, self.tcx.data_layout.pointer_size).into(),
                 )).with_default_tag()),
             ConstValue::Scalar(x) =>
                 Ok(Operand::Immediate(Immediate::Scalar(x.into())).with_default_tag()),

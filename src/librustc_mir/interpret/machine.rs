@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains everything needed to instantiate an interpreter.
 //! This separation exists to ensure that no fancy miri features like
 //! interpreting common C functions leak into CTFE.
@@ -77,8 +67,16 @@ pub trait Machine<'a, 'mir, 'tcx>: Sized {
     /// The `default()` is used for pointers to consts, statics, vtables and functions.
     type PointerTag: ::std::fmt::Debug + Default + Copy + Eq + Hash + 'static;
 
+    /// Extra data stored in every call frame.
+    type FrameExtra;
+
+    /// Extra data stored in memory.  A reference to this is available when `AllocExtra`
+    /// gets initialized, so you can e.g., have an `Rc` here if there is global state you
+    /// need access to in the `AllocExtra` hooks.
+    type MemoryExtra: Default;
+
     /// Extra data stored in every allocation.
-    type AllocExtra: AllocationExtra<Self::PointerTag>;
+    type AllocExtra: AllocationExtra<Self::PointerTag, Self::MemoryExtra> + 'static;
 
     /// Memory's allocation map
     type MemoryMap:
@@ -89,7 +87,8 @@ pub trait Machine<'a, 'mir, 'tcx>: Sized {
         Default +
         Clone;
 
-    /// The memory kind to use for copied statics -- or None if those are not supported.
+    /// The memory kind to use for copied statics -- or None if statics should not be mutated
+    /// and thus any such attempt will cause a `ModifiedStatic` error to be raised.
     /// Statics are copied under two circumstances: When they are mutated, and when
     /// `static_with_default_tag` or `find_foreign_static` (see below) returns an owned allocation
     /// that is added to the memory so that the work is not done twice.
@@ -135,8 +134,9 @@ pub trait Machine<'a, 'mir, 'tcx>: Sized {
     /// the machine memory. (This relies on `AllocMap::get_or` being able to add the
     /// owned allocation to the map even when the map is shared.)
     fn find_foreign_static(
-        tcx: TyCtxtAt<'a, 'tcx, 'tcx>,
         def_id: DefId,
+        tcx: TyCtxtAt<'a, 'tcx, 'tcx>,
+        memory_extra: &Self::MemoryExtra,
     ) -> EvalResult<'tcx, Cow<'tcx, Allocation<Self::PointerTag, Self::AllocExtra>>>;
 
     /// Called to turn an allocation obtained from the `tcx` into one that has
@@ -146,9 +146,10 @@ pub trait Machine<'a, 'mir, 'tcx>: Sized {
     /// allocation (because a copy had to be done to add tags or metadata), machine memory will
     /// cache the result. (This relies on `AllocMap::get_or` being able to add the
     /// owned allocation to the map even when the map is shared.)
-    fn adjust_static_allocation(
-        alloc: &'_ Allocation
-    ) -> Cow<'_, Allocation<Self::PointerTag, Self::AllocExtra>>;
+    fn adjust_static_allocation<'b>(
+        alloc: &'b Allocation,
+        memory_extra: &Self::MemoryExtra,
+    ) -> Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>;
 
     /// Called for all binary operations on integer(-like) types when one operand is a pointer
     /// value, and for the `Offset` operation that is inherently about pointers.
@@ -174,7 +175,7 @@ pub trait Machine<'a, 'mir, 'tcx>: Sized {
         ecx: &mut EvalContext<'a, 'mir, 'tcx, Self>,
         ptr: Pointer,
         kind: MemoryKind<Self::MemoryKinds>,
-    ) -> EvalResult<'tcx, Pointer<Self::PointerTag>>;
+    ) -> Pointer<Self::PointerTag>;
 
     /// Executed when evaluating the `*` operator: Following a reference.
     /// This has the chance to adjust the tag.  It should not change anything else!
@@ -192,18 +193,20 @@ pub trait Machine<'a, 'mir, 'tcx>: Sized {
     #[inline]
     fn retag(
         _ecx: &mut EvalContext<'a, 'mir, 'tcx, Self>,
-        _fn_entry: bool,
+        _kind: mir::RetagKind,
         _place: PlaceTy<'tcx, Self::PointerTag>,
     ) -> EvalResult<'tcx> {
         Ok(())
     }
 
-    /// Execute an escape-to-raw operation
-    #[inline]
-    fn escape_to_raw(
-        _ecx: &mut EvalContext<'a, 'mir, 'tcx, Self>,
-        _ptr: OpTy<'tcx, Self::PointerTag>,
-    ) -> EvalResult<'tcx> {
-        Ok(())
-    }
+    /// Called immediately before a new stack frame got pushed
+    fn stack_push(
+        ecx: &mut EvalContext<'a, 'mir, 'tcx, Self>,
+    ) -> EvalResult<'tcx, Self::FrameExtra>;
+
+    /// Called immediately after a stack frame gets popped
+    fn stack_pop(
+        ecx: &mut EvalContext<'a, 'mir, 'tcx, Self>,
+        extra: Self::FrameExtra,
+    ) -> EvalResult<'tcx>;
 }

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::borrow_set::BorrowSet;
 use borrow_check::location::LocationTable;
 use borrow_check::nll::ToRegionVid;
@@ -17,7 +7,7 @@ use rustc::infer::InferCtxt;
 use rustc::mir::visit::TyContext;
 use rustc::mir::visit::Visitor;
 use rustc::mir::{BasicBlock, BasicBlockData, Location, Mir, Place, Rvalue};
-use rustc::mir::{Statement, Terminator};
+use rustc::mir::{SourceInfo, Statement, Terminator};
 use rustc::mir::UserTypeProjection;
 use rustc::ty::fold::TypeFoldable;
 use rustc::ty::subst::Substs;
@@ -76,11 +66,12 @@ impl<'cg, 'cx, 'gcx, 'tcx> Visitor<'tcx> for ConstraintGeneration<'cg, 'cx, 'gcx
     /// call. Make them live at the location where they appear.
     fn visit_ty(&mut self, ty: &ty::Ty<'tcx>, ty_context: TyContext) {
         match ty_context {
-            TyContext::ReturnTy(source_info)
-            | TyContext::YieldTy(source_info)
-            | TyContext::LocalDecl { source_info, .. } => {
+            TyContext::ReturnTy(SourceInfo { span, .. })
+            | TyContext::YieldTy(SourceInfo { span, .. })
+            | TyContext::UserTy(span)
+            | TyContext::LocalDecl { source_info: SourceInfo { span, .. }, .. } => {
                 span_bug!(
-                    source_info.span,
+                    span,
                     "should not be visiting outside of the CFG: {:?}",
                     ty_context
                 );

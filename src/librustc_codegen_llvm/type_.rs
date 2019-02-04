@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_upper_case_globals)]
 
 pub use llvm::Type;
@@ -30,12 +20,13 @@ use abi::{LlvmType, FnTypeExt};
 
 use std::fmt;
 use std::cell::RefCell;
+use std::ptr;
 
 use libc::c_uint;
 
 impl PartialEq for Type {
     fn eq(&self, other: &Self) -> bool {
-        self as *const _ == other as *const _
+        ptr::eq(self, other)
     }
 }
 
@@ -44,6 +35,22 @@ impl fmt::Debug for Type {
         f.write_str(&llvm::build_string(|s| unsafe {
             llvm::LLVMRustWriteTypeToString(self, s);
         }).expect("non-UTF8 type description from LLVM"))
+    }
+}
+
+impl CodegenCx<'ll, 'tcx> {
+    crate fn type_named_struct(&self, name: &str) -> &'ll Type {
+        let name = SmallCStr::new(name);
+        unsafe {
+            llvm::LLVMStructCreateNamed(self.llcx, name.as_ptr())
+        }
+    }
+
+    crate fn set_struct_body(&self, ty: &'ll Type, els: &[&'ll Type], packed: bool) {
+        unsafe {
+            llvm::LLVMStructSetBody(ty, els.as_ptr(),
+                                    els.len() as c_uint, packed as Bool)
+        }
     }
 }
 
@@ -160,13 +167,6 @@ impl BaseTypeMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         }
     }
 
-    fn type_named_struct(&self, name: &str) -> &'ll Type {
-        let name = SmallCStr::new(name);
-        unsafe {
-            llvm::LLVMStructCreateNamed(self.llcx, name.as_ptr())
-        }
-    }
-
 
     fn type_array(&self, ty: &'ll Type, len: u64) -> &'ll Type {
         unsafe {
@@ -183,13 +183,6 @@ impl BaseTypeMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     fn type_kind(&self, ty: &'ll Type) -> TypeKind {
         unsafe {
             llvm::LLVMRustGetTypeKind(ty).to_generic()
-        }
-    }
-
-    fn set_struct_body(&self, ty: &'ll Type, els: &[&'ll Type], packed: bool) {
-        unsafe {
-            llvm::LLVMStructSetBody(ty, els.as_ptr(),
-                                    els.len() as c_uint, packed as Bool)
         }
     }
 
@@ -253,7 +246,7 @@ impl Type {
         }
     }
 
-    // Creates an integer type with the given number of bits, e.g. i24
+    // Creates an integer type with the given number of bits, e.g., i24
     pub fn ix_llcx(
         llcx: &llvm::Context,
         num_bits: u64

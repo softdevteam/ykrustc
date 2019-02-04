@@ -1,6 +1,9 @@
 error[E0382]: use of moved value: `b`
-  --> $DIR/issue-27282-move-match-input-into-guard.rs:28:14
+  --> $DIR/issue-27282-move-match-input-into-guard.rs:18:14
    |
+LL |     let b = &mut true;
+   |         - move occurs because `b` has type `&mut bool`, which does not implement the `Copy` trait
+...
 LL |         _ if { (|| { let bar = b; *bar = false; })();
    |                 --             - variable moved due to use in closure
    |                 |

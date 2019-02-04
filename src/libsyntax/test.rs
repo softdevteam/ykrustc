@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Code that generates a test runner to run all the tests in a crate
 
 #![allow(dead_code)]
@@ -281,7 +271,7 @@ fn generate_test_harness(sess: &ParseSess,
         path: Vec::new(),
         test_cases: Vec::new(),
         reexport_test_harness_main,
-        // NB: doesn't consider the value of `--crate-name` passed on the command line.
+        // N.B., doesn't consider the value of `--crate-name` passed on the command line.
         is_libtest: attr::find_crate_name(&krate.attrs).map(|s| s == "test").unwrap_or(false),
         toplevel_reexport: None,
         ctxt: SyntaxContext::empty().apply_mark(mark),
@@ -438,14 +428,11 @@ fn is_test_case(i: &ast::Item) -> bool {
 
 fn get_test_runner(sd: &errors::Handler, krate: &ast::Crate) -> Option<ast::Path> {
     let test_attr = attr::find_by_name(&krate.attrs, "test_runner")?;
-    if let Some(meta_list) = test_attr.meta_item_list() {
+    test_attr.meta_item_list().map(|meta_list| {
         if meta_list.len() != 1 {
             sd.span_fatal(test_attr.span(),
                 "#![test_runner(..)] accepts exactly 1 argument").raise()
         }
-        Some(meta_list[0].word().as_ref().unwrap().ident.clone())
-    } else {
-        sd.span_fatal(test_attr.span(),
-            "test_runner must be of the form #[test_runner(..)]").raise()
-    }
+        meta_list[0].word().as_ref().unwrap().ident.clone()
+    })
 }

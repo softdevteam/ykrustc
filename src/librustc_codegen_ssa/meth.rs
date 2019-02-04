@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_target::abi::call::FnType;
 use callee;
 use rustc_mir::monomorphize;
@@ -39,10 +29,10 @@ impl<'a, 'tcx: 'a> VirtualIndex {
 
         let llvtable = bx.pointercast(
             llvtable,
-            bx.cx().type_ptr_to(bx.cx().fn_ptr_backend_type(fn_ty))
+            bx.type_ptr_to(bx.fn_ptr_backend_type(fn_ty))
         );
-        let ptr_align = bx.tcx().data_layout.pointer_align;
-        let gep = bx.inbounds_gep(llvtable, &[bx.cx().const_usize(self.0)]);
+        let ptr_align = bx.tcx().data_layout.pointer_align.abi;
+        let gep = bx.inbounds_gep(llvtable, &[bx.const_usize(self.0)]);
         let ptr = bx.load(gep, ptr_align);
         bx.nonnull_metadata(ptr);
         // Vtable loads are invariant
@@ -58,9 +48,9 @@ impl<'a, 'tcx: 'a> VirtualIndex {
         // Load the data pointer from the object.
         debug!("get_int({:?}, {:?})", llvtable, self);
 
-        let llvtable = bx.pointercast(llvtable, bx.cx().type_ptr_to(bx.cx().type_isize()));
-        let usize_align = bx.tcx().data_layout.pointer_align;
-        let gep = bx.inbounds_gep(llvtable, &[bx.cx().const_usize(self.0)]);
+        let llvtable = bx.pointercast(llvtable, bx.type_ptr_to(bx.type_isize()));
+        let usize_align = bx.tcx().data_layout.pointer_align.abi;
+        let gep = bx.inbounds_gep(llvtable, &[bx.const_usize(self.0)]);
         let ptr = bx.load(gep, usize_align);
         // Vtable loads are invariant
         bx.set_invariant_load(ptr);
@@ -74,12 +64,12 @@ impl<'a, 'tcx: 'a> VirtualIndex {
 /// The vtables are cached instead of created on every call.
 ///
 /// The `trait_ref` encodes the erased self type. Hence if we are
-/// making an object `Foo<Trait>` from a value of type `Foo<T>`, then
+/// making an object `Foo<dyn Trait>` from a value of type `Foo<T>`, then
 /// `trait_ref` would map `T:Trait`.
 pub fn get_vtable<'tcx, Cx: CodegenMethods<'tcx>>(
     cx: &Cx,
     ty: Ty<'tcx>,
-    trait_ref: ty::PolyExistentialTraitRef<'tcx>,
+    trait_ref: Option<ty::PolyExistentialTraitRef<'tcx>>,
 ) -> Cx::Value {
     let tcx = cx.tcx();
 
@@ -93,26 +83,33 @@ pub fn get_vtable<'tcx, Cx: CodegenMethods<'tcx>>(
     // Not in the cache. Build it.
     let nullptr = cx.const_null(cx.type_i8p());
 
-    let methods = tcx.vtable_methods(trait_ref.with_self_ty(tcx, ty));
-    let methods = methods.iter().cloned().map(|opt_mth| {
+    let methods_root;
+    let methods = if let Some(trait_ref) = trait_ref {
+        methods_root = tcx.vtable_methods(trait_ref.with_self_ty(tcx, ty));
+        methods_root.iter()
+    } else {
+        (&[]).iter()
+    };
+
+    let methods = methods.cloned().map(|opt_mth| {
         opt_mth.map_or(nullptr, |(def_id, substs)| {
             callee::resolve_and_get_fn_for_vtable(cx, def_id, substs)
         })
     });
 
-    let (size, align) = cx.layout_of(ty).size_and_align();
+    let layout = cx.layout_of(ty);
     // /////////////////////////////////////////////////////////////////////////////////////////////
     // If you touch this code, be sure to also make the corresponding changes to
     // `get_vtable` in rust_mir/interpret/traits.rs
     // /////////////////////////////////////////////////////////////////////////////////////////////
     let components: Vec<_> = [
         cx.get_fn(monomorphize::resolve_drop_in_place(cx.tcx(), ty)),
-        cx.const_usize(size.bytes()),
-        cx.const_usize(align.abi())
+        cx.const_usize(layout.size.bytes()),
+        cx.const_usize(layout.align.abi.bytes())
     ].iter().cloned().chain(methods).collect();
 
     let vtable_const = cx.const_struct(&components, false);
-    let align = cx.data_layout().pointer_align;
+    let align = cx.data_layout().pointer_align.abi;
     let vtable = cx.static_addr_of(vtable_const, align, Some("vtable"));
 
     cx.create_vtable_metadata(ty, vtable);

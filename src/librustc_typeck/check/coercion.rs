@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! # Type Coercion
 //!
 //! Under certain circumstances we will coerce from one type to another,
@@ -336,7 +326,7 @@ impl<'f, 'gcx, 'tcx> Coerce<'f, 'gcx, 'tcx> {
             //   the decision to region inference (and regionck, which will add
             //   some more edges to this variable). However, this can wind up
             //   creating a crippling number of variables in some cases --
-            //   e.g. #32278 -- so we optimize one particular case [3].
+            //   e.g., #32278 -- so we optimize one particular case [3].
             //   Let me try to explain with some examples:
             //   - The "running example" above represents the simple case,
             //     where we have one `&` reference at the outer level and
@@ -419,7 +409,7 @@ impl<'f, 'gcx, 'tcx> Coerce<'f, 'gcx, 'tcx> {
 
         let needs = Needs::maybe_mut_place(mt_b.mutbl);
         let InferOk { value: mut adjustments, obligations: o }
-            = autoderef.adjust_steps_as_infer_ok(needs);
+            = autoderef.adjust_steps_as_infer_ok(self, needs);
         obligations.extend(o);
         obligations.extend(autoderef.into_obligations());
 
@@ -579,7 +569,33 @@ impl<'f, 'gcx, 'tcx> Coerce<'f, 'gcx, 'tcx> {
             };
             match selcx.select(&obligation.with(trait_ref)) {
                 // Uncertain or unimplemented.
-                Ok(None) |
+                Ok(None) => {
+                    if trait_ref.def_id() == unsize_did {
+                        let trait_ref = self.resolve_type_vars_if_possible(&trait_ref);
+                        let self_ty = trait_ref.skip_binder().self_ty();
+                        let unsize_ty = trait_ref.skip_binder().input_types().nth(1).unwrap();
+                        debug!("coerce_unsized: ambiguous unsize case for {:?}", trait_ref);
+                        match (&self_ty.sty, &unsize_ty.sty) {
+                            (ty::Infer(ty::TyVar(v)),
+                             ty::Dynamic(..)) if self.type_var_is_sized(*v) => {
+                                debug!("coerce_unsized: have sized infer {:?}", v);
+                                coercion.obligations.push(obligation);
+                                // `$0: Unsize<dyn Trait>` where we know that `$0: Sized`, try going
+                                // for unsizing.
+                            }
+                            _ => {
+                                // Some other case for `$0: Unsize<Something>`. Note that we
+                                // hit this case even if `Something` is a sized type, so just
+                                // don't do the coercion.
+                                debug!("coerce_unsized: ambiguous unsize");
+                                return Err(TypeError::Mismatch);
+                            }
+                        }
+                    } else {
+                        debug!("coerce_unsized: early return - ambiguous");
+                        return Err(TypeError::Mismatch);
+                    }
+                }
                 Err(traits::Unimplemented) => {
                     debug!("coerce_unsized: early return - can't prove obligation");
                     return Err(TypeError::Mismatch);
@@ -696,7 +712,7 @@ impl<'f, 'gcx, 'tcx> Coerce<'f, 'gcx, 'tcx> {
 
         let b = self.shallow_resolve(b);
 
-        let node_id_a = self.tcx.hir.as_local_node_id(def_id_a).unwrap();
+        let node_id_a = self.tcx.hir().as_local_node_id(def_id_a).unwrap();
         match b.sty {
             ty::FnPtr(_) if self.tcx.with_freevars(node_id_a, |v| v.is_empty()) => {
                 // We coerce the closure, which has fn type
@@ -809,7 +825,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         // Special-case that coercion alone cannot handle:
         // Two function item types of differing IDs or Substs.
         if let (&ty::FnDef(..), &ty::FnDef(..)) = (&prev_ty.sty, &new_ty.sty) {
-            // Don't reify if the function types have a LUB, i.e. they
+            // Don't reify if the function types have a LUB, i.e., they
             // are the same function and their parameters have a LUB.
             let lub_ty = self.commit_if_ok(|_| {
                 self.at(cause, self.param_env)
@@ -1143,7 +1159,6 @@ impl<'gcx, 'tcx, 'exprs, E> CoerceMany<'gcx, 'tcx, 'exprs, E>
             // `expression_ty` will be unit).
             //
             // Another example is `break` with no argument expression.
-            assert!(expression_ty.is_unit());
             assert!(expression_ty.is_unit(), "if let hack without unit type");
             fcx.at(cause, fcx.param_env)
                .eq_exp(label_expression_as_expected, expression_ty, self.merged_ty())
@@ -1190,24 +1205,23 @@ impl<'gcx, 'tcx, 'exprs, E> CoerceMany<'gcx, 'tcx, 'exprs, E>
                         db = struct_span_err!(
                             fcx.tcx.sess, cause.span, E0069,
                             "`return;` in a function whose return type is not `()`");
-                        db.span_label(cause.span, "return type is not ()");
+                        db.span_label(cause.span, "return type is not `()`");
                     }
                     ObligationCauseCode::BlockTailExpression(blk_id) => {
-                        db = fcx.report_mismatched_types(cause, expected, found, err);
-
-                        let expr = expression.unwrap_or_else(|| {
-                            span_bug!(cause.span,
-                                      "supposed to be part of a block tail expression, but the \
-                                       expression is empty");
-                        });
-                        fcx.suggest_mismatched_types_on_tail(
-                            &mut db,
-                            expr,
+                        let parent_id = fcx.tcx.hir().get_parent_node(blk_id);
+                        db = self.report_return_mismatched_types(
+                            cause,
                             expected,
                             found,
-                            cause.span,
-                            blk_id,
+                            err,
+                            fcx,
+                            parent_id,
+                            expression.map(|expr| (expr, blk_id)),
                         );
+                    }
+                    ObligationCauseCode::ReturnType(id) => {
+                        db = self.report_return_mismatched_types(
+                            cause, expected, found, err, fcx, id, None);
                     }
                     _ => {
                         db = fcx.report_mismatched_types(cause, expected, found, err);
@@ -1223,6 +1237,59 @@ impl<'gcx, 'tcx, 'exprs, E> CoerceMany<'gcx, 'tcx, 'exprs, E>
                 self.final_ty = Some(fcx.tcx.types.err);
             }
         }
+    }
+
+    fn report_return_mismatched_types<'a>(
+        &self,
+        cause: &ObligationCause<'tcx>,
+        expected: Ty<'tcx>,
+        found: Ty<'tcx>,
+        err: TypeError<'tcx>,
+        fcx: &FnCtxt<'a, 'gcx, 'tcx>,
+        id: syntax::ast::NodeId,
+        expression: Option<(&'gcx hir::Expr, syntax::ast::NodeId)>,
+    ) -> DiagnosticBuilder<'a> {
+        let mut db = fcx.report_mismatched_types(cause, expected, found, err);
+
+        let mut pointing_at_return_type = false;
+        let mut return_sp = None;
+
+        // Verify that this is a tail expression of a function, otherwise the
+        // label pointing out the cause for the type coercion will be wrong
+        // as prior return coercions would not be relevant (#57664).
+        let parent_id = fcx.tcx.hir().get_parent_node(id);
+        let fn_decl = if let Some((expr, blk_id)) = expression {
+            pointing_at_return_type = fcx.suggest_mismatched_types_on_tail(
+                &mut db,
+                expr,
+                expected,
+                found,
+                cause.span,
+                blk_id,
+            );
+            let parent = fcx.tcx.hir().get(parent_id);
+            fcx.get_node_fn_decl(parent).map(|(fn_decl, _, is_main)| (fn_decl, is_main))
+        } else {
+            fcx.get_fn_decl(parent_id)
+        };
+
+        if let (Some((fn_decl, can_suggest)), _) = (fn_decl, pointing_at_return_type) {
+            if expression.is_none() {
+                pointing_at_return_type |= fcx.suggest_missing_return_type(
+                    &mut db, &fn_decl, expected, found, can_suggest);
+            }
+            if !pointing_at_return_type {
+                return_sp = Some(fn_decl.output.span()); // `impl Trait` return type
+            }
+        }
+        if let (Some(sp), Some(return_sp)) = (fcx.ret_coercion_span.borrow().as_ref(), return_sp) {
+            db.span_label(return_sp, "expected because this return type...");
+            db.span_label( *sp, format!(
+                "...is found to be `{}` here",
+                fcx.resolve_type_vars_with_obligations(expected),
+            ));
+        }
+        db
     }
 
     pub fn complete<'a>(self, fcx: &FnCtxt<'a, 'gcx, 'tcx>) -> Ty<'tcx> {

@@ -1,18 +1,9 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Type resolution: the phase that finds all the types in the AST with
 // unresolved type variables and replaces "ty_var" types with their
 // substitutions.
 
 use check::FnCtxt;
+use errors::DiagnosticBuilder;
 use rustc::hir;
 use rustc::hir::def_id::{DefId, DefIndex};
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
@@ -30,10 +21,19 @@ use syntax_pos::Span;
 ///////////////////////////////////////////////////////////////////////////
 // Entry point
 
+// During type inference, partially inferred types are
+// represented using Type variables (ty::Infer). These don't appear in
+// the final TypeckTables since all of the types should have been
+// inferred once typeck_tables_of is done.
+// When type inference is running however, having to update the typeck
+// tables every time a new type is inferred would be unreasonably slow,
+// so instead all of the replacement happens at the end in
+// resolve_type_vars_in_body, which creates a new TypeTables which
+// doesn't contain any inference types.
 impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     pub fn resolve_type_vars_in_body(&self, body: &'gcx hir::Body) -> &'gcx ty::TypeckTables<'gcx> {
-        let item_id = self.tcx.hir.body_owner(body.id());
-        let item_def_id = self.tcx.hir.local_def_id(item_id);
+        let item_id = self.tcx.hir().body_owner(body.id());
+        let item_def_id = self.tcx.hir().local_def_id(item_id);
 
         // This attribute causes us to dump some writeback information
         // in the form of errors, which is used for unit tests.
@@ -44,7 +44,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             wbcx.visit_node_id(arg.pat.span, arg.hir_id);
         }
         wbcx.visit_body(body);
-        wbcx.visit_upvar_borrow_map();
+        wbcx.visit_upvar_capture_map();
+        wbcx.visit_upvar_list_map();
         wbcx.visit_closures();
         wbcx.visit_liberated_fn_sigs();
         wbcx.visit_fru_field_types();
@@ -99,7 +100,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
         body: &'gcx hir::Body,
         rustc_dump_user_substs: bool,
     ) -> WritebackCx<'cx, 'gcx, 'tcx> {
-        let owner = fcx.tcx.hir.definitions().node_to_hir_id(body.id().node_id);
+        let owner = fcx.tcx.hir().definitions().node_to_hir_id(body.id().node_id);
 
         WritebackCx {
             fcx,
@@ -115,7 +116,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
 
     fn write_ty_to_tables(&mut self, hir_id: hir::HirId, ty: Ty<'gcx>) {
         debug!("write_ty_to_tables({:?}, {:?})", hir_id, ty);
-        assert!(!ty.needs_infer() && !ty.has_skol());
+        assert!(!ty.needs_infer() && !ty.has_placeholders());
         self.tables.node_types_mut().insert(hir_id, ty);
     }
 
@@ -233,7 +234,7 @@ impl<'cx, 'gcx, 'tcx> Visitor<'gcx> for WritebackCx<'cx, 'gcx, 'tcx> {
 
         match e.node {
             hir::ExprKind::Closure(_, _, body, _, _) => {
-                let body = self.fcx.tcx.hir.body(body);
+                let body = self.fcx.tcx.hir().body(body);
                 for arg in &body.arguments {
                     self.visit_node_id(e.span, arg.hir_id);
                 }
@@ -300,7 +301,7 @@ impl<'cx, 'gcx, 'tcx> Visitor<'gcx> for WritebackCx<'cx, 'gcx, 'tcx> {
 }
 
 impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
-    fn visit_upvar_borrow_map(&mut self) {
+    fn visit_upvar_capture_map(&mut self) {
         for (upvar_id, upvar_capture) in self.fcx.tables.borrow().upvar_capture_map.iter() {
             let new_upvar_capture = match *upvar_capture {
                 ty::UpvarCapture::ByValue => ty::UpvarCapture::ByValue,
@@ -320,6 +321,21 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
             self.tables
                 .upvar_capture_map
                 .insert(*upvar_id, new_upvar_capture);
+        }
+    }
+
+    /// Runs through the function context's upvar list map and adds the same to
+    /// the TypeckTables. upvarlist is a hashmap of the list of upvars referred
+    /// to in a closure..
+    fn visit_upvar_list_map(&mut self) {
+        for (closure_def_id, upvar_list) in self.fcx.tables.borrow().upvar_list.iter() {
+            debug!(
+                "UpvarIDs captured by closure {:?} are: {:?}",
+                closure_def_id, upvar_list
+            );
+            self.tables
+                .upvar_list
+                .insert(*closure_def_id, upvar_list.to_vec());
         }
     }
 
@@ -367,7 +383,8 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
         debug_assert_eq!(fcx_tables.local_id_root, self.tables.local_id_root);
         let common_local_id_root = fcx_tables.local_id_root.unwrap();
 
-        for (&local_id, c_ty) in fcx_tables.user_provided_tys().iter() {
+        let mut errors_buffer = Vec::new();
+        for (&local_id, c_ty) in fcx_tables.user_provided_types().iter() {
             let hir_id = hir::HirId {
                 owner: common_local_id_root.index,
                 local_id,
@@ -384,8 +401,30 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
             };
 
             self.tables
-                .user_provided_tys_mut()
+                .user_provided_types_mut()
                 .insert(hir_id, c_ty.clone());
+
+            if let ty::UserType::TypeOf(_, user_substs) = c_ty.value {
+                if self.rustc_dump_user_substs {
+                    // This is a unit-testing mechanism.
+                    let node_id = self.tcx().hir().hir_to_node_id(hir_id);
+                    let span = self.tcx().hir().span(node_id);
+                    // We need to buffer the errors in order to guarantee a consistent
+                    // order when emitting them.
+                    let err = self.tcx().sess.struct_span_err(
+                        span,
+                        &format!("user substs: {:?}", user_substs)
+                    );
+                    err.buffer(&mut errors_buffer);
+                }
+            }
+        }
+
+        if !errors_buffer.is_empty() {
+            errors_buffer.sort_by_key(|diag| diag.span.primary_span());
+            for diag in errors_buffer.drain(..) {
+                DiagnosticBuilder::new_diagnostic(self.tcx().sess.diagnostic(), diag).emit();
+            }
         }
     }
 
@@ -398,7 +437,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
                 c_sig
             } else {
                 span_bug!(
-                    self.fcx.tcx.hir.span_if_local(def_id).unwrap(),
+                    self.fcx.tcx.hir().span_if_local(def_id).unwrap(),
                     "writeback: `{:?}` missing from the global type context",
                     c_sig
                 );
@@ -412,7 +451,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
 
     fn visit_opaque_types(&mut self, span: Span) {
         for (&def_id, opaque_defn) in self.fcx.opaque_types.borrow().iter() {
-            let node_id = self.tcx().hir.as_local_node_id(def_id).unwrap();
+            let node_id = self.tcx().hir().as_local_node_id(def_id).unwrap();
             let instantiated_ty = self.resolve(&opaque_defn.concrete_ty, &node_id);
 
             let generics = self.tcx().generics_of(def_id);
@@ -545,7 +584,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
     }
 
     fn visit_field_id(&mut self, node_id: ast::NodeId) {
-        let hir_id = self.tcx().hir.node_to_hir_id(node_id);
+        let hir_id = self.tcx().hir().node_to_hir_id(node_id);
         if let Some(index) = self.fcx
             .tables
             .borrow_mut()
@@ -580,24 +619,8 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
         if let Some(substs) = self.fcx.tables.borrow().node_substs_opt(hir_id) {
             let substs = self.resolve(&substs, &span);
             debug!("write_substs_to_tcx({:?}, {:?})", hir_id, substs);
-            assert!(!substs.needs_infer() && !substs.has_skol());
+            assert!(!substs.needs_infer() && !substs.has_placeholders());
             self.tables.node_substs_mut().insert(hir_id, substs);
-        }
-
-        // Copy over any user-substs
-        if let Some(user_substs) = self.fcx.tables.borrow().user_substs(hir_id) {
-            let user_substs = self.tcx().lift_to_global(&user_substs).unwrap();
-            self.tables.user_substs_mut().insert(hir_id, user_substs);
-
-            // Unit-testing mechanism:
-            if self.rustc_dump_user_substs {
-                let node_id = self.tcx().hir.hir_to_node_id(hir_id);
-                let span = self.tcx().hir.span(node_id);
-                self.tcx().sess.span_err(
-                    span,
-                    &format!("user substs: {:?}", user_substs),
-                );
-            }
         }
     }
 
@@ -710,21 +733,21 @@ impl Locatable for Span {
 
 impl Locatable for ast::NodeId {
     fn to_span(&self, tcx: &TyCtxt) -> Span {
-        tcx.hir.span(*self)
+        tcx.hir().span(*self)
     }
 }
 
 impl Locatable for DefIndex {
     fn to_span(&self, tcx: &TyCtxt) -> Span {
-        let node_id = tcx.hir.def_index_to_node_id(*self);
-        tcx.hir.span(node_id)
+        let node_id = tcx.hir().def_index_to_node_id(*self);
+        tcx.hir().span(node_id)
     }
 }
 
 impl Locatable for hir::HirId {
     fn to_span(&self, tcx: &TyCtxt) -> Span {
-        let node_id = tcx.hir.hir_to_node_id(*self);
-        tcx.hir.span(node_id)
+        let node_id = tcx.hir().hir_to_node_id(*self);
+        tcx.hir().span(node_id)
     }
 }
 

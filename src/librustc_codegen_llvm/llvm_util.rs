@@ -1,18 +1,9 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use syntax_pos::symbol::Symbol;
-use back::write::create_target_machine;
+use back::write::create_informational_target_machine;
 use llvm;
 use rustc::session::Session;
 use rustc::session::config::PrintRequest;
+use rustc_target::spec::MergeFunctions;
 use libc::c_int;
 use std::ffi::CString;
 use syntax::feature_gate::UnstableFeatures;
@@ -70,6 +61,20 @@ unsafe fn configure_llvm(sess: &Session) {
         if sess.opts.debugging_opts.disable_instrumentation_preinliner {
             add("-disable-preinline");
         }
+        if llvm::LLVMRustIsRustLLVM() {
+            match sess.opts.debugging_opts.merge_functions
+                  .unwrap_or(sess.target.target.options.merge_functions) {
+                MergeFunctions::Disabled |
+                MergeFunctions::Trampolines => {}
+                MergeFunctions::Aliases => {
+                    add("-mergefunc-use-aliases");
+                }
+            }
+        }
+
+        // HACK(eddyb) LLVM inserts `llvm.assume` calls to preserve align attributes
+        // during inlining. Unfortunately these may block other optimizations.
+        add("-preserve-alignment-assumptions-during-inlining=false");
 
         for arg in &sess.opts.cg.llvm_args {
             add(&(*arg));
@@ -121,6 +126,7 @@ const AARCH64_WHITELIST: &[(&str, Option<&str>)] = &[
 ];
 
 const X86_WHITELIST: &[(&str, Option<&str>)] = &[
+    ("adx", Some("adx_target_feature")),
     ("aes", None),
     ("avx", None),
     ("avx2", None),
@@ -136,10 +142,12 @@ const X86_WHITELIST: &[(&str, Option<&str>)] = &[
     ("avx512vpopcntdq", Some("avx512_target_feature")),
     ("bmi1", None),
     ("bmi2", None),
+    ("cmpxchg16b", Some("cmpxchg16b_target_feature")),
     ("fma", None),
     ("fxsr", None),
     ("lzcnt", None),
     ("mmx", Some("mmx_target_feature")),
+    ("movbe", Some("movbe_target_feature")),
     ("pclmulqdq", None),
     ("popcnt", None),
     ("rdrand", None),
@@ -208,6 +216,7 @@ pub fn to_llvm_feature<'a>(sess: &Session, s: &'a str) -> &'a str {
         ("x86", "pclmulqdq") => "pclmul",
         ("x86", "rdrand") => "rdrnd",
         ("x86", "bmi1") => "bmi",
+        ("x86", "cmpxchg16b") => "cx16",
         ("aarch64", "fp") => "fp-armv8",
         ("aarch64", "fp16") => "fullfp16",
         (_, s) => s,
@@ -215,7 +224,7 @@ pub fn to_llvm_feature<'a>(sess: &Session, s: &'a str) -> &'a str {
 }
 
 pub fn target_features(sess: &Session) -> Vec<Symbol> {
-    let target_machine = create_target_machine(sess, true);
+    let target_machine = create_informational_target_machine(sess, true);
     target_feature_whitelist(sess)
         .iter()
         .filter_map(|&(feature, gate)| {
@@ -268,7 +277,7 @@ pub fn print_passes() {
 
 pub(crate) fn print(req: PrintRequest, sess: &Session) {
     require_inited();
-    let tm = create_target_machine(sess, true);
+    let tm = create_informational_target_machine(sess, true);
     unsafe {
         match req {
             PrintRequest::TargetCPUs => llvm::LLVMRustPrintTargetCPUs(tm),

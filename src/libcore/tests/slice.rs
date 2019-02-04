@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::result::Result::{Ok, Err};
 
 #[test]
@@ -1024,11 +1014,11 @@ fn test_rotate_right() {
 fn sort_unstable() {
     use core::cmp::Ordering::{Equal, Greater, Less};
     use core::slice::heapsort;
-    use rand::{FromEntropy, Rng, XorShiftRng};
+    use rand::{FromEntropy, Rng, rngs::SmallRng, seq::SliceRandom};
 
     let mut v = [0; 600];
     let mut tmp = [0; 600];
-    let mut rng = XorShiftRng::from_entropy();
+    let mut rng = SmallRng::from_entropy();
 
     for len in (2..25).chain(500..510) {
         let v = &mut v[0..len];
@@ -1073,7 +1063,7 @@ fn sort_unstable() {
     for i in 0..v.len() {
         v[i] = i as i32;
     }
-    v.sort_unstable_by(|_, _| *rng.choose(&[Less, Equal, Greater]).unwrap());
+    v.sort_unstable_by(|_, _| *[Less, Equal, Greater].choose(&mut rng).unwrap());
     v.sort_unstable();
     for i in 0..v.len() {
         assert_eq!(v[i], i as i32);
@@ -1326,4 +1316,19 @@ fn test_copy_within_panics_src_inverted() {
     let mut bytes = *b"Hello, World!";
     // 2 is greater than 1, so this range is invalid.
     bytes.copy_within(2..1, 0);
+}
+
+#[test]
+fn test_is_sorted() {
+    let empty: [i32; 0] = [];
+
+    assert!([1, 2, 2, 9].is_sorted());
+    assert!(![1, 3, 2].is_sorted());
+    assert!([0].is_sorted());
+    assert!(empty.is_sorted());
+    assert!(![0.0, 1.0, std::f32::NAN].is_sorted());
+    assert!([-2, -1, 0, 3].is_sorted());
+    assert!(![-2i32, -1, 0, 3].is_sorted_by_key(|n| n.abs()));
+    assert!(!["c", "bb", "aaa"].is_sorted());
+    assert!(["c", "bb", "aaa"].is_sorted_by_key(|s| s.len()));
 }

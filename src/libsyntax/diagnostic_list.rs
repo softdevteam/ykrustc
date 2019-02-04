@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 // Error messages for EXXXX errors.
@@ -399,12 +389,12 @@ register_diagnostics! {
     E0545, // incorrect 'issue'
     E0546, // missing 'feature'
     E0547, // missing 'issue'
-    E0548, // incorrect stability attribute type
+//  E0548, // replaced with a generic attribute input check
     E0549, // rustc_deprecated attribute must be paired with either stable or unstable attribute
     E0550, // multiple deprecated attributes
     E0551, // incorrect meta item
     E0553, // multiple rustc_const_unstable attributes
-    E0555, // malformed feature attribute, expected #![feature(...)]
+//  E0555, // replaced with a generic attribute input check
     E0556, // malformed feature, expected just one word
     E0584, // file for module `..` found at both .. and ..
     E0629, // missing 'feature' (rustc_const_unstable)

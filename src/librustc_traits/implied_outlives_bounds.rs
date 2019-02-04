@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Provider for the `implied_outlives_bounds` query.
 //! Do not call this query directory. See [`rustc::traits::query::implied_outlives_bounds`].
 
@@ -77,7 +67,7 @@ fn compute_implied_outlives_bounds<'tcx>(
         let obligations =
             wf::obligations(infcx, param_env, DUMMY_NODE_ID, ty, DUMMY_SP).unwrap_or(vec![]);
 
-        // NB: All of these predicates *ought* to be easily proven
+        // N.B., all of these predicates *ought* to be easily proven
         // true. In fact, their correctness is (mostly) implied by
         // other parts of the program. However, in #42552, we had
         // an annoying scenario where:

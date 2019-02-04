@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_camel_case_types, non_snake_case)]
 
 //! Code that is useful in various codegen modules.
@@ -21,7 +11,7 @@ use value::Value;
 use rustc_codegen_ssa::traits::*;
 
 use rustc::ty::layout::{HasDataLayout, LayoutOf, self, TyLayout, Size};
-use rustc::mir::interpret::{Scalar, AllocType, Allocation};
+use rustc::mir::interpret::{Scalar, AllocKind, Allocation};
 use consts::const_alloc_to_llvm;
 use rustc_codegen_ssa::mir::place::PlaceRef;
 
@@ -63,7 +53,7 @@ pub use context::CodegenCx;
 ///
 /// Each `Block` may contain an instance of this, indicating whether the block
 /// is part of a landing pad or not. This is used to make decision about whether
-/// to emit `invoke` instructions (e.g. in a landing pad we don't continue to
+/// to emit `invoke` instructions (e.g., in a landing pad we don't continue to
 /// use `invoke`) and also about various function call metadata.
 ///
 /// For GNU exceptions (`landingpad` + `resume` instructions) this structure is
@@ -98,7 +88,6 @@ impl BackendTypes for CodegenCx<'ll, 'tcx> {
     type Value = &'ll Value;
     type BasicBlock = &'ll BasicBlock;
     type Type = &'ll Type;
-    type Context = &'ll llvm::Context;
     type Funclet = Funclet<'ll>;
 
     type DIScope = &'ll llvm::debuginfo::DIScope;
@@ -313,13 +302,13 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 if layout.value == layout::Pointer {
                     unsafe { llvm::LLVMConstIntToPtr(llval, llty) }
                 } else {
-                    self.static_bitcast(llval, llty)
+                    self.const_bitcast(llval, llty)
                 }
             },
             Scalar::Ptr(ptr) => {
-                let alloc_type = self.tcx.alloc_map.lock().get(ptr.alloc_id);
-                let base_addr = match alloc_type {
-                    Some(AllocType::Memory(alloc)) => {
+                let alloc_kind = self.tcx.alloc_map.lock().get(ptr.alloc_id);
+                let base_addr = match alloc_kind {
+                    Some(AllocKind::Memory(alloc)) => {
                         let init = const_alloc_to_llvm(self, alloc);
                         if alloc.mutability == Mutability::Mutable {
                             self.static_addr_of_mut(init, alloc.align, None)
@@ -327,24 +316,24 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                             self.static_addr_of(init, alloc.align, None)
                         }
                     }
-                    Some(AllocType::Function(fn_instance)) => {
+                    Some(AllocKind::Function(fn_instance)) => {
                         self.get_fn(fn_instance)
                     }
-                    Some(AllocType::Static(def_id)) => {
+                    Some(AllocKind::Static(def_id)) => {
                         assert!(self.tcx.is_static(def_id).is_some());
                         self.get_static(def_id)
                     }
                     None => bug!("missing allocation {:?}", ptr.alloc_id),
                 };
                 let llval = unsafe { llvm::LLVMConstInBoundsGEP(
-                    self.static_bitcast(base_addr, self.type_i8p()),
+                    self.const_bitcast(base_addr, self.type_i8p()),
                     &self.const_usize(ptr.offset.bytes()),
                     1,
                 ) };
                 if layout.value != layout::Pointer {
                     unsafe { llvm::LLVMConstPtrToInt(llval, llty) }
                 } else {
-                    self.static_bitcast(llval, llty)
+                    self.const_bitcast(llval, llty)
                 }
             }
         }
@@ -357,15 +346,19 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         offset: Size,
     ) -> PlaceRef<'tcx, &'ll Value> {
         let init = const_alloc_to_llvm(self, alloc);
-        let base_addr = self.static_addr_of(init, layout.align, None);
+        let base_addr = self.static_addr_of(init, layout.align.abi, None);
 
         let llval = unsafe { llvm::LLVMConstInBoundsGEP(
-            self.static_bitcast(base_addr, self.type_i8p()),
+            self.const_bitcast(base_addr, self.type_i8p()),
             &self.const_usize(offset.bytes()),
             1,
         )};
-        let llval = self.static_bitcast(llval, self.type_ptr_to(layout.llvm_type(self)));
+        let llval = self.const_bitcast(llval, self.type_ptr_to(layout.llvm_type(self)));
         PlaceRef::new_sized(llval, layout, alloc.align)
+    }
+
+    fn const_ptrcast(&self, val: &'ll Value, ty: &'ll Type) -> &'ll Value {
+        consts::ptrcast(val, ty)
     }
 }
 

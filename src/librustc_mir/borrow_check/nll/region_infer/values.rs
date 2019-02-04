@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::mir::{BasicBlock, Location, Mir};
 use rustc::ty::{self, RegionVid};
 use rustc_data_structures::bit_set::{HybridBitSet, SparseBitMatrix};
@@ -48,7 +38,7 @@ impl RegionValueElements {
 
         let mut basic_blocks = IndexVec::with_capacity(num_points);
         for (bb, bb_data) in mir.basic_blocks().iter_enumerated() {
-            basic_blocks.extend((0..bb_data.statements.len() + 1).map(|_| bb));
+            basic_blocks.extend((0..=bb_data.statements.len()).map(|_| bb));
         }
 
         Self {
@@ -150,7 +140,7 @@ crate enum RegionElement {
 
     /// A placeholder (e.g., instantiated from a `for<'a> fn(&'a u32)`
     /// type).
-    PlaceholderRegion(ty::Placeholder),
+    PlaceholderRegion(ty::PlaceholderRegion),
 }
 
 /// When we initially compute liveness, we use a bit matrix storing
@@ -219,17 +209,17 @@ impl<N: Idx> LivenessValues<N> {
     }
 }
 
-/// Maps from `ty::Placeholder` values that are used in the rest of
+/// Maps from `ty::PlaceholderRegion` values that are used in the rest of
 /// rustc to the internal `PlaceholderIndex` values that are used in
 /// NLL.
 #[derive(Default)]
 crate struct PlaceholderIndices {
-    to_index: FxHashMap<ty::Placeholder, PlaceholderIndex>,
-    from_index: IndexVec<PlaceholderIndex, ty::Placeholder>,
+    to_index: FxHashMap<ty::PlaceholderRegion, PlaceholderIndex>,
+    from_index: IndexVec<PlaceholderIndex, ty::PlaceholderRegion>,
 }
 
 impl PlaceholderIndices {
-    crate fn insert(&mut self, placeholder: ty::Placeholder) -> PlaceholderIndex {
+    crate fn insert(&mut self, placeholder: ty::PlaceholderRegion) -> PlaceholderIndex {
         let PlaceholderIndices {
             to_index,
             from_index,
@@ -239,11 +229,11 @@ impl PlaceholderIndices {
             .or_insert_with(|| from_index.push(placeholder))
     }
 
-    crate fn lookup_index(&self, placeholder: ty::Placeholder) -> PlaceholderIndex {
+    crate fn lookup_index(&self, placeholder: ty::PlaceholderRegion) -> PlaceholderIndex {
         self.to_index[&placeholder]
     }
 
-    crate fn lookup_placeholder(&self, placeholder: PlaceholderIndex) -> ty::Placeholder {
+    crate fn lookup_placeholder(&self, placeholder: PlaceholderIndex) -> ty::PlaceholderRegion {
         self.from_index[placeholder]
     }
 
@@ -313,7 +303,7 @@ impl<N: Idx> RegionValues<N> {
         self.points.insert_all_into_row(r);
     }
 
-    /// Add all elements in `r_from` to `r_to` (because e.g. `r_to:
+    /// Add all elements in `r_from` to `r_to` (because e.g., `r_to:
     /// r_from`).
     crate fn add_region(&mut self, r_to: N, r_from: N) -> bool {
         self.points.union_rows(r_from, r_to)
@@ -375,7 +365,7 @@ impl<N: Idx> RegionValues<N> {
     crate fn placeholders_contained_in<'a>(
         &'a self,
         r: N,
-    ) -> impl Iterator<Item = ty::Placeholder> + 'a {
+    ) -> impl Iterator<Item = ty::PlaceholderRegion> + 'a {
         self.placeholders
             .row(r)
             .into_iter()
@@ -432,7 +422,7 @@ impl ToElementIndex for RegionVid {
     }
 }
 
-impl ToElementIndex for ty::Placeholder {
+impl ToElementIndex for ty::PlaceholderRegion {
     fn add_to_row<N: Idx>(self, values: &mut RegionValues<N>, row: N) -> bool {
         let index = values.placeholder_indices.lookup_index(self);
         values.placeholders.insert(row, index)

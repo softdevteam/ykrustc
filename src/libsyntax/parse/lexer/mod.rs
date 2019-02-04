@@ -1,24 +1,14 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use ast::{self, Ident};
 use syntax_pos::{self, BytePos, CharPos, Pos, Span, NO_EXPANSION};
 use source_map::{SourceMap, FilePathMapping};
 use errors::{Applicability, FatalError, Diagnostic, DiagnosticBuilder};
 use parse::{token, ParseSess};
-use str::char_at;
 use symbol::{Symbol, keywords};
 use core::unicode::property::Pattern_White_Space;
 
 use std::borrow::Cow;
 use std::char;
+use std::iter;
 use std::mem::replace;
 use rustc_data_structures::sync::Lrc;
 
@@ -60,11 +50,11 @@ pub struct StringReader<'a> {
     // cache a direct reference to the source text, so that we don't have to
     // retrieve it via `self.source_file.src.as_ref().unwrap()` all the time.
     src: Lrc<String>,
-    /// Stack of open delimiters and their spans. Used for error message.
     token: token::Token,
     span: Span,
     /// The raw source span which *does not* take `override_span` into account
     span_src_raw: Span,
+    /// Stack of open delimiters and their spans. Used for error message.
     open_braces: Vec<(token::DelimToken, Span)>,
     /// The type and spans for all braces
     ///
@@ -248,19 +238,6 @@ impl<'a> StringReader<'a> {
         sr
     }
 
-    pub fn new_without_err(sess: &'a ParseSess,
-                           source_file: Lrc<syntax_pos::SourceFile>,
-                           override_span: Option<Span>,
-                           prepend_error_text: &str) -> Result<Self, ()> {
-        let mut sr = StringReader::new_raw(sess, source_file, override_span);
-        if sr.advance_token().is_err() {
-            eprintln!("{}", prepend_error_text);
-            sr.emit_fatal_errors();
-            return Err(());
-        }
-        Ok(sr)
-    }
-
     pub fn new_or_buffered_errs(sess: &'a ParseSess,
                                 source_file: Lrc<syntax_pos::SourceFile>,
                                 override_span: Option<Span>) -> Result<Self, Vec<Diagnostic>> {
@@ -309,7 +286,7 @@ impl<'a> StringReader<'a> {
 
     /// Report a lexical error with a given span.
     fn err_span(&self, sp: Span, m: &str) {
-        self.sess.span_diagnostic.span_err(sp, m)
+        self.sess.span_diagnostic.struct_span_err(sp, m).emit();
     }
 
 
@@ -459,45 +436,42 @@ impl<'a> StringReader<'a> {
 
     /// Converts CRLF to LF in the given string, raising an error on bare CR.
     fn translate_crlf<'b>(&self, start: BytePos, s: &'b str, errmsg: &'b str) -> Cow<'b, str> {
-        let mut i = 0;
-        while i < s.len() {
-            let ch = char_at(s, i);
-            let next = i + ch.len_utf8();
+        let mut chars = s.char_indices().peekable();
+        while let Some((i, ch)) = chars.next() {
             if ch == '\r' {
-                if next < s.len() && char_at(s, next) == '\n' {
-                    return translate_crlf_(self, start, s, errmsg, i).into();
+                if let Some((lf_idx, '\n')) = chars.peek() {
+                    return translate_crlf_(self, start, s, *lf_idx, chars, errmsg).into();
                 }
                 let pos = start + BytePos(i as u32);
-                let end_pos = start + BytePos(next as u32);
+                let end_pos = start + BytePos((i + ch.len_utf8()) as u32);
                 self.err_span_(pos, end_pos, errmsg);
             }
-            i = next;
         }
         return s.into();
 
         fn translate_crlf_(rdr: &StringReader,
                            start: BytePos,
                            s: &str,
-                           errmsg: &str,
-                           mut i: usize)
+                           mut j: usize,
+                           mut chars: iter::Peekable<impl Iterator<Item = (usize, char)>>,
+                           errmsg: &str)
                            -> String {
             let mut buf = String::with_capacity(s.len());
-            let mut j = 0;
-            while i < s.len() {
-                let ch = char_at(s, i);
-                let next = i + ch.len_utf8();
+            // Skip first CR
+            buf.push_str(&s[.. j - 1]);
+            while let Some((i, ch)) = chars.next() {
                 if ch == '\r' {
                     if j < i {
                         buf.push_str(&s[j..i]);
                     }
+                    let next = i + ch.len_utf8();
                     j = next;
-                    if next >= s.len() || char_at(s, next) != '\n' {
+                    if chars.peek().map(|(_, ch)| *ch) != Some('\n') {
                         let pos = start + BytePos(i as u32);
                         let end_pos = start + BytePos(next as u32);
                         rdr.err_span_(pos, end_pos, errmsg);
                     }
                 }
-                i = next;
             }
             if j < s.len() {
                 buf.push_str(&s[j..]);
@@ -506,8 +480,7 @@ impl<'a> StringReader<'a> {
         }
     }
 
-    /// Advance the StringReader by one character. If a newline is
-    /// discovered, add it to the SourceFile's list of line start offsets.
+    /// Advance the StringReader by one character.
     crate fn bump(&mut self) {
         let next_src_index = self.src_index(self.next_pos);
         if next_src_index < self.end_src_index {
@@ -959,12 +932,36 @@ impl<'a> StringReader<'a> {
                                     self.scan_unicode_escape(delim) && !ascii_only
                                 } else {
                                     let span = self.mk_sp(start, self.pos);
-                                    self.sess.span_diagnostic
-                                        .struct_span_err(span, "incorrect unicode escape sequence")
-                                        .span_help(span,
-                                                   "format of unicode escape sequences is \
-                                                    `\\u{…}`")
-                                        .emit();
+                                    let mut suggestion = "\\u{".to_owned();
+                                    let mut err = self.sess.span_diagnostic.struct_span_err(
+                                        span,
+                                        "incorrect unicode escape sequence",
+                                    );
+                                    let mut i = 0;
+                                    while let (Some(ch), true) = (self.ch, i < 6) {
+                                        if ch.is_digit(16) {
+                                            suggestion.push(ch);
+                                            self.bump();
+                                            i += 1;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                    if i != 0 {
+                                        suggestion.push('}');
+                                        err.span_suggestion(
+                                            self.mk_sp(start, self.pos),
+                                            "format of unicode escape sequences uses braces",
+                                            suggestion,
+                                            Applicability::MaybeIncorrect,
+                                        );
+                                    } else {
+                                        err.span_help(
+                                            span,
+                                            "format of unicode escape sequences is `\\u{...}`",
+                                        );
+                                    }
+                                    err.emit();
                                     false
                                 };
                                 if ascii_only {
@@ -1131,7 +1128,7 @@ impl<'a> StringReader<'a> {
                     "expected at least one digit in exponent"
                 );
                 if let Some(ch) = self.ch {
-                    // check for e.g. Unicode minus '−' (Issue #49746)
+                    // check for e.g., Unicode minus '−' (Issue #49746)
                     if unicode_chars::check_for_substitution(self, ch, &mut err) {
                         self.bump();
                         self.scan_digits(10, 10);
@@ -1398,9 +1395,10 @@ impl<'a> StringReader<'a> {
                     // lifetimes shouldn't end with a single quote
                     // if we find one, then this is an invalid character literal
                     if self.ch_is('\'') {
-                        self.fatal_span_verbose(start_with_quote, self.next_pos,
-                                String::from("character literal may only contain one codepoint"))
-                            .raise();
+                        self.err_span_(start_with_quote, self.next_pos,
+                                "character literal may only contain one codepoint");
+                        self.bump();
+                        return Ok(token::Literal(token::Err(Symbol::intern("??")), None))
 
                     }
 
@@ -1429,13 +1427,13 @@ impl<'a> StringReader<'a> {
                             self.sess.span_diagnostic
                                 .struct_span_err(span,
                                                  "character literal may only contain one codepoint")
-                                .span_suggestion_with_applicability(
+                                .span_suggestion(
                                     span,
                                     "if you meant to write a `str` literal, use double quotes",
                                     format!("\"{}\"", &self.src[start..end]),
                                     Applicability::MachineApplicable
                                 ).emit();
-                            return Ok(token::Literal(token::Str_(Symbol::intern("??")), None))
+                            return Ok(token::Literal(token::Err(Symbol::intern("??")), None))
                         }
                         if self.ch_is('\n') || self.is_eof() || self.ch_is('/') {
                             // Only attempt to infer single line string literals. If we encounter
@@ -1859,6 +1857,11 @@ fn ident_continue(c: Option<char>) -> bool {
     (c > '\x7f' && c.is_xid_continue())
 }
 
+#[inline]
+fn char_at(s: &str, byte: usize) -> char {
+    s[byte..].chars().next().unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1899,7 +1902,7 @@ mod tests {
                  sess: &'a ParseSess,
                  teststr: String)
                  -> StringReader<'a> {
-        let sf = sm.new_source_file(PathBuf::from("zebra.rs").into(), teststr);
+        let sf = sm.new_source_file(PathBuf::from(teststr.clone()).into(), teststr);
         StringReader::new(sess, sf, None)
     }
 

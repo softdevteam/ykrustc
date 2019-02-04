@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use fmt;
 use hash;
 use io;
@@ -16,10 +6,11 @@ use net::{ntoh, hton, IpAddr, Ipv4Addr, Ipv6Addr};
 use option;
 use sys::net::netc as c;
 use sys_common::{FromInner, AsInner, IntoInner};
-use sys_common::net::lookup_host;
+use sys_common::net::LookupHost;
 use vec;
 use iter;
 use slice;
+use convert::TryInto;
 
 /// An internet socket address, either IPv4 or IPv6.
 ///
@@ -702,7 +693,7 @@ impl hash::Hash for SocketAddrV6 {
 /// the other: for simple uses a string like `"localhost:12345"` is much nicer
 /// than manual construction of the corresponding [`SocketAddr`], but sometimes
 /// [`SocketAddr`] value is *the* main source of the address, and converting it to
-/// some other type (e.g. a string) just for it to be converted back to
+/// some other type (e.g., a string) just for it to be converted back to
 /// [`SocketAddr`] in constructor methods is pointless.
 ///
 /// Addresses returned by the operating system that are not IP addresses are
@@ -863,9 +854,9 @@ impl ToSocketAddrs for (Ipv6Addr, u16) {
     }
 }
 
-fn resolve_socket_addr(s: &str, p: u16) -> io::Result<vec::IntoIter<SocketAddr>> {
-    let ips = lookup_host(s)?;
-    let v: Vec<_> = ips.map(|mut a| { a.set_port(p); a }).collect();
+fn resolve_socket_addr(lh: LookupHost) -> io::Result<vec::IntoIter<SocketAddr>> {
+    let p = lh.port();
+    let v: Vec<_> = lh.map(|mut a| { a.set_port(p); a }).collect();
     Ok(v.into_iter())
 }
 
@@ -885,7 +876,7 @@ impl<'a> ToSocketAddrs for (&'a str, u16) {
             return Ok(vec![SocketAddr::V6(addr)].into_iter())
         }
 
-        resolve_socket_addr(host, port)
+        resolve_socket_addr((host, port).try_into()?)
     }
 }
 
@@ -899,22 +890,7 @@ impl ToSocketAddrs for str {
             return Ok(vec![addr].into_iter());
         }
 
-        macro_rules! try_opt {
-            ($e:expr, $msg:expr) => (
-                match $e {
-                    Some(r) => r,
-                    None => return Err(io::Error::new(io::ErrorKind::InvalidInput,
-                                                      $msg)),
-                }
-            )
-        }
-
-        // split the string by ':' and convert the second part to u16
-        let mut parts_iter = self.rsplitn(2, ':');
-        let port_str = try_opt!(parts_iter.next(), "invalid socket address");
-        let host = try_opt!(parts_iter.next(), "invalid socket address");
-        let port: u16 = try_opt!(port_str.parse().ok(), "invalid port value");
-        resolve_socket_addr(host, port)
+        resolve_socket_addr(self.try_into()?)
     }
 }
 

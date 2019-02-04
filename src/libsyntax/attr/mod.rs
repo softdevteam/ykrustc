@@ -1,21 +1,11 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Functions dealing with attributes and meta items
 
 mod builtin;
 
 pub use self::builtin::{
     cfg_matches, contains_feature_attr, eval_condition, find_crate_name, find_deprecation,
-    find_repr_attrs, find_stability, find_unwind_attr, Deprecation, InlineAttr, IntType, ReprAttr,
-    RustcDeprecation, Stability, StabilityLevel, UnwindAttr,
+    find_repr_attrs, find_stability, find_unwind_attr, Deprecation, InlineAttr, OptimizeAttr,
+    IntType, ReprAttr, RustcDeprecation, Stability, StabilityLevel, UnwindAttr,
 };
 pub use self::IntType::*;
 pub use self::ReprAttr::*;
@@ -34,7 +24,7 @@ use parse::token::{self, Token};
 use ptr::P;
 use symbol::Symbol;
 use ThinVec;
-use tokenstream::{TokenStream, TokenTree, Delimited, DelimSpan};
+use tokenstream::{TokenStream, TokenTree, DelimSpan};
 use GLOBALS;
 
 use std::iter;
@@ -96,7 +86,7 @@ impl NestedMetaItem {
         self.meta_item().map_or(false, |meta_item| meta_item.check_name(name))
     }
 
-    /// Returns the name of the meta item, e.g. `foo` in `#[foo]`,
+    /// Returns the name of the meta item, e.g., `foo` in `#[foo]`,
     /// `#[foo="bar"]` and `#[foo(bar)]`, if self is a MetaItem
     pub fn name(&self) -> Option<Name> {
         self.meta_item().and_then(|meta_item| Some(meta_item.name()))
@@ -180,7 +170,7 @@ impl Attribute {
     }
 
     /// Returns the **last** segment of the name of this attribute.
-    /// E.g. `foo` for `#[foo]`, `skip` for `#[rustfmt::skip]`.
+    /// e.g., `foo` for `#[foo]`, `skip` for `#[rustfmt::skip]`.
     pub fn name(&self) -> Name {
         name_from_path(&self.path)
     }
@@ -482,8 +472,8 @@ impl MetaItem {
                                          Token::from_ast_ident(segment.ident)).into());
             last_pos = segment.ident.span.hi();
         }
-        idents.push(self.node.tokens(self.span));
-        TokenStream::concat(idents)
+        self.node.tokens(self.span).append_to_tree_and_joint_vec(&mut idents);
+        TokenStream::new(idents)
     }
 
     fn from_tokens<I>(tokens: &mut iter::Peekable<I>) -> Option<MetaItem>
@@ -491,28 +481,33 @@ impl MetaItem {
     {
         // FIXME: Share code with `parse_path`.
         let ident = match tokens.next() {
-            Some(TokenTree::Token(span, Token::Ident(ident, _))) => {
-                if let Some(TokenTree::Token(_, Token::ModSep)) = tokens.peek() {
-                    let mut segments = vec![PathSegment::from_ident(ident.with_span_pos(span))];
-                    tokens.next();
-                    loop {
-                        if let Some(TokenTree::Token(span,
-                                                     Token::Ident(ident, _))) = tokens.next() {
-                            segments.push(PathSegment::from_ident(ident.with_span_pos(span)));
-                        } else {
-                            return None;
-                        }
-                        if let Some(TokenTree::Token(_, Token::ModSep)) = tokens.peek() {
-                            tokens.next();
-                        } else {
-                            break;
-                        }
+            Some(TokenTree::Token(span, token @ Token::Ident(..))) |
+            Some(TokenTree::Token(span, token @ Token::ModSep)) => 'arm: {
+                let mut segments = if let Token::Ident(ident, _) = token {
+                    if let Some(TokenTree::Token(_, Token::ModSep)) = tokens.peek() {
+                        tokens.next();
+                        vec![PathSegment::from_ident(ident.with_span_pos(span))]
+                    } else {
+                        break 'arm Path::from_ident(ident.with_span_pos(span));
                     }
-                    let span = span.with_hi(segments.last().unwrap().ident.span.hi());
-                    Path { span, segments }
                 } else {
-                    Path::from_ident(ident.with_span_pos(span))
+                    vec![PathSegment::path_root(span)]
+                };
+                loop {
+                    if let Some(TokenTree::Token(span,
+                                                    Token::Ident(ident, _))) = tokens.next() {
+                        segments.push(PathSegment::from_ident(ident.with_span_pos(span)));
+                    } else {
+                        return None;
+                    }
+                    if let Some(TokenTree::Token(_, Token::ModSep)) = tokens.peek() {
+                        tokens.next();
+                    } else {
+                        break;
+                    }
                 }
+                let span = span.with_hi(segments.last().unwrap().ident.span.hi());
+                Path { span, segments }
             }
             Some(TokenTree::Token(_, Token::Interpolated(ref nt))) => match nt.0 {
                 token::Nonterminal::NtIdent(ident, _) => Path::from_ident(ident),
@@ -539,7 +534,9 @@ impl MetaItemKind {
         match *self {
             MetaItemKind::Word => TokenStream::empty(),
             MetaItemKind::NameValue(ref lit) => {
-                TokenStream::concat(vec![TokenTree::Token(span, Token::Eq).into(), lit.tokens()])
+                let mut vec = vec![TokenTree::Token(span, Token::Eq).into()];
+                lit.tokens().append_to_tree_and_joint_vec(&mut vec);
+                TokenStream::new(vec)
             }
             MetaItemKind::List(ref list) => {
                 let mut tokens = Vec::new();
@@ -547,12 +544,13 @@ impl MetaItemKind {
                     if i > 0 {
                         tokens.push(TokenTree::Token(span, Token::Comma).into());
                     }
-                    tokens.push(item.node.tokens());
+                    item.node.tokens().append_to_tree_and_joint_vec(&mut tokens);
                 }
-                TokenTree::Delimited(DelimSpan::from_single(span), Delimited {
-                    delim: token::Paren,
-                    tts: TokenStream::concat(tokens).into(),
-                }).into()
+                TokenTree::Delimited(
+                    DelimSpan::from_single(span),
+                    token::Paren,
+                    TokenStream::new(tokens).into(),
+                ).into()
             }
         }
     }
@@ -570,9 +568,9 @@ impl MetaItemKind {
                     None
                 };
             }
-            Some(TokenTree::Delimited(_, ref delimited)) if delimited.delim == token::Paren => {
+            Some(TokenTree::Delimited(_, delim, ref tts)) if delim == token::Paren => {
                 tokens.next();
-                delimited.stream()
+                tts.clone()
             }
             _ => return Some(MetaItemKind::Word),
         };
@@ -668,6 +666,7 @@ impl LitKind {
             } else {
                 "false"
             })), false),
+            LitKind::Err(val) => Token::Literal(token::Lit::Err(val), None),
         }
     }
 
@@ -803,7 +802,7 @@ pub fn inject(mut krate: ast::Crate, parse_sess: &ParseSess, attrs: &[String]) -
     for raw_attr in attrs {
         let mut parser = parse::new_parser_from_source_str(
             parse_sess,
-            FileName::CliCrateAttr,
+            FileName::cli_crate_attr_source_code(&raw_attr),
             raw_attr.clone(),
         );
 

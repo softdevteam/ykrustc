@@ -1,19 +1,9 @@
-// Copyright 2014-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // FIXME:
 // Alignment of 128 bit types is not currently handled, this will
 // need to be fixed when PowerPC vector support is added.
 
 use abi::call::{FnType, ArgType, Reg, RegKind, Uniform};
-use abi::{Align, Endian, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
+use abi::{Endian, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
 use spec::HasTargetSpec;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,7 +18,7 @@ fn is_homogeneous_aggregate<'a, Ty, C>(cx: &C, arg: &mut ArgType<'a, Ty>, abi: A
     where Ty: TyLayoutMethods<'a, C> + Copy,
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
 {
-    arg.layout.homogeneous_aggregate(cx).and_then(|unit| {
+    arg.layout.homogeneous_aggregate(cx).unit().and_then(|unit| {
         // ELFv1 only passes one-member aggregates transparently.
         // ELFv2 passes up to eight uniquely addressable members.
         if (abi == ELFv1 && arg.layout.size > unit.size)
@@ -120,8 +110,8 @@ fn classify_arg_ty<'a, Ty, C>(cx: &C, arg: &mut ArgType<'a, Ty>, abi: ABI)
     } else {
         // Aggregates larger than a doubleword should be padded
         // at the tail to fill out a whole number of doublewords.
-        let align = Align::from_bits(64, 64).unwrap();
-        (Reg::i64(), size.abi_align(align))
+        let reg_i64 = Reg::i64();
+        (reg_i64, size.align_to(reg_i64.align(cx)))
     };
 
     arg.cast_to(Uniform {

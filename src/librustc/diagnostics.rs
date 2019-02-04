@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 // Error messages for EXXXX errors.
@@ -47,7 +37,7 @@ trait Foo where Self: Sized {
 We cannot create an object of type `Box<Foo>` or `&Foo` since in this case
 `Self` would not be `Sized`.
 
-Generally, `Self : Sized` is used to indicate that the trait should not be used
+Generally, `Self: Sized` is used to indicate that the trait should not be used
 as a trait object. If the trait comes from your own crate, consider removing
 this restriction.
 
@@ -217,9 +207,9 @@ trait Trait {
 ```
 
 If this is not an option, consider replacing the type parameter with another
-trait object (e.g. if `T: OtherTrait`, use `on: Box<OtherTrait>`). If the number
-of types you intend to feed to this method is limited, consider manually listing
-out the methods of different types.
+trait object (e.g., if `T: OtherTrait`, use `on: Box<OtherTrait>`). If the
+number of types you intend to feed to this method is limited, consider manually
+listing out the methods of different types.
 
 ### Method has no receiver
 
@@ -371,6 +361,10 @@ Here are some simple examples of where you'll run into this error:
 struct Foo1 { x: &bool }
               // ^ expected lifetime parameter
 struct Foo2<'a> { x: &'a bool } // correct
+
+impl Foo2 {}
+  // ^^^^ expected lifetime parameter
+impl<'a> Foo2<'a> {} // correct
 
 struct Bar1 { x: Foo2 }
               // ^^^^ expected lifetime parameter
@@ -642,7 +636,7 @@ struct Foo; // error: duplicate lang item found: `arc`
 ```
 
 Lang items are already implemented in the standard library. Unless you are
-writing a free-standing application (e.g. a kernel), you do not need to provide
+writing a free-standing application (e.g., a kernel), you do not need to provide
 them yourself.
 
 You can build a free-standing crate by adding `#![no_std]` to the crate
@@ -699,7 +693,7 @@ This error appears when the curly braces contain an identifier which doesn't
 match with any of the type parameters or the string `Self`. This might happen
 if you misspelled a type parameter, or if you intended to use literal curly
 braces. If it is the latter, escape the curly braces with a second curly brace
-of the same type; e.g. a literal `{` is `{{`.
+of the same type; e.g., a literal `{` is `{{`.
 "##,
 
 E0231: r##"
@@ -776,10 +770,39 @@ struct Foo {
 These can be fixed by declaring lifetime parameters:
 
 ```
-fn foo<'a>(x: &'a str) {}
-
 struct Foo<'a> {
     x: &'a str,
+}
+
+fn foo<'a>(x: &'a str) {}
+```
+
+Impl blocks declare lifetime parameters separately. You need to add lifetime
+parameters to an impl block if you're implementing a type that has a lifetime
+parameter of its own.
+For example:
+
+```compile_fail,E0261
+struct Foo<'a> {
+    x: &'a str,
+}
+
+// error,  use of undeclared lifetime name `'a`
+impl Foo<'a> {
+    fn foo<'a>(x: &'a str) {}
+}
+```
+
+This is fixed by declaring the impl block like this:
+
+```
+struct Foo<'a> {
+    x: &'a str,
+}
+
+// correct
+impl<'a> Foo<'a> {
+    fn foo(x: &'a str) {}
 }
 ```
 "##,
@@ -832,7 +855,7 @@ extern "C" {
 
 E0271: r##"
 This is because of a type mismatch between the associated type of some
-trait (e.g. `T::Bar`, where `T` implements `trait Quux { type Bar; }`)
+trait (e.g., `T::Bar`, where `T` implements `trait Quux { type Bar; }`)
 and another type `U` that is required to be equal to `T::Bar`, but is not.
 Examples follow.
 
@@ -1164,7 +1187,7 @@ impl Generator for AnotherImpl {
 fn main() {
     let cont: u32 = Generator::create();
     // error, impossible to choose one of Generator trait implementation
-    // Impl or AnotherImpl? Maybe anything else?
+    // Should it be Impl or AnotherImpl, maybe something else?
 }
 ```
 
@@ -1187,27 +1210,6 @@ fn main() {
     // if there are multiple methods with same name (different traits)
     let gen2 = <AnotherImpl as Generator>::create();
 }
-```
-"##,
-
-E0296: r##"
-This error indicates that the given recursion limit could not be parsed. Ensure
-that the value provided is a positive integer between quotes.
-
-Erroneous code example:
-
-```compile_fail,E0296
-#![recursion_limit]
-
-fn main() {}
-```
-
-And a working example:
-
-```
-#![recursion_limit="1000"]
-
-fn main() {}
 ```
 "##,
 
@@ -1562,7 +1564,8 @@ fn takes_u8(_: u8) {}
 
 fn main() {
     unsafe { takes_u8(::std::mem::transmute(0u16)); }
-    // error: transmute called with types of different sizes
+    // error: cannot transmute between types of different sizes,
+    //        or dependently-sized types
 }
 ```
 
@@ -1622,7 +1625,7 @@ representation of enums isn't strictly defined in Rust, and this attribute
 won't work on enums.
 
 `#[repr(simd)]` will give a struct consisting of a homogeneous series of machine
-types (i.e. `u8`, `i32`, etc) a representation that permits vectorization via
+types (i.e., `u8`, `i32`, etc) a representation that permits vectorization via
 SIMD. This doesn't make much sense for enums since they don't consist of a
 single list of data.
 "##,
@@ -2102,20 +2105,6 @@ trait Foo { }
 ```
 "##,
 
-E0702: r##"
-This error indicates that a `#[non_exhaustive]` attribute had a value. The
-`#[non_exhaustive]` should be empty.
-
-Examples of erroneous code:
-
-```compile_fail,E0702
-# #![feature(non_exhaustive)]
-
-#[non_exhaustive(anything)]
-struct Foo;
-```
-"##,
-
 E0718: r##"
 This error indicates that a `#[lang = ".."]` attribute was placed
 on the wrong type of item.
@@ -2147,6 +2136,7 @@ register_diagnostics! {
     E0280, // requirement is not satisfied
     E0284, // cannot resolve type
 //  E0285, // overflow evaluation builtin bounds
+//  E0296, // replaced with a generic attribute input check
 //  E0300, // unexpanded macro
 //  E0304, // expected signed integer constant
 //  E0305, // expected constant
@@ -2189,4 +2179,5 @@ register_diagnostics! {
     E0709, // multiple different lifetimes used in arguments of `async fn`
     E0710, // an unknown tool name found in scoped lint
     E0711, // a feature has been declared with conflicting stability attributes
+//  E0702, // replaced with a generic attribute input check
 }

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Testing candidates
 //
 // After candidates have been simplified, the only match pairs that
@@ -18,6 +8,7 @@
 use build::Builder;
 use build::matches::{Candidate, MatchPair, Test, TestKind};
 use hair::*;
+use hair::pattern::compare_const_vals;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::fx::FxHashMap;
 use rustc::ty::{self, Ty};
@@ -71,16 +62,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 }
             }
 
-            PatternKind::Range { lo, hi, ty, end } => {
-                assert!(ty == match_pair.pattern.ty);
+            PatternKind::Range(range) => {
+                assert!(range.ty == match_pair.pattern.ty);
                 Test {
                     span: match_pair.pattern.span,
-                    kind: TestKind::Range {
-                        lo,
-                        hi,
-                        ty,
-                        end,
-                    },
+                    kind: TestKind::Range(range),
                 }
             }
 
@@ -115,7 +101,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                                      candidate: &Candidate<'pat, 'tcx>,
                                      switch_ty: Ty<'tcx>,
                                      options: &mut Vec<u128>,
-                                     indices: &mut FxHashMap<&'tcx ty::Const<'tcx>, usize>)
+                                     indices: &mut FxHashMap<ty::Const<'tcx>, usize>)
                                      -> bool
     {
         let match_pair = match candidate.match_pairs.iter().find(|mp| mp.place == *test_place) {
@@ -136,7 +122,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             PatternKind::Variant { .. } => {
                 panic!("you should have called add_variants_to_switch instead!");
             }
-            PatternKind::Range { .. } |
+            PatternKind::Range(range) => {
+                // Check that none of the switch values are in the range.
+                self.values_not_contained_in_range(range, indices)
+                    .unwrap_or(false)
+            }
             PatternKind::Slice { .. } |
             PatternKind::Array { .. } |
             PatternKind::Wild |
@@ -200,20 +190,18 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 for (idx, discr) in adt_def.discriminants(tcx) {
                     target_blocks.push(if variants.contains(idx) {
                         values.push(discr.val);
-                        targets.push(self.cfg.start_new_block());
-                        *targets.last().unwrap()
+                        let block = self.cfg.start_new_block();
+                        targets.push(block);
+                        block
                     } else {
-                        if otherwise_block.is_none() {
-                            otherwise_block = Some(self.cfg.start_new_block());
-                        }
-                        otherwise_block.unwrap()
+                        *otherwise_block
+                            .get_or_insert_with(|| self.cfg.start_new_block())
                     });
                 }
-                if let Some(otherwise_block) = otherwise_block {
-                    targets.push(otherwise_block);
-                } else {
-                    targets.push(self.unreachable_block());
-                }
+                targets.push(
+                    otherwise_block
+                        .unwrap_or_else(|| self.unreachable_block()),
+                );
                 debug!("num_enum_variants: {}, tested variants: {:?}, variants: {:?}",
                        num_enum_variants, values, variants);
                 let discr_ty = adt_def.repr.discr_type().to_ty(tcx);
@@ -314,18 +302,18 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     }
                     let eq_def_id = self.hir.tcx().lang_items().eq_trait().unwrap();
                     let (mty, method) = self.hir.trait_method(eq_def_id, "eq", ty, &[ty.into()]);
+                    let method = self.hir.tcx().intern_lazy_const(ty::LazyConst::Evaluated(method));
 
+                    let re_erased = self.hir.tcx().types.re_erased;
                     // take the argument by reference
-                    let region_scope = self.topmost_scope();
-                    let region = self.hir.tcx().mk_region(ty::ReScope(region_scope));
                     let tam = ty::TypeAndMut {
                         ty,
                         mutbl: Mutability::MutImmutable,
                     };
-                    let ref_ty = self.hir.tcx().mk_ref(region, tam);
+                    let ref_ty = self.hir.tcx().mk_ref(re_erased, tam);
 
                     // let lhs_ref_place = &lhs;
-                    let ref_rvalue = Rvalue::Ref(region, BorrowKind::Shared, place);
+                    let ref_rvalue = Rvalue::Ref(re_erased, BorrowKind::Shared, place);
                     let lhs_ref_place = self.temp(ref_ty, test.span);
                     self.cfg.push_assign(block, source_info, &lhs_ref_place, ref_rvalue);
                     let val = Operand::Move(lhs_ref_place);
@@ -335,7 +323,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     self.cfg.push_assign(block, source_info, &rhs_place, Rvalue::Use(expect));
 
                     // let rhs_ref_place = &rhs_place;
-                    let ref_rvalue = Rvalue::Ref(region, BorrowKind::Shared, rhs_place);
+                    let ref_rvalue = Rvalue::Ref(re_erased, BorrowKind::Shared, rhs_place);
                     let rhs_ref_place = self.temp(ref_ty, test.span);
                     self.cfg.push_assign(block, source_info, &rhs_ref_place, ref_rvalue);
                     let expect = Operand::Move(rhs_ref_place);
@@ -349,7 +337,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                             span: test.span,
                             ty: mty,
 
-                            // FIXME(#47184): This constant comes from user
+                            // FIXME(#54571): This constant comes from user
                             // input (a constant in a pattern).  Are
                             // there forms where users can add type
                             // annotations here?  For example, an
@@ -378,7 +366,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 }
             }
 
-            TestKind::Range { ref lo, ref hi, ty, ref end } => {
+            TestKind::Range(PatternRange { ref lo, ref hi, ty, ref end }) => {
                 // Test `val` by computing `lo <= val && val <= hi`, using primitive comparisons.
                 let lo = self.literal_operand(test.span, ty.clone(), lo.clone());
                 let hi = self.literal_operand(test.span, ty.clone(), hi.clone());
@@ -490,8 +478,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // away.)
         let tested_match_pair = candidate.match_pairs.iter()
                                                      .enumerate()
-                                                     .filter(|&(_, mp)| mp.place == *test_place)
-                                                     .next();
+                                                     .find(|&(_, mp)| mp.place == *test_place);
         let (match_pair_index, match_pair) = match tested_match_pair {
             Some(pair) => pair,
             None => {
@@ -532,6 +519,24 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 resulting_candidates[index].push(new_candidate);
                 true
             }
+
+            (&TestKind::SwitchInt { switch_ty: _, ref options, ref indices },
+             &PatternKind::Range(range)) => {
+                let not_contained = self
+                    .values_not_contained_in_range(range, indices)
+                    .unwrap_or(false);
+
+                if not_contained {
+                    // No switch values are contained in the pattern range,
+                    // so the pattern can be matched only if this test fails.
+                    let otherwise = options.len();
+                    resulting_candidates[otherwise].push(candidate.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+
             (&TestKind::SwitchInt { .. }, _) => false,
 
 
@@ -610,8 +615,63 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 }
             }
 
+            (&TestKind::Range(test),
+             &PatternKind::Range(pat)) => {
+                if test == pat {
+                    resulting_candidates[0]
+                        .push(self.candidate_without_match_pair(
+                            match_pair_index,
+                            candidate,
+                        ));
+                    return true;
+                }
+
+                let no_overlap = (|| {
+                    use std::cmp::Ordering::*;
+                    use rustc::hir::RangeEnd::*;
+
+                    let param_env = ty::ParamEnv::empty().and(test.ty);
+                    let tcx = self.hir.tcx();
+
+                    let lo = compare_const_vals(tcx, test.lo, pat.hi, param_env)?;
+                    let hi = compare_const_vals(tcx, test.hi, pat.lo, param_env)?;
+
+                    match (test.end, pat.end, lo, hi) {
+                        // pat < test
+                        (_, _, Greater, _) |
+                        (_, Excluded, Equal, _) |
+                        // pat > test
+                        (_, _, _, Less) |
+                        (Excluded, _, _, Equal) => Some(true),
+                        _ => Some(false),
+                    }
+                })();
+
+                if no_overlap == Some(true) {
+                    // Testing range does not overlap with pattern range,
+                    // so the pattern can be matched only if this test fails.
+                    resulting_candidates[1].push(candidate.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+
+            (&TestKind::Range(range), &PatternKind::Constant { value }) => {
+                if self.const_range_contains(range, value) == Some(false) {
+                    // `value` is not contained in the testing range,
+                    // so `value` can be matched only if this test fails.
+                    resulting_candidates[1].push(candidate.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+
+            (&TestKind::Range { .. }, _) => false,
+
+
             (&TestKind::Eq { .. }, _) |
-            (&TestKind::Range { .. }, _) |
             (&TestKind::Len { .. }, _) => {
                 // These are all binary tests.
                 //
@@ -721,6 +781,40 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         span_bug!(match_pair.pattern.span,
                   "simplifyable pattern found: {:?}",
                   match_pair.pattern)
+    }
+
+    fn const_range_contains(
+        &self,
+        range: PatternRange<'tcx>,
+        value: ty::Const<'tcx>,
+    ) -> Option<bool> {
+        use std::cmp::Ordering::*;
+
+        let param_env = ty::ParamEnv::empty().and(range.ty);
+        let tcx = self.hir.tcx();
+
+        let a = compare_const_vals(tcx, range.lo, value, param_env)?;
+        let b = compare_const_vals(tcx, value, range.hi, param_env)?;
+
+        match (b, range.end) {
+            (Less, _) |
+            (Equal, RangeEnd::Included) if a != Greater => Some(true),
+            _ => Some(false),
+        }
+    }
+
+    fn values_not_contained_in_range(
+        &self,
+        range: PatternRange<'tcx>,
+        indices: &FxHashMap<ty::Const<'tcx>, usize>,
+    ) -> Option<bool> {
+        for &val in indices.keys() {
+            if self.const_range_contains(range, val)? {
+                return Some(false);
+            }
+        }
+
+        Some(true)
     }
 }
 

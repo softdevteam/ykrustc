@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains `HashStable` implementations for various HIR data
 //! types in no particular order.
 
@@ -163,7 +153,7 @@ impl_stable_hash_for!(enum hir::LifetimeName {
     Error,
 });
 
-impl_stable_hash_for!(struct hir::Label {
+impl_stable_hash_for!(struct ast::Label {
     ident
 });
 
@@ -420,7 +410,6 @@ impl_stable_hash_for!(struct hir::Block {
     rules,
     span,
     targeted_by_break,
-    recovered,
 });
 
 impl_stable_hash_for!(struct hir::Pat {
@@ -494,7 +483,12 @@ impl_stable_hash_for!(enum hir::UnOp {
     UnNeg
 });
 
-impl_stable_hash_for_spanned!(hir::StmtKind);
+impl_stable_hash_for!(struct hir::Stmt {
+    id,
+    node,
+    span,
+});
+
 
 impl_stable_hash_for!(struct hir::Local {
     pat,
@@ -505,12 +499,6 @@ impl_stable_hash_for!(struct hir::Local {
     span,
     attrs,
     source
-});
-
-impl_stable_hash_for_spanned!(hir::DeclKind);
-impl_stable_hash_for!(enum hir::DeclKind {
-    Local(local),
-    Item(item_id)
 });
 
 impl_stable_hash_for!(struct hir::Arm {
@@ -602,7 +590,8 @@ impl_stable_hash_for!(enum hir::ExprKind {
     InlineAsm(asm, inputs, outputs),
     Struct(path, fields, base),
     Repeat(val, times),
-    Yield(val)
+    Yield(val),
+    Err
 });
 
 impl_stable_hash_for!(enum hir::LocalSource {
@@ -828,7 +817,7 @@ impl_stable_hash_for!(struct hir::EnumDef {
 });
 
 impl_stable_hash_for!(struct hir::VariantKind {
-    name,
+    ident -> (ident.name),
     attrs,
     data,
     disr_expr
@@ -862,7 +851,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for hir::Item {
                                           hcx: &mut StableHashingContext<'a>,
                                           hasher: &mut StableHasher<W>) {
         let hir::Item {
-            name,
+            ident,
             ref attrs,
             id: _,
             hir_id: _,
@@ -872,7 +861,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for hir::Item {
         } = *self;
 
         hcx.hash_hir_item_like(|hcx| {
-            name.hash_stable(hcx, hasher);
+            ident.name.hash_stable(hcx, hasher);
             attrs.hash_stable(hcx, hasher);
             node.hash_stable(hcx, hasher);
             vis.hash_stable(hcx, hasher);
@@ -936,7 +925,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for hir::AssociatedItemKind {
 }
 
 impl_stable_hash_for!(struct hir::ForeignItem {
-    name,
+    ident -> (ident.name),
     attrs,
     node,
     id,
@@ -951,9 +940,10 @@ impl_stable_hash_for!(enum hir::ForeignItemKind {
 });
 
 impl_stable_hash_for!(enum hir::StmtKind {
-    Decl(decl, id),
-    Expr(expr, id),
-    Semi(expr, id)
+    Local(local),
+    Item(item_id),
+    Expr(expr),
+    Semi(expr)
 });
 
 impl_stable_hash_for!(struct hir::Arg {
@@ -1169,6 +1159,7 @@ impl<'a> ToStableHashKey<StableHashingContext<'a>> for hir::TraitCandidate {
 impl_stable_hash_for!(struct hir::CodegenFnAttrs {
     flags,
     inline,
+    optimize,
     export_name,
     link_name,
     target_features,
@@ -1186,6 +1177,14 @@ impl<'hir> HashStable<StableHashingContext<'hir>> for hir::CodegenFnAttrFlags
 }
 
 impl<'hir> HashStable<StableHashingContext<'hir>> for attr::InlineAttr {
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          hcx: &mut StableHashingContext<'hir>,
+                                          hasher: &mut StableHasher<W>) {
+        mem::discriminant(self).hash_stable(hcx, hasher);
+    }
+}
+
+impl<'hir> HashStable<StableHashingContext<'hir>> for attr::OptimizeAttr {
     fn hash_stable<W: StableHasherResult>(&self,
                                           hcx: &mut StableHashingContext<'hir>,
                                           hasher: &mut StableHasher<W>) {

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of compiling various phases of the compiler and standard
 //! library.
 //!
@@ -18,7 +8,7 @@
 
 use std::borrow::Cow;
 use std::env;
-use std::fs::{self, File};
+use std::fs;
 use std::io::BufReader;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
@@ -29,12 +19,13 @@ use build_helper::{output, mtime, up_to_date};
 use filetime::FileTime;
 use serde_json;
 
-use util::{exe, libdir, is_dylib};
-use {Compiler, Mode, GitRepo};
-use native;
+use crate::dist;
+use crate::util::{exe, libdir, is_dylib};
+use crate::{Compiler, Mode, GitRepo};
+use crate::native;
 
-use cache::{INTERNER, Interned};
-use builder::{Step, RunConfig, ShouldRun, Builder};
+use crate::cache::{INTERNER, Interned};
+use crate::builder::{Step, RunConfig, ShouldRun, Builder};
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Std {
@@ -87,11 +78,8 @@ impl Step for Std {
             builder.info(&format!("Uplifting stage1 std ({} -> {})", from.host, target));
 
             // Even if we're not building std this stage, the new sysroot must
-            // still contain the musl startup objects.
-            if target.contains("musl") {
-                let libdir = builder.sysroot_libdir(compiler, target);
-                copy_musl_third_party_objects(builder, target, &libdir);
-            }
+            // still contain the third party objects needed by various targets.
+            copy_third_party_objects(builder, &compiler, target);
 
             builder.ensure(StdLink {
                 compiler: from,
@@ -101,10 +89,7 @@ impl Step for Std {
             return;
         }
 
-        if target.contains("musl") {
-            let libdir = builder.sysroot_libdir(compiler, target);
-            copy_musl_third_party_objects(builder, target, &libdir);
-        }
+        copy_third_party_objects(builder, &compiler, target);
 
         let mut cargo = builder.cargo(compiler, Mode::Std, target, "build");
         std_cargo(builder, &compiler, target, &mut cargo);
@@ -114,7 +99,6 @@ impl Step for Std {
                 &compiler.host, target));
         run_cargo(builder,
                   &mut cargo,
-                  vec![],
                   &libstd_stamp(builder, compiler, target),
                   false);
 
@@ -126,17 +110,36 @@ impl Step for Std {
     }
 }
 
-/// Copies the crt(1,i,n).o startup objects
-///
-/// Since musl supports fully static linking, we can cross link for it even
-/// with a glibc-targeting toolchain, given we have the appropriate startup
-/// files. As those shipped with glibc won't work, copy the ones provided by
-/// musl so we have them on linux-gnu hosts.
-fn copy_musl_third_party_objects(builder: &Builder,
-                                 target: Interned<String>,
-                                 into: &Path) {
-    for &obj in &["crt1.o", "crti.o", "crtn.o"] {
-        builder.copy(&builder.musl_root(target).unwrap().join("lib").join(obj), &into.join(obj));
+/// Copies third pary objects needed by various targets.
+fn copy_third_party_objects(builder: &Builder, compiler: &Compiler, target: Interned<String>) {
+    let libdir = builder.sysroot_libdir(*compiler, target);
+
+    // Copies the crt(1,i,n).o startup objects
+    //
+    // Since musl supports fully static linking, we can cross link for it even
+    // with a glibc-targeting toolchain, given we have the appropriate startup
+    // files. As those shipped with glibc won't work, copy the ones provided by
+    // musl so we have them on linux-gnu hosts.
+    if target.contains("musl") {
+        for &obj in &["crt1.o", "crti.o", "crtn.o"] {
+            builder.copy(
+                &builder.musl_root(target).unwrap().join("lib").join(obj),
+                &libdir.join(obj),
+            );
+        }
+    }
+
+    // Copies libunwind.a compiled to be linked wit x86_64-fortanix-unknown-sgx.
+    //
+    // This target needs to be linked to Fortanix's port of llvm's libunwind.
+    // libunwind requires support for rwlock and printing to stderr,
+    // which is provided by std for this target.
+    if target == "x86_64-fortanix-unknown-sgx" {
+        let src_path_env = "X86_FORTANIX_SGX_LIBS";
+        let obj = "libunwind.a";
+        let src = env::var(src_path_env).expect(&format!("{} not found in env", src_path_env));
+        let src = Path::new(&src).join(obj);
+        builder.copy(&src, &libdir.join(obj));
     }
 }
 
@@ -152,11 +155,12 @@ pub fn std_cargo(builder: &Builder,
 
     if builder.no_std(target) == Some(true) {
         // for no-std targets we only compile a few no_std crates
-        cargo.arg("--features").arg("c mem")
+        cargo
             .args(&["-p", "alloc"])
-            .args(&["-p", "compiler_builtins"])
             .arg("--manifest-path")
-            .arg(builder.src.join("src/rustc/compiler_builtins_shim/Cargo.toml"));
+            .arg(builder.src.join("src/liballoc/Cargo.toml"))
+            .arg("--features")
+            .arg("compiler-builtins-mem");
     } else {
         let features = builder.std_features();
 
@@ -374,7 +378,6 @@ impl Step for Test {
                 &compiler.host, target));
         run_cargo(builder,
                   &mut cargo,
-                  vec![],
                   &libtest_stamp(builder, compiler, target),
                   false);
 
@@ -502,7 +505,6 @@ impl Step for Rustc {
                  compiler.stage, &compiler.host, target));
         run_cargo(builder,
                   &mut cargo,
-                  vec![],
                   &librustc_stamp(builder, compiler, target),
                   false);
 
@@ -552,8 +554,8 @@ pub fn rustc_cargo_env(builder: &Builder, cargo: &mut Command) {
     if let Some(ref s) = builder.config.rustc_default_linker {
         cargo.env("CFG_DEFAULT_LINKER", s);
     }
-    if builder.config.rustc_parallel_queries {
-        cargo.env("RUSTC_PARALLEL_QUERIES", "1");
+    if builder.config.rustc_parallel {
+        cargo.env("RUSTC_PARALLEL_COMPILER", "1");
     }
     if builder.config.rust_verify_llvm_ir {
         cargo.env("RUSTC_VERIFY_LLVM_IR", "1");
@@ -645,47 +647,18 @@ impl Step for CodegenBackend {
 
         let out_dir = builder.cargo_out(compiler, Mode::Codegen, target);
 
-        let mut cargo = builder.cargo(compiler, Mode::Codegen, target, "rustc");
+        let mut cargo = builder.cargo(compiler, Mode::Codegen, target, "build");
         cargo.arg("--manifest-path")
             .arg(builder.src.join("src/librustc_codegen_llvm/Cargo.toml"));
         rustc_cargo_env(builder, &mut cargo);
 
         let features = build_codegen_backend(&builder, &mut cargo, &compiler, target, backend);
 
-        let mut cargo_tails_args = vec![];
-
-        if builder.config.llvm_thin_lto {
-            cargo_tails_args.push("--".to_string());
-
-            let num_jobs = builder.jobs();
-
-            if !target.contains("msvc") {
-                // Here we assume that the linker is clang. If it's not, there'll
-                // be linker errors.
-                cargo_tails_args.push("-Clink-arg=-fuse-ld=lld".to_string());
-                cargo_tails_args.push("-Clink-arg=-flto=thin".to_string());
-
-                if builder.config.llvm_optimize {
-                    cargo_tails_args.push("-Clink-arg=-O2".to_string());
-                }
-
-                // Let's make LLD respect the `-j` option.
-                let num_jobs_arg = format!("-Clink-arg=-Wl,--thinlto-jobs={}", num_jobs);
-                cargo_tails_args.push(num_jobs_arg);
-            } else {
-                // Here we assume that the linker is lld-link.exe. lld-link.exe
-                // does not need the extra arguments except for num_jobs
-                let num_jobs_arg = format!("-Clink-arg=/opt:lldltojobs={}", num_jobs);
-                cargo_tails_args.push(num_jobs_arg);
-            }
-        }
-
         let tmp_stamp = out_dir.join(".tmp.stamp");
 
         let _folder = builder.fold_output(|| format!("stage{}-rustc_codegen_llvm", compiler.stage));
         let files = run_cargo(builder,
                               cargo.arg("--features").arg(features),
-                              cargo_tails_args,
                               &tmp_stamp,
                               false);
         if builder.config.dry_run {
@@ -707,7 +680,7 @@ impl Step for CodegenBackend {
         }
         let stamp = codegen_backend_stamp(builder, compiler, target, backend);
         let codegen_backend = codegen_backend.to_str().unwrap();
-        t!(t!(File::create(&stamp)).write_all(codegen_backend.as_bytes()));
+        t!(fs::write(&stamp, &codegen_backend));
     }
 }
 
@@ -739,6 +712,7 @@ pub fn build_codegen_backend(builder: &Builder,
             if builder.is_rust_llvm(target) && backend != "emscripten" {
                 cargo.env("LLVM_RUSTLLVM", "1");
             }
+
             cargo.env("LLVM_CONFIG", &llvm_config);
             if backend != "emscripten" {
                 let target_config = builder.config.target_config.get(&target);
@@ -758,8 +732,13 @@ pub fn build_codegen_backend(builder: &Builder,
                                          "libstdc++.a");
                 cargo.env("LLVM_STATIC_STDCPP", file);
             }
-            if builder.config.llvm_link_shared {
+            if builder.config.llvm_link_shared ||
+                (builder.config.llvm_thin_lto && backend != "emscripten")
+            {
                 cargo.env("LLVM_LINK_SHARED", "1");
+            }
+            if builder.config.llvm_use_libcxx {
+                cargo.env("LLVM_USE_LIBCXX", "1");
             }
         }
         _ => panic!("unknown backend: {}", backend),
@@ -796,8 +775,7 @@ fn copy_codegen_backends_to_sysroot(builder: &Builder,
 
     for backend in builder.config.rust_codegen_backends.iter() {
         let stamp = codegen_backend_stamp(builder, compiler, target, *backend);
-        let mut dylib = String::new();
-        t!(t!(File::open(&stamp)).read_to_string(&mut dylib));
+        let dylib = t!(fs::read_to_string(&stamp));
         let file = Path::new(&dylib);
         let filename = file.file_name().unwrap().to_str().unwrap();
         // change `librustc_codegen_llvm-xxxxxx.so` to `librustc_codegen_llvm-llvm.so`
@@ -999,6 +977,8 @@ impl Step for Assemble {
             copy_lld_to_sysroot(builder, target_compiler, &lld_install);
         }
 
+        dist::maybe_install_llvm_dylib(builder, target_compiler.host, &sysroot);
+
         // Link the compiler binary itself into place
         let out_dir = builder.cargo_out(build_compiler, Mode::Rustc, host);
         let rustc = out_dir.join(exe("rustc_binary", &*host));
@@ -1025,7 +1005,6 @@ pub fn add_to_sysroot(builder: &Builder, sysroot_dst: &Path, stamp: &Path) {
 
 pub fn run_cargo(builder: &Builder,
                  cargo: &mut Command,
-                 tail_args: Vec<String>,
                  stamp: &Path,
                  is_check: bool)
     -> Vec<PathBuf>
@@ -1048,7 +1027,7 @@ pub fn run_cargo(builder: &Builder,
     // files we need to probe for later.
     let mut deps = Vec::new();
     let mut toplevel = Vec::new();
-    let ok = stream_cargo(builder, cargo, tail_args, &mut |msg| {
+    let ok = stream_cargo(builder, cargo, &mut |msg| {
         let filenames = match msg {
             CargoMessage::CompilerArtifact { filenames, .. } => filenames,
             _ => return,
@@ -1137,10 +1116,7 @@ pub fn run_cargo(builder: &Builder,
     // contents (the list of files to copy) is different or if any dep's mtime
     // is newer then we rewrite the stamp file.
     deps.sort();
-    let mut stamp_contents = Vec::new();
-    if let Ok(mut f) = File::open(stamp) {
-        t!(f.read_to_end(&mut stamp_contents));
-    }
+    let stamp_contents = fs::read(stamp);
     let stamp_mtime = mtime(&stamp);
     let mut new_contents = Vec::new();
     let mut max = None;
@@ -1156,7 +1132,10 @@ pub fn run_cargo(builder: &Builder,
     }
     let max = max.unwrap();
     let max_path = max_path.unwrap();
-    if stamp_contents == new_contents && max <= stamp_mtime {
+    let contents_equal = stamp_contents
+        .map(|contents| contents == new_contents)
+        .unwrap_or_default();
+    if contents_equal && max <= stamp_mtime {
         builder.verbose(&format!("not updating {:?}; contents equal and {:?} <= {:?}",
                 stamp, max, stamp_mtime));
         return deps
@@ -1166,14 +1145,13 @@ pub fn run_cargo(builder: &Builder,
     } else {
         builder.verbose(&format!("updating {:?} as deps changed", stamp));
     }
-    t!(t!(File::create(stamp)).write_all(&new_contents));
+    t!(fs::write(&stamp, &new_contents));
     deps
 }
 
 pub fn stream_cargo(
     builder: &Builder,
     cargo: &mut Command,
-    tail_args: Vec<String>,
     cb: &mut dyn FnMut(CargoMessage),
 ) -> bool {
     if builder.config.dry_run {
@@ -1183,10 +1161,6 @@ pub fn stream_cargo(
     // stderr as piped so we can get those pretty colors.
     cargo.arg("--message-format").arg("json")
          .stdout(Stdio::piped());
-
-    for arg in tail_args {
-        cargo.arg(arg);
-    }
 
     builder.verbose(&format!("running: {:?}", cargo));
     let mut child = match cargo.spawn() {

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Filesystem manipulation operations.
 //!
 //! This module contains basic methods to manipulate the contents of the local
@@ -195,9 +185,10 @@ pub struct OpenOptions(fs_imp::OpenOptions);
 /// This module only currently provides one bit of information, [`readonly`],
 /// which is exposed on all currently supported platforms. Unix-specific
 /// functionality, such as mode bits, is available through the
-/// `os::unix::PermissionsExt` trait.
+/// [`PermissionsExt`] trait.
 ///
 /// [`readonly`]: struct.Permissions.html#method.readonly
+/// [`PermissionsExt`]: ../os/unix/fs/trait.PermissionsExt.html
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Permissions(fs_imp::FilePermissions);
@@ -256,7 +247,7 @@ fn initial_buffer_size(file: &File) -> usize {
 /// use std::fs;
 /// use std::net::SocketAddr;
 ///
-/// fn main() -> Result<(), Box<std::error::Error + 'static>> {
+/// fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 ///     let foo: SocketAddr = String::from_utf8_lossy(&fs::read("address.txt")?).parse()?;
 ///     Ok(())
 /// }
@@ -298,7 +289,7 @@ pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 /// use std::fs;
 /// use std::net::SocketAddr;
 ///
-/// fn main() -> Result<(), Box<std::error::Error + 'static>> {
+/// fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 ///     let foo: SocketAddr = fs::read_to_string("address.txt")?.parse()?;
 ///     Ok(())
 /// }
@@ -1130,7 +1121,9 @@ impl Permissions {
     /// writing.
     ///
     /// This operation does **not** modify the filesystem. To modify the
-    /// filesystem use the `fs::set_permissions` function.
+    /// filesystem use the [`fs::set_permissions`] function.
+    ///
+    /// [`fs::set_permissions`]: fn.set_permissions.html
     ///
     /// # Examples
     ///
@@ -1406,7 +1399,7 @@ impl AsInner<fs_imp::DirEntry> for DirEntry {
 /// Removes a file from the filesystem.
 ///
 /// Note that there is no
-/// guarantee that the file is immediately deleted (e.g. depending on
+/// guarantee that the file is immediately deleted (e.g., depending on
 /// platform, other open file descriptors may prevent immediate removal).
 ///
 /// # Platform-specific behavior
@@ -1648,9 +1641,14 @@ pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> io::Result<(
 ///
 /// The `dst` path will be a symbolic link pointing to the `src` path.
 /// On Windows, this will be a file symlink, not a directory symlink;
-/// for this reason, the platform-specific `std::os::unix::fs::symlink`
-/// and `std::os::windows::fs::{symlink_file, symlink_dir}` should be
+/// for this reason, the platform-specific [`std::os::unix::fs::symlink`]
+/// and [`std::os::windows::fs::symlink_file`] or [`symlink_dir`] should be
 /// used instead to make the intent explicit.
+///
+/// [`std::os::unix::fs::symlink`]: ../os/unix/fs/fn.symlink.html
+/// [`std::os::windows::fs::symlink_file`]: ../os/windows/fs/fn.symlink_file.html
+/// [`symlink_dir`]: ../os/windows/fs/fn.symlink_dir.html
+///
 ///
 /// # Examples
 ///
@@ -1728,7 +1726,7 @@ pub fn read_link<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 /// limited to just these cases:
 ///
 /// * `path` does not exist.
-/// * A component in path is not a directory.
+/// * A non-final component in path is not a directory.
 ///
 /// # Examples
 ///
@@ -1804,13 +1802,15 @@ pub fn create_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
 /// * If any directory in the path specified by `path`
 /// does not already exist and it could not be created otherwise. The specific
 /// error conditions for when a directory is being created (after it is
-/// determined to not exist) are outlined by `fs::create_dir`.
+/// determined to not exist) are outlined by [`fs::create_dir`].
 ///
 /// Notable exception is made for situations where any of the directories
 /// specified in the `path` could not be created as it was being created concurrently.
 /// Such cases are considered to be successful. That is, calling `create_dir_all`
 /// concurrently from multiple threads or processes is guaranteed not to fail
 /// due to a race condition with itself.
+///
+/// [`fs::create_dir`]: fn.create_dir.html
 ///
 /// # Examples
 ///
@@ -1877,7 +1877,10 @@ pub fn remove_dir<P: AsRef<Path>>(path: P) -> io::Result<()> {
 ///
 /// # Errors
 ///
-/// See `file::remove_file` and `fs::remove_dir`.
+/// See [`fs::remove_file`] and [`fs::remove_dir`].
+///
+/// [`fs::remove_file`]:  fn.remove_file.html
+/// [`fs::remove_dir`]: fn.remove_dir.html
 ///
 /// # Examples
 ///
@@ -2065,7 +2068,7 @@ impl DirBuilder {
             Err(e) => return Err(e),
         }
         match path.parent() {
-            Some(p) => try!(self.create_dir_all(p)),
+            Some(p) => self.create_dir_all(p)?,
             None => return Err(io::Error::new(io::ErrorKind::Other, "failed to create whole tree")),
         }
         match self.inner.mkdir(path) {
@@ -2089,7 +2092,7 @@ mod tests {
     use fs::{self, File, OpenOptions};
     use io::{ErrorKind, SeekFrom};
     use path::Path;
-    use rand::{StdRng, FromEntropy, RngCore};
+    use rand::{rngs::StdRng, FromEntropy, RngCore};
     use str;
     use sys_common::io::test::{TempDir, tmpdir};
     use thread;

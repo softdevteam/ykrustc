@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! ### Inferring borrow kinds for upvars
 //!
 //! Whenever there is a closure expression, we need to determine how each
@@ -74,7 +64,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for InferBorrowKindVisitor<'a, 'gcx, 'tcx> {
 
     fn visit_expr(&mut self, expr: &'gcx hir::Expr) {
         if let hir::ExprKind::Closure(cc, _, body_id, _, _) = expr.node {
-            let body = self.fcx.tcx.hir.body(body_id);
+            let body = self.fcx.tcx.hir().body(body_id);
             self.visit_body(body);
             self.fcx
                 .analyze_closure(expr.id, expr.hir_id, expr.span, body, cc);
@@ -132,14 +122,18 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         };
 
         self.tcx.with_freevars(closure_node_id, |freevars| {
+            let mut freevar_list: Vec<ty::UpvarId> = Vec::with_capacity(freevars.len());
             for freevar in freevars {
                 let upvar_id = ty::UpvarId {
                     var_path: ty::UpvarPath {
-                        hir_id : self.tcx.hir.node_to_hir_id(freevar.var_id()),
+                        hir_id: self.tcx.hir().node_to_hir_id(freevar.var_id()),
                     },
                     closure_expr_id: LocalDefId::from_def_id(closure_def_id),
                 };
                 debug!("seed upvar_id {:?}", upvar_id);
+                // Adding the upvar Id to the list of Upvars, which will be added
+                // to the map for the closure at the end of the for loop.
+                freevar_list.push(upvar_id);
 
                 let capture_kind = match capture_clause {
                     hir::CaptureByValue => ty::UpvarCapture::ByValue,
@@ -159,9 +153,18 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     .upvar_capture_map
                     .insert(upvar_id, capture_kind);
             }
+            // Add the vector of freevars to the map keyed with the closure id.
+            // This gives us an easier access to them without having to call
+            // with_freevars again..
+            if !freevar_list.is_empty() {
+                self.tables
+                    .borrow_mut()
+                    .upvar_list
+                    .insert(closure_def_id, freevar_list);
+            }
         });
 
-        let body_owner_def_id = self.tcx.hir.body_owner_def_id(body.id());
+        let body_owner_def_id = self.tcx.hir().body_owner_def_id(body.id());
         let region_scope_tree = &self.tcx.region_scope_tree(body_owner_def_id);
         let mut delegate = InferBorrowKind {
             fcx: self,
@@ -176,7 +179,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             self.param_env,
             region_scope_tree,
             &self.tables.borrow(),
-        ).consume_body(body);
+        )
+        .consume_body(body);
 
         if let Some(closure_substs) = infer_kind {
             // Unify the (as yet unbound) type variable in the closure
@@ -240,19 +244,17 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         // This may change if abstract return types of some sort are
         // implemented.
         let tcx = self.tcx;
-        let closure_def_index = tcx.hir.local_def_id(closure_id);
+        let closure_def_index = tcx.hir().local_def_id(closure_id);
 
         tcx.with_freevars(closure_id, |freevars| {
             freevars
                 .iter()
                 .map(|freevar| {
                     let var_node_id = freevar.var_id();
-                    let var_hir_id = tcx.hir.node_to_hir_id(var_node_id);
+                    let var_hir_id = tcx.hir().node_to_hir_id(var_node_id);
                     let freevar_ty = self.node_ty(var_hir_id);
                     let upvar_id = ty::UpvarId {
-                        var_path: ty::UpvarPath {
-                            hir_id: var_hir_id,
-                        },
+                        var_path: ty::UpvarPath { hir_id: var_hir_id },
                         closure_expr_id: LocalDefId::from_def_id(closure_def_index),
                     };
                     let capture = self.tables.borrow().upvar_capture(upvar_id);
@@ -272,7 +274,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             },
                         ),
                     }
-                }).collect()
+                })
+                .collect()
         })
     }
 }
@@ -647,6 +650,6 @@ impl<'a, 'gcx, 'tcx> euv::Delegate<'tcx> for InferBorrowKind<'a, 'gcx, 'tcx> {
 }
 
 fn var_name(tcx: TyCtxt, var_hir_id: hir::HirId) -> ast::Name {
-    let var_node_id = tcx.hir.hir_to_node_id(var_hir_id);
-    tcx.hir.name(var_node_id)
+    let var_node_id = tcx.hir().hir_to_node_id(var_hir_id);
+    tcx.hir().name(var_node_id)
 }

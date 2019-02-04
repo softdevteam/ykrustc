@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![unstable(feature = "futures_api",
             reason = "futures in libcore are unstable",
             issue = "50547")]
@@ -227,7 +217,7 @@ pub unsafe trait UnsafeWake: Send + Sync {
     /// # Unsafety
     ///
     /// This function is unsafe to call because it's asserting the `UnsafeWake`
-    /// value is in a consistent state, i.e. hasn't been dropped.
+    /// value is in a consistent state, i.e., hasn't been dropped.
     unsafe fn clone_raw(&self) -> Waker;
 
     /// Drops this instance of `UnsafeWake`, deallocating resources
@@ -249,7 +239,7 @@ pub unsafe trait UnsafeWake: Send + Sync {
     /// # Unsafety
     ///
     /// This function is unsafe to call because it's asserting the `UnsafeWake`
-    /// value is in a consistent state, i.e. hasn't been dropped.
+    /// value is in a consistent state, i.e., hasn't been dropped.
     unsafe fn drop_raw(&self);
 
     /// Indicates that the associated task is ready to make progress and should
@@ -266,7 +256,7 @@ pub unsafe trait UnsafeWake: Send + Sync {
     /// # Unsafety
     ///
     /// This function is unsafe to call because it's asserting the `UnsafeWake`
-    /// value is in a consistent state, i.e. hasn't been dropped.
+    /// value is in a consistent state, i.e., hasn't been dropped.
     unsafe fn wake(&self);
 
     /// Indicates that the associated task is ready to make progress and should
@@ -286,7 +276,7 @@ pub unsafe trait UnsafeWake: Send + Sync {
     /// # Unsafety
     ///
     /// This function is unsafe to call because it's asserting the `UnsafeWake`
-    /// value is in a consistent state, i.e. hasn't been dropped, and that the
+    /// value is in a consistent state, i.e., hasn't been dropped, and that the
     /// `UnsafeWake` hasn't moved from the thread on which it was created.
     unsafe fn wake_local(&self) {
         self.wake()

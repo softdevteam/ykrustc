@@ -1,4 +1,4 @@
-// Copyright (c) 2016-2017 Nuxi (https://nuxi.nl/) and contributors.
+// Copyright (c) 2016-2017 Nuxi <https://nuxi.nl/> and contributors.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions
@@ -107,7 +107,7 @@
 //!
 //! ## Specification of the ABI
 //!
-//! The entire ABI is specified in a a file called
+//! The entire ABI is specified in a file called
 //! [`cloudabi.txt`](https://github.com/NuxiNL/cloudabi/blob/master/cloudabi.txt),
 //! from which all
 //! [headers](https://github.com/NuxiNL/cloudabi/tree/master/headers)

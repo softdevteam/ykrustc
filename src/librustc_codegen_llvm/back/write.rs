@@ -1,13 +1,3 @@
-// Copyright 2013-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use attributes;
 use back::bytecode::{self, RLIB_BYTECODE_EXTENSION};
 use back::lto::ThinBuffer;
@@ -15,15 +5,17 @@ use rustc_codegen_ssa::back::write::{CodegenContext, ModuleConfig, run_assembler
 use rustc_codegen_ssa::traits::*;
 use base;
 use consts;
+use rustc::hir::def_id::LOCAL_CRATE;
 use rustc::session::config::{self, OutputType, Passes, Lto};
 use rustc::session::Session;
+use rustc::ty::TyCtxt;
 use time_graph::Timeline;
 use llvm::{self, DiagnosticInfo, PassManager, SMDiagnostic};
 use llvm_util;
 use ModuleLlvm;
 use rustc_codegen_ssa::{ModuleCodegen, CompiledModule};
 use rustc::util::common::time_ext;
-use rustc_fs_util::{path2cstr, link_or_copy};
+use rustc_fs_util::{path_to_c_string, link_or_copy};
 use rustc_data_structures::small_c_str::SmallCStr;
 use errors::{self, Handler, FatalError};
 use type_::Type;
@@ -80,7 +72,7 @@ pub fn write_output_file(
         output: &Path,
         file_type: llvm::FileType) -> Result<(), FatalError> {
     unsafe {
-        let output_c = path2cstr(output);
+        let output_c = path_to_c_string(output);
         let result = llvm::LLVMRustWriteOutputFile(target, pm, m, output_c.as_ptr(), file_type);
         if result.into_result().is_err() {
             let msg = format!("could not write output to {}", output.display());
@@ -91,42 +83,46 @@ pub fn write_output_file(
     }
 }
 
-pub(crate) fn get_llvm_opt_level(optimize: config::OptLevel) -> llvm::CodeGenOptLevel {
-    match optimize {
-      config::OptLevel::No => llvm::CodeGenOptLevel::None,
-      config::OptLevel::Less => llvm::CodeGenOptLevel::Less,
-      config::OptLevel::Default => llvm::CodeGenOptLevel::Default,
-      config::OptLevel::Aggressive => llvm::CodeGenOptLevel::Aggressive,
-      _ => llvm::CodeGenOptLevel::Default,
-    }
-}
-
-pub(crate) fn get_llvm_opt_size(optimize: config::OptLevel) -> llvm::CodeGenOptSize {
-    match optimize {
-      config::OptLevel::Size => llvm::CodeGenOptSizeDefault,
-      config::OptLevel::SizeMin => llvm::CodeGenOptSizeAggressive,
-      _ => llvm::CodeGenOptSizeNone,
-    }
-}
-
 pub fn create_target_machine(
+    tcx: TyCtxt,
+    find_features: bool,
+) -> &'static mut llvm::TargetMachine {
+    target_machine_factory(tcx.sess, tcx.backend_optimization_level(LOCAL_CRATE), find_features)()
+        .unwrap_or_else(|err| llvm_err(tcx.sess.diagnostic(), &err).raise() )
+}
+
+pub fn create_informational_target_machine(
     sess: &Session,
     find_features: bool,
 ) -> &'static mut llvm::TargetMachine {
-    target_machine_factory(sess, find_features)().unwrap_or_else(|err| {
+    target_machine_factory(sess, config::OptLevel::No, find_features)().unwrap_or_else(|err| {
         llvm_err(sess.diagnostic(), &err).raise()
     })
+}
+
+
+pub fn to_llvm_opt_settings(cfg: config::OptLevel) -> (llvm::CodeGenOptLevel, llvm::CodeGenOptSize)
+{
+    use self::config::OptLevel::*;
+    match cfg {
+        No => (llvm::CodeGenOptLevel::None, llvm::CodeGenOptSizeNone),
+        Less => (llvm::CodeGenOptLevel::Less, llvm::CodeGenOptSizeNone),
+        Default => (llvm::CodeGenOptLevel::Default, llvm::CodeGenOptSizeNone),
+        Aggressive => (llvm::CodeGenOptLevel::Aggressive, llvm::CodeGenOptSizeNone),
+        Size => (llvm::CodeGenOptLevel::Default, llvm::CodeGenOptSizeDefault),
+        SizeMin => (llvm::CodeGenOptLevel::Default, llvm::CodeGenOptSizeAggressive),
+    }
 }
 
 // If find_features is true this won't access `sess.crate_types` by assuming
 // that `is_pie_binary` is false. When we discover LLVM target features
 // `sess.crate_types` is uninitialized so we cannot access it.
-pub fn target_machine_factory(sess: &Session, find_features: bool)
+pub fn target_machine_factory(sess: &Session, optlvl: config::OptLevel, find_features: bool)
     -> Arc<dyn Fn() -> Result<&'static mut llvm::TargetMachine, String> + Send + Sync>
 {
     let reloc_model = get_reloc_model(sess);
 
-    let opt_level = get_llvm_opt_level(sess.opts.optimize);
+    let (opt_level, _) = to_llvm_opt_settings(optlvl);
     let use_softfp = sess.opts.cg.soft_float;
 
     let ffunction_sections = sess.target.target.options.function_sections;
@@ -211,7 +207,7 @@ pub(crate) fn save_temp_bitcode(
         let ext = format!("{}.bc", name);
         let cgu = Some(&module.name[..]);
         let path = cgcx.output_filenames.temp_path_ext(&ext, cgu);
-        let cstr = path2cstr(&path);
+        let cstr = path_to_c_string(&path);
         let llmod = module.module_llvm.llmod();
         llvm::LLVMWriteBitcodeToFile(llmod, cstr.as_ptr());
     }
@@ -324,7 +320,7 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
 
     if config.emit_no_opt_bc {
         let out = cgcx.output_filenames.temp_path_ext("no-opt.bc", module_name);
-        let out = path2cstr(&out);
+        let out = path_to_c_string(&out);
         llvm::LLVMWriteBitcodeToFile(llmod, out.as_ptr());
     }
 
@@ -367,19 +363,20 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
             if !config.no_prepopulate_passes {
                 llvm::LLVMRustAddAnalysisPasses(tm, fpm, llmod);
                 llvm::LLVMRustAddAnalysisPasses(tm, mpm, llmod);
-                let opt_level = config.opt_level.map(get_llvm_opt_level)
+                let opt_level = config.opt_level.map(|x| to_llvm_opt_settings(x).0)
                     .unwrap_or(llvm::CodeGenOptLevel::None);
                 let prepare_for_thin_lto = cgcx.lto == Lto::Thin || cgcx.lto == Lto::ThinLocal ||
                     (cgcx.lto != Lto::Fat && cgcx.opts.debugging_opts.cross_lang_lto.enabled());
+                with_llvm_pmb(llmod, &config, opt_level, prepare_for_thin_lto, &mut |b| {
+                    llvm::LLVMPassManagerBuilderPopulateFunctionPassManager(b, fpm);
+                    llvm::LLVMPassManagerBuilderPopulateModulePassManager(b, mpm);
+                });
+
                 have_name_anon_globals_pass = have_name_anon_globals_pass || prepare_for_thin_lto;
                 if using_thin_buffers && !prepare_for_thin_lto {
                     assert!(addpass("name-anon-globals"));
                     have_name_anon_globals_pass = true;
                 }
-                with_llvm_pmb(llmod, &config, opt_level, prepare_for_thin_lto, &mut |b| {
-                    llvm::LLVMPassManagerBuilderPopulateFunctionPassManager(b, fpm);
-                    llvm::LLVMPassManagerBuilderPopulateModulePassManager(b, mpm);
-                })
             }
 
             for pass in &config.passes {
@@ -530,7 +527,7 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
             || -> Result<(), FatalError> {
             if config.emit_ir {
                 let out = cgcx.output_filenames.temp_path(OutputType::LlvmAssembly, module_name);
-                let out = path2cstr(&out);
+                let out = path_to_c_string(&out);
 
                 extern "C" fn demangle_callback(input_ptr: *const c_char,
                                                 input_len: size_t,
@@ -698,7 +695,8 @@ pub unsafe fn with_llvm_pmb(llmod: &llvm::Module,
     // reasonable defaults and prepare it to actually populate the pass
     // manager.
     let builder = llvm::LLVMPassManagerBuilderCreate();
-    let opt_size = config.opt_size.map(get_llvm_opt_size).unwrap_or(llvm::CodeGenOptSizeNone);
+    let opt_size = config.opt_size.map(|x| to_llvm_opt_settings(x).1)
+        .unwrap_or(llvm::CodeGenOptSizeNone);
     let inline_threshold = config.inline_threshold;
 
     let pgo_gen_path = config.pgo_gen.as_ref().map(|s| {
@@ -781,7 +779,7 @@ fn create_msvc_imps(
     }
     // The x86 ABI seems to require that leading underscores are added to symbol
     // names, so we need an extra underscore on 32-bit. There's also a leading
-    // '\x01' here which disables LLVM's symbol mangling (e.g. no extra
+    // '\x01' here which disables LLVM's symbol mangling (e.g., no extra
     // underscores added in front).
     let prefix = if cgcx.target_pointer_width == "32" {
         "\x01__imp__"

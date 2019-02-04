@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![cfg(target_thread_local)]
 #![unstable(feature = "thread_local_internals", issue = "0")]
 
@@ -43,30 +33,57 @@ pub unsafe fn register_dtor(t: *mut u8, dtor: unsafe extern fn(*mut u8)) {
     register_dtor_fallback(t, dtor);
 }
 
-// macOS's analog of the above linux function is this _tlv_atexit function.
-// The disassembly of thread_local globals in C++ (at least produced by
-// clang) will have this show up in the output.
+// This implementation is very similar to register_dtor_fallback in
+// sys_common/thread_local.rs. The main difference is that we want to hook into
+// macOS's analog of the above linux function, _tlv_atexit. OSX will run the
+// registered dtors before any TLS slots get freed, and when the main thread
+// exits.
+//
+// Unfortunately, calling _tlv_atexit while tls dtors are running is UB. The
+// workaround below is to register, via _tlv_atexit, a custom DTOR list once per
+// thread. thread_local dtors are pushed to the DTOR list without calling
+// _tlv_atexit.
 #[cfg(target_os = "macos")]
 pub unsafe fn register_dtor(t: *mut u8, dtor: unsafe extern fn(*mut u8)) {
+    use cell::Cell;
+    use ptr;
+
+    #[thread_local]
+    static REGISTERED: Cell<bool> = Cell::new(false);
+    if !REGISTERED.get() {
+        _tlv_atexit(run_dtors, ptr::null_mut());
+        REGISTERED.set(true);
+    }
+
+    type List = Vec<(*mut u8, unsafe extern fn(*mut u8))>;
+
+    #[thread_local]
+    static DTORS: Cell<*mut List> = Cell::new(ptr::null_mut());
+    if DTORS.get().is_null() {
+        let v: Box<List> = box Vec::new();
+        DTORS.set(Box::into_raw(v));
+    }
+
     extern {
         fn _tlv_atexit(dtor: unsafe extern fn(*mut u8),
                        arg: *mut u8);
     }
-    _tlv_atexit(dtor, t);
+
+    let list: &mut List = &mut *DTORS.get();
+    list.push((t, dtor));
+
+    unsafe extern fn run_dtors(_: *mut u8) {
+        let mut ptr = DTORS.replace(ptr::null_mut());
+        while !ptr.is_null() {
+            let list = Box::from_raw(ptr);
+            for (ptr, dtor) in list.into_iter() {
+                dtor(ptr);
+            }
+            ptr = DTORS.replace(ptr::null_mut());
+        }
+    }
 }
 
 pub fn requires_move_before_drop() -> bool {
-    // The macOS implementation of TLS apparently had an odd aspect to it
-    // where the pointer we have may be overwritten while this destructor
-    // is running. Specifically if a TLS destructor re-accesses TLS it may
-    // trigger a re-initialization of all TLS variables, paving over at
-    // least some destroyed ones with initial values.
-    //
-    // This means that if we drop a TLS value in place on macOS that we could
-    // revert the value to its original state halfway through the
-    // destructor, which would be bad!
-    //
-    // Hence, we use `ptr::read` on macOS (to move to a "safe" location)
-    // instead of drop_in_place.
-    cfg!(target_os = "macos")
+    false
 }

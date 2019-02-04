@@ -1,18 +1,8 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Simplification of where clauses and parameter bounds into a prettier and
 //! more canonical form.
 //!
 //! Currently all cross-crate-inlined function use `rustc::ty` to reconstruct
-//! the AST (e.g. see all of `clean::inline`), but this is not always a
+//! the AST (e.g., see all of `clean::inline`), but this is not always a
 //! non-lossy transformation. The current format of storage for where clauses
 //! for functions and such is simply a list of predicates. One example of this
 //! is that the AST predicate of: `where T: Trait<Foo=Bar>` is encoded as:

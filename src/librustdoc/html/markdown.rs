@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Markdown formatting for rustdoc
 //!
 //! This module implements markdown formatting through the pulldown-cmark
@@ -806,6 +796,10 @@ impl<'a> fmt::Display for MarkdownSummaryLine<'a> {
 }
 
 pub fn plain_summary_line(md: &str) -> String {
+    plain_summary_line_full(md, false)
+}
+
+pub fn plain_summary_line_full(md: &str, limit_length: bool) -> String {
     struct ParserWrapper<'a> {
         inner: Parser<'a>,
         is_in: isize,
@@ -852,7 +846,21 @@ pub fn plain_summary_line(md: &str) -> String {
             s.push_str(&t);
         }
     }
-    s
+    if limit_length && s.chars().count() > 60 {
+        let mut len = 0;
+        let mut ret = s.split_whitespace()
+                       .take_while(|p| {
+                           // + 1 for the added character after the word.
+                           len += p.chars().count() + 1;
+                           len < 60
+                       })
+                       .collect::<Vec<_>>()
+                       .join(" ");
+        ret.push('…');
+        ret
+    } else {
+        s
+    }
 }
 
 pub fn markdown_links(md: &str) -> Vec<(String, Option<Range<usize>>)> {
@@ -909,6 +917,115 @@ pub fn markdown_links(md: &str) -> Vec<(String, Option<Range<usize>>)> {
     links.extend(shortcut_links.drain(..));
 
     links
+}
+
+#[derive(Debug)]
+crate struct RustCodeBlock {
+    /// The range in the markdown that the code block occupies. Note that this includes the fences
+    /// for fenced code blocks.
+    pub range: Range<usize>,
+    /// The range in the markdown that the code within the code block occupies.
+    pub code: Range<usize>,
+    pub is_fenced: bool,
+    pub syntax: Option<String>,
+}
+
+/// Returns a range of bytes for each code block in the markdown that is tagged as `rust` or
+/// untagged (and assumed to be rust).
+crate fn rust_code_blocks(md: &str) -> Vec<RustCodeBlock> {
+    let mut code_blocks = vec![];
+
+    if md.is_empty() {
+        return code_blocks;
+    }
+
+    let mut opts = Options::empty();
+    opts.insert(OPTION_ENABLE_TABLES);
+    opts.insert(OPTION_ENABLE_FOOTNOTES);
+    let mut p = Parser::new_ext(md, opts);
+
+    let mut code_block_start = 0;
+    let mut code_start = 0;
+    let mut is_fenced = false;
+    let mut previous_offset = 0;
+    let mut in_rust_code_block = false;
+    while let Some(event) = p.next() {
+        let offset = p.get_offset();
+
+        match event {
+            Event::Start(Tag::CodeBlock(syntax)) => {
+                let lang_string = if syntax.is_empty() {
+                    LangString::all_false()
+                } else {
+                    LangString::parse(&*syntax, ErrorCodes::Yes)
+                };
+
+                if lang_string.rust {
+                    in_rust_code_block = true;
+
+                    code_start = offset;
+                    code_block_start = match md[previous_offset..offset].find("```") {
+                        Some(fence_idx) => {
+                            is_fenced = true;
+                            previous_offset + fence_idx
+                        }
+                        None => offset,
+                    };
+                }
+            }
+            Event::End(Tag::CodeBlock(syntax)) if in_rust_code_block => {
+                in_rust_code_block = false;
+
+                let code_block_end = if is_fenced {
+                    let fence_str = &md[previous_offset..offset]
+                        .chars()
+                        .rev()
+                        .collect::<String>();
+                    fence_str
+                        .find("```")
+                        .map(|fence_idx| offset - fence_idx)
+                        .unwrap_or_else(|| offset)
+                } else if md
+                    .as_bytes()
+                    .get(offset)
+                    .map(|b| *b == b'\n')
+                    .unwrap_or_default()
+                {
+                    offset - 1
+                } else {
+                    offset
+                };
+
+                let code_end = if is_fenced {
+                    previous_offset
+                } else {
+                    code_block_end
+                };
+
+                code_blocks.push(RustCodeBlock {
+                    is_fenced,
+                    range: Range {
+                        start: code_block_start,
+                        end: code_block_end,
+                    },
+                    code: Range {
+                        start: code_start,
+                        end: code_end,
+                    },
+                    syntax: if !syntax.is_empty() {
+                        Some(syntax.into_owned())
+                    } else {
+                        None
+                    },
+                });
+            }
+            _ => (),
+        }
+
+        previous_offset = offset;
+    }
+
+    code_blocks
 }
 
 #[derive(Clone, Default, Debug)]

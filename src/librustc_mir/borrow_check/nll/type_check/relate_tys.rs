@@ -1,19 +1,10 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use borrow_check::nll::constraints::OutlivesConstraint;
 use borrow_check::nll::type_check::{BorrowCheckContext, Locations};
-use rustc::infer::nll_relate::{TypeRelating, TypeRelatingDelegate};
+use rustc::infer::nll_relate::{TypeRelating, TypeRelatingDelegate, NormalizationStrategy};
 use rustc::infer::{InferCtxt, NLLRegionVariableOrigin};
 use rustc::mir::ConstraintCategory;
 use rustc::traits::query::Fallible;
+use rustc::traits::DomainGoal;
 use rustc::ty::relate::TypeRelation;
 use rustc::ty::{self, Ty};
 
@@ -38,7 +29,7 @@ pub(super) fn relate_types<'tcx>(
     TypeRelating::new(
         infcx,
         NllTypeRelatingDelegate::new(infcx, borrowck_context, locations, category),
-        v,
+        v
     ).relate(&a, &b)?;
     Ok(())
 }
@@ -84,7 +75,10 @@ impl TypeRelatingDelegate<'tcx> for NllTypeRelatingDelegate<'_, '_, '_, 'tcx> {
         }
     }
 
-    fn next_placeholder_region(&mut self, placeholder: ty::Placeholder) -> ty::Region<'tcx> {
+    fn next_placeholder_region(
+        &mut self,
+        placeholder: ty::PlaceholderRegion
+    ) -> ty::Region<'tcx> {
         if let Some(borrowck_context) = &mut self.borrowck_context {
             borrowck_context.constraints.placeholder_region(self.infcx, placeholder)
         } else {
@@ -111,5 +105,17 @@ impl TypeRelatingDelegate<'tcx> for NllTypeRelatingDelegate<'_, '_, '_, 'tcx> {
                     category: self.category,
                 });
         }
+    }
+
+    fn push_domain_goal(&mut self, _: DomainGoal<'tcx>) {
+        bug!("should never be invoked with eager normalization")
+    }
+
+    fn normalization() -> NormalizationStrategy {
+        NormalizationStrategy::Eager
+    }
+
+    fn forbid_inference_vars() -> bool {
+        true
     }
 }

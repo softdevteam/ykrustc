@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Error Reporting for Anonymous Region Lifetime Errors
 //! where both the regions are anonymous.
 
@@ -56,9 +46,9 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
         let (span, sub, sup) = self.get_regions();
 
         // Determine whether the sub and sup consist of both anonymous (elided) regions.
-        let anon_reg_sup = self.tcx.is_suitable_region(sup)?;
+        let anon_reg_sup = self.tcx().is_suitable_region(sup)?;
 
-        let anon_reg_sub = self.tcx.is_suitable_region(sub)?;
+        let anon_reg_sub = self.tcx().is_suitable_region(sub)?;
         let scope_def_id_sup = anon_reg_sup.def_id;
         let bregion_sup = anon_reg_sup.boundregion;
         let scope_def_id_sub = anon_reg_sub.def_id;
@@ -148,7 +138,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
         };
 
 
-        struct_span_err!(self.tcx.sess, span, E0623, "lifetime mismatch")
+        struct_span_err!(self.tcx().sess, span, E0623, "lifetime mismatch")
             .span_label(span_1, main_label)
             .span_label(span_2, String::new())
             .span_label(span, span_label)

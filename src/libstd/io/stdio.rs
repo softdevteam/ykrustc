@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use io::prelude::*;
 
 use cell::RefCell;
@@ -131,7 +121,7 @@ fn handle_ebadf<T>(r: io::Result<T>, default: T) -> io::Result<T> {
 ///
 /// Each handle is a shared reference to a global buffer of input data to this
 /// process. A handle can be `lock`'d to gain full access to [`BufRead`] methods
-/// (e.g. `.lines()`). Reads to this handle are otherwise locked with respect
+/// (e.g., `.lines()`). Reads to this handle are otherwise locked with respect
 /// to other reads.
 ///
 /// This handle implements the `Read` trait, but beware that concurrent reads
@@ -269,7 +259,7 @@ impl Stdin {
     ///
     /// You can run the example one of two ways:
     ///
-    /// - Pipe some text to it, e.g. `printf foo | path/to/executable`
+    /// - Pipe some text to it, e.g., `printf foo | path/to/executable`
     /// - Give it text interactively by running the executable directly,
     ///   in which case it will wait for the Enter key to be pressed before
     ///   continuing

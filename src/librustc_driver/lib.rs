@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust compiler.
 //!
 //! # Note
@@ -21,12 +11,11 @@
 #![feature(box_syntax)]
 #![cfg_attr(unix, feature(libc))]
 #![feature(nll)]
-#![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(slice_sort_by_cached_key)]
 #![feature(set_stdio)]
-#![feature(rustc_stack_internals)]
 #![feature(no_debug)]
+#![feature(integer_atomics)]
 
 #![recursion_limit="256"]
 
@@ -66,21 +55,12 @@ extern crate syntax_pos;
 extern crate rustc_yk_sections;
 extern crate rustc_yk_link;
 
-// Note that the linkage here should be all that we need, on Linux we're not
-// prefixing the symbols here so this should naturally override our default
-// allocator. On OSX it should override via the zone allocator. We shouldn't
-// enable this by default on other platforms, so other platforms aren't handled
-// here yet.
-#[cfg(feature = "jemalloc-sys")]
-extern crate jemalloc_sys;
-
 use driver::CompileController;
 use pretty::{PpMode, UserIdentifiedItem};
 
-use rustc_resolve as resolve;
 use rustc_save_analysis as save;
 use rustc_save_analysis::DumpHandler;
-use rustc_data_structures::sync::{self, Lrc};
+use rustc_data_structures::sync::{self, Lrc, Ordering::SeqCst};
 use rustc_data_structures::OnDrop;
 use rustc::session::{self, config, Session, build_session, CompileResult};
 use rustc::session::CompileIncomplete;
@@ -113,7 +93,7 @@ use std::panic;
 use std::path::{PathBuf, Path};
 use std::process::{self, Command, Stdio};
 use std::str;
-use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, ONCE_INIT};
 use std::thread;
 
@@ -129,7 +109,7 @@ mod test;
 pub mod profile;
 pub mod driver;
 pub mod pretty;
-mod derive_registrar;
+mod proc_macro_decls;
 
 pub mod target_features {
     use syntax::ast;
@@ -221,14 +201,7 @@ pub fn run<F>(run_compiler: F) -> isize
 }
 
 fn load_backend_from_dylib(path: &Path) -> fn() -> Box<dyn CodegenBackend> {
-    // Note that we're specifically using `open_global_now` here rather than
-    // `open`, namely we want the behavior on Unix of RTLD_GLOBAL and RTLD_NOW,
-    // where NOW means "bind everything right now" because we don't want
-    // surprises later on and RTLD_GLOBAL allows the symbols to be made
-    // available for future dynamic libraries opened. This is currently used by
-    // loading LLVM and then making its symbols available for other dynamic
-    // libraries.
-    let lib = DynamicLibrary::open_global_now(path).unwrap_or_else(|err| {
+    let lib = DynamicLibrary::open(Some(path)).unwrap_or_else(|err| {
         let err = format!("couldn't load codegen backend {:?}: {:?}", path, err);
         early_error(ErrorOutputType::default(), &err);
     });
@@ -260,7 +233,7 @@ pub fn get_codegen_backend(sess: &Session) -> Box<dyn CodegenBackend> {
             .unwrap_or(&sess.target.target.options.codegen_backend);
         let backend = match &codegen_name[..] {
             "metadata_only" => {
-                rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::new
+                rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::boxed
             }
             filename if filename.contains(".") => {
                 load_backend_from_dylib(filename.as_ref())
@@ -283,7 +256,7 @@ fn get_codegen_sysroot(backend_name: &str) -> fn() -> Box<dyn CodegenBackend> {
     // general this assertion never trips due to the once guard in `get_codegen_backend`,
     // but there's a few manual calls to this function in this file we protect
     // against.
-    static LOADED: AtomicBool = ATOMIC_BOOL_INIT;
+    static LOADED: AtomicBool = AtomicBool::new(false);
     assert!(!LOADED.fetch_or(true, Ordering::SeqCst),
             "cannot load the default codegen backend twice");
 
@@ -293,7 +266,7 @@ fn get_codegen_sysroot(backend_name: &str) -> fn() -> Box<dyn CodegenBackend> {
     // let's just return a dummy creation function which won't be used in
     // general anyway.
     if cfg!(test) {
-        return rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::new
+        return rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::boxed
     }
 
     let target = session::config::host_triple();
@@ -596,7 +569,7 @@ fn make_input(free_matches: &[String]) -> Option<(Input, Option<PathBuf>, Option
             } else {
                 None
             };
-            Some((Input::Str { name: FileName::Anon, input: src },
+            Some((Input::Str { name: FileName::anon_source_code(&src), input: src },
                   None, err))
         } else {
             Some((Input::File(PathBuf::from(ifile)),
@@ -907,13 +880,11 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                     pretty::print_after_hir_lowering(state.session,
                                                      state.cstore.unwrap(),
                                                      state.hir_map.unwrap(),
-                                                     state.analysis.unwrap(),
                                                      state.resolutions.unwrap(),
                                                      state.input,
                                                      &state.expanded_crate.take().unwrap(),
                                                      state.crate_name.unwrap(),
                                                      ppm,
-                                                     state.arenas.unwrap(),
                                                      state.output_filenames.unwrap(),
                                                      opt_uii.clone(),
                                                      state.out_file);
@@ -956,7 +927,7 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 let sess = state.session;
                 eprintln!("Fuel used by {}: {}",
                     sess.print_fuel_crate.as_ref().unwrap(),
-                    sess.print_fuel.get());
+                    sess.print_fuel.load(SeqCst));
             }
         }
         control
@@ -969,7 +940,6 @@ pub fn enable_save_analysis(control: &mut CompileController) {
         time(state.session, "save analysis", || {
             save::process_crate(state.tcx.unwrap(),
                                 state.expanded_crate.unwrap(),
-                                state.analysis.unwrap(),
                                 state.crate_name.unwrap(),
                                 state.input,
                                 None,
@@ -978,7 +948,6 @@ pub fn enable_save_analysis(control: &mut CompileController) {
         });
     };
     control.after_analysis.run_callback_on_error = true;
-    control.make_glob_map = resolve::MakeGlobMap::Yes;
 }
 
 impl RustcDefaultCalls {
@@ -1044,7 +1013,7 @@ impl RustcDefaultCalls {
                     targets.sort();
                     println!("{}", targets.join("\n"));
                 },
-                Sysroot => println!("{}", sess.sysroot().display()),
+                Sysroot => println!("{}", sess.sysroot.display()),
                 TargetSpec => println!("{}", sess.target.target.to_json().pretty()),
                 FileNames | CrateName => {
                     let input = input.unwrap_or_else(||
@@ -1470,6 +1439,11 @@ fn parse_crate_attrs<'a>(sess: &'a Session, input: &Input) -> PResult<'a, Vec<as
     }
 }
 
+// Temporarily have stack size set to 32MB to deal with various crates with long method
+// chains or deep syntax trees.
+// FIXME(oli-obk): get https://github.com/rust-lang/rust/pull/55617 the finish line
+const STACK_SIZE: usize = 32 * 1024 * 1024; // 32MB
+
 /// Runs `f` in a suitable thread for running `rustc`; returns a `Result` with either the return
 /// value of `f` or -- if a panic occurs -- the panic value.
 ///
@@ -1479,72 +1453,13 @@ pub fn in_named_rustc_thread<F, R>(name: String, f: F) -> Result<R, Box<dyn Any 
     where F: FnOnce() -> R + Send + 'static,
           R: Send + 'static,
 {
-    // Temporarily have stack size set to 16MB to deal with nom-using crates failing
-    const STACK_SIZE: usize = 16 * 1024 * 1024; // 16MB
-
-    #[cfg(all(unix, not(target_os = "haiku")))]
-    let spawn_thread = unsafe {
-        // Fetch the current resource limits
-        let mut rlim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_STACK, &mut rlim) != 0 {
-            let err = io::Error::last_os_error();
-            error!("in_rustc_thread: error calling getrlimit: {}", err);
-            true
-        } else if rlim.rlim_max < STACK_SIZE as libc::rlim_t {
-            true
-        } else if rlim.rlim_cur < STACK_SIZE as libc::rlim_t {
-            std::rt::deinit_stack_guard();
-            rlim.rlim_cur = STACK_SIZE as libc::rlim_t;
-            if libc::setrlimit(libc::RLIMIT_STACK, &mut rlim) != 0 {
-                let err = io::Error::last_os_error();
-                error!("in_rustc_thread: error calling setrlimit: {}", err);
-                std::rt::update_stack_guard();
-                true
-            } else {
-                std::rt::update_stack_guard();
-                false
-            }
-        } else {
-            false
-        }
-    };
-
-    // We set the stack size at link time. See src/rustc/rustc.rs.
-    #[cfg(windows)]
-    let spawn_thread = false;
-
-    #[cfg(target_os = "haiku")]
-    let spawn_thread = unsafe {
-        // Haiku does not have setrlimit implemented for the stack size.
-        // By default it does have the 16 MB stack limit, but we check this in
-        // case the minimum STACK_SIZE changes or Haiku's defaults change.
-        let mut rlim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_STACK, &mut rlim) != 0 {
-            let err = io::Error::last_os_error();
-            error!("in_rustc_thread: error calling getrlimit: {}", err);
-            true
-        } else if rlim.rlim_cur >= STACK_SIZE {
-            false
-        } else {
-            true
-        }
-    };
-
-    #[cfg(not(any(windows, unix)))]
-    let spawn_thread = true;
-
-    // The or condition is added from backward compatibility.
-    if spawn_thread || env::var_os("RUST_MIN_STACK").is_some() {
+    // We need a thread for soundness of thread local storage in rustc. For debugging purposes
+    // we allow an escape hatch where everything runs on the main thread.
+    if env::var_os("RUSTC_UNSTABLE_NO_MAIN_THREAD").is_none() {
         let mut cfg = thread::Builder::new().name(name);
 
-        // FIXME: Hacks on hacks. If the env is trying to override the stack size
-        // then *don't* set it explicitly.
+        // If the env is trying to override the stack size then *don't* set it explicitly.
+        // The libstd thread impl will fetch the `RUST_MIN_STACK` env var itself.
         if env::var_os("RUST_MIN_STACK").is_none() {
             cfg = cfg.stack_size(STACK_SIZE);
         }
@@ -1699,7 +1614,6 @@ pub fn diagnostics_registry() -> errors::registry::Registry {
     all_errors.extend_from_slice(&rustc_privacy::DIAGNOSTICS);
     // FIXME: need to figure out a way to get these back in here
     // all_errors.extend_from_slice(get_codegen_backend(sess).diagnostics());
-    all_errors.extend_from_slice(&rustc_codegen_utils::DIAGNOSTICS);
     all_errors.extend_from_slice(&rustc_metadata::DIAGNOSTICS);
     all_errors.extend_from_slice(&rustc_passes::DIAGNOSTICS);
     all_errors.extend_from_slice(&rustc_plugin::DIAGNOSTICS);

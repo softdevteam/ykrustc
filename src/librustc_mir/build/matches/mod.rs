@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Code related to match expressions. These are sufficiently complex
 //! to warrant their own module and submodules. :) This main module
 //! includes the high-level algorithm, the submodules contain the
@@ -18,10 +8,8 @@ use build::ForGuard::{self, OutsideGuard, RefWithinGuard, ValWithinGuard};
 use build::{BlockAnd, BlockAndExtension, Builder};
 use build::{GuardFrame, GuardFrameLocal, LocalsForNode};
 use hair::*;
-use hair::pattern::PatternTypeProjections;
-use rustc::hir;
 use rustc::mir::*;
-use rustc::ty::{self, Ty};
+use rustc::ty::{self, CanonicalUserTypeAnnotation, Ty};
 use rustc::ty::layout::VariantIdx;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::fx::FxHashMap;
@@ -100,8 +88,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             .collect();
 
         // create binding start block for link them by false edges
-        let candidate_count = arms.iter().fold(0, |ac, c| ac + c.patterns.len());
-        let pre_binding_blocks: Vec<_> = (0..candidate_count + 1)
+        let candidate_count = arms.iter().map(|c| c.patterns.len()).sum::<usize>();
+        let pre_binding_blocks: Vec<_> = (0..=candidate_count)
             .map(|_| self.cfg.start_new_block())
             .collect();
 
@@ -111,7 +99,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // pattern, which means there may be more than one candidate
         // *per arm*. These candidates are kept sorted such that the
         // highest priority candidate comes first in the list.
-        // (i.e. same order as in source)
+        // (i.e., same order as in source)
 
         let candidates: Vec<_> = arms.iter()
             .enumerate()
@@ -296,6 +284,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     ..
                 },
                 user_ty: pat_ascription_ty,
+                variance: _,
                 user_ty_span,
             } => {
                 let place =
@@ -313,14 +302,33 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 );
 
                 let ty_source_info = self.source_info(user_ty_span);
+                let user_ty = box pat_ascription_ty.user_ty(
+                    &mut self.canonical_user_type_annotations,
+                    place.ty(&self.local_decls, self.hir.tcx()).to_ty(self.hir.tcx()),
+                    ty_source_info.span,
+                );
                 self.cfg.push(
                     block,
                     Statement {
                         source_info: ty_source_info,
                         kind: StatementKind::AscribeUserType(
                             place,
+                            // We always use invariant as the variance here. This is because the
+                            // variance field from the ascription refers to the variance to use
+                            // when applying the type to the value being matched, but this
+                            // ascription applies rather to the type of the binding. e.g., in this
+                            // example:
+                            //
+                            // ```
+                            // let x: T = <expr>
+                            // ```
+                            //
+                            // We are creating an ascription that defines the type of `x` to be
+                            // exactly `T` (i.e., with invariance). The variance field, in
+                            // contrast, is intended to be used to relate `T` to the type of
+                            // `<expr>`.
                             ty::Variance::Invariant,
-                            box pat_ascription_ty.user_ty(),
+                            user_ty,
                         ),
                     },
                 );
@@ -337,7 +345,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
     pub fn place_into_pattern(
         &mut self,
-        mut block: BasicBlock,
+        block: BasicBlock,
         irrefutable_pat: Pattern<'tcx>,
         initializer: &Place<'tcx>,
         set_match_place: bool,
@@ -359,7 +367,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         // Simplify the candidate. Since the pattern is irrefutable, this should
         // always convert all match-pairs into bindings.
-        unpack!(block = self.simplify_candidate(block, &mut candidate));
+        self.simplify_candidate(&mut candidate);
 
         if !candidate.match_pairs.is_empty() {
             span_bug!(
@@ -417,9 +425,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         );
         let mut scope = self.source_scope;
         let num_patterns = patterns.len();
+        debug!("declare_bindings: patterns={:?}", patterns);
         self.visit_bindings(
             &patterns[0],
-            &PatternTypeProjections::none(),
+            UserTypeProjections::none(),
             &mut |this, mutability, name, mode, var, span, ty, user_ty| {
                 if visibility_scope.is_none() {
                     visibility_scope =
@@ -470,7 +479,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         );
         let place = Place::Local(local_id);
         let var_ty = self.local_decls[local_id].ty;
-        let hir_id = self.hir.tcx().hir.node_to_hir_id(var);
+        let hir_id = self.hir.tcx().hir().node_to_hir_id(var);
         let region_scope = self.hir.region_scope_tree.var_scope(hir_id.local_id);
         self.schedule_drop(span, region_scope, &place, var_ty, DropKind::Storage);
         place
@@ -479,7 +488,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     pub fn schedule_drop_for_binding(&mut self, var: NodeId, span: Span, for_guard: ForGuard) {
         let local_id = self.var_local_id(var, for_guard);
         let var_ty = self.local_decls[local_id].ty;
-        let hir_id = self.hir.tcx().hir.node_to_hir_id(var);
+        let hir_id = self.hir.tcx().hir().node_to_hir_id(var);
         let region_scope = self.hir.region_scope_tree.var_scope(hir_id.local_id);
         self.schedule_drop(
             span,
@@ -495,7 +504,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     pub(super) fn visit_bindings(
         &mut self,
         pattern: &Pattern<'tcx>,
-        pattern_user_ty: &PatternTypeProjections<'tcx>,
+        pattern_user_ty: UserTypeProjections<'tcx>,
         f: &mut impl FnMut(
             &mut Self,
             Mutability,
@@ -504,9 +513,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             NodeId,
             Span,
             Ty<'tcx>,
-            &PatternTypeProjections<'tcx>,
+            UserTypeProjections<'tcx>,
         ),
     ) {
+        debug!("visit_bindings: pattern={:?} pattern_user_ty={:?}", pattern, pattern_user_ty);
         match *pattern.kind {
             PatternKind::Binding {
                 mutability,
@@ -517,19 +527,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 ref subpattern,
                 ..
             } => {
-                let pattern_ref_binding; // sidestep temp lifetime limitations.
-                let binding_user_ty = match mode {
-                    BindingMode::ByValue => { pattern_user_ty }
-                    BindingMode::ByRef(..) => {
-                        // If this is a `ref` binding (e.g., `let ref
-                        // x: T = ..`), then the type of `x` is not
-                        // `T` but rather `&T`.
-                        pattern_ref_binding = pattern_user_ty.ref_binding();
-                        &pattern_ref_binding
-                    }
-                };
-
-                f(self, mutability, name, mode, var, pattern.span, ty, binding_user_ty);
+                f(self, mutability, name, mode, var, pattern.span, ty, pattern_user_ty.clone());
                 if let Some(subpattern) = subpattern.as_ref() {
                     self.visit_bindings(subpattern, pattern_user_ty, f);
                 }
@@ -547,41 +545,59 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 let from = u32::try_from(prefix.len()).unwrap();
                 let to = u32::try_from(suffix.len()).unwrap();
                 for subpattern in prefix {
-                    self.visit_bindings(subpattern, &pattern_user_ty.index(), f);
+                    self.visit_bindings(subpattern, pattern_user_ty.clone().index(), f);
                 }
                 for subpattern in slice {
-                    self.visit_bindings(subpattern, &pattern_user_ty.subslice(from, to), f);
+                    self.visit_bindings(subpattern, pattern_user_ty.clone().subslice(from, to), f);
                 }
                 for subpattern in suffix {
-                    self.visit_bindings(subpattern, &pattern_user_ty.index(), f);
+                    self.visit_bindings(subpattern, pattern_user_ty.clone().index(), f);
                 }
             }
             PatternKind::Constant { .. } | PatternKind::Range { .. } | PatternKind::Wild => {}
             PatternKind::Deref { ref subpattern } => {
-                self.visit_bindings(subpattern, &pattern_user_ty.deref(), f);
+                self.visit_bindings(subpattern, pattern_user_ty.deref(), f);
             }
-            PatternKind::AscribeUserType { ref subpattern, ref user_ty, user_ty_span } => {
+            PatternKind::AscribeUserType {
+                ref subpattern,
+                ref user_ty,
+                user_ty_span,
+                variance: _,
+            } => {
                 // This corresponds to something like
                 //
                 // ```
                 // let A::<'a>(_): A<'static> = ...;
                 // ```
-                let subpattern_user_ty = pattern_user_ty.add_user_type(user_ty, user_ty_span);
-                self.visit_bindings(subpattern, &subpattern_user_ty, f)
+                //
+                // Note that the variance doesn't apply here, as we are tracking the effect
+                // of `user_ty` on any bindings contained with subpattern.
+                let annotation = CanonicalUserTypeAnnotation {
+                    span: user_ty_span,
+                    user_ty: user_ty.user_ty,
+                    inferred_ty: subpattern.ty,
+                };
+                let projection = UserTypeProjection {
+                    base: self.canonical_user_type_annotations.push(annotation),
+                    projs: Vec::new(),
+                };
+                let subpattern_user_ty = pattern_user_ty.push_projection(&projection, user_ty_span);
+                self.visit_bindings(subpattern, subpattern_user_ty, f)
             }
 
             PatternKind::Leaf { ref subpatterns } => {
                 for subpattern in subpatterns {
-                    let subpattern_user_ty = pattern_user_ty.leaf(subpattern.field);
-                    self.visit_bindings(&subpattern.pattern, &subpattern_user_ty, f);
+                    let subpattern_user_ty = pattern_user_ty.clone().leaf(subpattern.field);
+                    debug!("visit_bindings: subpattern_user_ty={:?}", subpattern_user_ty);
+                    self.visit_bindings(&subpattern.pattern, subpattern_user_ty, f);
                 }
             }
 
             PatternKind::Variant { adt_def, substs: _, variant_index, ref subpatterns } => {
                 for subpattern in subpatterns {
-                    let subpattern_user_ty = pattern_user_ty.variant(
+                    let subpattern_user_ty = pattern_user_ty.clone().variant(
                         adt_def, variant_index, subpattern.field);
-                    self.visit_bindings(&subpattern.pattern, &subpattern_user_ty, f);
+                    self.visit_bindings(&subpattern.pattern, subpattern_user_ty, f);
                 }
             }
         }
@@ -630,7 +646,7 @@ struct Binding<'tcx> {
     var_id: NodeId,
     var_ty: Ty<'tcx>,
     mutability: Mutability,
-    binding_mode: BindingMode<'tcx>,
+    binding_mode: BindingMode,
 }
 
 /// Indicates that the type of `source` must be a subtype of the
@@ -641,6 +657,7 @@ struct Ascription<'tcx> {
     span: Span,
     source: Place<'tcx>,
     user_ty: PatternTypeProjection<'tcx>,
+    variance: ty::Variance,
 }
 
 #[derive(Clone, Debug)]
@@ -671,22 +688,17 @@ enum TestKind<'tcx> {
     SwitchInt {
         switch_ty: Ty<'tcx>,
         options: Vec<u128>,
-        indices: FxHashMap<&'tcx ty::Const<'tcx>, usize>,
+        indices: FxHashMap<ty::Const<'tcx>, usize>,
     },
 
     // test for equality
     Eq {
-        value: &'tcx ty::Const<'tcx>,
+        value: ty::Const<'tcx>,
         ty: Ty<'tcx>,
     },
 
     // test whether the value falls within an inclusive or exclusive range
-    Range {
-        lo: &'tcx ty::Const<'tcx>,
-        hi: &'tcx ty::Const<'tcx>,
-        ty: Ty<'tcx>,
-        end: hir::RangeEnd,
-    },
+    Range(PatternRange<'tcx>),
 
     // test length of the slice is equal to len
     Len {
@@ -745,7 +757,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // complete, all the match pairs which remain require some
         // form of test, whether it be a switch or pattern comparison.
         for candidate in &mut candidates {
-            unpack!(block = self.simplify_candidate(block, candidate));
+            self.simplify_candidate(candidate);
         }
 
         // The candidates are sorted by priority. Check to see
@@ -1035,7 +1047,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             test, match_pair
         );
         let target_blocks = self.perform_test(block, &match_pair.place, &test);
-        let mut target_candidates: Vec<_> = (0..target_blocks.len()).map(|_| vec![]).collect();
+        let mut target_candidates = vec![vec![]; target_blocks.len()];
 
         // Sort the candidates into the appropriate vector in
         // `target_candidates`. Note that at some point we may
@@ -1330,14 +1342,19 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 ascription.user_ty,
             );
 
+            let user_ty = box ascription.user_ty.clone().user_ty(
+                &mut self.canonical_user_type_annotations,
+                ascription.source.ty(&self.local_decls, self.hir.tcx()).to_ty(self.hir.tcx()),
+                source_info.span
+            );
             self.cfg.push(
                 block,
                 Statement {
                     source_info,
                     kind: StatementKind::AscribeUserType(
                         ascription.source.clone(),
-                        ty::Variance::Covariant,
-                        box ascription.user_ty.clone().user_ty(),
+                        ascription.variance,
+                        user_ty,
                     ),
                 },
             );
@@ -1360,7 +1377,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // Assign each of the bindings. Since we are binding for a
         // guard expression, this will never trigger moves out of the
         // candidate.
-        let re_empty = self.hir.tcx().types.re_empty;
+        let re_erased = self.hir.tcx().types.re_erased;
         for binding in bindings {
             let source_info = self.source_info(binding.span);
 
@@ -1376,15 +1393,15 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             self.schedule_drop_for_binding(binding.var_id, binding.span, RefWithinGuard);
             match binding.binding_mode {
                 BindingMode::ByValue => {
-                    let rvalue = Rvalue::Ref(re_empty, BorrowKind::Shared, binding.source.clone());
+                    let rvalue = Rvalue::Ref(re_erased, BorrowKind::Shared, binding.source.clone());
                     self.cfg
                         .push_assign(block, source_info, &ref_for_guard, rvalue);
                 }
-                BindingMode::ByRef(region, borrow_kind) => {
+                BindingMode::ByRef(borrow_kind) => {
                     // Tricky business: For `ref id` and `ref mut id`
                     // patterns, we want `id` within the guard to
                     // correspond to a temp of type `& &T` or `& &mut
-                    // T` (i.e. a "borrow of a borrow") that is
+                    // T` (i.e., a "borrow of a borrow") that is
                     // implicitly dereferenced.
                     //
                     // To borrow a borrow, we need that inner borrow
@@ -1420,10 +1437,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                             allow_two_phase_borrow: true,
                         },
                     };
-                    let rvalue = Rvalue::Ref(region, borrow_kind, binding.source.clone());
+                    let rvalue = Rvalue::Ref(re_erased, borrow_kind, binding.source.clone());
                     self.cfg
                         .push_assign(block, source_info, &val_for_guard, rvalue);
-                    let rvalue = Rvalue::Ref(region, BorrowKind::Shared, val_for_guard);
+                    let rvalue = Rvalue::Ref(re_erased, BorrowKind::Shared, val_for_guard);
                     self.cfg
                         .push_assign(block, source_info, &ref_for_guard, rvalue);
                 }
@@ -1441,6 +1458,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             block, bindings
         );
 
+
+        let re_erased = self.hir.tcx().types.re_erased;
         // Assign each of the bindings. This may trigger moves out of the candidate.
         for binding in bindings {
             let source_info = self.source_info(binding.span);
@@ -1451,8 +1470,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 BindingMode::ByValue => {
                     Rvalue::Use(self.consume_by_copy_or_move(binding.source.clone()))
                 }
-                BindingMode::ByRef(region, borrow_kind) => {
-                    Rvalue::Ref(region, borrow_kind, binding.source.clone())
+                BindingMode::ByRef(borrow_kind) => {
+                    Rvalue::Ref(re_erased, borrow_kind, binding.source.clone())
                 }
             };
             self.cfg.push_assign(block, source_info, &local, rvalue);
@@ -1484,7 +1503,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         num_patterns: usize,
         var_id: NodeId,
         var_ty: Ty<'tcx>,
-        user_var_ty: &PatternTypeProjections<'tcx>,
+        user_ty: UserTypeProjections<'tcx>,
         has_guard: ArmHasGuard,
         opt_match_place: Option<(Option<Place<'tcx>>, Span)>,
         pat_span: Span,
@@ -1498,12 +1517,13 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         let tcx = self.hir.tcx();
         let binding_mode = match mode {
             BindingMode::ByValue => ty::BindingMode::BindByValue(mutability.into()),
-            BindingMode::ByRef { .. } => ty::BindingMode::BindByReference(mutability.into()),
+            BindingMode::ByRef(_) => ty::BindingMode::BindByReference(mutability.into()),
         };
+        debug!("declare_binding: user_ty={:?}", user_ty);
         let local = LocalDecl::<'tcx> {
             mutability,
             ty: var_ty,
-            user_ty: user_var_ty.clone().user_ty(),
+            user_ty,
             name: Some(name),
             source_info,
             visibility_scope,
@@ -1535,7 +1555,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             let ref_for_guard = self.local_decls.push(LocalDecl::<'tcx> {
                 // See previous comment.
                 mutability: Mutability::Not,
-                ty: tcx.mk_imm_ref(tcx.types.re_empty, var_ty),
+                ty: tcx.mk_imm_ref(tcx.types.re_erased, var_ty),
                 user_ty: UserTypeProjections::none(),
                 name: Some(name),
                 source_info,
@@ -1604,7 +1624,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         for (matched_place, borrow_kind) in all_fake_borrows {
             let borrowed_input =
-                Rvalue::Ref(tcx.types.re_empty, borrow_kind, matched_place.clone());
+                Rvalue::Ref(tcx.types.re_erased, borrow_kind, matched_place.clone());
             let borrowed_input_ty = borrowed_input.ty(&self.local_decls, tcx);
             let borrowed_input_temp = self.temp(borrowed_input_ty, source_info.span);
             self.cfg.push_assign(

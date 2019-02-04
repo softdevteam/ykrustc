@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of [the WTF-8 encoding](https://simonsapin.github.io/wtf-8/).
 //!
 //! This library uses Rust’s type system to maintain
@@ -40,7 +30,7 @@ use str;
 use sync::Arc;
 use sys_common::AsInner;
 
-const UTF8_REPLACEMENT_CHARACTER: &'static str = "\u{FFFD}";
+const UTF8_REPLACEMENT_CHARACTER: &str = "\u{FFFD}";
 
 /// A Unicode code point: from U+0000 to U+10FFFF.
 ///

@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #include <stdio.h>
 
 #include <vector>
@@ -17,21 +7,15 @@
 
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Support/CBindingWrapping.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
-
-#if LLVM_VERSION_GE(6, 0)
-#include "llvm/CodeGen/TargetSubtargetInfo.h"
-#include "llvm/IR/IntrinsicInst.h"
-#else
-#include "llvm/Target/TargetSubtargetInfo.h"
-#endif
-
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/FunctionImport.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
@@ -198,13 +182,9 @@ GEN_SUBTARGETS
 
 extern "C" bool LLVMRustHasFeature(LLVMTargetMachineRef TM,
                                    const char *Feature) {
-#if LLVM_VERSION_GE(6, 0)
   TargetMachine *Target = unwrap(TM);
   const MCSubtargetInfo *MCInfo = Target->getMCSubtargetInfo();
   return MCInfo->checkFeatures(std::string("+") + Feature);
-#else
-  return false;
-#endif
 }
 
 enum class LLVMRustCodeModel {
@@ -284,7 +264,7 @@ static Optional<Reloc::Model> fromRust(LLVMRustRelocMode RustReloc) {
   report_fatal_error("Bad RelocModel.");
 }
 
-#if LLVM_RUSTLLVM
+#ifdef LLVM_RUSTLLVM
 /// getLongestEntryLength - Return the length of the longest entry in the table.
 ///
 static size_t getLongestEntryLength(ArrayRef<SubtargetFeatureKV> Table) {
@@ -392,13 +372,9 @@ extern "C" LLVMTargetMachineRef LLVMRustCreateTargetMachine(
     Options.ThreadModel = ThreadModel::Single;
   }
 
-#if LLVM_VERSION_GE(6, 0)
   Options.EmitStackSizeSection = EmitStackSizeSection;
 
   Optional<CodeModel::Model> CM;
-#else
-  CodeModel::Model CM = CodeModel::Model::Default;
-#endif
   if (RustCM != LLVMRustCodeModel::None)
     CM = fromRust(RustCM);
   TargetMachine *TM = TheTarget->createTargetMachine(
@@ -813,7 +789,7 @@ struct LLVMRustThinLTOData {
   StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries;
 
 #if LLVM_VERSION_GE(7, 0)
-  LLVMRustThinLTOData() : Index(/* isPerformingAnalysis = */ false) {}
+  LLVMRustThinLTOData() : Index(/* HaveGVs = */ false) {}
 #endif
 };
 
@@ -889,7 +865,12 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
   auto deadIsPrevailing = [&](GlobalValue::GUID G) {
     return PrevailingType::Unknown;
   };
+#if LLVM_VERSION_GE(8, 0)
+  computeDeadSymbolsWithConstProp(Ret->Index, Ret->GUIDPreservedSymbols,
+                                  deadIsPrevailing, /* ImportEnabled = */ true);
+#else
   computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols, deadIsPrevailing);
+#endif
 #else
   computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols);
 #endif
@@ -922,7 +903,11 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
                               GlobalValue::LinkageTypes NewLinkage) {
     ResolvedODR[ModuleIdentifier][GUID] = NewLinkage;
   };
+#if LLVM_VERSION_GE(8, 0)
+  thinLTOResolvePrevailingInIndex(Ret->Index, isPrevailing, recordNewLinkage);
+#else
   thinLTOResolveWeakForLinkerInIndex(Ret->Index, isPrevailing, recordNewLinkage);
+#endif
 
   // Here we calculate an `ExportedGUIDs` set for use in the `isExported`
   // callback below. This callback below will dictate the linkage for all
@@ -977,7 +962,11 @@ extern "C" bool
 LLVMRustPrepareThinLTOResolveWeak(const LLVMRustThinLTOData *Data, LLVMModuleRef M) {
   Module &Mod = *unwrap(M);
   const auto &DefinedGlobals = Data->ModuleToDefinedGVSummaries.lookup(Mod.getModuleIdentifier());
+#if LLVM_VERSION_GE(8, 0)
+  thinLTOResolvePrevailingInModule(Mod, DefinedGlobals);
+#else
   thinLTOResolveWeakForLinkerModule(Mod, DefinedGlobals);
+#endif
   return true;
 }
 

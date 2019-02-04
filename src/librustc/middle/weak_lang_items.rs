@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Validity checking for weak lang items
 
 use session::config;
@@ -49,7 +39,7 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
     {
         let mut cx = Context { tcx, items };
-        tcx.hir.krate().visit_all_item_likes(&mut cx.as_deep_visitor());
+        tcx.hir().krate().visit_all_item_likes(&mut cx.as_deep_visitor());
     }
     verify(tcx, items);
 }

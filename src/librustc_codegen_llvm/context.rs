@@ -1,16 +1,5 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use attributes;
 use llvm;
-use llvm_util;
 use rustc::dep_graph::DepGraphSafe;
 use rustc::hir;
 use debuginfo;
@@ -61,7 +50,8 @@ pub struct CodegenCx<'ll, 'tcx: 'll> {
     /// Cache instances of monomorphic and polymorphic items
     pub instances: RefCell<FxHashMap<Instance<'tcx>, &'ll Value>>,
     /// Cache generated vtables
-    pub vtables: RefCell<FxHashMap<(Ty<'tcx>, ty::PolyExistentialTraitRef<'tcx>), &'ll Value>>,
+    pub vtables: RefCell<FxHashMap<
+            (Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), &'ll Value>>,
     /// Cache of constant strings,
     pub const_cstr_cache: RefCell<FxHashMap<LocalInternedString, &'ll Value>>,
 
@@ -154,16 +144,17 @@ pub fn is_pie_binary(sess: &Session) -> bool {
 }
 
 pub unsafe fn create_module(
-    sess: &Session,
+    tcx: TyCtxt,
     llcx: &'ll llvm::Context,
     mod_name: &str,
 ) -> &'ll llvm::Module {
+    let sess = tcx.sess;
     let mod_name = SmallCStr::new(mod_name);
     let llmod = llvm::LLVMModuleCreateWithNameInContext(mod_name.as_ptr(), llcx);
 
     // Ensure the data-layout values hardcoded remain the defaults.
     if sess.target.target.options.is_builtin {
-        let tm = ::back::write::create_target_machine(sess, false);
+        let tm = ::back::write::create_target_machine(tcx, false);
         llvm::LLVMRustSetDataLayoutFromTargetMachine(llmod, tm);
         llvm::LLVMRustDisposeTargetMachine(tm);
 
@@ -233,7 +224,7 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
         // they're not available to be linked against. This poses a few problems
         // for the compiler, some of which are somewhat fundamental, but we use
         // the `use_dll_storage_attrs` variable below to attach the `dllexport`
-        // attribute to all LLVM functions that are exported e.g. they're
+        // attribute to all LLVM functions that are exported e.g., they're
         // already tagged with external linkage). This is suboptimal for a few
         // reasons:
         //
@@ -314,11 +305,15 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
             local_gen_sym_counter: Cell::new(0),
         }
     }
+
+    crate fn statics_to_rauw(&self) -> &RefCell<Vec<(&'ll Value, &'ll Value)>> {
+        &self.statics_to_rauw
+    }
 }
 
 impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     fn vtables(&self) -> &RefCell<FxHashMap<(Ty<'tcx>,
-                                ty::PolyExistentialTraitRef<'tcx>), &'ll Value>>
+                                Option<ty::PolyExistentialTraitRef<'tcx>>), &'ll Value>>
     {
         &self.vtables
     }
@@ -328,7 +323,7 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     }
 
     fn get_fn(&self, instance: Instance<'tcx>) -> &'ll Value {
-        get_fn(&&self,instance)
+        get_fn(self, instance)
     }
 
     fn get_param(&self, llfn: &'ll Value, index: c_uint) -> &'ll Value {
@@ -405,7 +400,6 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         ));
 
         let llfn = self.declare_fn("rust_eh_unwind_resume", sig);
-        attributes::unwind(llfn, true);
         attributes::apply_target_cpu_attr(self, llfn);
         unwresume.set(Some(llfn));
         llfn
@@ -431,10 +425,6 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         &self.codegen_unit
     }
 
-    fn statics_to_rauw(&self) -> &RefCell<Vec<(&'ll Value, &'ll Value)>> {
-        &self.statics_to_rauw
-    }
-
     fn used_statics(&self) -> &RefCell<Vec<&'ll Value>> {
         &self.used_statics
     }
@@ -445,10 +435,6 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
     fn apply_target_cpu_attr(&self, llfn: &'ll Value) {
         attributes::apply_target_cpu_attr(self, llfn)
-    }
-
-    fn closure_env_needs_indirect_debuginfo(&self) -> bool {
-        llvm_util::get_major_version() < 6
     }
 
     fn create_used_variable(&self) {
@@ -470,8 +456,8 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     }
 }
 
-impl IntrinsicDeclarationMethods<'tcx> for CodegenCx<'b, 'tcx> {
-    fn get_intrinsic(&self, key: &str) -> &'b Value {
+impl CodegenCx<'b, 'tcx> {
+    crate fn get_intrinsic(&self, key: &str) -> &'b Value {
         if let Some(v) = self.intrinsics.borrow().get(key).cloned() {
             return v;
         }
@@ -723,17 +709,17 @@ impl IntrinsicDeclarationMethods<'tcx> for CodegenCx<'b, 'tcx> {
         ifn!("llvm.bitreverse.i64", fn(t_i64) -> t_i64);
         ifn!("llvm.bitreverse.i128", fn(t_i128) -> t_i128);
 
-    ifn!("llvm.fshl.i8", fn(t_i8, t_i8, t_i8) -> t_i8);
-    ifn!("llvm.fshl.i16", fn(t_i16, t_i16, t_i16) -> t_i16);
-    ifn!("llvm.fshl.i32", fn(t_i32, t_i32, t_i32) -> t_i32);
-    ifn!("llvm.fshl.i64", fn(t_i64, t_i64, t_i64) -> t_i64);
-    ifn!("llvm.fshl.i128", fn(t_i128, t_i128, t_i128) -> t_i128);
+        ifn!("llvm.fshl.i8", fn(t_i8, t_i8, t_i8) -> t_i8);
+        ifn!("llvm.fshl.i16", fn(t_i16, t_i16, t_i16) -> t_i16);
+        ifn!("llvm.fshl.i32", fn(t_i32, t_i32, t_i32) -> t_i32);
+        ifn!("llvm.fshl.i64", fn(t_i64, t_i64, t_i64) -> t_i64);
+        ifn!("llvm.fshl.i128", fn(t_i128, t_i128, t_i128) -> t_i128);
 
-    ifn!("llvm.fshr.i8", fn(t_i8, t_i8, t_i8) -> t_i8);
-    ifn!("llvm.fshr.i16", fn(t_i16, t_i16, t_i16) -> t_i16);
-    ifn!("llvm.fshr.i32", fn(t_i32, t_i32, t_i32) -> t_i32);
-    ifn!("llvm.fshr.i64", fn(t_i64, t_i64, t_i64) -> t_i64);
-    ifn!("llvm.fshr.i128", fn(t_i128, t_i128, t_i128) -> t_i128);
+        ifn!("llvm.fshr.i8", fn(t_i8, t_i8, t_i8) -> t_i8);
+        ifn!("llvm.fshr.i16", fn(t_i16, t_i16, t_i16) -> t_i16);
+        ifn!("llvm.fshr.i32", fn(t_i32, t_i32, t_i32) -> t_i32);
+        ifn!("llvm.fshr.i64", fn(t_i64, t_i64, t_i64) -> t_i64);
+        ifn!("llvm.fshr.i128", fn(t_i128, t_i128, t_i128) -> t_i128);
 
         ifn!("llvm.sadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
         ifn!("llvm.sadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
@@ -771,6 +757,30 @@ impl IntrinsicDeclarationMethods<'tcx> for CodegenCx<'b, 'tcx> {
         ifn!("llvm.umul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
         ifn!("llvm.umul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
 
+        ifn!("llvm.sadd.sat.i8", fn(t_i8, t_i8) -> t_i8);
+        ifn!("llvm.sadd.sat.i16", fn(t_i16, t_i16) -> t_i16);
+        ifn!("llvm.sadd.sat.i32", fn(t_i32, t_i32) -> t_i32);
+        ifn!("llvm.sadd.sat.i64", fn(t_i64, t_i64) -> t_i64);
+        ifn!("llvm.sadd.sat.i128", fn(t_i128, t_i128) -> t_i128);
+
+        ifn!("llvm.uadd.sat.i8", fn(t_i8, t_i8) -> t_i8);
+        ifn!("llvm.uadd.sat.i16", fn(t_i16, t_i16) -> t_i16);
+        ifn!("llvm.uadd.sat.i32", fn(t_i32, t_i32) -> t_i32);
+        ifn!("llvm.uadd.sat.i64", fn(t_i64, t_i64) -> t_i64);
+        ifn!("llvm.uadd.sat.i128", fn(t_i128, t_i128) -> t_i128);
+
+        ifn!("llvm.ssub.sat.i8", fn(t_i8, t_i8) -> t_i8);
+        ifn!("llvm.ssub.sat.i16", fn(t_i16, t_i16) -> t_i16);
+        ifn!("llvm.ssub.sat.i32", fn(t_i32, t_i32) -> t_i32);
+        ifn!("llvm.ssub.sat.i64", fn(t_i64, t_i64) -> t_i64);
+        ifn!("llvm.ssub.sat.i128", fn(t_i128, t_i128) -> t_i128);
+
+        ifn!("llvm.usub.sat.i8", fn(t_i8, t_i8) -> t_i8);
+        ifn!("llvm.usub.sat.i16", fn(t_i16, t_i16) -> t_i16);
+        ifn!("llvm.usub.sat.i32", fn(t_i32, t_i32) -> t_i32);
+        ifn!("llvm.usub.sat.i64", fn(t_i64, t_i64) -> t_i64);
+        ifn!("llvm.usub.sat.i128", fn(t_i128, t_i128) -> t_i128);
+
         ifn!("llvm.lifetime.start", fn(t_i64,i8p) -> void);
         ifn!("llvm.lifetime.end", fn(t_i64, i8p) -> void);
 
@@ -782,6 +792,11 @@ impl IntrinsicDeclarationMethods<'tcx> for CodegenCx<'b, 'tcx> {
 
         ifn!("llvm.assume", fn(i1) -> void);
         ifn!("llvm.prefetch", fn(i8p, t_i32, t_i32, t_i32) -> void);
+
+        // variadic intrinsics
+        ifn!("llvm.va_start", fn(i8p) -> void);
+        ifn!("llvm.va_end", fn(i8p) -> void);
+        ifn!("llvm.va_copy", fn(i8p, i8p) -> void);
 
         if self.sess().opts.debuginfo != DebugInfo::None {
             ifn!("llvm.dbg.declare", fn(self.type_metadata(), self.type_metadata()) -> void);

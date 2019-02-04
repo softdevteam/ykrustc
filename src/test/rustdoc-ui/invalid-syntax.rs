@@ -1,17 +1,66 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // compile-pass
-// compile-flags: --error-format=human
 
 /// ```
 /// \__________pkt->size___________/          \_result->size_/ \__pkt->size__/
 /// ```
 pub fn foo() {}
+
+/// ```
+///    |
+/// LL | use foobar::Baz;
+///    |     ^^^^^^ did you mean `baz::foobar`?
+/// ```
+pub fn bar() {}
+
+/// ```
+/// valid
+/// ```
+///
+/// ```
+/// \_
+/// ```
+///
+/// ```text
+/// "invalid
+/// ```
+pub fn valid_and_invalid() {}
+
+/// This is a normal doc comment, but...
+///
+/// There's a code block with bad syntax in it:
+///
+/// ```rust
+/// \_
+/// ```
+///
+/// Good thing we tested it!
+pub fn baz() {}
+
+/// Indented block start
+///
+///     code with bad syntax
+///     \_
+///
+/// Indented block end
+pub fn quux() {}
+
+/// Unclosed fence
+///
+/// ```
+/// slkdjf
+pub fn xyzzy() {}
+
+/// Indented code that contains a fence
+///
+///     ```
+pub fn blah() {}
+
+/// ```edition2018
+/// \_
+/// ```
+pub fn blargh() {}
+
+#[doc = "```"]
+/// \_
+#[doc = "```"]
+pub fn crazy_attrs() {}

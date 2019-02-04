@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::Unsafety;
 use hir::def_id::DefId;
 use ty::{self, Ty, PolyFnSig, TypeFoldable, Substs, TyCtxt};
@@ -85,6 +75,11 @@ impl<'a, 'tcx> Instance<'tcx> {
 
                 let env_region = ty::ReLateBound(ty::INNERMOST, ty::BrEnv);
                 let env_ty = tcx.mk_mut_ref(tcx.mk_region(env_region), ty);
+
+                let pin_did = tcx.lang_items().pin_type().unwrap();
+                let pin_adt_ref = tcx.adt_def(pin_did);
+                let pin_substs = tcx.intern_substs(&[env_ty.into()]);
+                let env_ty = tcx.mk_adt(pin_adt_ref, pin_substs);
 
                 sig.map_bound(|sig| {
                     let state_did = tcx.lang_items().gen_state().unwrap();
@@ -173,10 +168,7 @@ impl<'tcx> InstanceDef<'tcx> {
             // available to normal end-users.
             return true
         }
-        let codegen_fn_attrs = tcx.codegen_fn_attrs(self.def_id());
-        // need to use `is_const_fn_raw` since we don't really care if the user can use it as a
-        // const fn, just whether the function should be inlined
-        codegen_fn_attrs.requests_inline() || tcx.is_const_fn_raw(self.def_id())
+        tcx.codegen_fn_attrs(self.def_id()).requests_inline()
     }
 }
 
@@ -350,9 +342,10 @@ fn resolve_associated_item<'a, 'tcx>(
 ) -> Option<Instance<'tcx>> {
     let def_id = trait_item.def_id;
     debug!("resolve_associated_item(trait_item={:?}, \
+            param_env={:?}, \
             trait_id={:?}, \
             rcvr_substs={:?})",
-           def_id, trait_id, rcvr_substs);
+            def_id, param_env, trait_id, rcvr_substs);
 
     let trait_ref = ty::TraitRef::from_method(tcx, trait_id, rcvr_substs);
     let vtbl = tcx.codegen_fulfill_obligation((param_env, ty::Binder::bind(trait_ref)));
@@ -362,7 +355,7 @@ fn resolve_associated_item<'a, 'tcx>(
     match vtbl {
         traits::VtableImpl(impl_data) => {
             let (def_id, substs) = traits::find_associated_item(
-                tcx, trait_item, rcvr_substs, &impl_data);
+                tcx, param_env, trait_item, rcvr_substs, &impl_data);
             let substs = tcx.erase_regions(&substs);
             Some(ty::Instance::new(def_id, substs))
         }

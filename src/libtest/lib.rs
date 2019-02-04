@@ -1,13 +1,3 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Support code for rustc's built in unit-test and micro-benchmarking
 //! framework.
 //!
@@ -23,7 +13,7 @@
 // running tests while providing a base that other test frameworks may
 // build off of.
 
-// NB: this is also specified in this crate's Cargo.toml, but libsyntax contains logic specific to
+// N.B., this is also specified in this crate's Cargo.toml, but libsyntax contains logic specific to
 // this crate, which relies on this attribute (rather than the value of `--crate-name` passed by
 // cargo) to detect this crate.
 
@@ -34,7 +24,7 @@
        html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
 #![feature(asm)]
 #![feature(fnbox)]
-#![cfg_attr(any(unix, target_os = "cloudabi"), feature(libc))]
+#![cfg_attr(any(unix, target_os = "cloudabi"), feature(libc, rustc_private))]
 #![feature(nll)]
 #![feature(set_stdio)]
 #![feature(panic_unwind)]
@@ -99,8 +89,12 @@ mod formatters;
 
 use formatters::{JsonFormatter, OutputFormatter, PrettyFormatter, TerseFormatter};
 
+/// Whether to execute tests concurrently or not
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Concurrent { Yes, No }
+
 // The name of a test. By convention this follows the rules for rust
-// paths; i.e. it should be a series of identifiers separated by double
+// paths; i.e., it should be a series of identifiers separated by double
 // colons. This way if some test runner wants to arrange the tests
 // hierarchically it may.
 
@@ -515,7 +509,7 @@ Test Attributes:
 
 // FIXME: Copied from libsyntax until linkage errors are resolved. Issue #47566
 fn is_nightly() -> bool {
-    // Whether this is a feature-staged build, i.e. on the beta or stable channel
+    // Whether this is a feature-staged build, i.e., on the beta or stable channel
     let disable_unstable_features = option_env!("CFG_DISABLE_UNSTABLE_FEATURES").is_some();
     // Whether we should enable unstable features for bootstrapping
     let bootstrap = env::var("RUSTC_BOOTSTRAP").is_ok();
@@ -1018,10 +1012,12 @@ fn use_color(opts: &TestOpts) -> bool {
     }
 }
 
-#[cfg(any(target_os = "cloudabi", target_os = "redox",
-          all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+#[cfg(any(target_os = "cloudabi",
+          target_os = "redox",
+          all(target_arch = "wasm32", not(target_os = "emscripten")),
+          all(target_vendor = "fortanix", target_env = "sgx")))]
 fn stdout_isatty() -> bool {
-    // FIXME: Implement isatty on Redox
+    // FIXME: Implement isatty on Redox and SGX
     false
 }
 #[cfg(unix)]
@@ -1071,8 +1067,12 @@ pub fn run_tests<F>(opts: &TestOpts, tests: Vec<TestDescAndFn>, mut callback: F)
 where
     F: FnMut(TestEvent) -> io::Result<()>,
 {
-    use std::collections::HashMap;
+    use std::collections::{self, HashMap};
+    use std::hash::BuildHasherDefault;
     use std::sync::mpsc::RecvTimeoutError;
+    // Use a deterministic hasher
+    type TestMap =
+        HashMap<TestDesc, Instant, BuildHasherDefault<collections::hash_map::DefaultHasher>>;
 
     let tests_len = tests.len();
 
@@ -1111,9 +1111,9 @@ where
 
     let (tx, rx) = channel::<MonitorMsg>();
 
-    let mut running_tests: HashMap<TestDesc, Instant> = HashMap::new();
+    let mut running_tests: TestMap = HashMap::default();
 
-    fn get_timed_out_tests(running_tests: &mut HashMap<TestDesc, Instant>) -> Vec<TestDesc> {
+    fn get_timed_out_tests(running_tests: &mut TestMap) -> Vec<TestDesc> {
         let now = Instant::now();
         let timed_out = running_tests
             .iter()
@@ -1131,7 +1131,7 @@ where
         timed_out
     };
 
-    fn calc_timeout(running_tests: &HashMap<TestDesc, Instant>) -> Option<Duration> {
+    fn calc_timeout(running_tests: &TestMap) -> Option<Duration> {
         running_tests.values().min().map(|next_timeout| {
             let now = Instant::now();
             if *next_timeout >= now {
@@ -1146,7 +1146,7 @@ where
         while !remaining.is_empty() {
             let test = remaining.pop().unwrap();
             callback(TeWait(test.desc.clone()))?;
-            run_test(opts, !opts.run_tests, test, tx.clone());
+            run_test(opts, !opts.run_tests, test, tx.clone(), Concurrent::No);
             let (test, result, stdout) = rx.recv().unwrap();
             callback(TeResult(test, result, stdout))?;
         }
@@ -1157,7 +1157,7 @@ where
                 let timeout = Instant::now() + Duration::from_secs(TEST_WARN_TIMEOUT_S);
                 running_tests.insert(test.desc.clone(), timeout);
                 callback(TeWait(test.desc.clone()))?; //here no pad
-                run_test(opts, !opts.run_tests, test, tx.clone());
+                run_test(opts, !opts.run_tests, test, tx.clone(), Concurrent::Yes);
                 pending += 1;
             }
 
@@ -1189,7 +1189,7 @@ where
         // All benchmarks run at the end, in serial.
         for b in filtered_benchs {
             callback(TeWait(b.desc.clone()))?;
-            run_test(opts, false, b, tx.clone());
+            run_test(opts, false, b, tx.clone(), Concurrent::No);
             let (test, result, stdout) = rx.recv().unwrap();
             callback(TeResult(test, result, stdout))?;
         }
@@ -1246,7 +1246,8 @@ fn get_concurrency() -> usize {
         1
     }
 
-    #[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+    #[cfg(any(all(target_arch = "wasm32", not(target_os = "emscripten")),
+              all(target_vendor = "fortanix", target_env = "sgx")))]
     fn num_cpus() -> usize {
         1
     }
@@ -1391,6 +1392,7 @@ pub fn run_test(
     force_ignore: bool,
     test: TestDescAndFn,
     monitor_ch: Sender<MonitorMsg>,
+    concurrency: Concurrent,
 ) {
     let TestDescAndFn { desc, testfn } = test;
 
@@ -1407,6 +1409,7 @@ pub fn run_test(
         monitor_ch: Sender<MonitorMsg>,
         nocapture: bool,
         testfn: Box<dyn FnBox() + Send>,
+        concurrency: Concurrent,
     ) {
         // Buffer for capturing standard I/O
         let data = Arc::new(Mutex::new(Vec::new()));
@@ -1441,7 +1444,7 @@ pub fn run_test(
         // the test synchronously, regardless of the concurrency
         // level.
         let supports_threads = !cfg!(target_os = "emscripten") && !cfg!(target_arch = "wasm32");
-        if supports_threads {
+        if concurrency == Concurrent::Yes && supports_threads {
             let cfg = thread::Builder::new().name(name.as_slice().to_owned());
             cfg.spawn(runtest).unwrap();
         } else {
@@ -1462,13 +1465,14 @@ pub fn run_test(
         }
         DynTestFn(f) => {
             let cb = move || __rust_begin_short_backtrace(f);
-            run_test_inner(desc, monitor_ch, opts.nocapture, Box::new(cb))
+            run_test_inner(desc, monitor_ch, opts.nocapture, Box::new(cb), concurrency)
         }
         StaticTestFn(f) => run_test_inner(
             desc,
             monitor_ch,
             opts.nocapture,
             Box::new(move || __rust_begin_short_backtrace(f)),
+            concurrency,
         ),
     }
 }
@@ -1612,7 +1616,7 @@ where
     // be left doing 0 iterations on every loop. The unfortunate
     // side effect of not being able to do as many runs is
     // automatically handled by the statistical analysis below
-    // (i.e. larger error bars).
+    // (i.e., larger error bars).
     n = cmp::max(1, n);
 
     let mut total_run = Duration::new(0, 0);
@@ -1751,6 +1755,7 @@ mod tests {
     use std::sync::mpsc::channel;
     use bench;
     use Bencher;
+    use Concurrent;
 
 
     fn one_ignored_one_unignored_test() -> Vec<TestDescAndFn> {
@@ -1791,7 +1796,7 @@ mod tests {
             testfn: DynTestFn(Box::new(f)),
         };
         let (tx, rx) = channel();
-        run_test(&TestOpts::new(), false, desc, tx);
+        run_test(&TestOpts::new(), false, desc, tx, Concurrent::No);
         let (_, res, _) = rx.recv().unwrap();
         assert!(res != TrOk);
     }
@@ -1809,7 +1814,7 @@ mod tests {
             testfn: DynTestFn(Box::new(f)),
         };
         let (tx, rx) = channel();
-        run_test(&TestOpts::new(), false, desc, tx);
+        run_test(&TestOpts::new(), false, desc, tx, Concurrent::No);
         let (_, res, _) = rx.recv().unwrap();
         assert!(res == TrIgnored);
     }
@@ -1829,7 +1834,7 @@ mod tests {
             testfn: DynTestFn(Box::new(f)),
         };
         let (tx, rx) = channel();
-        run_test(&TestOpts::new(), false, desc, tx);
+        run_test(&TestOpts::new(), false, desc, tx, Concurrent::No);
         let (_, res, _) = rx.recv().unwrap();
         assert!(res == TrOk);
     }
@@ -1849,7 +1854,7 @@ mod tests {
             testfn: DynTestFn(Box::new(f)),
         };
         let (tx, rx) = channel();
-        run_test(&TestOpts::new(), false, desc, tx);
+        run_test(&TestOpts::new(), false, desc, tx, Concurrent::No);
         let (_, res, _) = rx.recv().unwrap();
         assert!(res == TrOk);
     }
@@ -1871,7 +1876,7 @@ mod tests {
             testfn: DynTestFn(Box::new(f)),
         };
         let (tx, rx) = channel();
-        run_test(&TestOpts::new(), false, desc, tx);
+        run_test(&TestOpts::new(), false, desc, tx, Concurrent::No);
         let (_, res, _) = rx.recv().unwrap();
         assert!(res == TrFailedMsg(format!("{} '{}'", failed_msg, expected)));
     }
@@ -1889,7 +1894,7 @@ mod tests {
             testfn: DynTestFn(Box::new(f)),
         };
         let (tx, rx) = channel();
-        run_test(&TestOpts::new(), false, desc, tx);
+        run_test(&TestOpts::new(), false, desc, tx, Concurrent::No);
         let (_, res, _) = rx.recv().unwrap();
         assert!(res == TrFailed);
     }

@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Support for inlining external documentation into the current AST.
 
 use std::iter::once;
@@ -207,7 +197,7 @@ pub fn build_external_trait(cx: &DocContext, did: DefId) -> clean::Trait {
 fn build_external_function(cx: &DocContext, did: DefId) -> clean::Function {
     let sig = cx.tcx.fn_sig(did);
 
-    let constness = if cx.tcx.is_const_fn(did) {
+    let constness = if cx.tcx.is_min_const_fn(did) {
         hir::Constness::Const
     } else {
         hir::Constness::NotConst
@@ -303,8 +293,8 @@ pub fn build_impl(cx: &DocContext, did: DefId, ret: &mut Vec<clean::Item>) {
         }
     }
 
-    let for_ = if let Some(nodeid) = tcx.hir.as_local_node_id(did) {
-        match tcx.hir.expect_item(nodeid).node {
+    let for_ = if let Some(nodeid) = tcx.hir().as_local_node_id(did) {
+        match tcx.hir().expect_item(nodeid).node {
             hir::ItemKind::Impl(.., ref t, _) => {
                 t.clean(cx)
             }
@@ -325,12 +315,12 @@ pub fn build_impl(cx: &DocContext, did: DefId, ret: &mut Vec<clean::Item>) {
     }
 
     let predicates = tcx.predicates_of(did);
-    let (trait_items, generics) = if let Some(nodeid) = tcx.hir.as_local_node_id(did) {
-        match tcx.hir.expect_item(nodeid).node {
+    let (trait_items, generics) = if let Some(nodeid) = tcx.hir().as_local_node_id(did) {
+        match tcx.hir().expect_item(nodeid).node {
             hir::ItemKind::Impl(.., ref gen, _, _, ref item_ids) => {
                 (
                     item_ids.iter()
-                            .map(|ii| tcx.hir.impl_item(ii.id).clean(cx))
+                            .map(|ii| tcx.hir().impl_item(ii.id).clean(cx))
                             .collect::<Vec<_>>(),
                     gen.clean(cx),
                 )
@@ -420,8 +410,8 @@ fn build_module(cx: &DocContext, did: DefId, visited: &mut FxHashSet<DefId>) -> 
 }
 
 pub fn print_inlined_const(cx: &DocContext, did: DefId) -> String {
-    if let Some(node_id) = cx.tcx.hir.as_local_node_id(did) {
-        cx.tcx.hir.node_to_pretty_string(node_id)
+    if let Some(node_id) = cx.tcx.hir().as_local_node_id(did) {
+        cx.tcx.hir().node_to_pretty_string(node_id)
     } else {
         cx.tcx.rendered_const(did)
     }

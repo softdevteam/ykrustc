@@ -1,21 +1,10 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! MIR datatypes and passes. See the [rustc guide] for more info.
 //!
-//! [rustc guide]: https://rust-lang-nursery.github.io/rustc-guide/mir/index.html
+//! [rustc guide]: https://rust-lang.github.io/rustc-guide/mir/index.html
 
 use hir::def::CtorKind;
 use hir::def_id::DefId;
 use hir::{self, HirId, InlineAsm};
-use middle::region;
 use mir::interpret::{ConstValue, EvalErrorKind, Scalar};
 use mir::visit::MirVisitable;
 use rustc_apfloat::ieee::{Double, Single};
@@ -26,7 +15,7 @@ use rustc_data_structures::graph::{self, GraphPredecessors, GraphSuccessors};
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::sync::MappedReadGuard;
-use rustc_serialize as serialize;
+use rustc_serialize::{self as serialize};
 use smallvec::SmallVec;
 use std::borrow::Cow;
 use std::fmt::{self, Debug, Formatter, Write};
@@ -38,9 +27,12 @@ use syntax::ast::{self, Name};
 use syntax::symbol::InternedString;
 use syntax_pos::{Span, DUMMY_SP};
 use ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
-use ty::subst::{CanonicalUserSubsts, Subst, Substs};
-use ty::{self, AdtDef, CanonicalTy, ClosureSubsts, GeneratorSubsts, Region, Ty, TyCtxt};
+use ty::subst::{Subst, Substs};
 use ty::layout::VariantIdx;
+use ty::{
+    self, AdtDef, CanonicalUserTypeAnnotations, ClosureSubsts, GeneratorSubsts, Region, Ty, TyCtxt,
+    UserTypeAnnotationIndex,
+};
 use util::ppaux;
 
 pub use mir::interpret::AssertMessage;
@@ -132,6 +124,9 @@ pub struct Mir<'tcx> {
     /// variables and temporaries.
     pub local_decls: LocalDecls<'tcx>,
 
+    /// User type annotations
+    pub user_type_annotations: CanonicalUserTypeAnnotations<'tcx>,
+
     /// Number of arguments this function takes.
     ///
     /// Starting at local 1, `arg_count` locals will be provided by the caller
@@ -150,6 +145,14 @@ pub struct Mir<'tcx> {
     /// This is used for the "rust-call" ABI.
     pub spread_arg: Option<Local>,
 
+    /// Mark this MIR of a const context other than const functions as having converted a `&&` or
+    /// `||` expression into `&` or `|` respectively. This is problematic because if we ever stop
+    /// this conversion from happening and use short circuiting, we will cause the following code
+    /// to change the value of `x`: `let mut x = 42; false && { x = 55; true };`
+    ///
+    /// List of places where control flow was destroyed. Used for error reporting.
+    pub control_flow_destroyed: Vec<(Span, String)>,
+
     /// A span representing this MIR, for error reporting
     pub span: Span,
 
@@ -164,10 +167,12 @@ impl<'tcx> Mir<'tcx> {
         source_scope_local_data: ClearCrossCrate<IndexVec<SourceScope, SourceScopeLocalData>>,
         promoted: IndexVec<Promoted, Mir<'tcx>>,
         yield_ty: Option<Ty<'tcx>>,
-        local_decls: IndexVec<Local, LocalDecl<'tcx>>,
+        local_decls: LocalDecls<'tcx>,
+        user_type_annotations: CanonicalUserTypeAnnotations<'tcx>,
         arg_count: usize,
         upvar_decls: Vec<UpvarDecl>,
         span: Span,
+        control_flow_destroyed: Vec<(Span, String)>,
     ) -> Self {
         // We need `arg_count` locals, and one for the return place
         assert!(
@@ -187,11 +192,13 @@ impl<'tcx> Mir<'tcx> {
             generator_drop: None,
             generator_layout: None,
             local_decls,
+            user_type_annotations,
             arg_count,
             upvar_decls,
             spread_arg: None,
             span,
             cache: cache::Cache::new(),
+            control_flow_destroyed,
         }
     }
 
@@ -340,7 +347,7 @@ impl<'tcx> Mir<'tcx> {
     #[inline]
     pub fn args_iter(&self) -> impl Iterator<Item = Local> {
         let arg_count = self.arg_count;
-        (1..arg_count + 1).map(Local::new)
+        (1..=arg_count).map(Local::new)
     }
 
     /// Returns an iterator over all user-defined variables and compiler-generated temporaries (all
@@ -419,9 +426,11 @@ impl_stable_hash_for!(struct Mir<'tcx> {
     generator_drop,
     generator_layout,
     local_decls,
+    user_type_annotations,
     arg_count,
     upvar_decls,
     spread_arg,
+    control_flow_destroyed,
     span,
     cache
 });
@@ -557,7 +566,7 @@ pub enum BorrowKind {
     /// Data is mutable and not aliasable.
     Mut {
         /// True if this borrow arose from method-call auto-ref
-        /// (i.e. `adjustment::Adjust::Borrow`)
+        /// (i.e., `adjustment::Adjust::Borrow`)
         allow_two_phase_borrow: bool,
     },
 }
@@ -693,7 +702,7 @@ mod binding_form_impl {
 /// expression; that is, a block like `{ STMT_1; STMT_2; EXPR }`.
 ///
 /// It is used to improve diagnostics when such temporaries are
-/// involved in borrow_check errors, e.g. explanations of where the
+/// involved in borrow_check errors, e.g., explanations of where the
 /// temporaries come from, when their destructors are run, and/or how
 /// one might revise the code to satisfy the borrow checker's rules.
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
@@ -702,7 +711,7 @@ pub struct BlockTailInfo {
     /// expression is ignored by the block's expression context.
     ///
     /// Examples include `{ ...; tail };` and `let _ = { ...; tail };`
-    /// but not e.g. `let _x = { ...; tail };`
+    /// but not e.g., `let _x = { ...; tail };`
     pub tail_result_is_ignored: bool,
 }
 
@@ -757,7 +766,7 @@ pub struct LocalDecl<'tcx> {
     pub ty: Ty<'tcx>,
 
     /// If the user manually ascribed a type to this variable,
-    /// e.g. via `let x: T`, then we carry that type here. The MIR
+    /// e.g., via `let x: T`, then we carry that type here. The MIR
     /// borrow checker needs this information since it can affect
     /// region inference.
     pub user_ty: UserTypeProjections<'tcx>,
@@ -768,7 +777,7 @@ pub struct LocalDecl<'tcx> {
     /// to generate better debuginfo.
     pub name: Option<Name>,
 
-    /// The *syntactic* (i.e. not visibility) source scope the local is defined
+    /// The *syntactic* (i.e., not visibility) source scope the local is defined
     /// in. If the local was defined in a let-statement, this
     /// is *within* the let-statement, rather than outside
     /// of it.
@@ -1657,7 +1666,7 @@ impl<'tcx> TerminatorKind<'tcx> {
                             ),
                             ty: switch_ty,
                         };
-                        fmt_const_val(&mut s, &c).unwrap();
+                        fmt_const_val(&mut s, c).unwrap();
                         s.into()
                     }).chain(iter::once("otherwise".into()))
                     .collect()
@@ -1746,9 +1755,12 @@ pub enum StatementKind<'tcx> {
     Assign(Place<'tcx>, Box<Rvalue<'tcx>>),
 
     /// This represents all the reading that a pattern match may do
-    /// (e.g. inspecting constants and discriminant values), and the
+    /// (e.g., inspecting constants and discriminant values), and the
     /// kind of pattern it comes from. This is in order to adapt potential
     /// error messages to these specific patterns.
+    ///
+    /// Note that this also is emitted for regular `let` bindings to ensure that locals that are
+    /// never accessed still get some sanity checks for e.g. `let x: ! = ..;`
     FakeRead(FakeReadCause, Place<'tcx>),
 
     /// Write the discriminant for a variant to the enum Place.
@@ -1775,23 +1787,7 @@ pub enum StatementKind<'tcx> {
     /// by miri and only generated when "-Z mir-emit-retag" is passed.
     /// See <https://internals.rust-lang.org/t/stacked-borrows-an-aliasing-model-for-rust/8153/>
     /// for more details.
-    Retag {
-        /// `fn_entry` indicates whether this is the initial retag that happens in the
-        /// function prolog.
-        fn_entry: bool,
-        place: Place<'tcx>,
-    },
-
-    /// Escape the given reference to a raw pointer, so that it can be accessed
-    /// without precise provenance tracking. These statements are currently only interpreted
-    /// by miri and only generated when "-Z mir-emit-retag" is passed.
-    /// See <https://internals.rust-lang.org/t/stacked-borrows-an-aliasing-model-for-rust/8153/>
-    /// for more details.
-    EscapeToRaw(Operand<'tcx>),
-
-    /// Mark one terminating point of a region scope (i.e. static region).
-    /// (The starting point(s) arise implicitly from borrows.)
-    EndRegion(region::Scope),
+    Retag(RetagKind, Place<'tcx>),
 
     /// Encodes a user's type ascription. These need to be preserved
     /// intact so that NLL can respect them. For example:
@@ -1809,6 +1805,19 @@ pub enum StatementKind<'tcx> {
 
     /// No-op. Useful for deleting instructions without affecting statement indices.
     Nop,
+}
+
+/// `RetagKind` describes what kind of retag is to be performed.
+#[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, PartialEq, Eq)]
+pub enum RetagKind {
+    /// The initial retag when entering a function
+    FnEntry,
+    /// Retag preparing for a two-phase borrow
+    TwoPhase,
+    /// Retagging raw pointers
+    Raw,
+    /// A "normal" retag
+    Default,
 }
 
 /// The `FakeReadCause` describes the type of pattern why a `FakeRead` statement exists.
@@ -1846,11 +1855,16 @@ impl<'tcx> Debug for Statement<'tcx> {
         match self.kind {
             Assign(ref place, ref rv) => write!(fmt, "{:?} = {:?}", place, rv),
             FakeRead(ref cause, ref place) => write!(fmt, "FakeRead({:?}, {:?})", cause, place),
-            // (reuse lifetime rendering policy from ppaux.)
-            EndRegion(ref ce) => write!(fmt, "EndRegion({})", ty::ReScope(*ce)),
-            Retag { fn_entry, ref place } =>
-                write!(fmt, "Retag({}{:?})", if fn_entry { "[fn entry] " } else { "" }, place),
-            EscapeToRaw(ref place) => write!(fmt, "EscapeToRaw({:?})", place),
+            Retag(ref kind, ref place) =>
+                write!(fmt, "Retag({}{:?})",
+                    match kind {
+                        RetagKind::FnEntry => "[fn entry] ",
+                        RetagKind::TwoPhase => "[2phase] ",
+                        RetagKind::Raw => "[raw] ",
+                        RetagKind::Default => "",
+                    },
+                    place,
+                ),
             StorageLive(ref place) => write!(fmt, "StorageLive({:?})", place),
             StorageDead(ref place) => write!(fmt, "StorageDead({:?})", place),
             SetDiscriminant {
@@ -2035,7 +2049,7 @@ impl<'tcx> Debug for Place<'tcx> {
             Promoted(ref promoted) => write!(fmt, "({:?}: {:?})", promoted.0, promoted.1),
             Projection(ref data) => match data.elem {
                 ProjectionElem::Downcast(ref adt_def, index) => {
-                    write!(fmt, "({:?} as {})", data.base, adt_def.variants[index].name)
+                    write!(fmt, "({:?} as {})", data.base, adt_def.variants[index].ident)
                 }
                 ProjectionElem::Deref => write!(fmt, "(*{:?})", data.base),
                 ProjectionElem::Field(field, ty) => {
@@ -2140,7 +2154,9 @@ impl<'tcx> Operand<'tcx> {
             span,
             ty,
             user_ty: None,
-            literal: ty::Const::zero_sized(tcx, ty),
+            literal: tcx.intern_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::zero_sized(ty)),
+            ),
         })
     }
 
@@ -2179,7 +2195,7 @@ pub enum Rvalue<'tcx> {
 
     /// Read the discriminant of an ADT.
     ///
-    /// Undefined (i.e. no effort is made to make it defined, but there’s no reason why it cannot
+    /// Undefined (i.e., no effort is made to make it defined, but there’s no reason why it cannot
     /// be defined to return, say, a 0) if ADT is not an enum.
     Discriminant(Place<'tcx>),
 
@@ -2207,7 +2223,7 @@ pub enum CastKind {
     /// "Unsize" -- convert a thin-or-fat pointer to a fat pointer.
     /// codegen must figure out the details once full monomorphization
     /// is known. For example, this could be used to cast from a
-    /// `&[i32;N]` to a `&[i32]`, or a `Box<T>` to a `Box<Trait>`
+    /// `&[i32;N]` to a `&[i32]`, or a `Box<T>` to a `Box<dyn Trait>`
     /// (presuming `T: Trait`).
     Unsize,
 }
@@ -2221,13 +2237,13 @@ pub enum AggregateKind<'tcx> {
     /// The second field is the variant index. It's equal to 0 for struct
     /// and union expressions. The fourth field is
     /// active field number and is present only for union expressions
-    /// -- e.g. for a union expression `SomeUnion { c: .. }`, the
+    /// -- e.g., for a union expression `SomeUnion { c: .. }`, the
     /// active field index would identity the field `c`
     Adt(
         &'tcx AdtDef,
         VariantIdx,
         &'tcx Substs<'tcx>,
-        Option<UserTypeAnnotation<'tcx>>,
+        Option<UserTypeAnnotationIndex>,
         Option<usize>,
     ),
 
@@ -2375,17 +2391,17 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                     }
 
                     AggregateKind::Closure(def_id, _) => ty::tls::with(|tcx| {
-                        if let Some(node_id) = tcx.hir.as_local_node_id(def_id) {
+                        if let Some(node_id) = tcx.hir().as_local_node_id(def_id) {
                             let name = if tcx.sess.opts.debugging_opts.span_free_formats {
                                 format!("[closure@{:?}]", node_id)
                             } else {
-                                format!("[closure@{:?}]", tcx.hir.span(node_id))
+                                format!("[closure@{:?}]", tcx.hir().span(node_id))
                             };
                             let mut struct_fmt = fmt.debug_struct(&name);
 
                             tcx.with_freevars(node_id, |freevars| {
                                 for (freevar, place) in freevars.iter().zip(places) {
-                                    let var_name = tcx.hir.name(freevar.var_id());
+                                    let var_name = tcx.hir().name(freevar.var_id());
                                     struct_fmt.field(&var_name.as_str(), place);
                                 }
                             });
@@ -2397,13 +2413,13 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                     }),
 
                     AggregateKind::Generator(def_id, _, _) => ty::tls::with(|tcx| {
-                        if let Some(node_id) = tcx.hir.as_local_node_id(def_id) {
-                            let name = format!("[generator@{:?}]", tcx.hir.span(node_id));
+                        if let Some(node_id) = tcx.hir().as_local_node_id(def_id) {
+                            let name = format!("[generator@{:?}]", tcx.hir().span(node_id));
                             let mut struct_fmt = fmt.debug_struct(&name);
 
                             tcx.with_freevars(node_id, |freevars| {
                                 for (freevar, place) in freevars.iter().zip(places) {
-                                    let var_name = tcx.hir.name(freevar.var_id());
+                                    let var_name = tcx.hir().name(freevar.var_id());
                                     struct_fmt.field(&var_name.as_str(), place);
                                 }
                                 struct_fmt.field("$state", &places[freevars.len()]);
@@ -2441,36 +2457,9 @@ pub struct Constant<'tcx> {
     /// indicate that `Vec<_>` was explicitly specified.
     ///
     /// Needed for NLL to impose user-given type constraints.
-    pub user_ty: Option<UserTypeAnnotation<'tcx>>,
+    pub user_ty: Option<UserTypeAnnotationIndex>,
 
-    pub literal: &'tcx ty::Const<'tcx>,
-}
-
-/// A user-given type annotation attached to a constant.  These arise
-/// from constants that are named via paths, like `Foo::<A>::new` and
-/// so forth.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
-pub enum UserTypeAnnotation<'tcx> {
-    Ty(CanonicalTy<'tcx>),
-
-    /// The canonical type is the result of `type_of(def_id)` with the
-    /// given substitutions applied.
-    TypeOf(DefId, CanonicalUserSubsts<'tcx>),
-}
-
-EnumTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for UserTypeAnnotation<'tcx> {
-        (UserTypeAnnotation::Ty)(ty),
-        (UserTypeAnnotation::TypeOf)(def, substs),
-    }
-}
-
-EnumLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for UserTypeAnnotation<'a> {
-        type Lifted = UserTypeAnnotation<'tcx>;
-        (UserTypeAnnotation::Ty)(ty),
-        (UserTypeAnnotation::TypeOf)(def, substs),
-    }
+    pub literal: &'tcx ty::LazyConst<'tcx>,
 }
 
 /// A collection of projections into user types.
@@ -2532,6 +2521,48 @@ impl<'tcx> UserTypeProjections<'tcx> {
     pub fn projections(&self) -> impl Iterator<Item=&UserTypeProjection<'tcx>> {
         self.contents.iter().map(|&(ref user_type, _span)| user_type)
     }
+
+    pub fn push_projection(
+        mut self,
+        user_ty: &UserTypeProjection<'tcx>,
+        span: Span,
+    ) -> Self {
+        self.contents.push((user_ty.clone(), span));
+        self
+    }
+
+    fn map_projections(
+        mut self,
+        mut f: impl FnMut(UserTypeProjection<'tcx>) -> UserTypeProjection<'tcx>
+    ) -> Self {
+        self.contents = self.contents.drain(..).map(|(proj, span)| (f(proj), span)).collect();
+        self
+    }
+
+    pub fn index(self) -> Self {
+        self.map_projections(|pat_ty_proj| pat_ty_proj.index())
+    }
+
+    pub fn subslice(self, from: u32, to: u32) -> Self {
+        self.map_projections(|pat_ty_proj| pat_ty_proj.subslice(from, to))
+    }
+
+    pub fn deref(self) -> Self {
+        self.map_projections(|pat_ty_proj| pat_ty_proj.deref())
+    }
+
+    pub fn leaf(self, field: Field) -> Self {
+        self.map_projections(|pat_ty_proj| pat_ty_proj.leaf(field))
+    }
+
+    pub fn variant(
+        self,
+        adt_def: &'tcx AdtDef,
+        variant_index: VariantIdx,
+        field: Field,
+    ) -> Self {
+        self.map_projections(|pat_ty_proj| pat_ty_proj.variant(adt_def, variant_index, field))
+    }
 }
 
 /// Encodes the effect of a user-supplied type annotation on the
@@ -2551,11 +2582,44 @@ impl<'tcx> UserTypeProjections<'tcx> {
 ///   determined by finding the type of the `.0` field from `T`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
 pub struct UserTypeProjection<'tcx> {
-    pub base: UserTypeAnnotation<'tcx>,
+    pub base: UserTypeAnnotationIndex,
     pub projs: Vec<ProjectionElem<'tcx, (), ()>>,
 }
 
 impl<'tcx> Copy for ProjectionKind<'tcx> { }
+
+impl<'tcx> UserTypeProjection<'tcx> {
+    pub(crate) fn index(mut self) -> Self {
+        self.projs.push(ProjectionElem::Index(()));
+        self
+    }
+
+    pub(crate) fn subslice(mut self, from: u32, to: u32) -> Self {
+        self.projs.push(ProjectionElem::Subslice { from, to });
+        self
+    }
+
+    pub(crate) fn deref(mut self) -> Self {
+        self.projs.push(ProjectionElem::Deref);
+        self
+    }
+
+    pub(crate) fn leaf(mut self, field: Field) -> Self {
+        self.projs.push(ProjectionElem::Field(field, ()));
+        self
+    }
+
+    pub(crate) fn variant(
+        mut self,
+        adt_def: &'tcx AdtDef,
+        variant_index: VariantIdx,
+        field: Field,
+    ) -> Self {
+        self.projs.push(ProjectionElem::Downcast(adt_def, variant_index));
+        self.projs.push(ProjectionElem::Field(field, ()));
+        self
+    }
+}
 
 CloneTypeFoldableAndLiftImpls! { ProjectionKind<'tcx>, }
 
@@ -2593,12 +2657,20 @@ newtype_index! {
 impl<'tcx> Debug for Constant<'tcx> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
         write!(fmt, "const ")?;
-        fmt_const_val(fmt, self.literal)
+        fmt_lazy_const_val(fmt, self.literal)
     }
 }
 
 /// Write a `ConstValue` in a way closer to the original source code than the `Debug` output.
-pub fn fmt_const_val(f: &mut impl Write, const_val: &ty::Const<'_>) -> fmt::Result {
+pub fn fmt_lazy_const_val(f: &mut impl Write, const_val: &ty::LazyConst<'_>) -> fmt::Result {
+    match *const_val {
+        ty::LazyConst::Unevaluated(..) => write!(f, "{:?}", const_val),
+        ty::LazyConst::Evaluated(c) => fmt_const_val(f, c),
+    }
+}
+
+/// Write a `ConstValue` in a way closer to the original source code than the `Debug` output.
+pub fn fmt_const_val(f: &mut impl Write, const_val: ty::Const<'_>) -> fmt::Result {
     use ty::TyKind::*;
     let value = const_val.val;
     let ty = const_val.ty;
@@ -2630,23 +2702,21 @@ pub fn fmt_const_val(f: &mut impl Write, const_val: &ty::Const<'_>) -> fmt::Resu
         return write!(f, "{}", item_path_str(did));
     }
     // print string literals
-    if let ConstValue::ScalarPair(ptr, len) = value {
+    if let ConstValue::Slice(ptr, len) = value {
         if let Scalar::Ptr(ptr) = ptr {
-            if let Scalar::Bits { bits: len, .. } = len {
-                if let Ref(_, &ty::TyS { sty: Str, .. }, _) = ty.sty {
-                    return ty::tls::with(|tcx| {
-                        let alloc = tcx.alloc_map.lock().get(ptr.alloc_id);
-                        if let Some(interpret::AllocType::Memory(alloc)) = alloc {
-                            assert_eq!(len as usize as u128, len);
-                            let slice =
-                                &alloc.bytes[(ptr.offset.bytes() as usize)..][..(len as usize)];
-                            let s = ::std::str::from_utf8(slice).expect("non utf8 str from miri");
-                            write!(f, "{:?}", s)
-                        } else {
-                            write!(f, "pointer to erroneous constant {:?}, {:?}", ptr, len)
-                        }
-                    });
-                }
+            if let Ref(_, &ty::TyS { sty: Str, .. }, _) = ty.sty {
+                return ty::tls::with(|tcx| {
+                    let alloc = tcx.alloc_map.lock().get(ptr.alloc_id);
+                    if let Some(interpret::AllocKind::Memory(alloc)) = alloc {
+                        assert_eq!(len as usize as u64, len);
+                        let slice =
+                            &alloc.bytes[(ptr.offset.bytes() as usize)..][..(len as usize)];
+                        let s = ::std::str::from_utf8(slice).expect("non utf8 str from miri");
+                        write!(f, "{:?}", s)
+                    } else {
+                        write!(f, "pointer to erroneous constant {:?}, {:?}", ptr, len)
+                    }
+                });
             }
         }
     }
@@ -2777,8 +2847,8 @@ impl Location {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
 pub enum UnsafetyViolationKind {
     General,
-    /// unsafety is not allowed at all in min const fn
-    MinConstFn,
+    /// Permitted in const fn and regular fns
+    GeneralAndConstFn,
     ExternStatic(ast::NodeId),
     BorrowPacked(ast::NodeId),
 }
@@ -2901,6 +2971,7 @@ pub struct ClosureOutlivesRequirement<'tcx> {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
 pub enum ConstraintCategory {
     Return,
+    Yield,
     UseAsConst,
     UseAsStatic,
     TypeAnnotation,
@@ -2960,9 +3031,11 @@ CloneTypeFoldableAndLiftImpls! {
     SourceInfo,
     UpvarDecl,
     FakeReadCause,
+    RetagKind,
     SourceScope,
     SourceScopeData,
     SourceScopeLocalData,
+    UserTypeAnnotationIndex,
 }
 
 BraceStructTypeFoldableImpl! {
@@ -2976,9 +3049,11 @@ BraceStructTypeFoldableImpl! {
         generator_drop,
         generator_layout,
         local_decls,
+        user_type_annotations,
         arg_count,
         upvar_decls,
         spread_arg,
+        control_flow_destroyed,
         span,
         cache,
     }
@@ -3026,9 +3101,7 @@ EnumTypeFoldableImpl! {
         (StatementKind::StorageLive)(a),
         (StatementKind::StorageDead)(a),
         (StatementKind::InlineAsm) { asm, outputs, inputs },
-        (StatementKind::Retag) { fn_entry, place },
-        (StatementKind::EscapeToRaw)(place),
-        (StatementKind::EndRegion)(a),
+        (StatementKind::Retag)(kind, place),
         (StatementKind::AscribeUserType)(a, v, b),
         (StatementKind::Nop),
     }

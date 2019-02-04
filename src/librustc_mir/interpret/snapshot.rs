@@ -23,8 +23,8 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use syntax::ast::Mutability;
 use syntax::source_map::Span;
 
-use super::eval_context::{LocalValue, StackPopCleanup};
-use super::{Frame, Memory, Operand, MemPlace, Place, Immediate, ScalarMaybeUndef};
+use super::eval_context::{LocalState, StackPopCleanup};
+use super::{Frame, Memory, Operand, MemPlace, Place, Immediate, ScalarMaybeUndef, LocalValue};
 use const_eval::CompileTimeInterpreter;
 
 #[derive(Default)]
@@ -314,7 +314,7 @@ struct FrameSnapshot<'a, 'tcx: 'a> {
     stmt: usize,
 }
 
-impl_stable_hash_for!(impl<'tcx, 'mir: 'tcx> for struct Frame<'mir, 'tcx> {
+impl_stable_hash_for!(impl<'mir, 'tcx: 'mir> for struct Frame<'mir, 'tcx> {
     mir,
     instance,
     span,
@@ -323,6 +323,7 @@ impl_stable_hash_for!(impl<'tcx, 'mir: 'tcx> for struct Frame<'mir, 'tcx> {
     locals,
     block,
     stmt,
+    extra,
 });
 
 impl<'a, 'mir, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a Frame<'mir, 'tcx>
@@ -340,6 +341,7 @@ impl<'a, 'mir, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a Frame<'mir, 'tcx>
             locals,
             block,
             stmt,
+            extra: _,
         } = self;
 
         FrameSnapshot {
@@ -353,6 +355,22 @@ impl<'a, 'mir, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a Frame<'mir, 'tcx>
         }
     }
 }
+
+impl<'a, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a LocalState<'tcx>
+    where Ctx: SnapshotContext<'a>,
+{
+    type Item = LocalValue<(), AllocIdSnapshot<'a>>;
+
+    fn snapshot(&self, ctx: &'a Ctx) -> Self::Item {
+        let LocalState { state, layout: _ } = self;
+        state.snapshot(ctx)
+    }
+}
+
+impl_stable_hash_for!(struct LocalState<'tcx> {
+    state,
+    layout -> _,
+});
 
 impl<'a, 'b, 'mir, 'tcx: 'a+'mir> SnapshotContext<'b>
     for Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>

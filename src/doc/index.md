@@ -21,6 +21,9 @@ nav {
 #search-but:hover, #search-input:focus {
     border-color: #55a9ff;
 }
+h2 {
+    font-size: 18px;
+}
 </style>
 
 Welcome to an overview of the documentation provided by the Rust project.
@@ -68,6 +71,10 @@ accomplishing various tasks.
   </form>
 </div>
 
+## The Edition Guide
+
+[The Edition Guide](edition-guide/index.html) describes the Rust editions.
+
 ## The Rustc Book
 
 [The Rustc Book](rustc/index.html) describes the Rust compiler, `rustc`.
@@ -104,3 +111,9 @@ Rust. It's also sometimes called "the 'nomicon."
 ## The Unstable Book
 
 [The Unstable Book](unstable-book/index.html) has documentation for unstable features.
+
+## The `rustc` Contribution Guide
+
+[The `rustc` Guide](https://rust-lang.github.io/rustc-guide/) documents how
+the compiler works and how to contribute to it. This is useful if you want to build
+or modify the Rust compiler from source (e.g. to target something non-standard).
