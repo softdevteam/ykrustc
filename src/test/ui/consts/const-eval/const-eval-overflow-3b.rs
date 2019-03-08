@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Evaluation of constants in array-elem count goes through different
 // compiler control-flow paths.
 //
@@ -17,11 +7,11 @@
 // types for the left- and right-hand sides of the addition do not
 // match (as well as overflow).
 
-// FIXME (#23926): the error output is not consistent between a
-// self-hosted and a cross-compiled setup; therefore resorting to
-// error-pattern for now.
 
-// error-pattern: mismatched types
+
+
+
+
 
 #![allow(unused_imports)]
 
@@ -32,6 +22,8 @@ use std::{u8, u16, u32, u64, usize};
 const A_I8_I
     : [u32; (i8::MAX as usize) + 1]
     = [0; (i8::MAX + 1u8) as usize];
+//~^ ERROR mismatched types
+//~| ERROR cannot add `u8` to `i8`
 
 fn main() {
     foo(&A_I8_I[..]);

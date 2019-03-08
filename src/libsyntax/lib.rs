@@ -1,51 +1,29 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust parser and macro expander.
 //!
 //! # Note
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        test(attr(deny(warnings))))]
 
+#![deny(rust_2018_idioms)]
+
 #![feature(crate_visibility_modifier)]
-#![feature(macro_at_most_once_rep)]
+#![feature(label_break_value)]
 #![feature(nll)]
 #![feature(rustc_attrs)]
 #![feature(rustc_diagnostic_macros)]
-#![feature(slice_sort_by_cached_key)]
-#![feature(str_escape)]
 #![feature(step_trait)]
 #![feature(try_trait)]
 #![feature(unicode_internals)]
 
 #![recursion_limit="256"]
 
-#[macro_use] extern crate bitflags;
-extern crate core;
-extern crate serialize;
-#[macro_use] extern crate log;
-pub extern crate rustc_errors as errors;
-extern crate syntax_pos;
-#[macro_use] extern crate rustc_data_structures;
-extern crate rustc_target;
-#[macro_use] extern crate scoped_tls;
-#[macro_use]
-extern crate smallvec;
-
+#[allow(unused_extern_crates)]
 extern crate serialize as rustc_serialize; // used by deriving
 
+pub use errors;
 use rustc_data_structures::sync::Lock;
 use rustc_data_structures::bit_set::GrowableBitSet;
 pub use rustc_data_structures::thin_vec::ThinVec;
@@ -55,8 +33,6 @@ use ast::AttrId;
 // way towards a non-panic!-prone parser. It should be used for fatal parsing
 // errors; eventually we plan to convert all code using panictry to just use
 // normal try.
-// Exported for syntax_ext, not meant for general use.
-#[macro_export]
 macro_rules! panictry {
     ($e:expr) => ({
         use std::result::Result::{Ok, Err};
@@ -125,7 +101,7 @@ pub fn with_globals<F, R>(f: F) -> R
     })
 }
 
-scoped_thread_local!(pub static GLOBALS: Globals);
+scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
 
 #[macro_use]
 pub mod diagnostics {
@@ -135,7 +111,7 @@ pub mod diagnostics {
     pub mod metadata;
 }
 
-// NB: This module needs to be declared first so diagnostics are
+// N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
 pub mod diagnostic_list;
 
@@ -145,21 +121,15 @@ pub mod util {
     pub mod parser;
     #[cfg(test)]
     pub mod parser_testing;
-    pub mod move_map;
-
-    mod rc_slice;
-    pub use self::rc_slice::RcSlice;
-
-    mod rc_vec;
-    pub use self::rc_vec::RcVec;
+    pub mod map_in_place;
 }
 
 pub mod json;
 
 pub mod syntax {
-    pub use ext;
-    pub use parse;
-    pub use ast;
+    pub use crate::ext;
+    pub use crate::parse;
+    pub use crate::ast;
 }
 
 pub mod ast;
@@ -169,12 +139,11 @@ pub mod source_map;
 pub mod config;
 pub mod entry;
 pub mod feature_gate;
-pub mod fold;
+pub mod mut_visit;
 pub mod parse;
 pub mod ptr;
 pub mod show_span;
 pub mod std_inject;
-pub mod str;
 pub use syntax_pos::edition;
 pub use syntax_pos::symbol;
 pub mod test;
@@ -193,7 +162,6 @@ pub mod ext {
     pub mod derive;
     pub mod expand;
     pub mod placeholders;
-    pub mod quote;
     pub mod source_util;
 
     pub mod tt {

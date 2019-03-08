@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Hex binary-to-text encoding
 
 pub use self::FromHexError::*;
@@ -70,7 +60,7 @@ pub enum FromHexError {
 }
 
 impl fmt::Display for FromHexError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             InvalidHexCharacter(ch, idx) =>
                 write!(f, "Invalid character '{}' at position {}", ch, idx),
@@ -90,7 +80,7 @@ impl error::Error for FromHexError {
 
 
 impl FromHex for str {
-    /// Convert any hexadecimal encoded string (literal, `@`, `&`, or `~`)
+    /// Converts any hexadecimal encoded string (literal, `@`, `&`, or `~`)
     /// to the byte values it encodes.
     ///
     /// You can use the `String::from_utf8` function to turn a
@@ -155,8 +145,8 @@ impl FromHex for str {
 #[cfg(test)]
 mod tests {
     extern crate test;
-    use self::test::Bencher;
-    use hex::{FromHex, ToHex};
+    use test::Bencher;
+    use crate::hex::{FromHex, ToHex};
 
     #[test]
     pub fn test_to_hex() {

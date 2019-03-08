@@ -1,18 +1,8 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::mir::ConstraintCategory;
 use rustc::ty::RegionVid;
 use rustc_data_structures::graph::scc::Sccs;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
-use borrow_check::nll::type_check::Locations;
+use crate::borrow_check::nll::type_check::Locations;
 
 use std::fmt;
 use std::ops::Deref;
@@ -40,8 +30,8 @@ impl ConstraintSet {
     /// Constructs a "normal" graph from the constraint set; the graph makes it
     /// easy to find the constraints affecting a particular region.
     ///
-    /// NB: This graph contains a "frozen" view of the current
-    /// constraints.  any new constraints added to the `ConstraintSet`
+    /// N.B., this graph contains a "frozen" view of the current
+    /// constraints. Any new constraints added to the `ConstraintSet`
     /// after the graph is built will not be present in the graph.
     crate fn graph(&self, num_region_vars: usize) -> graph::NormalConstraintGraph {
         graph::ConstraintGraph::new(graph::Normal, self, num_region_vars)
@@ -53,7 +43,7 @@ impl ConstraintSet {
         graph::ConstraintGraph::new(graph::Reverse, self, num_region_vars)
     }
 
-    /// Compute cycles (SCCs) in the graph of regions. In particular,
+    /// Computes cycles (SCCs) in the graph of regions. In particular,
     /// find all regions R1, R2 such that R1: R2 and R2: R1 and group
     /// them into an SCC, and find the relationships between SCCs.
     crate fn compute_sccs(
@@ -94,7 +84,7 @@ pub struct OutlivesConstraint {
 }
 
 impl fmt::Debug for OutlivesConstraint {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
             "({:?}: {:?}) due to {:?}",

@@ -1,15 +1,5 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use abi::call::{FnType, ArgType, Uniform};
-use abi::{HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
+use crate::abi::call::{FnType, ArgType, Uniform};
+use crate::abi::{HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
 
 // Data layout: e-p:32:32-i64:64-v128:32:128-n32-S128
 
@@ -21,7 +11,7 @@ fn classify_ret_ty<'a, Ty, C>(cx: &C, ret: &mut ArgType<'a, Ty>)
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
 {
     if ret.layout.is_aggregate() {
-        if let Some(unit) = ret.layout.homogeneous_aggregate(cx) {
+        if let Some(unit) = ret.layout.homogeneous_aggregate(cx).unit() {
             let size = ret.layout.size;
             if unit.size == size {
                 ret.cast_to(Uniform {
@@ -36,7 +26,7 @@ fn classify_ret_ty<'a, Ty, C>(cx: &C, ret: &mut ArgType<'a, Ty>)
     }
 }
 
-fn classify_arg_ty<Ty>(arg: &mut ArgType<Ty>) {
+fn classify_arg_ty<Ty>(arg: &mut ArgType<'_, Ty>) {
     if arg.layout.is_aggregate() {
         arg.make_indirect_byval();
     }

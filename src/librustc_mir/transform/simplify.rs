@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A number of passes which remove various redundancies in the CFG.
 //!
 //! The `SimplifyCfg` pass gets rid of unnecessary blocks in the CFG, whereas the `SimplifyLocals`
@@ -44,7 +34,7 @@ use rustc::mir::*;
 use rustc::mir::visit::{MutVisitor, Visitor, PlaceContext};
 use rustc::session::config::DebugInfo;
 use std::borrow::Cow;
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 
 pub struct SimplifyCfg { label: String }
 
@@ -54,7 +44,7 @@ impl SimplifyCfg {
     }
 }
 
-pub fn simplify_cfg(mir: &mut Mir) {
+pub fn simplify_cfg(mir: &mut Mir<'_>) {
     CfgSimplifier::new(mir).simplify();
     remove_dead_blocks(mir);
 
@@ -69,7 +59,7 @@ impl MirPass for SimplifyCfg {
 
     fn run_pass<'a, 'tcx>(&self,
                           _tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource,
+                          _src: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         debug!("SimplifyCfg({:?}) - simplifying {:?}", self.label, mir);
         simplify_cfg(mir);
@@ -108,10 +98,14 @@ impl<'a, 'tcx: 'a> CfgSimplifier<'a, 'tcx> {
     pub fn simplify(mut self) {
         self.strip_nops();
 
+        let mut start = START_BLOCK;
+
         loop {
             let mut changed = false;
 
-            for bb in (0..self.basic_blocks.len()).map(BasicBlock::new) {
+            self.collapse_goto_chain(&mut start, &mut changed);
+
+            for bb in self.basic_blocks.indices() {
                 if self.pred_count[bb] == 0 {
                     continue
                 }
@@ -141,6 +135,27 @@ impl<'a, 'tcx: 'a> CfgSimplifier<'a, 'tcx> {
             }
 
             if !changed { break }
+        }
+
+        if start != START_BLOCK {
+            debug_assert!(self.pred_count[START_BLOCK] == 0);
+            self.basic_blocks.swap(START_BLOCK, start);
+            self.pred_count.swap(START_BLOCK, start);
+
+            // pred_count == 1 if the start block has no predecessor _blocks_.
+            if self.pred_count[START_BLOCK] > 1 {
+                for (bb, data) in self.basic_blocks.iter_enumerated_mut() {
+                    if self.pred_count[bb] == 0 {
+                        continue;
+                    }
+
+                    for target in data.terminator_mut().successors_mut() {
+                        if *target == start {
+                            *target = START_BLOCK;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -248,7 +263,7 @@ impl<'a, 'tcx: 'a> CfgSimplifier<'a, 'tcx> {
     }
 }
 
-pub fn remove_dead_blocks(mir: &mut Mir) {
+pub fn remove_dead_blocks(mir: &mut Mir<'_>) {
     let mut seen = BitSet::new_empty(mir.basic_blocks().len());
     for (bb, _) in traversal::preorder(mir) {
         seen.insert(bb.index());
@@ -283,7 +298,7 @@ pub struct SimplifyLocals;
 impl MirPass for SimplifyLocals {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _: MirSource,
+                          _: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         let mut marker = DeclMarker { locals: BitSet::new_empty(mir.local_decls.len()) };
         marker.visit_mir(mir);

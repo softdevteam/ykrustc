@@ -1,14 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use sys::mutex as imp;
+use crate::sys::mutex as imp;
 
 /// An OS-based mutual exclusion lock.
 ///
@@ -86,7 +76,7 @@ pub fn raw(mutex: &Mutex) -> &imp::Mutex { &mutex.0 }
 /// A simple RAII utility for the above Mutex without the poisoning semantics.
 pub struct MutexGuard<'a>(&'a imp::Mutex);
 
-impl<'a> Drop for MutexGuard<'a> {
+impl Drop for MutexGuard<'_> {
     #[inline]
     fn drop(&mut self) {
         unsafe { self.0.unlock(); }

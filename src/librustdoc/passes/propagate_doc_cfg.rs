@@ -1,25 +1,18 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::sync::Arc;
 
-use clean::{Crate, Item};
-use clean::cfg::Cfg;
-use fold::DocFolder;
-use passes::Pass;
+use crate::clean::{Crate, Item};
+use crate::clean::cfg::Cfg;
+use crate::core::DocContext;
+use crate::fold::DocFolder;
+use crate::passes::Pass;
 
-pub const PROPAGATE_DOC_CFG: Pass =
-    Pass::late("propagate-doc-cfg", propagate_doc_cfg,
-        "propagates `#[doc(cfg(...))]` to child items");
+pub const PROPAGATE_DOC_CFG: Pass = Pass {
+    name: "propagate-doc-cfg",
+    pass: propagate_doc_cfg,
+    description: "propagates `#[doc(cfg(...))]` to child items",
+};
 
-pub fn propagate_doc_cfg(cr: Crate) -> Crate {
+pub fn propagate_doc_cfg(cr: Crate, _: &DocContext<'_, '_, '_>) -> Crate {
     CfgPropagator { parent_cfg: None }.fold_crate(cr)
 }
 

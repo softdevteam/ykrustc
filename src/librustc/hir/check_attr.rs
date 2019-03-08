@@ -1,22 +1,16 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module implements some validity checks for attributes.
 //! In particular it verifies that `#[inline]` and `#[repr]` attributes are
 //! attached to items that actually support them and if there are
 //! conflicts between multiple such attributes attached to the same
 //! item.
 
-use hir;
-use hir::intravisit::{self, Visitor, NestedVisitorMap};
-use ty::TyCtxt;
+
+use crate::ty::TyCtxt;
+use crate::ty::query::Providers;
+
+use crate::hir;
+use crate::hir::def_id::DefId;
+use crate::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use std::fmt::{self, Display};
 use syntax_pos::Span;
 
@@ -97,10 +91,10 @@ struct CheckAttrVisitor<'a, 'tcx: 'a> {
 }
 
 impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
-    /// Check any attribute.
+    /// Checks any attribute.
     fn check_attributes(&self, item: &hir::Item, target: Target) {
         if target == Target::Fn || target == Target::Const {
-            self.tcx.codegen_fn_attrs(self.tcx.hir.local_def_id(item.id));
+            self.tcx.codegen_fn_attrs(self.tcx.hir().local_def_id_from_hir_id(item.hir_id));
         } else if let Some(a) = item.attrs.iter().find(|a| a.check_name("target_feature")) {
             self.tcx.sess.struct_span_err(a.span, "attribute should be applied to a function")
                 .span_label(item.span, "not a function")
@@ -121,7 +115,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
         self.check_used(item, target);
     }
 
-    /// Check if an `#[inline]` is applied to a function or a closure.
+    /// Checks if an `#[inline]` is applied to a function or a closure.
     fn check_inline(&self, attr: &hir::Attribute, span: &Span, target: Target) {
         if target != Target::Fn && target != Target::Closure {
             struct_span_err!(self.tcx.sess,
@@ -133,7 +127,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
         }
     }
 
-    /// Check if the `#[non_exhaustive]` attribute on an `item` is valid.
+    /// Checks if the `#[non_exhaustive]` attribute on an `item` is valid.
     fn check_non_exhaustive(&self, attr: &hir::Attribute, item: &hir::Item, target: Target) {
         match target {
             Target::Struct | Target::Enum => { /* Valid */ },
@@ -147,18 +141,9 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
                 return;
             }
         }
-
-        if attr.meta_item_list().is_some() || attr.value_str().is_some() {
-            struct_span_err!(self.tcx.sess,
-                             attr.span,
-                             E0702,
-                             "attribute should be empty")
-                .span_label(item.span, "not empty")
-                .emit();
-        }
     }
 
-    /// Check if the `#[marker]` attribute on an `item` is valid.
+    /// Checks if the `#[marker]` attribute on an `item` is valid.
     fn check_marker(&self, attr: &hir::Attribute, item: &hir::Item, target: Target) {
         match target {
             Target::Trait => { /* Valid */ },
@@ -170,15 +155,9 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
                 return;
             }
         }
-
-        if !attr.is_word() {
-            self.tcx.sess
-                .struct_span_err(attr.span, "attribute should be empty")
-                .emit();
-        }
     }
 
-    /// Check if the `#[repr]` attributes on `item` are valid.
+    /// Checks if the `#[repr]` attributes on `item` are valid.
     fn check_repr(&self, item: &hir::Item, target: Target) {
         // Extract the names of all repr hints, e.g., [foo, bar, align] for:
         // ```
@@ -207,8 +186,8 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
             };
 
             let (article, allowed_targets) = match &*name.as_str() {
-                "C" => {
-                    is_c = true;
+                "C" | "align" => {
+                    is_c |= name == "C";
                     if target != Target::Struct &&
                             target != Target::Union &&
                             target != Target::Enum {
@@ -229,14 +208,6 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
                     is_simd = true;
                     if target != Target::Struct {
                         ("a", "struct")
-                    } else {
-                        continue
-                    }
-                }
-                "align" => {
-                    if target != Target::Struct &&
-                            target != Target::Union {
-                        ("a", "struct or union")
                     } else {
                         continue
                     }
@@ -303,8 +274,8 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
 
     fn check_stmt_attributes(&self, stmt: &hir::Stmt) {
         // When checking statements ignore expressions, they will be checked later
-        if let hir::StmtKind::Decl(_, _) = stmt.node {
-            for attr in stmt.node.attrs() {
+        if let hir::StmtKind::Local(ref l) = stmt.node {
+            for attr in l.attrs.iter() {
                 if attr.check_name("inline") {
                     self.check_inline(attr, &stmt.span, Target::Statement);
                 }
@@ -352,7 +323,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for CheckAttrVisitor<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -374,15 +345,16 @@ impl<'a, 'tcx> Visitor<'tcx> for CheckAttrVisitor<'a, 'tcx> {
 }
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    let mut checker = CheckAttrVisitor { tcx };
-    tcx.hir.krate().visit_all_item_likes(&mut checker.as_deep_visitor());
+    for &module in tcx.hir().krate().modules.keys() {
+        tcx.ensure().check_mod_attrs(tcx.hir().local_def_id(module));
+    }
 }
 
 fn is_c_like_enum(item: &hir::Item) -> bool {
     if let hir::ItemKind::Enum(ref def, _) = item.node {
         for variant in &def.variants {
             match variant.node.data {
-                hir::VariantData::Unit(_) => { /* continue */ }
+                hir::VariantData::Unit(..) => { /* continue */ }
                 _ => { return false; }
             }
         }
@@ -390,4 +362,18 @@ fn is_c_like_enum(item: &hir::Item) -> bool {
     } else {
         false
     }
+}
+
+fn check_mod_attrs<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+    tcx.hir().visit_item_likes_in_module(
+        module_def_id,
+        &mut CheckAttrVisitor { tcx }.as_deep_visitor()
+    );
+}
+
+pub(crate) fn provide(providers: &mut Providers<'_>) {
+    *providers = Providers {
+        check_mod_attrs,
+        ..*providers
+    };
 }

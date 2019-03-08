@@ -1,17 +1,7 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module implements the check that the lifetime of a borrow
 //! does not exceed the lifetime of the value being borrowed.
 
-use borrowck::*;
+use crate::borrowck::*;
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
@@ -20,6 +10,7 @@ use rustc::ty;
 
 use syntax::ast;
 use syntax_pos::Span;
+use log::debug;
 
 type R = Result<(),()>;
 
@@ -62,7 +53,7 @@ struct GuaranteeLifetimeContext<'a, 'tcx: 'a> {
 impl<'a, 'tcx> GuaranteeLifetimeContext<'a, 'tcx> {
     fn check(&self, cmt: &mc::cmt_<'tcx>, discr_scope: Option<ast::NodeId>) -> R {
         //! Main routine. Walks down `cmt` until we find the
-        //! "guarantor".  Reports an error if `self.loan_region` is
+        //! "guarantor". Reports an error if `self.loan_region` is
         //! larger than scope of `cmt`.
         debug!("guarantee_lifetime.check(cmt={:?}, loan_region={:?})",
                cmt,
@@ -113,8 +104,7 @@ impl<'a, 'tcx> GuaranteeLifetimeContext<'a, 'tcx> {
             Categorization::Upvar(..) => {
                 self.bccx.tcx.mk_region(ty::ReScope(self.item_scope))
             }
-            Categorization::Local(local_id) => {
-                let hir_id = self.bccx.tcx.hir.node_to_hir_id(local_id);
+            Categorization::Local(hir_id) => {
                 self.bccx.tcx.mk_region(ty::ReScope(
                     self.bccx.region_scope_tree.var_scope(hir_id.local_id)))
             }

@@ -1,21 +1,11 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Redox-specific extension to the primitives in the `std::ffi` module.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use ffi::{OsStr, OsString};
-use mem;
-use sys::os_str::Buf;
-use sys_common::{FromInner, IntoInner, AsInner};
+use crate::ffi::{OsStr, OsString};
+use crate::mem;
+use crate::sys::os_str::Buf;
+use crate::sys_common::{FromInner, IntoInner, AsInner};
 
 /// Redox-specific extensions to [`OsString`].
 ///

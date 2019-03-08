@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Parameterized string expansion
 
 use self::Param::*;
@@ -50,23 +40,27 @@ pub enum Param {
 /// Container for static and dynamic variable arrays
 pub struct Variables {
     /// Static variables A-Z
-    sta: [Param; 26],
+    sta_va: [Param; 26],
     /// Dynamic variables a-z
-    dyn: [Param; 26],
+    dyn_va: [Param; 26],
 }
 
 impl Variables {
-    /// Return a new zero-initialized Variables
+    /// Returns a new zero-initialized Variables
     pub fn new() -> Variables {
         Variables {
-            sta: [Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
-                  Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
-                  Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
-                  Number(0), Number(0), Number(0), Number(0), Number(0)],
-            dyn: [Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
-                  Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
-                  Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
-                  Number(0), Number(0), Number(0), Number(0), Number(0)],
+            sta_va: [
+                Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
+                Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
+                Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
+                Number(0), Number(0), Number(0), Number(0), Number(0)
+            ],
+            dyn_va: [
+                Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
+                Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
+                Number(0), Number(0), Number(0), Number(0), Number(0), Number(0), Number(0),
+                Number(0), Number(0), Number(0), Number(0), Number(0)
+            ],
         }
     }
 }
@@ -259,14 +253,14 @@ pub fn expand(cap: &[u8], params: &[Param], vars: &mut Variables) -> Result<Vec<
                 if cur >= 'A' && cur <= 'Z' {
                     if let Some(arg) = stack.pop() {
                         let idx = (cur as u8) - b'A';
-                        vars.sta[idx as usize] = arg;
+                        vars.sta_va[idx as usize] = arg;
                     } else {
                         return Err("stack is empty".to_string());
                     }
                 } else if cur >= 'a' && cur <= 'z' {
                     if let Some(arg) = stack.pop() {
                         let idx = (cur as u8) - b'a';
-                        vars.dyn[idx as usize] = arg;
+                        vars.dyn_va[idx as usize] = arg;
                     } else {
                         return Err("stack is empty".to_string());
                     }
@@ -277,10 +271,10 @@ pub fn expand(cap: &[u8], params: &[Param], vars: &mut Variables) -> Result<Vec<
             GetVar => {
                 if cur >= 'A' && cur <= 'Z' {
                     let idx = (cur as u8) - b'A';
-                    stack.push(vars.sta[idx as usize].clone());
+                    stack.push(vars.sta_va[idx as usize].clone());
                 } else if cur >= 'a' && cur <= 'z' {
                     let idx = (cur as u8) - b'a';
-                    stack.push(vars.dyn[idx as usize].clone());
+                    stack.push(vars.dyn_va[idx as usize].clone());
                 } else {
                     return Err("bad variable name in %g".to_string());
                 }

@@ -1,29 +1,19 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use ascii;
-use borrow::{Cow, Borrow};
-use cmp::Ordering;
-use error::Error;
-use fmt::{self, Write};
-use io;
-use mem;
-use memchr;
-use ops;
-use os::raw::c_char;
-use ptr;
-use rc::Rc;
-use slice;
-use str::{self, Utf8Error};
-use sync::Arc;
-use sys;
+use crate::ascii;
+use crate::borrow::{Cow, Borrow};
+use crate::cmp::Ordering;
+use crate::error::Error;
+use crate::fmt::{self, Write};
+use crate::io;
+use crate::mem;
+use crate::memchr;
+use crate::ops;
+use crate::os::raw::c_char;
+use crate::ptr;
+use crate::rc::Rc;
+use crate::slice;
+use crate::str::{self, Utf8Error};
+use crate::sync::Arc;
+use crate::sys;
 
 /// A type representing an owned, C-compatible, nul-terminated string with no nul bytes in the
 /// middle.
@@ -372,7 +362,7 @@ impl CString {
     /// # Safety
     ///
     /// This should only ever be called with a pointer that was earlier
-    /// obtained by calling [`into_raw`] on a `CString`. Other usage (e.g. trying to take
+    /// obtained by calling [`into_raw`] on a `CString`. Other usage (e.g., trying to take
     /// ownership of a string that was allocated by foreign code) is likely to lead
     /// to undefined behavior or allocator corruption.
     ///
@@ -387,7 +377,7 @@ impl CString {
     ///
     /// # Examples
     ///
-    /// Create a `CString`, pass ownership to an `extern` function (via raw pointer), then retake
+    /// Creates a `CString`, pass ownership to an `extern` function (via raw pointer), then retake
     /// ownership with `from_raw`:
     ///
     /// ```ignore (extern-declaration)
@@ -669,9 +659,9 @@ impl fmt::Debug for CStr {
 }
 
 #[stable(feature = "cstr_default", since = "1.10.0")]
-impl<'a> Default for &'a CStr {
-    fn default() -> &'a CStr {
-        const SLICE: &'static [c_char] = &[0];
+impl Default for &CStr {
+    fn default() -> Self {
+        const SLICE: &[c_char] = &[0];
         unsafe { CStr::from_ptr(SLICE.as_ptr()) }
     }
 }
@@ -1167,8 +1157,8 @@ impl CStr {
     /// ```
     #[stable(feature = "cstr_to_str", since = "1.4.0")]
     pub fn to_str(&self) -> Result<&str, str::Utf8Error> {
-        // NB: When CStr is changed to perform the length check in .to_bytes()
-        // instead of in from_ptr(), it may be worth considering if this should
+        // N.B., when `CStr` is changed to perform the length check in `.to_bytes()`
+        // instead of in `from_ptr()`, it may be worth considering if this should
         // be rewritten to do the UTF-8 check inline with the length calculation
         // instead of doing it afterwards.
         str::from_utf8(self.to_bytes())
@@ -1313,12 +1303,12 @@ impl AsRef<CStr> for CString {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use os::raw::c_char;
-    use borrow::Cow::{Borrowed, Owned};
-    use hash::{Hash, Hasher};
-    use collections::hash_map::DefaultHasher;
-    use rc::Rc;
-    use sync::Arc;
+    use crate::os::raw::c_char;
+    use crate::borrow::Cow::{Borrowed, Owned};
+    use crate::hash::{Hash, Hasher};
+    use crate::collections::hash_map::DefaultHasher;
+    use crate::rc::Rc;
+    use crate::sync::Arc;
 
     #[test]
     fn c_to_rust() {
@@ -1475,7 +1465,7 @@ mod tests {
 
     #[test]
     fn cstr_const_constructor() {
-        const CSTR: &'static CStr = unsafe {
+        const CSTR: &CStr = unsafe {
             CStr::from_bytes_with_nul_unchecked(b"Hello, world!\0")
         };
 

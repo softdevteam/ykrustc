@@ -1,13 +1,3 @@
-// Copyright 2013-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /// Creates a [`Vec`] containing the arguments.
 ///
 /// `vec!` allows `Vec`s to be defined with the same syntax as array expressions.
@@ -44,7 +34,7 @@
 #[cfg(not(test))]
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(box_syntax)]
 macro_rules! vec {
     ($elem:expr; $n:expr) => (
         $crate::vec::from_elem($elem, $n)
@@ -72,20 +62,25 @@ macro_rules! vec {
 
 /// Creates a `String` using interpolation of runtime expressions.
 ///
-/// The first argument `format!` receives is a format string.  This must be a string
-/// literal.  The power of the formatting string is in the `{}`s contained.
+/// The first argument `format!` receives is a format string. This must be a string
+/// literal. The power of the formatting string is in the `{}`s contained.
 ///
 /// Additional parameters passed to `format!` replace the `{}`s within the
 /// formatting string in the order given unless named or positional parameters
-/// are used, see [`std::fmt`][fmt] for more information.
+/// are used; see [`std::fmt`][fmt] for more information.
 ///
 /// A common use for `format!` is concatenation and interpolation of strings.
 /// The same convention is used with [`print!`] and [`write!`] macros,
 /// depending on the intended destination of the string.
 ///
+/// To convert a single value to a string, use the [`to_string`] method. This
+/// will use the [`Display`] formatting trait.
+///
 /// [fmt]: ../std/fmt/index.html
 /// [`print!`]: ../std/macro.print.html
 /// [`write!`]: ../std/macro.write.html
+/// [`to_string`]: ../std/string/trait.ToString.html
+/// [`Display`]: ../std/fmt/trait.Display.html
 ///
 /// # Panics
 ///

@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // ok
 const fn foo1() {}
 const fn foo2(x: i32) -> i32 { x }
@@ -78,9 +68,9 @@ const fn i32_ops2(c: i32, d: i32) -> bool { c < d }
 const fn i32_ops3(c: i32, d: i32) -> bool { c != d }
 const fn i32_ops4(c: i32, d: i32) -> i32 { c + d }
 const fn char_cast(u: u8) -> char { u as char }
-const unsafe fn foo4() -> i32 { 42 }
-const unsafe fn foo5<T>() -> *const T { 0 as *const T }
-const unsafe fn foo6<T>() -> *mut T { 0 as *mut T }
+const unsafe fn ret_i32_no_unsafe() -> i32 { 42 }
+const unsafe fn ret_null_ptr_no_unsafe<T>() -> *const T { 0 as *const T }
+const unsafe fn ret_null_mut_ptr_no_unsafe<T>() -> *mut T { 0 as *mut T }
 
 // not ok
 const fn foo11<T: std::fmt::Display>(t: T) -> T { t }
@@ -100,13 +90,17 @@ static BAR: u32 = 42;
 const fn foo25() -> u32 { BAR } //~ ERROR cannot access `static` items in const fn
 const fn foo26() -> &'static u32 { &BAR } //~ ERROR cannot access `static` items
 const fn foo30(x: *const u32) -> usize { x as usize }
-//~^ ERROR casting pointers to int
+//~^ ERROR casting pointers to ints is unstable
+const fn foo30_with_unsafe(x: *const u32) -> usize { unsafe { x as usize } }
+//~^ ERROR casting pointers to ints is unstable
 const fn foo30_2(x: *mut u32) -> usize { x as usize }
-//~^ ERROR casting pointers to int
+//~^ ERROR casting pointers to ints is unstable
+const fn foo30_2_with_unsafe(x: *mut u32) -> usize { unsafe { x as usize } }
+//~^ ERROR casting pointers to ints is unstable
 const fn foo30_4(b: bool) -> usize { if b { 1 } else { 42 } }
 //~^ ERROR `if`, `match`, `&&` and `||` are not stable in const fn
 const fn foo30_5(b: bool) { while b { } } //~ ERROR not stable in const fn
-const fn foo30_6() -> bool { let x = true; x } //~ ERROR local variables in const fn are unstable
+const fn foo30_6() -> bool { let x = true; x }
 const fn foo36(a: bool, b: bool) -> bool { a && b }
 //~^ ERROR `if`, `match`, `&&` and `||` are not stable in const fn
 const fn foo37(a: bool, b: bool) -> bool { a || b }

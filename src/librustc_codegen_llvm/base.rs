@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Codegen the completed AST to the LLVM IR.
 //!
 //! Some functions here, such as codegen_block and codegen_expr, return a value --
@@ -17,28 +7,29 @@
 //!
 //! Hopefully useful general knowledge about codegen:
 //!
-//!   * There's no way to find out the Ty type of a Value.  Doing so
-//!     would be "trying to get the eggs out of an omelette" (credit:
-//!     pcwalton).  You can, instead, find out its llvm::Type by calling val_ty,
-//!     but one llvm::Type corresponds to many `Ty`s; for instance, tup(int, int,
-//!     int) and rec(x=int, y=int, z=int) will have the same llvm::Type.
+//! * There's no way to find out the `Ty` type of a Value. Doing so
+//!   would be "trying to get the eggs out of an omelette" (credit:
+//!   pcwalton). You can, instead, find out its `llvm::Type` by calling `val_ty`,
+//!   but one `llvm::Type` corresponds to many `Ty`s; for instance, `tup(int, int,
+//!   int)` and `rec(x=int, y=int, z=int)` will have the same `llvm::Type`.
 
 use super::ModuleLlvm;
 use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
 use rustc_codegen_ssa::base::maybe_create_entry_wrapper;
 use super::LlvmCodegenBackend;
 
-use llvm;
-use metadata;
+use crate::llvm;
+use crate::metadata;
+use crate::builder::Builder;
+use crate::common;
+use crate::context::CodegenCx;
+use crate::monomorphize::partitioning::CodegenUnitExt;
+use rustc::dep_graph;
 use rustc::mir::mono::{Linkage, Visibility, Stats};
 use rustc::middle::cstore::{EncodedMetadata};
 use rustc::ty::TyCtxt;
 use rustc::middle::exported_symbols;
 use rustc::session::config::{self, DebugInfo};
-use builder::Builder;
-use common;
-use context::CodegenCx;
-use monomorphize::partitioning::CodegenUnitExt;
 use rustc_codegen_ssa::mono_item::MonoItemExt;
 use rustc_data_structures::small_c_str::SmallCStr;
 
@@ -50,12 +41,12 @@ use std::time::Instant;
 use syntax_pos::symbol::InternedString;
 use rustc::hir::CodegenFnAttrs;
 
-use value::Value;
+use crate::value::Value;
 
 
 pub fn write_metadata<'a, 'gcx>(
     tcx: TyCtxt<'a, 'gcx, 'gcx>,
-    llvm_module: &ModuleLlvm
+    llvm_module: &mut ModuleLlvm
 ) -> EncodedMetadata {
     use std::io::Write;
     use flate2::Compression;
@@ -146,7 +137,7 @@ pub fn iter_globals(llmod: &'ll llvm::Module) -> ValueIter<'ll> {
     }
 }
 
-pub fn compile_codegen_unit<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>,
+pub fn compile_codegen_unit<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                   cgu_name: InternedString)
                                   -> Stats {
     let start_time = Instant::now();
@@ -155,7 +146,8 @@ pub fn compile_codegen_unit<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>,
     let ((stats, module), _) = tcx.dep_graph.with_task(dep_node,
                                                        tcx,
                                                        cgu_name,
-                                                       module_codegen);
+                                                       module_codegen,
+                                                       dep_graph::hash_result);
     let time_to_codegen = start_time.elapsed();
 
     // We assume that the cost to run LLVM on a CGU is proportional to
@@ -174,28 +166,30 @@ pub fn compile_codegen_unit<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>,
         let backend = LlvmCodegenBackend(());
         let cgu = tcx.codegen_unit(cgu_name);
         // Instantiate monomorphizations without filling out definitions yet...
-        let llvm_module = backend.new_metadata(tcx.sess, &cgu_name.as_str());
+        let llvm_module = backend.new_metadata(tcx, &cgu_name.as_str());
         let stats = {
             let cx = CodegenCx::new(tcx, cgu, &llvm_module);
             let mono_items = cx.codegen_unit
                                .items_in_deterministic_order(cx.tcx);
             for &(mono_item, (linkage, visibility)) in &mono_items {
-                mono_item.predefine::<Builder>(&cx, linkage, visibility);
+                mono_item.predefine::<Builder<'_, '_, '_>>(&cx, linkage, visibility);
             }
 
             // ... and now that we have everything pre-defined, fill out those definitions.
             for &(mono_item, _) in &mono_items {
-                mono_item.define::<Builder>(&cx);
+                mono_item.define::<Builder<'_, '_, '_>>(&cx);
             }
 
             // If this codegen unit contains the main function, also create the
             // wrapper here
-            maybe_create_entry_wrapper::<Builder>(&cx);
+            maybe_create_entry_wrapper::<Builder<'_, '_, '_>>(&cx);
 
             // Run replace-all-uses-with for statics that need it
             for &(old_g, new_g) in cx.statics_to_rauw().borrow().iter() {
                 unsafe {
-                    cx.static_replace_all_uses(old_g, new_g)
+                    let bitcast = llvm::LLVMConstPointerCast(new_g, cx.val_ty(old_g));
+                    llvm::LLVMReplaceAllUsesWith(old_g, bitcast);
+                    llvm::LLVMDeleteGlobal(old_g);
                 }
             }
 

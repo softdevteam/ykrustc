@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Collection types.
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -33,25 +23,25 @@ pub mod btree_set {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
-pub use self::binary_heap::BinaryHeap;
+pub use binary_heap::BinaryHeap;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
-pub use self::btree_map::BTreeMap;
+pub use btree_map::BTreeMap;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
-pub use self::btree_set::BTreeSet;
+pub use btree_set::BTreeSet;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
-pub use self::linked_list::LinkedList;
+pub use linked_list::LinkedList;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(no_inline)]
-pub use self::vec_deque::VecDeque;
+pub use vec_deque::VecDeque;
 
-use alloc::{AllocErr, LayoutErr};
+use crate::alloc::{AllocErr, LayoutErr};
 
 /// Augments `AllocErr` with a CapacityOverflow variant.
 #[derive(Clone, PartialEq, Eq, Debug)]

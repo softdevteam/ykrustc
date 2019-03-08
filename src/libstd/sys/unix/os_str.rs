@@ -1,24 +1,15 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /// The underlying OsString/OsStr implementation on Unix systems: just
 /// a `Vec<u8>`/`[u8]`.
 
-use borrow::Cow;
-use fmt;
-use str;
-use mem;
-use rc::Rc;
-use sync::Arc;
-use sys_common::{AsInner, IntoInner};
-use sys_common::bytestring::debug_fmt_bytestring;
+use crate::borrow::Cow;
+use crate::fmt;
+use crate::str;
+use crate::mem;
+use crate::rc::Rc;
+use crate::sync::Arc;
+use crate::sys_common::{AsInner, IntoInner};
+use crate::sys_common::bytestring::debug_fmt_bytestring;
+
 use core::str::lossy::Utf8Lossy;
 
 #[derive(Clone, Hash)]

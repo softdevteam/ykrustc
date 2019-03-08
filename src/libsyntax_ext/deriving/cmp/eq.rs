@@ -1,16 +1,6 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use deriving::path_std;
-use deriving::generic::*;
-use deriving::generic::ty::*;
+use crate::deriving::path_std;
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
 
 use syntax::ast::{self, Expr, MetaItem, GenericArg};
 use syntax::ext::base::{Annotatable, ExtCtxt};
@@ -19,7 +9,7 @@ use syntax::ptr::P;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
 
-pub fn expand_deriving_eq(cx: &mut ExtCtxt,
+pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
                           span: Span,
                           mitem: &MetaItem,
                           item: &Annotatable,
@@ -54,8 +44,11 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt,
     trait_def.expand_ext(cx, mitem, item, push, true)
 }
 
-fn cs_total_eq_assert(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
-    fn assert_ty_bounds(cx: &mut ExtCtxt, stmts: &mut Vec<ast::Stmt>,
+fn cs_total_eq_assert(cx: &mut ExtCtxt<'_>,
+                      trait_span: Span,
+                      substr: &Substructure<'_>)
+                      -> P<Expr> {
+    fn assert_ty_bounds(cx: &mut ExtCtxt<'_>, stmts: &mut Vec<ast::Stmt>,
                         ty: P<ast::Ty>, span: Span, helper_name: &str) {
         // Generate statement `let _: helper_name<ty>;`,
         // set the expn ID so we can use the unstable struct.
@@ -65,7 +58,9 @@ fn cs_total_eq_assert(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure)
                                         vec![GenericArg::Type(ty)], vec![]);
         stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
     }
-    fn process_variant(cx: &mut ExtCtxt, stmts: &mut Vec<ast::Stmt>, variant: &ast::VariantData) {
+    fn process_variant(cx: &mut ExtCtxt<'_>,
+                       stmts: &mut Vec<ast::Stmt>,
+                       variant: &ast::VariantData) {
         for field in variant.fields() {
             // let _: AssertParamIsEq<FieldTy>;
             assert_ty_bounds(cx, stmts, field.ty.clone(), field.span, "AssertParamIsEq");

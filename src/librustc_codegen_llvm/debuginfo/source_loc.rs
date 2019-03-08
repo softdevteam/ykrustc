@@ -1,22 +1,12 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use self::InternalDebugLocation::*;
 
 use super::utils::{debug_context, span_start};
 use super::metadata::UNKNOWN_COLUMN_NUMBER;
 use rustc_codegen_ssa::debuginfo::FunctionDebugContext;
 
-use llvm;
-use llvm::debuginfo::DIScope;
-use builder::Builder;
+use crate::llvm;
+use crate::llvm::debuginfo::DIScope;
+use crate::builder::Builder;
 use rustc_codegen_ssa::traits::*;
 
 use libc::c_uint;
@@ -41,7 +31,7 @@ pub fn set_source_location<D>(
     };
 
     let dbg_loc = if function_debug_context.source_locations_enabled.get() {
-        debug!("set_source_location: {}", bx.cx().sess().source_map().span_to_string(span));
+        debug!("set_source_location: {}", bx.sess().source_map().span_to_string(span));
         let loc = span_start(bx.cx(), span);
         InternalDebugLocation::new(scope.unwrap(), loc.line, loc.col.to_usize())
     } else {
@@ -76,7 +66,7 @@ pub fn set_debug_location(
             // For MSVC, set the column number to zero.
             // Otherwise, emit it. This mimics clang behaviour.
             // See discussion in https://github.com/rust-lang/rust/issues/42921
-            let col_used =  if bx.cx().sess().target.target.options.is_like_msvc {
+            let col_used =  if bx.sess().target.target.options.is_like_msvc {
                 UNKNOWN_COLUMN_NUMBER
             } else {
                 col as c_uint

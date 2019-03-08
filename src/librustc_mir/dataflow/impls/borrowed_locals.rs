@@ -1,18 +1,8 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 pub use super::*;
 
 use rustc::mir::*;
 use rustc::mir::visit::Visitor;
-use dataflow::BitDenotation;
+use crate::dataflow::BitDenotation;
 
 /// This calculates if any part of a MIR local could have previously been borrowed.
 /// This means that once a local has been borrowed, its bit will be set
@@ -36,7 +26,7 @@ impl<'a, 'tcx: 'a> HaveBeenBorrowedLocals<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> BitDenotation for HaveBeenBorrowedLocals<'a, 'tcx> {
+impl<'a, 'tcx> BitDenotation<'tcx> for HaveBeenBorrowedLocals<'a, 'tcx> {
     type Idx = Local;
     fn name() -> &'static str { "has_been_borrowed_locals" }
     fn bits_per_block(&self) -> usize {
@@ -48,7 +38,7 @@ impl<'a, 'tcx> BitDenotation for HaveBeenBorrowedLocals<'a, 'tcx> {
     }
 
     fn statement_effect(&self,
-                        sets: &mut BlockSets<Local>,
+                        sets: &mut BlockSets<'_, Local>,
                         loc: Location) {
         let stmt = &self.mir[loc.block].statements[loc.statement_index];
 
@@ -64,18 +54,20 @@ impl<'a, 'tcx> BitDenotation for HaveBeenBorrowedLocals<'a, 'tcx> {
     }
 
     fn terminator_effect(&self,
-                         sets: &mut BlockSets<Local>,
+                         sets: &mut BlockSets<'_, Local>,
                          loc: Location) {
         BorrowedLocalsVisitor {
             sets,
         }.visit_terminator(loc.block, self.mir[loc.block].terminator(), loc);
     }
 
-    fn propagate_call_return(&self,
-                             _in_out: &mut BitSet<Local>,
-                             _call_bb: mir::BasicBlock,
-                             _dest_bb: mir::BasicBlock,
-                             _dest_place: &mir::Place) {
+    fn propagate_call_return(
+        &self,
+        _in_out: &mut BitSet<Local>,
+        _call_bb: mir::BasicBlock,
+        _dest_bb: mir::BasicBlock,
+        _dest_place: &mir::Place<'tcx>,
+    ) {
         // Nothing to do when a call returns successfully
     }
 }
@@ -100,9 +92,9 @@ struct BorrowedLocalsVisitor<'b, 'c: 'b> {
 
 fn find_local<'tcx>(place: &Place<'tcx>) -> Option<Local> {
     match *place {
-        Place::Local(l) => Some(l),
-        Place::Promoted(_) |
-        Place::Static(..) => None,
+        Place::Base(PlaceBase::Local(l)) => Some(l),
+        Place::Base(PlaceBase::Promoted(_)) |
+        Place::Base(PlaceBase::Static(..)) => None,
         Place::Projection(ref proj) => {
             match proj.elem {
                 ProjectionElem::Deref => None,

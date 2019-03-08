@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // run-pass
 #![allow(unused_macros)]
 // Check the macro follow sets (see corresponding cfail test).
@@ -83,7 +73,7 @@ macro_rules! follow_block {
     ($b:block $t:ty) => {};
     ($b:block $s:stmt) => {};
     ($b:block $p:path) => {};
-    ($b:block $b:block) => {};
+    ($b:block $c:block) => {};
     ($b:block $i:ident) => {};
     ($b:block $t:tt) => {};
     ($b:block $i:item) => {};
@@ -109,9 +99,9 @@ macro_rules! follow_ident {
     ($i:ident $s:stmt) => {};
     ($i:ident $p:path) => {};
     ($i:ident $b:block) => {};
-    ($i:ident $i:ident) => {};
+    ($i:ident $j:ident) => {};
     ($i:ident $t:tt) => {};
-    ($i:ident $i:item) => {};
+    ($i:ident $j:item) => {};
     ($i:ident $m:meta) => {};
 }
 // FOLLOW(tt) = any token
@@ -130,12 +120,12 @@ macro_rules! follow_tt {
     ($t:tt ident) => {};
     ($t:tt $p:pat) => {};
     ($t:tt $e:expr) => {};
-    ($t:tt $t:ty) => {};
+    ($t:tt $v:ty) => {};
     ($t:tt $s:stmt) => {};
     ($t:tt $p:path) => {};
     ($t:tt $b:block) => {};
     ($t:tt $i:ident) => {};
-    ($t:tt $t:tt) => {};
+    ($t:tt $v:tt) => {};
     ($t:tt $i:item) => {};
     ($t:tt $m:meta) => {};
 }
@@ -159,9 +149,9 @@ macro_rules! follow_item {
     ($i:item $s:stmt) => {};
     ($i:item $p:path) => {};
     ($i:item $b:block) => {};
-    ($i:item $i:ident) => {};
+    ($i:item $j:ident) => {};
     ($i:item $t:tt) => {};
-    ($i:item $i:item) => {};
+    ($i:item $j:item) => {};
     ($i:item $m:meta) => {};
 }
 // FOLLOW(meta) = any token
@@ -187,7 +177,7 @@ macro_rules! follow_meta {
     ($m:meta $i:ident) => {};
     ($m:meta $t:tt) => {};
     ($m:meta $i:item) => {};
-    ($m:meta $m:meta) => {};
+    ($m:meta $n:meta) => {};
 }
 
 fn main() {}

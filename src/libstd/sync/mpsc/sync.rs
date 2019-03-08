@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /// Synchronous channels/ports
 ///
 /// This channel implementation differs significantly from the asynchronous
@@ -41,11 +31,11 @@ use core::isize;
 use core::mem;
 use core::ptr;
 
-use sync::atomic::{Ordering, AtomicUsize};
-use sync::mpsc::blocking::{self, WaitToken, SignalToken};
-use sync::mpsc::select::StartResult::{self, Installed, Abort};
-use sync::{Mutex, MutexGuard};
-use time::Instant;
+use crate::sync::atomic::{Ordering, AtomicUsize};
+use crate::sync::mpsc::blocking::{self, WaitToken, SignalToken};
+use crate::sync::mpsc::select::StartResult::{self, Installed, Abort};
+use crate::sync::{Mutex, MutexGuard};
+use crate::time::Instant;
 
 const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 
@@ -292,7 +282,7 @@ impl<T> Packet<T> {
             }
         }
 
-        // NB: Channel could be disconnected while waiting, so the order of
+        // N.B., channel could be disconnected while waiting, so the order of
         // these conditionals is important.
         if guard.disconnected && guard.buf.size() == 0 {
             return Err(Disconnected);

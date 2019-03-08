@@ -1,13 +1,14 @@
 error[E0308]: match arms have incompatible types
-  --> $DIR/old-lub-glb-hr.rs:18:13
+  --> $DIR/old-lub-glb-hr.rs:16:14
    |
-LL |       let z = match 22 { //~ ERROR incompatible types
-   |  _____________^
+LL |       let z = match 22 {
+   |  _____________-
 LL | |         0 => x,
-LL | |         _ => y,
-   | |              - match arm with an incompatible type
+   | |              - this is found to be of type `for<'r, 's> fn(&'r u8, &'s u8)`
+LL | |         _ => y, //~ ERROR match arms have incompatible types
+   | |              ^ expected bound lifetime parameter, found concrete lifetime
 LL | |     };
-   | |_____^ expected bound lifetime parameter, found concrete lifetime
+   | |_____- `match` arms have incompatible types
    |
    = note: expected type `for<'r, 's> fn(&'r u8, &'s u8)`
               found type `for<'a> fn(&'a u8, &'a u8)`

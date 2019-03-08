@@ -1,26 +1,14 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::debuginfo::{
     DIBuilder, DIDescriptor, DIFile, DILexicalBlock, DISubprogram, DIType,
     DIBasicType, DIDerivedType, DICompositeType, DIScope, DIVariable,
     DIGlobalVariableExpression, DIArray, DISubrange, DITemplateTypeParameter, DIEnumerator,
-    DINameSpace, DIFlags,
+    DINameSpace, DIFlags, DISPFlags, DebugEmissionKind,
 };
 
 use libc::{c_uint, c_int, size_t, c_char};
 use libc::{c_ulonglong, c_void};
 
 use std::marker::PhantomData;
-use syntax;
-use rustc_codegen_ssa;
 
 use super::RustString;
 
@@ -125,6 +113,8 @@ pub enum Attribute {
     SanitizeAddress = 21,
     SanitizeMemory  = 22,
     NonLazyBind     = 23,
+    OptimizeNone    = 24,
+    ReturnsTwice    = 25,
 }
 
 /// LLVMIntPredicate
@@ -599,6 +589,40 @@ pub mod debuginfo {
             const FlagBitField            = (1 << 19);
             const FlagNoReturn            = (1 << 20);
             const FlagMainSubprogram      = (1 << 21);
+        }
+    }
+
+    // These values **must** match with LLVMRustDISPFlags!!
+    bitflags! {
+        #[repr(C)]
+        #[derive(Default)]
+        pub struct DISPFlags: ::libc::uint32_t {
+            const SPFlagZero              = 0;
+            const SPFlagVirtual           = 1;
+            const SPFlagPureVirtual       = 2;
+            const SPFlagLocalToUnit       = (1 << 2);
+            const SPFlagDefinition        = (1 << 3);
+            const SPFlagOptimized         = (1 << 4);
+        }
+    }
+
+    /// LLVMRustDebugEmissionKind
+    #[derive(Copy, Clone)]
+    #[repr(C)]
+    pub enum DebugEmissionKind {
+        NoDebug,
+        FullDebug,
+        LineTablesOnly,
+    }
+
+    impl DebugEmissionKind {
+        pub fn from_generic(kind: rustc::session::config::DebugInfo) -> Self {
+            use rustc::session::config::DebugInfo;
+            match kind {
+                DebugInfo::None => DebugEmissionKind::NoDebug,
+                DebugInfo::Limited => DebugEmissionKind::LineTablesOnly,
+                DebugInfo::Full => DebugEmissionKind::FullDebug,
+            }
         }
     }
 }
@@ -1222,12 +1246,12 @@ extern "C" {
         B: &Builder<'a>,
         LHS: &'a Value,
         LHS: &'a Value,
-    ) -> Option<&'a Value>;
+    ) -> &'a Value;
     pub fn LLVMRustBuildMaxNum(
         B: &Builder<'a>,
         LHS: &'a Value,
         LHS: &'a Value,
-    ) -> Option<&'a Value>;
+    ) -> &'a Value;
 
     // Atomic Operations
     pub fn LLVMRustBuildAtomicLoad(B: &Builder<'a>,
@@ -1259,7 +1283,7 @@ extern "C" {
                               SingleThreaded: Bool)
                               -> &'a Value;
 
-    pub fn LLVMRustBuildAtomicFence(B: &Builder,
+    pub fn LLVMRustBuildAtomicFence(B: &Builder<'_>,
                                     Order: AtomicOrdering,
                                     Scope: SynchronizationScope);
 
@@ -1287,17 +1311,17 @@ extern "C" {
     pub fn LLVMPassManagerBuilderUseInlinerWithThreshold(PMB: &PassManagerBuilder,
                                                          threshold: c_uint);
     pub fn LLVMPassManagerBuilderPopulateModulePassManager(PMB: &PassManagerBuilder,
-                                                           PM: &PassManager);
+                                                           PM: &PassManager<'_>);
 
     pub fn LLVMPassManagerBuilderPopulateFunctionPassManager(PMB: &PassManagerBuilder,
-                                                             PM: &PassManager);
+                                                             PM: &PassManager<'_>);
     pub fn LLVMPassManagerBuilderPopulateLTOPassManager(PMB: &PassManagerBuilder,
-                                                        PM: &PassManager,
+                                                        PM: &PassManager<'_>,
                                                         Internalize: Bool,
                                                         RunInliner: Bool);
     pub fn LLVMRustPassManagerBuilderPopulateThinLTOPassManager(
         PMB: &PassManagerBuilder,
-        PM: &PassManager);
+        PM: &PassManager<'_>);
 
     // Stuff that's in rustllvm/ because it's not upstream yet.
 
@@ -1312,15 +1336,15 @@ extern "C" {
     pub fn LLVMGetSections(ObjFile: &'a ObjectFile) -> &'a mut SectionIterator<'a>;
     /// Destroys a section iterator.
     pub fn LLVMDisposeSectionIterator(SI: &'a mut SectionIterator<'a>);
-    /// Returns true if the section iterator is at the end of the section
+    /// Returns `true` if the section iterator is at the end of the section
     /// list:
     pub fn LLVMIsSectionIteratorAtEnd(ObjFile: &'a ObjectFile, SI: &SectionIterator<'a>) -> Bool;
     /// Moves the section iterator to point to the next section.
-    pub fn LLVMMoveToNextSection(SI: &SectionIterator);
+    pub fn LLVMMoveToNextSection(SI: &SectionIterator<'_>);
     /// Returns the current section size.
-    pub fn LLVMGetSectionSize(SI: &SectionIterator) -> c_ulonglong;
+    pub fn LLVMGetSectionSize(SI: &SectionIterator<'_>) -> c_ulonglong;
     /// Returns the current section contents as a string buffer.
-    pub fn LLVMGetSectionContents(SI: &SectionIterator) -> *const c_char;
+    pub fn LLVMGetSectionContents(SI: &SectionIterator<'_>) -> *const c_char;
 
     /// Reads the given file and returns it as a memory buffer. Use
     /// LLVMDisposeMemoryBuffer() to get rid of it.
@@ -1358,6 +1382,7 @@ extern "C" {
     pub fn LLVMRustDebugMetadataVersion() -> u32;
     pub fn LLVMRustVersionMajor() -> u32;
     pub fn LLVMRustVersionMinor() -> u32;
+    pub fn LLVMRustIsRustLLVM() -> bool;
 
     pub fn LLVMRustAddModuleFlag(M: &Module, name: *const c_char, value: u32);
 
@@ -1367,7 +1392,7 @@ extern "C" {
 
     pub fn LLVMRustDIBuilderDispose(Builder: &'a mut DIBuilder<'a>);
 
-    pub fn LLVMRustDIBuilderFinalize(Builder: &DIBuilder);
+    pub fn LLVMRustDIBuilderFinalize(Builder: &DIBuilder<'_>);
 
     pub fn LLVMRustDIBuilderCreateCompileUnit(Builder: &DIBuilder<'a>,
                                               Lang: c_uint,
@@ -1376,7 +1401,8 @@ extern "C" {
                                               isOptimized: bool,
                                               Flags: *const c_char,
                                               RuntimeVer: c_uint,
-                                              SplitName: *const c_char)
+                                              SplitName: *const c_char,
+                                              kind: DebugEmissionKind)
                                               -> &'a DIDescriptor;
 
     pub fn LLVMRustDIBuilderCreateFile(Builder: &DIBuilder<'a>,
@@ -1396,11 +1422,9 @@ extern "C" {
                                            File: &'a DIFile,
                                            LineNo: c_uint,
                                            Ty: &'a DIType,
-                                           isLocalToUnit: bool,
-                                           isDefinition: bool,
                                            ScopeLine: c_uint,
                                            Flags: DIFlags,
-                                           isOptimized: bool,
+                                           SPFlags: DISPFlags,
                                            Fn: &'a Value,
                                            TParam: &'a DIArray,
                                            Decl: Option<&'a DIDescriptor>)
@@ -1538,7 +1562,7 @@ extern "C" {
                                                   AlignInBits: u32,
                                                   Elements: &'a DIArray,
                                                   ClassType: &'a DIType,
-                                                  IsFixed: bool)
+                                                  IsScoped: bool)
                                                   -> &'a DIType;
 
     pub fn LLVMRustDIBuilderCreateUnionType(Builder: &DIBuilder<'a>,
@@ -1586,9 +1610,10 @@ extern "C" {
                                             LineNo: c_uint)
                                             -> &'a DINameSpace;
 
-    pub fn LLVMRustDICompositeTypeSetTypeArray(Builder: &DIBuilder<'a>,
-                                               CompositeType: &'a DIType,
-                                               TypeArray: &'a DIArray);
+    pub fn LLVMRustDICompositeTypeReplaceArrays(Builder: &DIBuilder<'a>,
+                                                CompositeType: &'a DIType,
+                                                Elements: Option<&'a DIArray>,
+                                                Params: Option<&'a DIArray>);
 
 
     pub fn LLVMRustDIBuilderCreateDebugLocation(Context: &'a Context,
@@ -1599,21 +1624,18 @@ extern "C" {
                                                 -> &'a Value;
     pub fn LLVMRustDIBuilderCreateOpDeref() -> i64;
     pub fn LLVMRustDIBuilderCreateOpPlusUconst() -> i64;
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTypeToString(Type: &Type, s: &RustString);
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteValueToString(value_ref: &Value, s: &RustString);
-}
 
-extern "C" {
     pub fn LLVMIsAConstantInt(value_ref: &Value) -> Option<&Value>;
     pub fn LLVMIsAConstantFP(value_ref: &Value) -> Option<&Value>;
 
     pub fn LLVMRustPassKind(Pass: &Pass) -> PassKind;
     pub fn LLVMRustFindAndCreatePass(Pass: *const c_char) -> Option<&'static mut Pass>;
-    pub fn LLVMRustAddPass(PM: &PassManager, Pass: &'static mut Pass);
+    pub fn LLVMRustAddPass(PM: &PassManager<'_>, Pass: &'static mut Pass);
 
     pub fn LLVMRustHasFeature(T: &TargetMachine, s: *const c_char) -> bool;
 
@@ -1678,28 +1700,22 @@ extern "C" {
     pub fn LLVMRustArchiveIteratorNext(
         AIR: &ArchiveIterator<'a>,
     ) -> Option<&'a mut ArchiveChild<'a>>;
-    pub fn LLVMRustArchiveChildName(ACR: &ArchiveChild, size: &mut size_t) -> *const c_char;
-    pub fn LLVMRustArchiveChildData(ACR: &ArchiveChild, size: &mut size_t) -> *const c_char;
+    pub fn LLVMRustArchiveChildName(ACR: &ArchiveChild<'_>, size: &mut size_t) -> *const c_char;
+    pub fn LLVMRustArchiveChildData(ACR: &ArchiveChild<'_>, size: &mut size_t) -> *const c_char;
     pub fn LLVMRustArchiveChildFree(ACR: &'a mut ArchiveChild<'a>);
     pub fn LLVMRustArchiveIteratorFree(AIR: &'a mut ArchiveIterator<'a>);
     pub fn LLVMRustDestroyArchive(AR: &'static mut Archive);
 
-    pub fn LLVMRustGetSectionName(SI: &SectionIterator, data: &mut *const c_char) -> size_t;
-}
+    pub fn LLVMRustGetSectionName(SI: &SectionIterator<'_>, data: &mut *const c_char) -> size_t;
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTwineToString(T: &Twine, s: &RustString);
-}
 
-extern "C" {
     pub fn LLVMContextSetDiagnosticHandler(C: &Context,
                                            Handler: DiagnosticHandler,
                                            DiagnosticContext: *mut c_void);
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustUnpackOptimizationDiagnostic(DI: &'a DiagnosticInfo,
                                                 pass_name_out: &RustString,
                                                 function_out: &mut Option<&'a Value>,
@@ -1707,37 +1723,26 @@ extern "C" {
                                                 loc_column_out: &mut c_uint,
                                                 loc_filename_out: &RustString,
                                                 message_out: &RustString);
-}
 
-extern "C" {
     pub fn LLVMRustUnpackInlineAsmDiagnostic(DI: &'a DiagnosticInfo,
                                              cookie_out: &mut c_uint,
                                              message_out: &mut Option<&'a Twine>,
                                              instruction_out: &mut Option<&'a Value>);
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteDiagnosticInfoToString(DI: &DiagnosticInfo, s: &RustString);
-}
-
-extern "C" {
     pub fn LLVMRustGetDiagInfoKind(DI: &DiagnosticInfo) -> DiagnosticKind;
 
     pub fn LLVMRustSetInlineAsmDiagnosticHandler(C: &Context,
                                                  H: InlineAsmDiagHandler,
                                                  CX: *mut c_void);
-}
 
-#[allow(improper_ctypes)] // FIXME(#52456) needed for RustString.
-extern "C" {
+    #[allow(improper_ctypes)]
     pub fn LLVMRustWriteSMDiagnosticToString(d: &SMDiagnostic, s: &RustString);
-}
 
-extern "C" {
     pub fn LLVMRustWriteArchive(Dst: *const c_char,
                                 NumMembers: size_t,
-                                Members: *const &RustArchiveMember,
+                                Members: *const &RustArchiveMember<'_>,
                                 WriteSymbtab: bool,
                                 Kind: ArchiveKind)
                                 -> LLVMRustResult;
@@ -1798,7 +1803,7 @@ extern "C" {
         CallbackPayload: *mut c_void,
     );
     pub fn LLVMRustFreeThinLTOData(Data: &'static mut ThinLTOData);
-    pub fn LLVMRustParseBitcodeForThinLTO(
+    pub fn LLVMRustParseBitcodeForLTO(
         Context: &Context,
         Data: *const u8,
         len: usize,
@@ -1810,7 +1815,7 @@ extern "C" {
     pub fn LLVMRustThinLTOPatchDICompileUnit(M: &Module, CU: *mut c_void);
 
     pub fn LLVMRustLinkerNew(M: &'a Module) -> &'a mut Linker<'a>;
-    pub fn LLVMRustLinkerAdd(linker: &Linker,
+    pub fn LLVMRustLinkerAdd(linker: &Linker<'_>,
                              bytecode: *const c_char,
                              bytecode_len: usize) -> bool;
     pub fn LLVMRustLinkerFree(linker: &'a mut Linker<'a>);

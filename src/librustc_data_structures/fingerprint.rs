@@ -1,15 +1,5 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
+use crate::stable_hasher;
 use std::mem;
-use stable_hasher;
 use serialize;
 use serialize::opaque::{EncodeResult, Encoder, Decoder};
 
@@ -80,12 +70,13 @@ impl Fingerprint {
 }
 
 impl ::std::fmt::Display for Fingerprint {
-    fn fmt(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         write!(formatter, "{:x}-{:x}", self.0, self.1)
     }
 }
 
 impl stable_hasher::StableHasherResult for Fingerprint {
+    #[inline]
     fn finish(hasher: stable_hasher::StableHasher<Self>) -> Self {
         let (_0, _1) = hasher.finalize();
         Fingerprint(_0, _1)

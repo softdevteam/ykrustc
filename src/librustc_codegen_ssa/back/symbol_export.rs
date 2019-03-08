@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_data_structures::sync::Lrc;
 use std::sync::Arc;
 
@@ -21,7 +11,7 @@ use rustc::middle::exported_symbols::{SymbolExportLevel, ExportedSymbol, metadat
 use rustc::session::config;
 use rustc::ty::{TyCtxt, SymbolName};
 use rustc::ty::query::Providers;
-use rustc::ty::subst::Substs;
+use rustc::ty::subst::SubstsRef;
 use rustc::util::nodemap::{FxHashMap, DefIdMap};
 use rustc_allocator::ALLOCATOR_METHODS;
 use rustc_data_structures::indexed_vec::IndexVec;
@@ -32,7 +22,7 @@ pub type ExportedSymbols = FxHashMap<
     Arc<Vec<(String, SymbolExportLevel)>>,
 >;
 
-pub fn threshold(tcx: TyCtxt) -> SymbolExportLevel {
+pub fn threshold(tcx: TyCtxt<'_, '_, '_>) -> SymbolExportLevel {
     crates_export_threshold(&tcx.sess.crate_types.borrow())
 }
 
@@ -79,13 +69,13 @@ fn reachable_non_generics_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
     let mut reachable_non_generics: DefIdMap<_> = tcx.reachable_set(LOCAL_CRATE).0
         .iter()
-        .filter_map(|&node_id| {
+        .filter_map(|&hir_id| {
             // We want to ignore some FFI functions that are not exposed from
             // this crate. Reachable FFI functions can be lumped into two
             // categories:
             //
             // 1. Those that are included statically via a static library
-            // 2. Those included otherwise (e.g. dynamically or via a framework)
+            // 2. Those included otherwise (e.g., dynamically or via a framework)
             //
             // Although our LLVM module is not literally emitting code for the
             // statically included symbols, it's an export of our library which
@@ -93,9 +83,9 @@ fn reachable_non_generics_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             //
             // As a result, if this id is an FFI item (foreign item) then we only
             // let it through if it's included statically.
-            match tcx.hir.get(node_id) {
+            match tcx.hir().get_by_hir_id(hir_id) {
                 Node::ForeignItem(..) => {
-                    let def_id = tcx.hir.local_def_id(node_id);
+                    let def_id = tcx.hir().local_def_id_from_hir_id(hir_id);
                     if tcx.is_statically_included_foreign_item(def_id) {
                         Some(def_id)
                     } else {
@@ -115,7 +105,7 @@ fn reachable_non_generics_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                     node: hir::ImplItemKind::Method(..),
                     ..
                 }) => {
-                    let def_id = tcx.hir.local_def_id(node_id);
+                    let def_id = tcx.hir().local_def_id_from_hir_id(hir_id);
                     let generics = tcx.generics_of(def_id);
                     if !generics.requires_monomorphization(tcx) &&
                         // Functions marked with #[inline] are only ever codegened
@@ -157,14 +147,12 @@ fn reachable_non_generics_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         })
         .collect();
 
-    if let Some(id) = *tcx.sess.derive_registrar_fn.get() {
-        let def_id = tcx.hir.local_def_id(id);
-        reachable_non_generics.insert(def_id, SymbolExportLevel::C);
+    if let Some(id) = tcx.proc_macro_decls_static(LOCAL_CRATE) {
+        reachable_non_generics.insert(id, SymbolExportLevel::C);
     }
 
-    if let Some(id) = *tcx.sess.plugin_registrar_fn.get() {
-        let def_id = tcx.hir.local_def_id(id);
-        reachable_non_generics.insert(def_id, SymbolExportLevel::C);
+    if let Some(id) = tcx.plugin_registrar_fn(LOCAL_CRATE) {
+        reachable_non_generics.insert(id, SymbolExportLevel::C);
     }
 
     Lrc::new(reachable_non_generics)
@@ -206,7 +194,7 @@ fn exported_symbols_provider_local<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                  })
                                  .collect();
 
-    if tcx.sess.entry_fn.borrow().is_some() {
+    if tcx.entry_fn(LOCAL_CRATE).is_some() {
         let exported_symbol = ExportedSymbol::NoDefId(SymbolName::new("main"));
 
         symbols.push((exported_symbol, SymbolExportLevel::C));
@@ -225,14 +213,15 @@ fn exported_symbols_provider_local<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         // These are weak symbols that point to the profile version and the
         // profile name, which need to be treated as exported so LTO doesn't nix
         // them.
-        const PROFILER_WEAK_SYMBOLS: [&'static str; 2] = [
+        const PROFILER_WEAK_SYMBOLS: [&str; 2] = [
             "__llvm_profile_raw_version",
             "__llvm_profile_filename",
         ];
-        for sym in &PROFILER_WEAK_SYMBOLS {
+
+        symbols.extend(PROFILER_WEAK_SYMBOLS.iter().map(|sym| {
             let exported_symbol = ExportedSymbol::NoDefId(SymbolName::new(sym));
-            symbols.push((exported_symbol, SymbolExportLevel::C));
-        }
+            (exported_symbol, SymbolExportLevel::C)
+        }));
     }
 
     if tcx.sess.crate_types.borrow().contains(&config::CrateType::Dylib) {
@@ -274,7 +263,7 @@ fn exported_symbols_provider_local<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                 def: InstanceDef::Item(def_id),
                 substs,
             }) = mono_item {
-                if substs.types().next().is_some() {
+                if substs.non_erasable_generics().next().is_some() {
                     symbols.push((ExportedSymbol::Generic(def_id, substs),
                                   SymbolExportLevel::Rust));
                 }
@@ -293,7 +282,7 @@ fn exported_symbols_provider_local<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 fn upstream_monomorphizations_provider<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     cnum: CrateNum)
-    -> Lrc<DefIdMap<Lrc<FxHashMap<&'tcx Substs<'tcx>, CrateNum>>>>
+    -> Lrc<DefIdMap<Lrc<FxHashMap<SubstsRef<'tcx>, CrateNum>>>>
 {
     debug_assert!(cnum == LOCAL_CRATE);
 
@@ -345,7 +334,7 @@ fn upstream_monomorphizations_provider<'a, 'tcx>(
 fn upstream_monomorphizations_for_provider<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     def_id: DefId)
-    -> Option<Lrc<FxHashMap<&'tcx Substs<'tcx>, CrateNum>>>
+    -> Option<Lrc<FxHashMap<SubstsRef<'tcx>, CrateNum>>>
 {
     debug_assert!(!def_id.is_local());
     tcx.upstream_monomorphizations(LOCAL_CRATE)
@@ -353,16 +342,16 @@ fn upstream_monomorphizations_for_provider<'a, 'tcx>(
        .cloned()
 }
 
-fn is_unreachable_local_definition_provider(tcx: TyCtxt, def_id: DefId) -> bool {
-    if let Some(node_id) = tcx.hir.as_local_node_id(def_id) {
-        !tcx.reachable_set(LOCAL_CRATE).0.contains(&node_id)
+fn is_unreachable_local_definition_provider(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> bool {
+    if let Some(hir_id) = tcx.hir().as_local_hir_id(def_id) {
+        !tcx.reachable_set(LOCAL_CRATE).0.contains(&hir_id)
     } else {
         bug!("is_unreachable_local_definition called with non-local DefId: {:?}",
              def_id)
     }
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     providers.reachable_non_generics = reachable_non_generics_provider;
     providers.is_reachable_non_generic = is_reachable_non_generic_provider_local;
     providers.exported_symbols = exported_symbols_provider_local;
@@ -370,12 +359,12 @@ pub fn provide(providers: &mut Providers) {
     providers.is_unreachable_local_definition = is_unreachable_local_definition_provider;
 }
 
-pub fn provide_extern(providers: &mut Providers) {
+pub fn provide_extern(providers: &mut Providers<'_>) {
     providers.is_reachable_non_generic = is_reachable_non_generic_provider_extern;
     providers.upstream_monomorphizations_for = upstream_monomorphizations_for_provider;
 }
 
-fn symbol_export_level(tcx: TyCtxt, sym_def_id: DefId) -> SymbolExportLevel {
+fn symbol_export_level(tcx: TyCtxt<'_, '_, '_>, sym_def_id: DefId) -> SymbolExportLevel {
     // We export anything that's not mangled at the "C" layer as it probably has
     // to do with ABI concerns. We do not, however, apply such treatment to
     // special symbols in the standard library for various plumbing between
@@ -392,7 +381,7 @@ fn symbol_export_level(tcx: TyCtxt, sym_def_id: DefId) -> SymbolExportLevel {
             if let Some(Node::Item(&hir::Item {
                 node: hir::ItemKind::Static(..),
                 ..
-            })) = tcx.hir.get_if_local(sym_def_id) {
+            })) = tcx.hir().get_if_local(sym_def_id) {
                 return SymbolExportLevel::Rust;
             }
         }

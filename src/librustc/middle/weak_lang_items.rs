@@ -1,28 +1,18 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Validity checking for weak lang items
 
-use session::config;
-use middle::lang_items;
+use crate::session::config;
+use crate::middle::lang_items;
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_target::spec::PanicStrategy;
 use syntax::ast;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
-use hir::def_id::DefId;
-use hir::intravisit::{Visitor, NestedVisitorMap};
-use hir::intravisit;
-use hir;
-use ty::TyCtxt;
+use crate::hir::def_id::DefId;
+use crate::hir::intravisit::{Visitor, NestedVisitorMap};
+use crate::hir::intravisit;
+use crate::hir;
+use crate::ty::TyCtxt;
 
 macro_rules! weak_lang_items {
     ($($name:ident, $item:ident, $sym:ident;)*) => (
@@ -49,7 +39,7 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
     {
         let mut cx = Context { tcx, items };
-        tcx.hir.krate().visit_all_item_likes(&mut cx.as_deep_visitor());
+        tcx.hir().krate().visit_all_item_likes(&mut cx.as_deep_visitor());
     }
     verify(tcx, items);
 }
@@ -64,7 +54,7 @@ pub fn link_name(attrs: &[ast::Attribute]) -> Option<Symbol> {
     })
 }
 
-/// Returns whether the specified `lang_item` doesn't actually need to be
+/// Returns `true` if the specified `lang_item` doesn't actually need to be
 /// present for this compilation.
 ///
 /// Not all lang items are always required for each compilation, particularly in

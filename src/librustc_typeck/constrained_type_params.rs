@@ -1,16 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::fold::{TypeFoldable, TypeVisitor};
 use rustc::util::nodemap::FxHashSet;
+use rustc::mir::interpret::ConstValue;
 use syntax::source_map::Span;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -24,7 +15,11 @@ impl From<ty::EarlyBoundRegion> for Parameter {
     fn from(param: ty::EarlyBoundRegion) -> Self { Parameter(param.index) }
 }
 
-/// Return the set of parameters constrained by the impl header.
+impl From<ty::ParamConst> for Parameter {
+    fn from(param: ty::ParamConst) -> Self { Parameter(param.index) }
+}
+
+/// Returns the set of parameters constrained by the impl header.
 pub fn parameters_for_impl<'tcx>(impl_self_ty: Ty<'tcx>,
                                  impl_trait_ref: Option<ty::TraitRef<'tcx>>)
                                  -> FxHashSet<Parameter>
@@ -37,7 +32,7 @@ pub fn parameters_for_impl<'tcx>(impl_self_ty: Ty<'tcx>,
 }
 
 /// If `include_projections` is false, returns the list of parameters that are
-/// constrained by `t` - i.e. the value of each parameter in the list is
+/// constrained by `t` - i.e., the value of each parameter in the list is
 /// uniquely determined by `t` (see RFC 447). If it is true, return the list
 /// of parameters whose values are needed in order to constrain `ty` - these
 /// differ, with the latter being a superset, in the presence of projections.
@@ -82,6 +77,16 @@ impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
         }
         false
     }
+
+    fn visit_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> bool {
+        if let ty::LazyConst::Evaluated(ty::Const {
+            val: ConstValue::Param(data),
+            ..
+        }) = c {
+            self.parameters.push(Parameter::from(*data));
+        }
+        false
+    }
 }
 
 pub fn identify_constrained_type_params<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
@@ -99,7 +104,7 @@ pub fn identify_constrained_type_params<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
 /// parameters so constrained to `input_parameters`. For example,
 /// imagine the following impl:
 ///
-///     impl<T: Debug, U: Iterator<Item=T>> Trait for U
+///     impl<T: Debug, U: Iterator<Item = T>> Trait for U
 ///
 /// The impl's predicates are collected from left to right. Ignoring
 /// the implicit `Sized` bounds, these are
@@ -122,10 +127,10 @@ pub fn identify_constrained_type_params<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
 /// We *do* have to be somewhat careful when projection targets contain
 /// projections themselves, for example in
 ///     impl<S,U,V,W> Trait for U where
-/// /* 0 */   S: Iterator<Item=U>,
+/// /* 0 */   S: Iterator<Item = U>,
 /// /* - */   U: Iterator,
 /// /* 1 */   <U as Iterator>::Item: ToOwned<Owned=(W,<V as Iterator>::Item)>
-/// /* 2 */   W: Iterator<Item=V>
+/// /* 2 */   W: Iterator<Item = V>
 /// /* 3 */   V: Debug
 /// we have to evaluate the projections in the order I wrote them:
 /// `V: Debug` requires `V` to be evaluated. The only projection that
@@ -134,7 +139,7 @@ pub fn identify_constrained_type_params<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
 /// which is determined by 1, which requires `U`, that is determined
 /// by 0. I should probably pick a less tangled example, but I can't
 /// think of any.
-pub fn setup_constraining_predicates<'tcx>(tcx: TyCtxt,
+pub fn setup_constraining_predicates<'tcx>(tcx: TyCtxt<'_, '_, '_>,
                                            predicates: &mut [(ty::Predicate<'tcx>, Span)],
                                            impl_trait_ref: Option<ty::TraitRef<'tcx>>,
                                            input_parameters: &mut FxHashSet<Parameter>)

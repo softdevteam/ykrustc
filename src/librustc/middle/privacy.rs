@@ -1,18 +1,8 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A pass that checks to make sure private fields and methods aren't used
 //! outside their scopes. This pass will also generate a set of exported items
 //! which are available for use externally when compiled as a library.
 
-use util::nodemap::{DefIdSet, FxHashMap};
+use crate::util::nodemap::{DefIdSet, FxHashMap};
 
 use std::hash::Hash;
 use std::fmt;
@@ -21,16 +11,16 @@ use syntax::ast::NodeId;
 // Accessibility levels, sorted in ascending order
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AccessLevel {
-    // Superset of Reachable used to mark impl Trait items.
+    /// Superset of `AccessLevel::Reachable` used to mark impl Trait items.
     ReachableFromImplTrait,
-    // Exported items + items participating in various kinds of public interfaces,
-    // but not directly nameable. For example, if function `fn f() -> T {...}` is
-    // public, then type `T` is reachable. Its values can be obtained by other crates
-    // even if the type itself is not nameable.
+    /// Exported items + items participating in various kinds of public interfaces,
+    /// but not directly nameable. For example, if function `fn f() -> T {...}` is
+    /// public, then type `T` is reachable. Its values can be obtained by other crates
+    /// even if the type itself is not nameable.
     Reachable,
-    // Public items + items accessible to other crates with help of `pub use` re-exports
+    /// Public items + items accessible to other crates with help of `pub use` re-exports
     Exported,
-    // Items accessible to other crates directly, without help of re-exports
+    /// Items accessible to other crates directly, without help of re-exports
     Public,
 }
 
@@ -41,12 +31,17 @@ pub struct AccessLevels<Id = NodeId> {
 }
 
 impl<Id: Hash + Eq> AccessLevels<Id> {
+    /// See `AccessLevel::Reachable`.
     pub fn is_reachable(&self, id: Id) -> bool {
         self.map.get(&id) >= Some(&AccessLevel::Reachable)
     }
+
+    /// See `AccessLevel::Exported`.
     pub fn is_exported(&self, id: Id) -> bool {
         self.map.get(&id) >= Some(&AccessLevel::Exported)
     }
+
+    /// See `AccessLevel::Public`.
     pub fn is_public(&self, id: Id) -> bool {
         self.map.get(&id) >= Some(&AccessLevel::Public)
     }

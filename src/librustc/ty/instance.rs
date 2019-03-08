@@ -1,19 +1,9 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir::Unsafety;
-use hir::def_id::DefId;
-use ty::{self, Ty, PolyFnSig, TypeFoldable, Substs, TyCtxt};
-use traits;
+use crate::hir::Unsafety;
+use crate::hir::def_id::DefId;
+use crate::ty::{self, Ty, PolyFnSig, TypeFoldable, SubstsRef, TyCtxt};
+use crate::traits;
 use rustc_target::spec::abi::Abi;
-use util::ppaux;
+use crate::util::ppaux;
 
 use std::fmt;
 use std::iter;
@@ -21,7 +11,7 @@ use std::iter;
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
 pub struct Instance<'tcx> {
     pub def: InstanceDef<'tcx>,
-    pub substs: &'tcx Substs<'tcx>,
+    pub substs: SubstsRef<'tcx>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
@@ -32,17 +22,17 @@ pub enum InstanceDef<'tcx> {
     /// `<T as Trait>::method` where `method` receives unsizeable `self: Self`.
     VtableShim(DefId),
 
-    /// \<fn() as FnTrait>::call_*
-    /// def-id is FnTrait::call_*
+    /// `<fn() as FnTrait>::call_*`
+    /// `DefId` is `FnTrait::call_*`
     FnPtrShim(DefId, Ty<'tcx>),
 
-    /// <Trait as Trait>::fn
+    /// `<Trait as Trait>::fn`
     Virtual(DefId, usize),
 
-    /// <[mut closure] as FnOnce>::call_once
+    /// `<[mut closure] as FnOnce>::call_once`
     ClosureOnceShim { call_once: DefId },
 
-    /// drop_in_place::<T>; None for empty drop glue.
+    /// `drop_in_place::<T>; None` for empty drop glue.
     DropGlue(DefId, Option<Ty<'tcx>>),
 
     ///`<T as Clone>::clone` shim.
@@ -75,7 +65,7 @@ impl<'a, 'tcx> Instance<'tcx> {
                 sig.map_bound(|sig| tcx.mk_fn_sig(
                     iter::once(*env_ty.skip_binder()).chain(sig.inputs().iter().cloned()),
                     sig.output(),
-                    sig.variadic,
+                    sig.c_variadic,
                     sig.unsafety,
                     sig.abi
                 ))
@@ -85,6 +75,11 @@ impl<'a, 'tcx> Instance<'tcx> {
 
                 let env_region = ty::ReLateBound(ty::INNERMOST, ty::BrEnv);
                 let env_ty = tcx.mk_mut_ref(tcx.mk_region(env_region), ty);
+
+                let pin_did = tcx.lang_items().pin_type().unwrap();
+                let pin_adt_ref = tcx.adt_def(pin_did);
+                let pin_substs = tcx.intern_substs(&[env_ty.into()]);
+                let env_ty = tcx.mk_adt(pin_adt_ref, pin_substs);
 
                 sig.map_bound(|sig| {
                     let state_did = tcx.lang_items().gen_state().unwrap();
@@ -146,7 +141,7 @@ impl<'tcx> InstanceDef<'tcx> {
         &self,
         tcx: TyCtxt<'a, 'tcx, 'tcx>
     ) -> bool {
-        use hir::map::DefPathData;
+        use crate::hir::map::DefPathData;
         let def_id = match *self {
             ty::InstanceDef::Item(def_id) => def_id,
             ty::InstanceDef::DropGlue(_, Some(_)) => return false,
@@ -173,10 +168,7 @@ impl<'tcx> InstanceDef<'tcx> {
             // available to normal end-users.
             return true
         }
-        let codegen_fn_attrs = tcx.codegen_fn_attrs(self.def_id());
-        // need to use `is_const_fn_raw` since we don't really care if the user can use it as a
-        // const fn, just whether the function should be inlined
-        codegen_fn_attrs.requests_inline() || tcx.is_const_fn_raw(self.def_id())
+        tcx.codegen_fn_attrs(self.def_id()).requests_inline()
     }
 }
 
@@ -211,7 +203,7 @@ impl<'tcx> fmt::Display for Instance<'tcx> {
 }
 
 impl<'a, 'b, 'tcx> Instance<'tcx> {
-    pub fn new(def_id: DefId, substs: &'tcx Substs<'tcx>)
+    pub fn new(def_id: DefId, substs: SubstsRef<'tcx>)
                -> Instance<'tcx> {
         assert!(!substs.has_escaping_bound_vars(),
                 "substs of instance {:?} not normalized for codegen: {:?}",
@@ -228,7 +220,7 @@ impl<'a, 'b, 'tcx> Instance<'tcx> {
         self.def.def_id()
     }
 
-    /// Resolve a (def_id, substs) pair to an (optional) instance -- most commonly,
+    /// Resolves a `(def_id, substs)` pair to an (optional) instance -- most commonly,
     /// this is used to find the precise code that will run for a trait method invocation,
     /// if known.
     ///
@@ -249,7 +241,7 @@ impl<'a, 'b, 'tcx> Instance<'tcx> {
     pub fn resolve(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                    param_env: ty::ParamEnv<'tcx>,
                    def_id: DefId,
-                   substs: &'tcx Substs<'tcx>) -> Option<Instance<'tcx>> {
+                   substs: SubstsRef<'tcx>) -> Option<Instance<'tcx>> {
         debug!("resolve(def_id={:?}, substs={:?})", def_id, substs);
         let result = if let Some(trait_def_id) = tcx.trait_of_item(def_id) {
             debug!(" => associated item, attempting to find impl in param_env {:#?}", param_env);
@@ -301,7 +293,7 @@ impl<'a, 'b, 'tcx> Instance<'tcx> {
     pub fn resolve_for_vtable(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                               param_env: ty::ParamEnv<'tcx>,
                               def_id: DefId,
-                              substs: &'tcx Substs<'tcx>) -> Option<Instance<'tcx>> {
+                              substs: SubstsRef<'tcx>) -> Option<Instance<'tcx>> {
         debug!("resolve(def_id={:?}, substs={:?})", def_id, substs);
         let fn_sig = tcx.fn_sig(def_id);
         let is_vtable_shim =
@@ -346,13 +338,14 @@ fn resolve_associated_item<'a, 'tcx>(
     trait_item: &ty::AssociatedItem,
     param_env: ty::ParamEnv<'tcx>,
     trait_id: DefId,
-    rcvr_substs: &'tcx Substs<'tcx>,
+    rcvr_substs: SubstsRef<'tcx>,
 ) -> Option<Instance<'tcx>> {
     let def_id = trait_item.def_id;
     debug!("resolve_associated_item(trait_item={:?}, \
+            param_env={:?}, \
             trait_id={:?}, \
             rcvr_substs={:?})",
-           def_id, trait_id, rcvr_substs);
+            def_id, param_env, trait_id, rcvr_substs);
 
     let trait_ref = ty::TraitRef::from_method(tcx, trait_id, rcvr_substs);
     let vtbl = tcx.codegen_fulfill_obligation((param_env, ty::Binder::bind(trait_ref)));
@@ -362,7 +355,7 @@ fn resolve_associated_item<'a, 'tcx>(
     match vtbl {
         traits::VtableImpl(impl_data) => {
             let (def_id, substs) = traits::find_associated_item(
-                tcx, trait_item, rcvr_substs, &impl_data);
+                tcx, param_env, trait_item, rcvr_substs, &impl_data);
             let substs = tcx.erase_regions(&substs);
             Some(ty::Instance::new(def_id, substs))
         }

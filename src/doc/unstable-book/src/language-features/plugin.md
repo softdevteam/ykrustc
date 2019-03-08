@@ -52,6 +52,7 @@ that implements Roman numeral integer literals.
 #![feature(plugin_registrar, rustc_private)]
 
 extern crate syntax;
+extern crate syntax_pos;
 extern crate rustc;
 extern crate rustc_plugin;
 
@@ -59,7 +60,7 @@ use syntax::parse::token;
 use syntax::tokenstream::TokenTree;
 use syntax::ext::base::{ExtCtxt, MacResult, DummyResult, MacEager};
 use syntax::ext::build::AstBuilder;  // A trait for expr_usize.
-use syntax::ext::quote::rt::Span;
+use syntax_pos::Span;
 use rustc_plugin::Registry;
 
 fn expand_rn(cx: &mut ExtCtxt, sp: Span, args: &[TokenTree])
@@ -137,8 +138,6 @@ of extensions.  See `Registry::register_syntax_extension` and the
 
 ## Tips and tricks
 
-Some of the [macro debugging tips](../book/first-edition/macros.html#debugging-macro-code) are applicable.
-
 You can use `syntax::parse` to turn token trees into
 higher-level syntax elements like expressions:
 
@@ -183,7 +182,6 @@ that warns about any item named `lintme`.
 ```rust,ignore
 #![feature(plugin_registrar)]
 #![feature(box_syntax, rustc_private)]
-#![feature(macro_at_most_once_rep)]
 
 extern crate syntax;
 

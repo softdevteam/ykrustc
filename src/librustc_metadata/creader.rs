@@ -1,19 +1,9 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Validates all used crates and extern libraries and loads their metadata
 
-use cstore::{self, CStore, CrateSource, MetadataBlob};
-use locator::{self, CratePaths};
-use decoder::proc_macro_def_path_table;
-use schema::CrateRoot;
+use crate::cstore::{self, CStore, CrateSource, MetadataBlob};
+use crate::locator::{self, CratePaths};
+use crate::decoder::proc_macro_def_path_table;
+use crate::schema::CrateRoot;
 use rustc_data_structures::sync::{Lrc, RwLock, Lock};
 
 use rustc::hir::def_id::CrateNum;
@@ -36,12 +26,12 @@ use std::{cmp, fs};
 
 use syntax::ast;
 use syntax::attr;
-use syntax::edition::Edition;
 use syntax::ext::base::SyntaxExtension;
 use syntax::symbol::Symbol;
 use syntax::visit;
+use syntax::{span_err, span_fatal};
 use syntax_pos::{Span, DUMMY_SP};
-use log;
+use log::{debug, info, log_enabled};
 
 pub struct Library {
     pub dylib: Option<(PathBuf, PathKind)>,
@@ -198,13 +188,15 @@ impl<'a> CrateLoader<'a> {
         });
     }
 
-    fn register_crate(&mut self,
-                      root: &Option<CratePaths>,
-                      ident: Symbol,
-                      span: Span,
-                      lib: Library,
-                      dep_kind: DepKind)
-                      -> (CrateNum, Lrc<cstore::CrateMetadata>) {
+    fn register_crate(
+        &mut self,
+        host_lib: Option<Library>,
+        root: &Option<CratePaths>,
+        ident: Symbol,
+        span: Span,
+        lib: Library,
+        dep_kind: DepKind
+    ) -> (CrateNum, Lrc<cstore::CrateMetadata>) {
         let crate_root = lib.metadata.get_root();
         info!("register crate `extern crate {} as {}`", crate_root.name, ident);
         self.verify_no_symbol_conflicts(span, &crate_root);
@@ -231,8 +223,17 @@ impl<'a> CrateLoader<'a> {
 
         let dependencies: Vec<CrateNum> = cnum_map.iter().cloned().collect();
 
-        let proc_macros = crate_root.macro_derive_registrar.map(|_| {
-            self.load_derive_macros(&crate_root, dylib.clone().map(|p| p.0), span)
+        let proc_macros = crate_root.proc_macro_decls_static.map(|_| {
+            if self.sess.opts.debugging_opts.dual_proc_macros {
+                let host_lib = host_lib.unwrap();
+                self.load_derive_macros(
+                    &host_lib.metadata.get_root(),
+                    host_lib.dylib.clone().map(|p| p.0),
+                    span
+                )
+            } else {
+                self.load_derive_macros(&crate_root, dylib.clone().map(|p| p.0), span)
+            }
         });
 
         let def_path_table = record_time(&self.sess.perf_stats.decode_def_path_tables_time, || {
@@ -279,6 +280,61 @@ impl<'a> CrateLoader<'a> {
         (cnum, cmeta)
     }
 
+    fn load_proc_macro<'b> (
+        &mut self,
+        locate_ctxt: &mut locator::Context<'b>,
+        path_kind: PathKind,
+    ) -> Option<(LoadResult, Option<Library>)>
+    where
+        'a: 'b
+    {
+        // Use a new locator Context so trying to load a proc macro doesn't affect the error
+        // message we emit
+        let mut proc_macro_locator = locate_ctxt.clone();
+
+        // Try to load a proc macro
+        proc_macro_locator.is_proc_macro = Some(true);
+
+        // Load the proc macro crate for the target
+        let (locator, target_result) = if self.sess.opts.debugging_opts.dual_proc_macros {
+            proc_macro_locator.reset();
+            let result = match self.load(&mut proc_macro_locator)? {
+                LoadResult::Previous(cnum) => return Some((LoadResult::Previous(cnum), None)),
+                LoadResult::Loaded(library) => Some(LoadResult::Loaded(library))
+            };
+            // Don't look for a matching hash when looking for the host crate.
+            // It won't be the same as the target crate hash
+            locate_ctxt.hash = None;
+            // Use the locate_ctxt when looking for the host proc macro crate, as that is required
+            // so we want it to affect the error message
+            (locate_ctxt, result)
+        } else {
+            (&mut proc_macro_locator, None)
+        };
+
+        // Load the proc macro crate for the host
+
+        locator.reset();
+        locator.is_proc_macro = Some(true);
+        locator.target = &self.sess.host;
+        locator.triple = TargetTriple::from_triple(config::host_triple());
+        locator.filesearch = self.sess.host_filesearch(path_kind);
+
+        let host_result = self.load(locator)?;
+
+        Some(if self.sess.opts.debugging_opts.dual_proc_macros {
+            let host_result = match host_result {
+                LoadResult::Previous(..) => {
+                    panic!("host and target proc macros must be loaded in lock-step")
+                }
+                LoadResult::Loaded(library) => library
+            };
+            (target_result.unwrap(), Some(host_result))
+        } else {
+            (host_result, None)
+        })
+    }
+
     fn resolve_crate<'b>(
         &'b mut self,
         root: &'b Option<CratePaths>,
@@ -292,7 +348,7 @@ impl<'a> CrateLoader<'a> {
     ) -> Result<(CrateNum, Lrc<cstore::CrateMetadata>), LoadError<'b>> {
         info!("resolving crate `extern crate {} as {}`", name, ident);
         let result = if let Some(cnum) = self.existing_match(name, hash, path_kind) {
-            LoadResult::Previous(cnum)
+            (LoadResult::Previous(cnum), None)
         } else {
             info!("falling back to a load");
             let mut locate_ctxt = locator::Context {
@@ -304,7 +360,7 @@ impl<'a> CrateLoader<'a> {
                 extra_filename: extra_filename,
                 filesearch: self.sess.target_filesearch(path_kind),
                 target: &self.sess.target.target,
-                triple: &self.sess.opts.target_triple,
+                triple: self.sess.opts.target_triple.clone(),
                 root,
                 rejected_via_hash: vec![],
                 rejected_via_triple: vec![],
@@ -316,30 +372,16 @@ impl<'a> CrateLoader<'a> {
                 metadata_loader: &*self.cstore.metadata_loader,
             };
 
-            self.load(&mut locate_ctxt).or_else(|| {
+            self.load(&mut locate_ctxt).map(|r| (r, None)).or_else(|| {
                 dep_kind = DepKind::UnexportedMacrosOnly;
-
-                let mut proc_macro_locator = locator::Context {
-                    target: &self.sess.host,
-                    triple: &TargetTriple::from_triple(config::host_triple()),
-                    filesearch: self.sess.host_filesearch(path_kind),
-                    rejected_via_hash: vec![],
-                    rejected_via_triple: vec![],
-                    rejected_via_kind: vec![],
-                    rejected_via_version: vec![],
-                    rejected_via_filename: vec![],
-                    is_proc_macro: Some(true),
-                    ..locate_ctxt
-                };
-
-                self.load(&mut proc_macro_locator)
+                self.load_proc_macro(&mut locate_ctxt, path_kind)
             }).ok_or_else(move || LoadError::LocatorError(locate_ctxt))?
         };
 
         match result {
-            LoadResult::Previous(cnum) => {
+            (LoadResult::Previous(cnum), None) => {
                 let data = self.cstore.get_crate_data(cnum);
-                if data.root.macro_derive_registrar.is_some() {
+                if data.root.proc_macro_decls_static.is_some() {
                     dep_kind = DepKind::UnexportedMacrosOnly;
                 }
                 data.dep_kind.with_lock(|data_dep_kind| {
@@ -347,13 +389,14 @@ impl<'a> CrateLoader<'a> {
                 });
                 Ok((cnum, data))
             }
-            LoadResult::Loaded(library) => {
-                Ok(self.register_crate(root, ident, span, library, dep_kind))
+            (LoadResult::Loaded(library), host_library) => {
+                Ok(self.register_crate(host_library, root, ident, span, library, dep_kind))
             }
+            _ => panic!()
         }
     }
 
-    fn load(&mut self, locate_ctxt: &mut locator::Context) -> Option<LoadResult> {
+    fn load(&mut self, locate_ctxt: &mut locator::Context<'_>) -> Option<LoadResult> {
         let library = locate_ctxt.maybe_load_library_crate()?;
 
         // In the case that we're loading a crate, but not matching
@@ -365,7 +408,7 @@ impl<'a> CrateLoader<'a> {
         // don't want to match a host crate against an equivalent target one
         // already loaded.
         let root = library.metadata.get_root();
-        if locate_ctxt.triple == &self.sess.opts.target_triple {
+        if locate_ctxt.triple == self.sess.opts.target_triple {
             let mut result = LoadResult::Loaded(library);
             self.cstore.iter_crate_data(|cnum, data| {
                 if data.root.name == root.name && root.hash == data.root.hash {
@@ -431,14 +474,14 @@ impl<'a> CrateLoader<'a> {
                           dep_kind: DepKind)
                           -> cstore::CrateNumMap {
         debug!("resolving deps of external crate");
-        if crate_root.macro_derive_registrar.is_some() {
+        if crate_root.proc_macro_decls_static.is_some() {
             return cstore::CrateNumMap::new();
         }
 
         // The map from crate numbers in the crate we're resolving to local crate numbers.
         // We map 0 and all other holes in the map to our parent crate. The "additional"
         // self-dependencies should be harmless.
-        ::std::iter::once(krate).chain(crate_root.crate_deps
+        std::iter::once(krate).chain(crate_root.crate_deps
                                                  .decode(metadata)
                                                  .map(|dep| {
             info!("resolving dep crate {} hash: `{}` extra filename: `{}`", dep.name, dep.hash,
@@ -461,9 +504,9 @@ impl<'a> CrateLoader<'a> {
     fn read_extension_crate(&mut self, span: Span, orig_name: Symbol, rename: Symbol)
                             -> ExtensionCrate {
         info!("read extension crate `extern crate {} as {}`", orig_name, rename);
-        let target_triple = &self.sess.opts.target_triple;
+        let target_triple = self.sess.opts.target_triple.clone();
         let host_triple = TargetTriple::from_triple(config::host_triple());
-        let is_cross = target_triple != &host_triple;
+        let is_cross = target_triple != host_triple;
         let mut target_only = false;
         let mut locate_ctxt = locator::Context {
             sess: self.sess,
@@ -474,7 +517,7 @@ impl<'a> CrateLoader<'a> {
             extra_filename: None,
             filesearch: self.sess.host_filesearch(PathKind::Crate),
             target: &self.sess.host,
-            triple: &host_triple,
+            triple: host_triple,
             root: &None,
             rejected_via_hash: vec![],
             rejected_via_triple: vec![],
@@ -523,7 +566,7 @@ impl<'a> CrateLoader<'a> {
         }
     }
 
-    /// Load custom derive macros.
+    /// Loads custom derive macros.
     ///
     /// Note that this is intentionally similar to how we load plugins today,
     /// but also intentionally separate. Plugins are likely always going to be
@@ -533,9 +576,8 @@ impl<'a> CrateLoader<'a> {
     fn load_derive_macros(&mut self, root: &CrateRoot, dylib: Option<PathBuf>, span: Span)
                           -> Vec<(ast::Name, Lrc<SyntaxExtension>)> {
         use std::{env, mem};
-        use proc_macro::TokenStream;
-        use proc_macro::__internal::Registry;
-        use dynamic_lib::DynamicLibrary;
+        use crate::dynamic_lib::DynamicLibrary;
+        use proc_macro::bridge::client::ProcMacro;
         use syntax_ext::deriving::custom::ProcMacroDerive;
         use syntax_ext::proc_macro_impl::{AttrProcMacro, BangProcMacro};
 
@@ -550,61 +592,49 @@ impl<'a> CrateLoader<'a> {
             Err(err) => self.sess.span_fatal(span, &err),
         };
 
-        let sym = self.sess.generate_derive_registrar_symbol(root.disambiguator);
-        let registrar = unsafe {
+        let sym = self.sess.generate_proc_macro_decls_symbol(root.disambiguator);
+        let decls = unsafe {
             let sym = match lib.symbol(&sym) {
                 Ok(f) => f,
                 Err(err) => self.sess.span_fatal(span, &err),
             };
-            mem::transmute::<*mut u8, fn(&mut dyn Registry)>(sym)
+            *(sym as *const &[ProcMacro])
         };
 
-        struct MyRegistrar {
-            extensions: Vec<(ast::Name, Lrc<SyntaxExtension>)>,
-            edition: Edition,
-        }
-
-        impl Registry for MyRegistrar {
-            fn register_custom_derive(&mut self,
-                                      trait_name: &str,
-                                      expand: fn(TokenStream) -> TokenStream,
-                                      attributes: &[&'static str]) {
-                let attrs = attributes.iter().cloned().map(Symbol::intern).collect::<Vec<_>>();
-                let derive = ProcMacroDerive::new(expand, attrs.clone());
-                let derive = SyntaxExtension::ProcMacroDerive(
-                    Box::new(derive), attrs, self.edition
-                );
-                self.extensions.push((Symbol::intern(trait_name), Lrc::new(derive)));
+        let extensions = decls.iter().map(|&decl| {
+            match decl {
+                ProcMacro::CustomDerive { trait_name, attributes, client } => {
+                    let attrs = attributes.iter().cloned().map(Symbol::intern).collect::<Vec<_>>();
+                    (trait_name, SyntaxExtension::ProcMacroDerive(
+                        Box::new(ProcMacroDerive {
+                            client,
+                            attrs: attrs.clone(),
+                        }),
+                        attrs,
+                        root.edition,
+                    ))
+                }
+                ProcMacro::Attr { name, client } => {
+                    (name, SyntaxExtension::AttrProcMacro(
+                        Box::new(AttrProcMacro { client }),
+                        root.edition,
+                    ))
+                }
+                ProcMacro::Bang { name, client } => {
+                    (name, SyntaxExtension::ProcMacro {
+                        expander: Box::new(BangProcMacro { client }),
+                        allow_internal_unstable: None,
+                        edition: root.edition,
+                    })
+                }
             }
-
-            fn register_attr_proc_macro(&mut self,
-                                        name: &str,
-                                        expand: fn(TokenStream, TokenStream) -> TokenStream) {
-                let expand = SyntaxExtension::AttrProcMacro(
-                    Box::new(AttrProcMacro { inner: expand }), self.edition
-                );
-                self.extensions.push((Symbol::intern(name), Lrc::new(expand)));
-            }
-
-            fn register_bang_proc_macro(&mut self,
-                                        name: &str,
-                                        expand: fn(TokenStream) -> TokenStream) {
-                let expand = SyntaxExtension::ProcMacro {
-                    expander: Box::new(BangProcMacro { inner: expand }),
-                    allow_internal_unstable: false,
-                    edition: self.edition,
-                };
-                self.extensions.push((Symbol::intern(name), Lrc::new(expand)));
-            }
-        }
-
-        let mut my_registrar = MyRegistrar { extensions: Vec::new(), edition: root.edition };
-        registrar(&mut my_registrar);
+        }).map(|(name, ext)| (Symbol::intern(name), Lrc::new(ext))).collect();
 
         // Intentionally leak the dynamic library. We can't ever unload it
         // since the library can make things that will live arbitrarily long.
         mem::forget(lib);
-        my_registrar.extensions
+
+        extensions
     }
 
     /// Look for a plugin registrar. Returns library path, crate
@@ -1020,7 +1050,7 @@ impl<'a> CrateLoader<'a> {
                        item.ident, orig_name);
                 let orig_name = match orig_name {
                     Some(orig_name) => {
-                        ::validate_crate_name(Some(self.sess), &orig_name.as_str(),
+                        crate::validate_crate_name(Some(self.sess), &orig_name.as_str(),
                                             Some(item.span));
                         orig_name
                     }

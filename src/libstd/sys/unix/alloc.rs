@@ -1,17 +1,6 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use ptr;
-use libc;
-use sys_common::alloc::{MIN_ALIGN, realloc_fallback};
-use alloc::{GlobalAlloc, Layout, System};
+use crate::ptr;
+use crate::sys_common::alloc::{MIN_ALIGN, realloc_fallback};
+use crate::alloc::{GlobalAlloc, Layout, System};
 
 #[stable(feature = "alloc_system_type", since = "1.28.0")]
 unsafe impl GlobalAlloc for System {

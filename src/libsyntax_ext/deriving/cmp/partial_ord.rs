@@ -1,18 +1,8 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+pub use OrderingOp::*;
 
-pub use self::OrderingOp::*;
-
-use deriving::{path_local, pathvec_std, path_std};
-use deriving::generic::*;
-use deriving::generic::ty::*;
+use crate::deriving::{path_local, pathvec_std, path_std};
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
 
 use syntax::ast::{self, BinOpKind, Expr, MetaItem};
 use syntax::ext::base::{Annotatable, ExtCtxt};
@@ -21,7 +11,7 @@ use syntax::ptr::P;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
 
-pub fn expand_deriving_partial_ord(cx: &mut ExtCtxt,
+pub fn expand_deriving_partial_ord(cx: &mut ExtCtxt<'_>,
                                    span: Span,
                                    mitem: &MetaItem,
                                    item: &Annotatable,
@@ -105,7 +95,7 @@ pub enum OrderingOp {
     GeOp,
 }
 
-pub fn some_ordering_collapsed(cx: &mut ExtCtxt,
+pub fn some_ordering_collapsed(cx: &mut ExtCtxt<'_>,
                                span: Span,
                                op: OrderingOp,
                                self_arg_tags: &[ast::Ident])
@@ -122,7 +112,7 @@ pub fn some_ordering_collapsed(cx: &mut ExtCtxt,
     cx.expr_method_call(span, lft, cx.ident_of(op_str), vec![rgt])
 }
 
-pub fn cs_partial_cmp(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<Expr> {
+pub fn cs_partial_cmp(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>) -> P<Expr> {
     let test_id = cx.ident_of("cmp").gensym();
     let ordering = cx.path_global(span, cx.std_path(&["cmp", "Ordering", "Equal"]));
     let ordering_expr = cx.expr_path(ordering.clone());
@@ -194,14 +184,14 @@ pub fn cs_partial_cmp(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<
 /// Strict inequality.
 fn cs_op(less: bool,
          inclusive: bool,
-         cx: &mut ExtCtxt,
+         cx: &mut ExtCtxt<'_>,
          span: Span,
-         substr: &Substructure) -> P<Expr> {
-    let ordering_path = |cx: &mut ExtCtxt, name: &str| {
+         substr: &Substructure<'_>) -> P<Expr> {
+    let ordering_path = |cx: &mut ExtCtxt<'_>, name: &str| {
         cx.expr_path(cx.path_global(span, cx.std_path(&["cmp", "Ordering", name])))
     };
 
-    let par_cmp = |cx: &mut ExtCtxt, span, self_f: P<Expr>, other_fs: &[P<Expr>], default| {
+    let par_cmp = |cx: &mut ExtCtxt<'_>, span, self_f: P<Expr>, other_fs: &[P<Expr>], default| {
         let other_f = match (other_fs.len(), other_fs.get(0)) {
             (1, Some(o_f)) => o_f,
             _ => cx.span_bug(span, "not exactly 2 arguments in `derive(PartialOrd)`"),
@@ -227,7 +217,7 @@ fn cs_op(less: bool,
     let fold = cs_fold1(false, // need foldr
         |cx, span, subexpr, self_f, other_fs| {
             // build up a series of `partial_cmp`s from the inside
-            // out (hence foldr) to get lexical ordering, i.e. for op ==
+            // out (hence foldr) to get lexical ordering, i.e., for op ==
             // `ast::lt`
             //
             // ```

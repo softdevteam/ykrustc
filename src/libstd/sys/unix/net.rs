@@ -1,32 +1,25 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::ffi::CStr;
+use crate::io::{self, IoVec, IoVecMut};
+use crate::mem;
+use crate::net::{SocketAddr, Shutdown};
+use crate::str;
+use crate::sys::fd::FileDesc;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::sys_common::net::{getsockopt, setsockopt, sockaddr_to_addr};
+use crate::time::{Duration, Instant};
+use crate::cmp;
 
-use ffi::CStr;
-use io;
-use libc::{self, c_int, c_void, size_t, sockaddr, socklen_t, EAI_SYSTEM, MSG_PEEK};
-use mem;
-use net::{SocketAddr, Shutdown};
-use str;
-use sys::fd::FileDesc;
-use sys_common::{AsInner, FromInner, IntoInner};
-use sys_common::net::{getsockopt, setsockopt, sockaddr_to_addr};
-use time::{Duration, Instant};
-use cmp;
+use libc::{c_int, c_void, size_t, sockaddr, socklen_t, EAI_SYSTEM, MSG_PEEK};
 
-pub use sys::{cvt, cvt_r};
+pub use crate::sys::{cvt, cvt_r};
+
+#[allow(unused_extern_crates)]
 pub extern crate libc as netc;
 
 pub type wrlen_t = size_t;
 
 // See below for the usage of SOCK_CLOEXEC, but this constant is only defined on
-// Linux currently (e.g. support doesn't exist on other platforms). In order to
+// Linux currently (e.g., support doesn't exist on other platforms). In order to
 // get name resolution to work and things to compile we just define a dummy
 // SOCK_CLOEXEC here for other platforms. Note that the dummy constant isn't
 // actually ever used (the blocks below are wrapped in `if cfg!` as well.
@@ -203,18 +196,21 @@ impl Socket {
         // Linux. This was added in 2.6.28, however, and because we support
         // 2.6.18 we must detect this support dynamically.
         if cfg!(target_os = "linux") {
-            weak! {
-                fn accept4(c_int, *mut sockaddr, *mut socklen_t, c_int) -> c_int
+            syscall! {
+                fn accept4(
+                    fd: c_int,
+                    addr: *mut sockaddr,
+                    addr_len: *mut socklen_t,
+                    flags: c_int
+                ) -> c_int
             }
-            if let Some(accept) = accept4.get() {
-                let res = cvt_r(|| unsafe {
-                    accept(self.0.raw(), storage, len, SOCK_CLOEXEC)
-                });
-                match res {
-                    Ok(fd) => return Ok(Socket(FileDesc::new(fd))),
-                    Err(ref e) if e.raw_os_error() == Some(libc::ENOSYS) => {}
-                    Err(e) => return Err(e),
-                }
+            let res = cvt_r(|| unsafe {
+                accept4(self.0.raw(), storage, len, SOCK_CLOEXEC)
+            });
+            match res {
+                Ok(fd) => return Ok(Socket(FileDesc::new(fd))),
+                Err(ref e) if e.raw_os_error() == Some(libc::ENOSYS) => {}
+                Err(e) => return Err(e),
             }
         }
 
@@ -248,6 +244,10 @@ impl Socket {
         self.recv_with_flags(buf, MSG_PEEK)
     }
 
+    pub fn read_vectored(&self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+        self.0.read_vectored(bufs)
+    }
+
     fn recv_from_with_flags(&self, buf: &mut [u8], flags: c_int)
                             -> io::Result<(usize, SocketAddr)> {
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
@@ -274,6 +274,10 @@ impl Socket {
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.0.write(buf)
+    }
+
+    pub fn write_vectored(&self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+        self.0.write_vectored(bufs)
     }
 
     pub fn set_timeout(&self, dur: Option<Duration>, kind: libc::c_int) -> io::Result<()> {
@@ -383,7 +387,7 @@ impl IntoInner<c_int> for Socket {
 // believe it's thread-safe).
 #[cfg(target_env = "gnu")]
 fn on_resolver_failure() {
-    use sys;
+    use crate::sys;
 
     // If the version fails to parse, we treat it the same as "not glibc".
     if let Some(version) = sys::os::glibc_version() {

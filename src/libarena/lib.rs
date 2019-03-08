@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The arena, a fast but limited type of allocator.
 //!
 //! Arenas are a type of allocator that destroy the objects within, all at
@@ -18,22 +8,20 @@
 //! This crate implements `TypedArena`, a simple arena that can only hold
 //! objects of a single type.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        test(no_crate_inject, attr(deny(warnings))))]
+
+#![deny(rust_2018_idioms)]
 
 #![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(dropck_eyepatch)]
-#![feature(nll)]
 #![feature(raw_vec_internals)]
 #![cfg_attr(test, feature(test))]
 
 #![allow(deprecated)]
 
 extern crate alloc;
-extern crate rustc_data_structures;
 
 use rustc_data_structures::sync::MTLock;
 
@@ -129,6 +117,11 @@ impl<T> Default for TypedArena<T> {
 }
 
 impl<T> TypedArena<T> {
+    pub fn in_arena(&self, ptr: *const T) -> bool {
+        let ptr = ptr as *const T as *mut T;
+
+        self.chunks.borrow().iter().any(|chunk| chunk.start() <= ptr && ptr < chunk.end())
+    }
     /// Allocates an object in the `TypedArena`, returning a reference to it.
     #[inline]
     pub fn alloc(&self, object: T) -> &mut T {
@@ -224,14 +217,14 @@ impl<T> TypedArena<T> {
         unsafe {
             // Clear the last chunk, which is partially filled.
             let mut chunks_borrow = self.chunks.borrow_mut();
-            if let Some(mut last_chunk) = chunks_borrow.pop() {
+            if let Some(mut last_chunk) = chunks_borrow.last_mut() {
                 self.clear_last_chunk(&mut last_chunk);
+                let len = chunks_borrow.len();
                 // If `T` is ZST, code below has no effect.
-                for mut chunk in chunks_borrow.drain(..) {
+                for mut chunk in chunks_borrow.drain(..len-1) {
                     let cap = chunk.storage.cap();
                     chunk.destroy(cap);
                 }
-                chunks_borrow.push(last_chunk);
             }
         }
     }
@@ -298,6 +291,7 @@ pub struct DroplessArena {
 unsafe impl Send for DroplessArena {}
 
 impl Default for DroplessArena {
+    #[inline]
     fn default() -> DroplessArena {
         DroplessArena {
             ptr: Cell::new(0 as *mut u8),
@@ -310,15 +304,11 @@ impl Default for DroplessArena {
 impl DroplessArena {
     pub fn in_arena<T: ?Sized>(&self, ptr: *const T) -> bool {
         let ptr = ptr as *const u8 as *mut u8;
-        for chunk in &*self.chunks.borrow() {
-            if chunk.start() <= ptr && ptr < chunk.end() {
-                return true;
-            }
-        }
 
-        false
+        self.chunks.borrow().iter().any(|chunk| chunk.start() <= ptr && ptr < chunk.end())
     }
 
+    #[inline]
     fn align(&self, align: usize) {
         let final_address = ((self.ptr.get() as usize) + align - 1) & !(align - 1);
         self.ptr.set(final_address as *mut u8);
@@ -408,7 +398,7 @@ impl DroplessArena {
     {
         assert!(!mem::needs_drop::<T>());
         assert!(mem::size_of::<T>() != 0);
-        assert!(slice.len() != 0);
+        assert!(!slice.is_empty());
 
         let mem = self.alloc_raw(
             slice.len() * mem::size_of::<T>(),
@@ -486,7 +476,7 @@ impl SyncDroplessArena {
 #[cfg(test)]
 mod tests {
     extern crate test;
-    use self::test::Bencher;
+    use test::Bencher;
     use super::TypedArena;
     use std::cell::Cell;
 
@@ -521,15 +511,15 @@ mod tests {
 
         impl<'a> Wrap<'a> {
             fn alloc_inner<F: Fn() -> Inner>(&self, f: F) -> &Inner {
-                let r: &EI = self.0.alloc(EI::I(f()));
+                let r: &EI<'_> = self.0.alloc(EI::I(f()));
                 if let &EI::I(ref i) = r {
                     i
                 } else {
                     panic!("mismatch");
                 }
             }
-            fn alloc_outer<F: Fn() -> Outer<'a>>(&self, f: F) -> &Outer {
-                let r: &EI = self.0.alloc(EI::O(f()));
+            fn alloc_outer<F: Fn() -> Outer<'a>>(&self, f: F) -> &Outer<'_> {
+                let r: &EI<'_> = self.0.alloc(EI::O(f()));
                 if let &EI::O(ref o) = r {
                     o
                 } else {
@@ -604,13 +594,22 @@ mod tests {
         }
     }
 
+    #[bench]
+    pub fn bench_typed_arena_clear(b: &mut Bencher) {
+        let mut arena = TypedArena::default();
+        b.iter(|| {
+            arena.alloc(Point { x: 1, y: 2, z: 3 });
+            arena.clear();
+        })
+    }
+
     // Drop tests
 
     struct DropCounter<'a> {
         count: &'a Cell<u32>,
     }
 
-    impl<'a> Drop for DropCounter<'a> {
+    impl Drop for DropCounter<'_> {
         fn drop(&mut self) {
             self.count.set(self.count.get() + 1);
         }
@@ -620,7 +619,7 @@ mod tests {
     fn test_typed_arena_drop_count() {
         let counter = Cell::new(0);
         {
-            let arena: TypedArena<DropCounter> = TypedArena::default();
+            let arena: TypedArena<DropCounter<'_>> = TypedArena::default();
             for _ in 0..100 {
                 // Allocate something with drop glue to make sure it doesn't leak.
                 arena.alloc(DropCounter { count: &counter });
@@ -632,7 +631,7 @@ mod tests {
     #[test]
     fn test_typed_arena_drop_on_clear() {
         let counter = Cell::new(0);
-        let mut arena: TypedArena<DropCounter> = TypedArena::default();
+        let mut arena: TypedArena<DropCounter<'_>> = TypedArena::default();
         for i in 0..10 {
             for _ in 0..100 {
                 // Allocate something with drop glue to make sure it doesn't leak.

@@ -1,24 +1,35 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // edition:2018
-// compile-flags:-Z unstable-options
-
-// FIXME: once `--edition` is stable in rustdoc, remove that `compile-flags` directive
 
 #![feature(async_await, futures_api)]
 
-// @has async_fn/struct.S.html
-// @has - '//code' 'pub async fn f()'
-pub struct S;
+// @has async_fn/fn.foo.html '//pre[@class="rust fn"]' 'pub async fn foo() -> Option<Foo>'
+pub async fn foo() -> Option<Foo> {
+    None
+}
 
-impl S {
+// @has async_fn/fn.bar.html '//pre[@class="rust fn"]' 'pub async fn bar(a: i32, b: i32) -> i32'
+pub async fn bar(a: i32, b: i32) -> i32 {
+    0
+}
+
+// @has async_fn/fn.baz.html '//pre[@class="rust fn"]' 'pub async fn baz<T>(a: T) -> T'
+pub async fn baz<T>(a: T) -> T {
+    a
+}
+
+trait Bar {}
+
+impl Bar for () {}
+
+// @has async_fn/fn.quux.html '//pre[@class="rust fn"]' 'pub async fn quux() -> impl Bar'
+pub async fn quux() -> impl Bar {
+    ()
+}
+
+// @has async_fn/struct.Foo.html
+// @matches - '//code' 'pub async fn f\(\)$'
+pub struct Foo;
+
+impl Foo {
     pub async fn f() {}
 }

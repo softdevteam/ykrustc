@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // ignore-tidy-tab
 
 #![warn(unused_mut, unused_parens)] // UI tests pass `-A unused`—see Issue #43896
@@ -20,7 +10,7 @@
 #[no_mangle]
 //~^ HELP remove this attribute
 pub fn defiant<T>(_t: T) {}
-//~^ WARN functions generic over types must be mangled
+//~^ WARN functions generic over types or consts must be mangled
 
 #[no_mangle]
 fn rio_grande() {}
@@ -33,7 +23,7 @@ mod badlands {
     //~^ ERROR const items should never be #[no_mangle]
     //~| HELP try a static value
     #[no_mangle] pub fn val_jean<T>() {}
-    //~^ WARN functions generic over types must be mangled
+    //~^ WARN functions generic over types or consts must be mangled
     //~| HELP remove this attribute
 
     // ... but we can suggest just-`pub` instead of restricted
@@ -41,7 +31,7 @@ mod badlands {
     //~^ ERROR const items should never be #[no_mangle]
     //~| HELP try a static value
     #[no_mangle] pub(crate) fn crossfield<T>() {}
-    //~^ WARN functions generic over types must be mangled
+    //~^ WARN functions generic over types or consts must be mangled
     //~| HELP remove this attribute
 }
 

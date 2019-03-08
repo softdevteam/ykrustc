@@ -1,14 +1,4 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use core::num::NonZeroU32;
+use core::num::{NonZeroU32, NonZeroI32};
 use core::option::Option;
 use core::option::Option::{Some, None};
 use std::mem::size_of;
@@ -23,6 +13,7 @@ fn test_create_nonzero_instance() {
 #[test]
 fn test_size_nonzero_in_option() {
     assert_eq!(size_of::<NonZeroU32>(), size_of::<Option<NonZeroU32>>());
+    assert_eq!(size_of::<NonZeroI32>(), size_of::<Option<NonZeroI32>>());
 }
 
 #[test]
@@ -127,4 +118,11 @@ fn test_from_nonzero() {
     let nz = NonZeroU32::new(1).unwrap();
     let num: u32 = nz.into();
     assert_eq!(num, 1u32);
+}
+
+#[test]
+fn test_from_signed_nonzero() {
+    let nz = NonZeroI32::new(1).unwrap();
+    let num: i32 = nz.into();
+    assert_eq!(num, 1i32);
 }

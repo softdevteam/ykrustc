@@ -1,26 +1,16 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Code for the 'normalization' query. This consists of a wrapper
 //! which folds deeply, invoking the underlying
 //! `normalize_projection_ty` query when it encounters projections.
 
-use infer::at::At;
-use infer::canonical::OriginalQueryValues;
-use infer::{InferCtxt, InferOk};
-use mir::interpret::{ConstValue, GlobalId};
-use traits::project::Normalized;
-use traits::{Obligation, ObligationCause, PredicateObligation, Reveal};
-use ty::fold::{TypeFoldable, TypeFolder};
-use ty::subst::{Subst, Substs};
-use ty::{self, Ty, TyCtxt};
+use crate::infer::at::At;
+use crate::infer::canonical::OriginalQueryValues;
+use crate::infer::{InferCtxt, InferOk};
+use crate::mir::interpret::GlobalId;
+use crate::traits::project::Normalized;
+use crate::traits::{Obligation, ObligationCause, PredicateObligation, Reveal};
+use crate::ty::fold::{TypeFoldable, TypeFolder};
+use crate::ty::subst::{Subst, InternalSubsts};
+use crate::ty::{self, Ty, TyCtxt};
 
 use super::NoSolution;
 
@@ -34,7 +24,7 @@ impl<'cx, 'gcx, 'tcx> At<'cx, 'gcx, 'tcx> {
     /// the normalized value along with various outlives relations (in
     /// the form of obligations that must be discharged).
     ///
-    /// NB. This will *eventually* be the main means of
+    /// N.B., this will *eventually* be the main means of
     /// normalizing, but for now should be used only when we actually
     /// know that normalization will succeed, since error reporting
     /// and other details are still "under development".
@@ -198,12 +188,12 @@ impl<'cx, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for QueryNormalizer<'cx, 'gcx, 'tcx
         }
     }
 
-    fn fold_const(&mut self, constant: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
-        if let ConstValue::Unevaluated(def_id, substs) = constant.val {
+    fn fold_const(&mut self, constant: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
+        if let ty::LazyConst::Unevaluated(def_id, substs) = *constant {
             let tcx = self.infcx.tcx.global_tcx();
             if let Some(param_env) = self.tcx().lift_to_global(&self.param_env) {
-                if substs.needs_infer() || substs.has_skol() {
-                    let identity_substs = Substs::identity_for_item(tcx, def_id);
+                if substs.needs_infer() || substs.has_placeholders() {
+                    let identity_substs = InternalSubsts::identity_for_item(tcx, def_id);
                     let instance = ty::Instance::resolve(tcx, param_env, def_id, identity_substs);
                     if let Some(instance) = instance {
                         let cid = GlobalId {
@@ -211,8 +201,9 @@ impl<'cx, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for QueryNormalizer<'cx, 'gcx, 'tcx
                             promoted: None,
                         };
                         if let Ok(evaluated) = tcx.const_eval(param_env.and(cid)) {
-                            let evaluated = evaluated.subst(self.tcx(), substs);
-                            return self.fold_const(evaluated);
+                            let substs = tcx.lift_to_global(&substs).unwrap();
+                            let evaluated = evaluated.subst(tcx, substs);
+                            return tcx.mk_lazy_const(ty::LazyConst::Evaluated(evaluated));
                         }
                     }
                 } else {
@@ -224,7 +215,7 @@ impl<'cx, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for QueryNormalizer<'cx, 'gcx, 'tcx
                                 promoted: None,
                             };
                             if let Ok(evaluated) = tcx.const_eval(param_env.and(cid)) {
-                                return self.fold_const(evaluated)
+                                return tcx.mk_lazy_const(ty::LazyConst::Evaluated(evaluated));
                             }
                         }
                     }

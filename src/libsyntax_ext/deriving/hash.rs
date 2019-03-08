@@ -1,16 +1,6 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use deriving::{self, pathvec_std, path_std};
-use deriving::generic::*;
-use deriving::generic::ty::*;
+use crate::deriving::{self, pathvec_std, path_std};
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
 
 use syntax::ast::{Expr, MetaItem, Mutability};
 use syntax::ext::base::{Annotatable, ExtCtxt};
@@ -18,7 +8,7 @@ use syntax::ext::build::AstBuilder;
 use syntax::ptr::P;
 use syntax_pos::Span;
 
-pub fn expand_deriving_hash(cx: &mut ExtCtxt,
+pub fn expand_deriving_hash(cx: &mut ExtCtxt<'_>,
                             span: Span,
                             mitem: &MetaItem,
                             item: &Annotatable,
@@ -60,7 +50,7 @@ pub fn expand_deriving_hash(cx: &mut ExtCtxt,
     hash_trait_def.expand(cx, mitem, item, push);
 }
 
-fn hash_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
+fn hash_substructure(cx: &mut ExtCtxt<'_>, trait_span: Span, substr: &Substructure<'_>) -> P<Expr> {
     let state_expr = match (substr.nonself_args.len(), substr.nonself_args.get(0)) {
         (1, Some(o_f)) => o_f,
         _ => {

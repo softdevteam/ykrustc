@@ -1,21 +1,11 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir::def_id::{DefId, LOCAL_CRATE};
-use ich::StableHashingContext;
+use crate::hir::def_id::{DefId, LOCAL_CRATE};
+use crate::ich::StableHashingContext;
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable,
                                            StableHasherResult};
 use std::cmp;
 use std::mem;
-use ty;
-use ty::subst::Substs;
+use crate::ty;
+use crate::ty::subst::SubstsRef;
 
 /// The SymbolExportLevel of a symbols specifies from which kinds of crates
 /// the symbol will be exported. `C` symbols will be exported from any
@@ -43,7 +33,7 @@ impl SymbolExportLevel {
 #[derive(Eq, PartialEq, Debug, Copy, Clone, RustcEncodable, RustcDecodable)]
 pub enum ExportedSymbol<'tcx> {
     NonGeneric(DefId),
-    Generic(DefId, &'tcx Substs<'tcx>),
+    Generic(DefId, SubstsRef<'tcx>),
     NoDefId(ty::SymbolName),
 }
 

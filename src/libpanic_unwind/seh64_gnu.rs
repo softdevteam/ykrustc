@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Unwinding implementation of top of native Win64 SEH,
 //! however the unwind handler data (aka LSDA) uses GCC-compatible encoding.
 
@@ -19,8 +9,8 @@ use alloc::boxed::Box;
 use core::any::Any;
 use core::intrinsics;
 use core::ptr;
-use dwarf::eh::{EHContext, EHAction, find_eh_action};
-use windows as c;
+use crate::dwarf::eh::{EHContext, EHAction, find_eh_action};
+use crate::windows as c;
 
 // Define our exception codes:
 // according to http://msdn.microsoft.com/en-us/library/het71c37(v=VS.80).aspx,

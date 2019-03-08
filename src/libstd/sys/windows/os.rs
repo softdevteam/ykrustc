@@ -1,29 +1,19 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! Implementation of `std::os` functionality for Windows
+//! Implementation of `std::os` functionality for Windows.
 
 #![allow(nonstandard_style)]
 
-use os::windows::prelude::*;
+use crate::os::windows::prelude::*;
 
-use error::Error as StdError;
-use ffi::{OsString, OsStr};
-use fmt;
-use io;
-use os::windows::ffi::EncodeWide;
-use path::{self, PathBuf};
-use ptr;
-use slice;
-use sys::{c, cvt};
-use sys::handle::Handle;
+use crate::error::Error as StdError;
+use crate::ffi::{OsString, OsStr};
+use crate::fmt;
+use crate::io;
+use crate::os::windows::ffi::EncodeWide;
+use crate::path::{self, PathBuf};
+use crate::ptr;
+use crate::slice;
+use crate::sys::{c, cvt};
+use crate::sys::handle::Handle;
 
 use super::to_u16s;
 
@@ -48,8 +38,8 @@ pub fn error_string(mut errnum: i32) -> String {
         // `[MS-ERREF]`: https://msdn.microsoft.com/en-us/library/cc231198.aspx
         if (errnum & c::FACILITY_NT_BIT as i32) != 0 {
             // format according to https://support.microsoft.com/en-us/help/259693
-            const NTDLL_DLL: &'static [u16] = &['N' as _, 'T' as _, 'D' as _, 'L' as _, 'L' as _,
-                                                '.' as _, 'D' as _, 'L' as _, 'L' as _, 0];
+            const NTDLL_DLL: &[u16] = &['N' as _, 'T' as _, 'D' as _, 'L' as _, 'L' as _,
+                                        '.' as _, 'D' as _, 'L' as _, 'L' as _, 0];
             module = c::GetModuleHandleW(NTDLL_DLL.as_ptr());
 
             if module != ptr::null_mut() {
@@ -67,7 +57,7 @@ pub fn error_string(mut errnum: i32) -> String {
                                     buf.len() as c::DWORD,
                                     ptr::null()) as usize;
         if res == 0 {
-            // Sometimes FormatMessageW can fail e.g. system doesn't like langId,
+            // Sometimes FormatMessageW can fail e.g., system doesn't like langId,
             let fm_err = errno();
             return format!("OS Error {} (FormatMessageW() returned error {})",
                            errnum, fm_err);
@@ -76,7 +66,7 @@ pub fn error_string(mut errnum: i32) -> String {
         match String::from_utf16(&buf[..res]) {
             Ok(mut msg) => {
                 // Trim trailing CRLF inserted by FormatMessageW
-                let len = msg.trim_right().len();
+                let len = msg.trim_end().len();
                 msg.truncate(len);
                 msg
             },
@@ -295,8 +285,8 @@ pub fn temp_dir() -> PathBuf {
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    ::env::var_os("HOME").or_else(|| {
-        ::env::var_os("USERPROFILE")
+    crate::env::var_os("HOME").or_else(|| {
+        crate::env::var_os("USERPROFILE")
     }).map(PathBuf::from).or_else(|| unsafe {
         let me = c::GetCurrentProcess();
         let mut token = ptr::null_mut();
@@ -324,8 +314,8 @@ pub fn getpid() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use io::Error;
-    use sys::c;
+    use crate::io::Error;
+    use crate::sys::c;
 
     // tests `error_string` above
     #[test]

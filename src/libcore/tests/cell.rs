@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::cell::*;
 use core::default::Default;
 use std::mem::drop;
@@ -119,6 +109,7 @@ fn double_borrow_single_release_no_borrow_mut() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn discard_doesnt_unborrow() {
     let x = RefCell::new(0);
     let _b = x.borrow();
@@ -359,6 +350,7 @@ fn refcell_ref_coercion() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn refcell_swap_borrows() {
     let x = RefCell::new(0);
     let _b = x.borrow();
@@ -368,6 +360,7 @@ fn refcell_swap_borrows() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn refcell_replace_borrows() {
     let x = RefCell::new(0);
     let _b = x.borrow();

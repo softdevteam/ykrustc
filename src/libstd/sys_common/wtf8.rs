@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of [the WTF-8 encoding](https://simonsapin.github.io/wtf-8/).
 //!
 //! This library uses Rust’s type system to maintain
@@ -27,24 +17,24 @@
 
 use core::str::next_code_point;
 
-use borrow::Cow;
-use char;
-use fmt;
-use hash::{Hash, Hasher};
-use iter::FromIterator;
-use mem;
-use ops;
-use rc::Rc;
-use slice;
-use str;
-use sync::Arc;
-use sys_common::AsInner;
+use crate::borrow::Cow;
+use crate::char;
+use crate::fmt;
+use crate::hash::{Hash, Hasher};
+use crate::iter::FromIterator;
+use crate::mem;
+use crate::ops;
+use crate::rc::Rc;
+use crate::slice;
+use crate::str;
+use crate::sync::Arc;
+use crate::sys_common::AsInner;
 
-const UTF8_REPLACEMENT_CHARACTER: &'static str = "\u{FFFD}";
+const UTF8_REPLACEMENT_CHARACTER: &str = "\u{FFFD}";
 
 /// A Unicode code point: from U+0000 to U+10FFFF.
 ///
-/// Compare with the `char` type,
+/// Compares with the `char` type,
 /// which represents a Unicode scalar value:
 /// a code point that is not a surrogate (U+D800 to U+DFFF).
 #[derive(Eq, PartialEq, Ord, PartialOrd, Clone, Copy)]
@@ -376,7 +366,7 @@ impl Wtf8Buf {
     }
 }
 
-/// Create a new WTF-8 string from an iterator of code points.
+/// Creates a new WTF-8 string from an iterator of code points.
 ///
 /// This replaces surrogate code point pairs with supplementary code points,
 /// like concatenating ill-formed UTF-16 strings effectively would.
@@ -423,7 +413,7 @@ impl AsInner<[u8]> for Wtf8 {
 impl fmt::Debug for Wtf8 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         fn write_str_escaped(f: &mut fmt::Formatter, s: &str) -> fmt::Result {
-            use fmt::Write;
+            use crate::fmt::Write;
             for c in s.chars().flat_map(|c| c.escape_debug()) {
                 f.write_char(c)?
             }
@@ -674,7 +664,7 @@ impl Wtf8 {
 }
 
 
-/// Return a slice of the given string for the byte range [`begin`..`end`).
+/// Returns a slice of the given string for the byte range [`begin`..`end`).
 ///
 /// # Panics
 ///
@@ -696,7 +686,7 @@ impl ops::Index<ops::Range<usize>> for Wtf8 {
     }
 }
 
-/// Return a slice of the given string from byte `begin` to its end.
+/// Returns a slice of the given string from byte `begin` to its end.
 ///
 /// # Panics
 ///
@@ -716,7 +706,7 @@ impl ops::Index<ops::RangeFrom<usize>> for Wtf8 {
     }
 }
 
-/// Return a slice of the given string from its beginning to byte `end`.
+/// Returns a slice of the given string from its beginning to byte `end`.
 ///
 /// # Panics
 ///
@@ -881,7 +871,7 @@ impl Wtf8 {
 
 #[cfg(test)]
 mod tests {
-    use borrow::Cow;
+    use crate::borrow::Cow;
     use super::*;
 
     #[test]

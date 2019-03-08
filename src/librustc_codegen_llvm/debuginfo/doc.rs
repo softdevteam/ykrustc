@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! # Debug Info Module
 //!
 //! This module serves the purpose of generating debug symbols. We use LLVM's
@@ -166,11 +156,11 @@
 //!
 //! (3) Tuple-, pointer and function types are structurally identified, which
 //!     means that they are equivalent if their component types are equivalent
-//!     (i.e. (i32, i32) is the same regardless in which crate it is used).
+//!     (i.e., (i32, i32) is the same regardless in which crate it is used).
 //!
 //! This algorithm also provides a stable ID for types that are defined in one
 //! crate but instantiated from metadata within another crate. We just have to
-//! take care to always map crate and node IDs back to the original crate
+//! take care to always map crate and `NodeId`s back to the original crate
 //! context.
 //!
 //! As a side-effect these unique type IDs also help to solve a problem arising
@@ -180,7 +170,7 @@
 //! with different concrete substitutions for `'a`, and thus there will be N
 //! `Ty` instances for the type `Struct<'a>` even though it is not generic
 //! otherwise. Unfortunately this means that we cannot use `ty::type_id()` as
-//! cheap identifier for type metadata---we have done this in the past, but it
+//! cheap identifier for type metadata -- we have done this in the past, but it
 //! led to unnecessary metadata duplication in the best case and LLVM
 //! assertions in the worst. However, the unique type ID as described above
 //! *can* be used as identifier. Since it is comparatively expensive to

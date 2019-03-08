@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 pub const CLONE_VM: usize = 0x100;
 pub const CLONE_FS: usize = 0x200;
 pub const CLONE_FILES: usize = 0x400;
@@ -117,42 +107,42 @@ pub const WNOHANG: usize =    0x01;
 pub const WUNTRACED: usize =  0x02;
 pub const WCONTINUED: usize = 0x08;
 
-/// True if status indicates the child is stopped.
+/// Returns `true` if status indicates the child is stopped.
 pub fn wifstopped(status: usize) -> bool {
     (status & 0xff) == 0x7f
 }
 
-/// If wifstopped(status), the signal that stopped the child.
+/// If wifstopped(status), returns the signal that stopped the child.
 pub fn wstopsig(status: usize) -> usize {
     (status >> 8) & 0xff
 }
 
-/// True if status indicates the child continued after a stop.
+/// Returns `true` if status indicates the child continued after a stop.
 pub fn wifcontinued(status: usize) -> bool {
     status == 0xffff
 }
 
-/// True if STATUS indicates termination by a signal.
+/// Returns `true` if status indicates termination by a signal.
 pub fn wifsignaled(status: usize) -> bool {
     ((status & 0x7f) + 1) as i8 >= 2
 }
 
-/// If wifsignaled(status), the terminating signal.
+/// If wifsignaled(status), returns the terminating signal.
 pub fn wtermsig(status: usize) -> usize {
     status & 0x7f
 }
 
-/// True if status indicates normal termination.
+/// Returns `true` if status indicates normal termination.
 pub fn wifexited(status: usize) -> bool {
     wtermsig(status) == 0
 }
 
-/// If wifexited(status), the exit status.
+/// If wifexited(status), returns the exit status.
 pub fn wexitstatus(status: usize) -> usize {
     (status >> 8) & 0xff
 }
 
-/// True if status indicates a core dump was created.
+/// Returns `true` if status indicates a core dump was created.
 pub fn wcoredump(status: usize) -> bool {
     (status & 0x80) != 0
 }

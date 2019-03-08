@@ -1,15 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-#![feature(const_int_wrapping)]
-
 const ADD_A: u32 = 200u32.wrapping_add(55);
 const ADD_B: u32 = 200u32.wrapping_add(u32::max_value());
 
@@ -24,6 +12,9 @@ const SHL_B: u32 = 1u32.wrapping_shl(128);
 
 const SHR_A: u32 = 128u32.wrapping_shr(7);
 const SHR_B: u32 = 128u32.wrapping_shr(128);
+
+const NEG_A: u32 = 5u32.wrapping_neg();
+const NEG_B: u32 = 1234567890u32.wrapping_neg();
 
 fn ident<T>(ident: T) -> T {
     ident
@@ -44,4 +35,7 @@ fn main() {
 
     assert_eq!(SHR_A, ident(1));
     assert_eq!(SHR_B, ident(128));
+
+    assert_eq!(NEG_A, ident(4294967291));
+    assert_eq!(NEG_B, ident(3060399406));
 }

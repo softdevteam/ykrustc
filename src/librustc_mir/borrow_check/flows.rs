@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Manages the dataflow bits required for borrowck.
 //!
 //! FIXME: this might be better as a "generic" fixed-point combinator,
@@ -17,25 +7,25 @@ use rustc::mir::{BasicBlock, Location};
 use rustc::ty::RegionVid;
 use rustc_data_structures::bit_set::BitIter;
 
-use borrow_check::location::LocationIndex;
+use crate::borrow_check::location::LocationIndex;
 
 use polonius_engine::Output;
 
-use dataflow::move_paths::indexes::BorrowIndex;
-use dataflow::move_paths::HasMoveData;
-use dataflow::Borrows;
-use dataflow::EverInitializedPlaces;
-use dataflow::{FlowAtLocation, FlowsAtLocation};
-use dataflow::MaybeUninitializedPlaces;
+use crate::dataflow::move_paths::indexes::BorrowIndex;
+use crate::dataflow::move_paths::HasMoveData;
+use crate::dataflow::Borrows;
+use crate::dataflow::EverInitializedPlaces;
+use crate::dataflow::{FlowAtLocation, FlowsAtLocation};
+use crate::dataflow::MaybeUninitializedPlaces;
 use either::Either;
 use std::fmt;
 use std::rc::Rc;
 
 // (forced to be `pub` due to its use as an associated type below.)
 crate struct Flows<'b, 'gcx: 'tcx, 'tcx: 'b> {
-    borrows: FlowAtLocation<Borrows<'b, 'gcx, 'tcx>>,
-    pub uninits: FlowAtLocation<MaybeUninitializedPlaces<'b, 'gcx, 'tcx>>,
-    pub ever_inits: FlowAtLocation<EverInitializedPlaces<'b, 'gcx, 'tcx>>,
+    borrows: FlowAtLocation<'tcx, Borrows<'b, 'gcx, 'tcx>>,
+    pub uninits: FlowAtLocation<'tcx, MaybeUninitializedPlaces<'b, 'gcx, 'tcx>>,
+    pub ever_inits: FlowAtLocation<'tcx, EverInitializedPlaces<'b, 'gcx, 'tcx>>,
 
     /// Polonius Output
     pub polonius_output: Option<Rc<Output<RegionVid, BorrowIndex, LocationIndex>>>,
@@ -43,9 +33,9 @@ crate struct Flows<'b, 'gcx: 'tcx, 'tcx: 'b> {
 
 impl<'b, 'gcx, 'tcx> Flows<'b, 'gcx, 'tcx> {
     crate fn new(
-        borrows: FlowAtLocation<Borrows<'b, 'gcx, 'tcx>>,
-        uninits: FlowAtLocation<MaybeUninitializedPlaces<'b, 'gcx, 'tcx>>,
-        ever_inits: FlowAtLocation<EverInitializedPlaces<'b, 'gcx, 'tcx>>,
+        borrows: FlowAtLocation<'tcx, Borrows<'b, 'gcx, 'tcx>>,
+        uninits: FlowAtLocation<'tcx, MaybeUninitializedPlaces<'b, 'gcx, 'tcx>>,
+        ever_inits: FlowAtLocation<'tcx, EverInitializedPlaces<'b, 'gcx, 'tcx>>,
         polonius_output: Option<Rc<Output<RegionVid, BorrowIndex, LocationIndex>>>,
     ) -> Self {
         Flows {
@@ -67,7 +57,7 @@ impl<'b, 'gcx, 'tcx> Flows<'b, 'gcx, 'tcx> {
         }
     }
 
-    crate fn with_outgoing_borrows(&self, op: impl FnOnce(BitIter<BorrowIndex>)) {
+    crate fn with_outgoing_borrows(&self, op: impl FnOnce(BitIter<'_, BorrowIndex>)) {
         self.borrows.with_iter_outgoing(op)
     }
 }
@@ -103,7 +93,7 @@ impl<'b, 'gcx, 'tcx> FlowsAtLocation for Flows<'b, 'gcx, 'tcx> {
 }
 
 impl<'b, 'gcx, 'tcx> fmt::Display for Flows<'b, 'gcx, 'tcx> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = String::new();
 
         s.push_str("borrows in effect: [");

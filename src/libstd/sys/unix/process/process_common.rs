@@ -1,25 +1,16 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::os::unix::prelude::*;
 
-use os::unix::prelude::*;
+use crate::ffi::{OsString, OsStr, CString, CStr};
+use crate::fmt;
+use crate::io;
+use crate::ptr;
+use crate::sys::fd::FileDesc;
+use crate::sys::fs::{File, OpenOptions};
+use crate::sys::pipe::{self, AnonPipe};
+use crate::sys_common::process::{CommandEnv, DefaultEnvKey};
+use crate::collections::BTreeMap;
 
-use ffi::{OsString, OsStr, CString, CStr};
-use fmt;
-use io;
-use libc::{self, c_int, gid_t, uid_t, c_char, EXIT_SUCCESS, EXIT_FAILURE};
-use ptr;
-use sys::fd::FileDesc;
-use sys::fs::{File, OpenOptions};
-use sys::pipe::{self, AnonPipe};
-use sys_common::process::{CommandEnv, DefaultEnvKey};
-use collections::BTreeMap;
+use libc::{c_int, gid_t, uid_t, c_char, EXIT_SUCCESS, EXIT_FAILURE};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -159,8 +150,10 @@ impl Command {
         &mut self.closures
     }
 
-    pub fn before_exec(&mut self,
-                       f: Box<dyn FnMut() -> io::Result<()> + Send + Sync>) {
+    pub unsafe fn pre_exec(
+        &mut self,
+        f: Box<dyn FnMut() -> io::Result<()> + Send + Sync>,
+    ) {
         self.closures.push(f);
     }
 
@@ -414,11 +407,10 @@ impl ExitCode {
 mod tests {
     use super::*;
 
-    use ffi::OsStr;
-    use mem;
-    use ptr;
-    use libc;
-    use sys::cvt;
+    use crate::ffi::OsStr;
+    use crate::mem;
+    use crate::ptr;
+    use crate::sys::cvt;
 
     macro_rules! t {
         ($e:expr) => {
@@ -451,7 +443,7 @@ mod tests {
 
     #[cfg(target_os = "android")]
     unsafe fn sigaddset(set: *mut libc::sigset_t, signum: libc::c_int) -> libc::c_int {
-        use slice;
+        use crate::slice;
 
         let raw = slice::from_raw_parts_mut(set as *mut u8, mem::size_of::<libc::sigset_t>());
         let bit = (signum - 1) as usize;

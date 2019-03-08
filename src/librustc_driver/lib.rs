@@ -1,32 +1,18 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust compiler.
 //!
 //! # Note
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-      html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![feature(box_syntax)]
 #![cfg_attr(unix, feature(libc))]
 #![feature(nll)]
-#![feature(quote)]
 #![feature(rustc_diagnostic_macros)]
-#![feature(slice_sort_by_cached_key)]
 #![feature(set_stdio)]
-#![feature(rustc_stack_internals)]
 #![feature(no_debug)]
+#![feature(integer_atomics)]
 
 #![recursion_limit="256"]
 
@@ -55,6 +41,7 @@ extern crate rustc_save_analysis;
 extern crate rustc_traits;
 extern crate rustc_codegen_utils;
 extern crate rustc_typeck;
+extern crate rustc_interface;
 extern crate scoped_tls;
 extern crate serialize;
 extern crate smallvec;
@@ -66,35 +53,25 @@ extern crate syntax_pos;
 extern crate rustc_yk_sections;
 extern crate rustc_yk_link;
 
-// Note that the linkage here should be all that we need, on Linux we're not
-// prefixing the symbols here so this should naturally override our default
-// allocator. On OSX it should override via the zone allocator. We shouldn't
-// enable this by default on other platforms, so other platforms aren't handled
-// here yet.
-#[cfg(feature = "jemalloc-sys")]
-extern crate jemalloc_sys;
-
 use driver::CompileController;
 use pretty::{PpMode, UserIdentifiedItem};
 
-use rustc_resolve as resolve;
 use rustc_save_analysis as save;
 use rustc_save_analysis::DumpHandler;
-use rustc_data_structures::sync::{self, Lrc};
+use rustc_data_structures::sync::{self, Lrc, Ordering::SeqCst};
 use rustc_data_structures::OnDrop;
-use rustc::session::{self, config, Session, build_session, CompileResult};
+use rustc::session::{self, config, Session, build_session, CompileResult, DiagnosticOutput};
 use rustc::session::CompileIncomplete;
 use rustc::session::config::{Input, PrintRequest, ErrorOutputType};
 use rustc::session::config::nightly_options;
-use rustc::session::filesearch;
 use rustc::session::{early_error, early_warn};
 use rustc::lint::Lint;
 use rustc::lint;
 use rustc_metadata::locator;
 use rustc_metadata::cstore::CStore;
-use rustc_metadata::dynamic_lib::DynamicLibrary;
 use rustc::util::common::{time, ErrorReported};
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
+use rustc_interface::util::{self, get_codegen_sysroot};
 
 use serialize::json::ToJson;
 
@@ -102,19 +79,15 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::cmp::max;
 use std::default::Default;
-use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
-use std::mem;
 use std::panic;
-use std::path::{PathBuf, Path};
+use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::str;
-use std::sync::atomic::{AtomicBool, ATOMIC_BOOL_INIT, Ordering};
-use std::sync::{Once, ONCE_INIT};
 use std::thread;
 
 use syntax::ast;
@@ -126,34 +99,8 @@ use syntax_pos::{DUMMY_SP, MultiSpan, FileName};
 #[cfg(test)]
 mod test;
 
-pub mod profile;
 pub mod driver;
 pub mod pretty;
-mod derive_registrar;
-
-pub mod target_features {
-    use syntax::ast;
-    use syntax::symbol::Symbol;
-    use rustc::session::Session;
-    use rustc_codegen_utils::codegen_backend::CodegenBackend;
-
-    /// Add `target_feature = "..."` cfgs for a variety of platform
-    /// specific features (SSE, NEON etc.).
-    ///
-    /// This is performed by checking whether a whitelisted set of
-    /// features is available on the target machine, by querying LLVM.
-    pub fn add_configuration(cfg: &mut ast::CrateConfig,
-                             sess: &Session,
-                             codegen_backend: &dyn CodegenBackend) {
-        let tf = Symbol::intern("target_feature");
-
-        cfg.extend(codegen_backend.target_features(sess).into_iter().map(|feat| (tf, Some(feat))));
-
-        if sess.crt_static_feature() {
-            cfg.insert((tf, Some(Symbol::intern("crt-static"))));
-        }
-    }
-}
 
 /// Exit status code used for successful compilation and help output.
 pub const EXIT_SUCCESS: isize = 0;
@@ -220,242 +167,6 @@ pub fn run<F>(run_compiler: F) -> isize
     }
 }
 
-fn load_backend_from_dylib(path: &Path) -> fn() -> Box<dyn CodegenBackend> {
-    // Note that we're specifically using `open_global_now` here rather than
-    // `open`, namely we want the behavior on Unix of RTLD_GLOBAL and RTLD_NOW,
-    // where NOW means "bind everything right now" because we don't want
-    // surprises later on and RTLD_GLOBAL allows the symbols to be made
-    // available for future dynamic libraries opened. This is currently used by
-    // loading LLVM and then making its symbols available for other dynamic
-    // libraries.
-    let lib = DynamicLibrary::open_global_now(path).unwrap_or_else(|err| {
-        let err = format!("couldn't load codegen backend {:?}: {:?}", path, err);
-        early_error(ErrorOutputType::default(), &err);
-    });
-    unsafe {
-        match lib.symbol("__rustc_codegen_backend") {
-            Ok(f) => {
-                mem::forget(lib);
-                mem::transmute::<*mut u8, _>(f)
-            }
-            Err(e) => {
-                let err = format!("couldn't load codegen backend as it \
-                                   doesn't export the `__rustc_codegen_backend` \
-                                   symbol: {:?}", e);
-                early_error(ErrorOutputType::default(), &err);
-            }
-        }
-    }
-}
-
-pub fn get_codegen_backend(sess: &Session) -> Box<dyn CodegenBackend> {
-    static INIT: Once = ONCE_INIT;
-
-    #[allow(deprecated)]
-    #[no_debug]
-    static mut LOAD: fn() -> Box<dyn CodegenBackend> = || unreachable!();
-
-    INIT.call_once(|| {
-        let codegen_name = sess.opts.debugging_opts.codegen_backend.as_ref()
-            .unwrap_or(&sess.target.target.options.codegen_backend);
-        let backend = match &codegen_name[..] {
-            "metadata_only" => {
-                rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::new
-            }
-            filename if filename.contains(".") => {
-                load_backend_from_dylib(filename.as_ref())
-            }
-            codegen_name => get_codegen_sysroot(codegen_name),
-        };
-
-        unsafe {
-            LOAD = backend;
-        }
-    });
-    let backend = unsafe { LOAD() };
-    backend.init(sess);
-    backend
-}
-
-fn get_codegen_sysroot(backend_name: &str) -> fn() -> Box<dyn CodegenBackend> {
-    // For now we only allow this function to be called once as it'll dlopen a
-    // few things, which seems to work best if we only do that once. In
-    // general this assertion never trips due to the once guard in `get_codegen_backend`,
-    // but there's a few manual calls to this function in this file we protect
-    // against.
-    static LOADED: AtomicBool = ATOMIC_BOOL_INIT;
-    assert!(!LOADED.fetch_or(true, Ordering::SeqCst),
-            "cannot load the default codegen backend twice");
-
-    // When we're compiling this library with `--test` it'll run as a binary but
-    // not actually exercise much functionality. As a result most of the logic
-    // here is defunkt (it assumes we're a dynamic library in a sysroot) so
-    // let's just return a dummy creation function which won't be used in
-    // general anyway.
-    if cfg!(test) {
-        return rustc_codegen_utils::codegen_backend::MetadataOnlyCodegenBackend::new
-    }
-
-    let target = session::config::host_triple();
-    let mut sysroot_candidates = vec![filesearch::get_or_default_sysroot()];
-    let path = current_dll_path()
-        .and_then(|s| s.canonicalize().ok());
-    if let Some(dll) = path {
-        // use `parent` twice to chop off the file name and then also the
-        // directory containing the dll which should be either `lib` or `bin`.
-        if let Some(path) = dll.parent().and_then(|p| p.parent()) {
-            // The original `path` pointed at the `rustc_driver` crate's dll.
-            // Now that dll should only be in one of two locations. The first is
-            // in the compiler's libdir, for example `$sysroot/lib/*.dll`. The
-            // other is the target's libdir, for example
-            // `$sysroot/lib/rustlib/$target/lib/*.dll`.
-            //
-            // We don't know which, so let's assume that if our `path` above
-            // ends in `$target` we *could* be in the target libdir, and always
-            // assume that we may be in the main libdir.
-            sysroot_candidates.push(path.to_owned());
-
-            if path.ends_with(target) {
-                sysroot_candidates.extend(path.parent() // chop off `$target`
-                    .and_then(|p| p.parent())           // chop off `rustlib`
-                    .and_then(|p| p.parent())           // chop off `lib`
-                    .map(|s| s.to_owned()));
-            }
-        }
-    }
-
-    let sysroot = sysroot_candidates.iter()
-        .map(|sysroot| {
-            let libdir = filesearch::relative_target_lib_path(&sysroot, &target);
-            sysroot.join(libdir).with_file_name(
-                option_env!("CFG_CODEGEN_BACKENDS_DIR").unwrap_or("codegen-backends"))
-        })
-        .filter(|f| {
-            info!("codegen backend candidate: {}", f.display());
-            f.exists()
-        })
-        .next();
-    let sysroot = sysroot.unwrap_or_else(|| {
-        let candidates = sysroot_candidates.iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n* ");
-        let err = format!("failed to find a `codegen-backends` folder \
-                           in the sysroot candidates:\n* {}", candidates);
-        early_error(ErrorOutputType::default(), &err);
-    });
-    info!("probing {} for a codegen backend", sysroot.display());
-
-    let d = sysroot.read_dir().unwrap_or_else(|e| {
-        let err = format!("failed to load default codegen backend, couldn't \
-                           read `{}`: {}", sysroot.display(), e);
-        early_error(ErrorOutputType::default(), &err);
-    });
-
-    let mut file: Option<PathBuf> = None;
-
-    let expected_name = format!("rustc_codegen_llvm-{}", backend_name);
-    for entry in d.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let filename = match path.file_name().and_then(|s| s.to_str()) {
-            Some(s) => s,
-            None => continue,
-        };
-        if !(filename.starts_with(DLL_PREFIX) && filename.ends_with(DLL_SUFFIX)) {
-            continue
-        }
-        let name = &filename[DLL_PREFIX.len() .. filename.len() - DLL_SUFFIX.len()];
-        if name != expected_name {
-            continue
-        }
-        if let Some(ref prev) = file {
-            let err = format!("duplicate codegen backends found\n\
-                               first:  {}\n\
-                               second: {}\n\
-            ", prev.display(), path.display());
-            early_error(ErrorOutputType::default(), &err);
-        }
-        file = Some(path.clone());
-    }
-
-    match file {
-        Some(ref s) => return load_backend_from_dylib(s),
-        None => {
-            let err = format!("failed to load default codegen backend for `{}`, \
-                               no appropriate codegen dylib found in `{}`",
-                              backend_name, sysroot.display());
-            early_error(ErrorOutputType::default(), &err);
-        }
-    }
-
-    #[cfg(unix)]
-    fn current_dll_path() -> Option<PathBuf> {
-        use std::ffi::{OsStr, CStr};
-        use std::os::unix::prelude::*;
-
-        unsafe {
-            let addr = current_dll_path as usize as *mut _;
-            let mut info = mem::zeroed();
-            if libc::dladdr(addr, &mut info) == 0 {
-                info!("dladdr failed");
-                return None
-            }
-            if info.dli_fname.is_null() {
-                info!("dladdr returned null pointer");
-                return None
-            }
-            let bytes = CStr::from_ptr(info.dli_fname).to_bytes();
-            let os = OsStr::from_bytes(bytes);
-            Some(PathBuf::from(os))
-        }
-    }
-
-    #[cfg(windows)]
-    fn current_dll_path() -> Option<PathBuf> {
-        use std::ffi::OsString;
-        use std::os::windows::prelude::*;
-
-        extern "system" {
-            fn GetModuleHandleExW(dwFlags: u32,
-                                  lpModuleName: usize,
-                                  phModule: *mut usize) -> i32;
-            fn GetModuleFileNameW(hModule: usize,
-                                  lpFilename: *mut u16,
-                                  nSize: u32) -> u32;
-        }
-
-        const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x00000004;
-
-        unsafe {
-            let mut module = 0;
-            let r = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                       current_dll_path as usize,
-                                       &mut module);
-            if r == 0 {
-                info!("GetModuleHandleExW failed: {}", io::Error::last_os_error());
-                return None
-            }
-            let mut space = Vec::with_capacity(1024);
-            let r = GetModuleFileNameW(module,
-                                       space.as_mut_ptr(),
-                                       space.capacity() as u32);
-            if r == 0 {
-                info!("GetModuleFileNameW failed: {}", io::Error::last_os_error());
-                return None
-            }
-            let r = r as usize;
-            if r >= space.capacity() {
-                info!("our buffer was too small? {}",
-                      io::Error::last_os_error());
-                return None
-            }
-            space.set_len(r);
-            let os = OsString::from_wide(&space);
-            Some(PathBuf::from(os))
-        }
-    }
-}
-
 // Parse args and run the compiler. This is the primary entry point for rustc.
 // See comments on CompilerCalls below for details about the callbacks argument.
 // The FileLoader provides a way to load files from sources other than the file system.
@@ -516,7 +227,12 @@ fn run_compiler_with_pool<'a>(
     let loader = file_loader.unwrap_or(box RealFileLoader);
     let source_map = Lrc::new(SourceMap::with_file_loader(loader, sopts.file_path_mapping()));
     let mut sess = session::build_session_with_source_map(
-        sopts, input_file_path.clone(), descriptions, source_map, emitter_dest,
+        sopts,
+        input_file_path.clone(),
+        descriptions,
+        source_map,
+        emitter_dest.map(|e| DiagnosticOutput::Raw(e)).unwrap_or(DiagnosticOutput::Default),
+        Default::default(),
     );
 
     if let Some(err) = input_err {
@@ -526,12 +242,12 @@ fn run_compiler_with_pool<'a>(
         return (Err(CompileIncomplete::Stopped), Some(sess));
     }
 
-    let codegen_backend = get_codegen_backend(&sess);
+    let codegen_backend = util::get_codegen_backend(&sess);
 
     rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
     let mut cfg = config::build_configuration(&sess, cfg);
-    target_features::add_configuration(&mut cfg, &sess, &*codegen_backend);
+    util::add_configuration(&mut cfg, &sess, &*codegen_backend);
     sess.parse_sess.config = cfg;
 
     let result = {
@@ -561,6 +277,10 @@ fn run_compiler_with_pool<'a>(
                               Some(plugins),
                               &control)
     };
+
+    if sess.opts.debugging_opts.self_profile {
+        sess.profiler(|p| p.dump_raw_events(&sess.opts));
+    }
 
     (result, Some(sess))
 }
@@ -596,7 +316,7 @@ fn make_input(free_matches: &[String]) -> Option<(Input, Option<PathBuf>, Option
             } else {
                 None
             };
-            Some((Input::Str { name: FileName::Anon, input: src },
+            Some((Input::Str { name: FileName::anon_source_code(&src), input: src },
                   None, err))
         } else {
             Some((Input::File(PathBuf::from(ifile)),
@@ -741,8 +461,8 @@ fn stdout_isatty() -> bool {
 }
 
 fn handle_explain(code: &str,
-                  descriptions: &errors::registry::Registry,
                   output: ErrorOutputType) {
+    let descriptions = rustc_interface::util::diagnostics_registry();
     let normalised = if code.starts_with("E") {
         code.to_string()
     } else {
@@ -819,11 +539,11 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                       matches: &getopts::Matches,
                       _: &config::Options,
                       _: &ast::CrateConfig,
-                      descriptions: &errors::registry::Registry,
+                      _: &errors::registry::Registry,
                       output: ErrorOutputType)
                       -> Compilation {
         if let Some(ref code) = matches.opt_str("explain") {
-            handle_explain(code, descriptions, output);
+            handle_explain(code, output);
             return Compilation::Stop;
         }
 
@@ -851,8 +571,8 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 }
                 rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
                 let mut cfg = config::build_configuration(&sess, cfg.clone());
-                let codegen_backend = get_codegen_backend(&sess);
-                target_features::add_configuration(&mut cfg, &sess, &*codegen_backend);
+                let codegen_backend = util::get_codegen_backend(&sess);
+                util::add_configuration(&mut cfg, &sess, &*codegen_backend);
                 sess.parse_sess.config = cfg;
                 let should_stop = RustcDefaultCalls::print_crate_info(
                     &*codegen_backend,
@@ -868,7 +588,15 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 early_error(sopts.error_format, "no input filename given");
             }
             1 => panic!("make_input should have provided valid inputs"),
-            _ => early_error(sopts.error_format, "multiple input filenames provided"),
+            _ =>
+                early_error(
+                    sopts.error_format,
+                    &format!(
+                        "multiple input filenames provided (first two filenames are `{}` and `{}`)",
+                        matches.free[0],
+                        matches.free[1],
+                    ),
+                )
         }
     }
 
@@ -899,21 +627,19 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 control.after_hir_lowering.stop = Compilation::Stop;
 
                 control.after_parse.callback = box move |state| {
-                    state.krate = Some(pretty::fold_crate(state.session,
-                                                          state.krate.take().unwrap(),
-                                                          ppm));
+                    let mut krate = state.krate.take().unwrap();
+                    pretty::visit_crate(state.session, &mut krate, ppm);
+                    state.krate = Some(krate);
                 };
                 control.after_hir_lowering.callback = box move |state| {
                     pretty::print_after_hir_lowering(state.session,
                                                      state.cstore.unwrap(),
                                                      state.hir_map.unwrap(),
-                                                     state.analysis.unwrap(),
                                                      state.resolutions.unwrap(),
                                                      state.input,
                                                      &state.expanded_crate.take().unwrap(),
                                                      state.crate_name.unwrap(),
                                                      ppm,
-                                                     state.arenas.unwrap(),
                                                      state.output_filenames.unwrap(),
                                                      opt_uii.clone(),
                                                      state.out_file);
@@ -922,7 +648,8 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 control.after_parse.stop = Compilation::Stop;
 
                 control.after_parse.callback = box move |state| {
-                    let krate = pretty::fold_crate(state.session, state.krate.take().unwrap(), ppm);
+                    let mut krate = state.krate.take().unwrap();
+                    pretty::visit_crate(state.session, &mut krate, ppm);
                     pretty::print_after_parsing(state.session,
                                                 state.input,
                                                 &krate,
@@ -956,7 +683,7 @@ impl<'a> CompilerCalls<'a> for RustcDefaultCalls {
                 let sess = state.session;
                 eprintln!("Fuel used by {}: {}",
                     sess.print_fuel_crate.as_ref().unwrap(),
-                    sess.print_fuel.get());
+                    sess.print_fuel.load(SeqCst));
             }
         }
         control
@@ -969,7 +696,6 @@ pub fn enable_save_analysis(control: &mut CompileController) {
         time(state.session, "save analysis", || {
             save::process_crate(state.tcx.unwrap(),
                                 state.expanded_crate.unwrap(),
-                                state.analysis.unwrap(),
                                 state.crate_name.unwrap(),
                                 state.input,
                                 None,
@@ -978,7 +704,6 @@ pub fn enable_save_analysis(control: &mut CompileController) {
         });
     };
     control.after_analysis.run_callback_on_error = true;
-    control.make_glob_map = resolve::MakeGlobMap::Yes;
 }
 
 impl RustcDefaultCalls {
@@ -1044,19 +769,25 @@ impl RustcDefaultCalls {
                     targets.sort();
                     println!("{}", targets.join("\n"));
                 },
-                Sysroot => println!("{}", sess.sysroot().display()),
+                Sysroot => println!("{}", sess.sysroot.display()),
                 TargetSpec => println!("{}", sess.target.target.to_json().pretty()),
                 FileNames | CrateName => {
                     let input = input.unwrap_or_else(||
                         early_error(ErrorOutputType::default(), "no input file provided"));
                     let attrs = attrs.as_ref().unwrap();
-                    let t_outputs = driver::build_output_filenames(input, odir, ofile, attrs, sess);
+                    let t_outputs = rustc_interface::util::build_output_filenames(
+                        input,
+                        odir,
+                        ofile,
+                        attrs,
+                        sess
+                    );
                     let id = rustc_codegen_utils::link::find_crate_name(Some(sess), attrs, input);
                     if *req == PrintRequest::CrateName {
                         println!("{}", id);
                         continue;
                     }
-                    let crate_types = driver::collect_crate_types(sess, attrs);
+                    let crate_types = rustc_interface::util::collect_crate_types(sess, attrs);
                     for &style in &crate_types {
                         let fname = rustc_codegen_utils::link::filename_for_input(
                             sess,
@@ -1349,7 +1080,7 @@ fn print_flag_list<T>(cmdline_opt: &str,
 
 /// Process command line options. Emits messages as appropriate. If compilation
 /// should continue, returns a getopts::Matches object parsed from args,
-/// otherwise returns None.
+/// otherwise returns `None`.
 ///
 /// The compiler's handling of options is a little complicated as it ties into
 /// our stability story, and it's even *more* complicated by historical
@@ -1470,6 +1201,11 @@ fn parse_crate_attrs<'a>(sess: &'a Session, input: &Input) -> PResult<'a, Vec<as
     }
 }
 
+// Temporarily have stack size set to 32MB to deal with various crates with long method
+// chains or deep syntax trees.
+// FIXME(oli-obk): get https://github.com/rust-lang/rust/pull/55617 the finish line
+const STACK_SIZE: usize = 32 * 1024 * 1024; // 32MB
+
 /// Runs `f` in a suitable thread for running `rustc`; returns a `Result` with either the return
 /// value of `f` or -- if a panic occurs -- the panic value.
 ///
@@ -1479,72 +1215,13 @@ pub fn in_named_rustc_thread<F, R>(name: String, f: F) -> Result<R, Box<dyn Any 
     where F: FnOnce() -> R + Send + 'static,
           R: Send + 'static,
 {
-    // Temporarily have stack size set to 16MB to deal with nom-using crates failing
-    const STACK_SIZE: usize = 16 * 1024 * 1024; // 16MB
-
-    #[cfg(all(unix, not(target_os = "haiku")))]
-    let spawn_thread = unsafe {
-        // Fetch the current resource limits
-        let mut rlim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_STACK, &mut rlim) != 0 {
-            let err = io::Error::last_os_error();
-            error!("in_rustc_thread: error calling getrlimit: {}", err);
-            true
-        } else if rlim.rlim_max < STACK_SIZE as libc::rlim_t {
-            true
-        } else if rlim.rlim_cur < STACK_SIZE as libc::rlim_t {
-            std::rt::deinit_stack_guard();
-            rlim.rlim_cur = STACK_SIZE as libc::rlim_t;
-            if libc::setrlimit(libc::RLIMIT_STACK, &mut rlim) != 0 {
-                let err = io::Error::last_os_error();
-                error!("in_rustc_thread: error calling setrlimit: {}", err);
-                std::rt::update_stack_guard();
-                true
-            } else {
-                std::rt::update_stack_guard();
-                false
-            }
-        } else {
-            false
-        }
-    };
-
-    // We set the stack size at link time. See src/rustc/rustc.rs.
-    #[cfg(windows)]
-    let spawn_thread = false;
-
-    #[cfg(target_os = "haiku")]
-    let spawn_thread = unsafe {
-        // Haiku does not have setrlimit implemented for the stack size.
-        // By default it does have the 16 MB stack limit, but we check this in
-        // case the minimum STACK_SIZE changes or Haiku's defaults change.
-        let mut rlim = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_STACK, &mut rlim) != 0 {
-            let err = io::Error::last_os_error();
-            error!("in_rustc_thread: error calling getrlimit: {}", err);
-            true
-        } else if rlim.rlim_cur >= STACK_SIZE {
-            false
-        } else {
-            true
-        }
-    };
-
-    #[cfg(not(any(windows, unix)))]
-    let spawn_thread = true;
-
-    // The or condition is added from backward compatibility.
-    if spawn_thread || env::var_os("RUST_MIN_STACK").is_some() {
+    // We need a thread for soundness of thread local storage in rustc. For debugging purposes
+    // we allow an escape hatch where everything runs on the main thread.
+    if env::var_os("RUSTC_UNSTABLE_NO_MAIN_THREAD").is_none() {
         let mut cfg = thread::Builder::new().name(name);
 
-        // FIXME: Hacks on hacks. If the env is trying to override the stack size
-        // then *don't* set it explicitly.
+        // If the env is trying to override the stack size then *don't* set it explicitly.
+        // The libstd thread impl will fetch the `RUST_MIN_STACK` env var itself.
         if env::var_os("RUST_MIN_STACK").is_none() {
             cfg = cfg.stack_size(STACK_SIZE);
         }
@@ -1567,7 +1244,7 @@ pub fn in_rustc_thread<F, R>(f: F) -> Result<R, Box<dyn Any + Send>>
     in_named_rustc_thread("rustc".to_string(), f)
 }
 
-/// Get a list of extra command-line flags provided by the user, as strings.
+/// Gets a list of extra command-line flags provided by the user, as strings.
 ///
 /// This function is used during ICEs to show more information useful for
 /// debugging, since some ICEs only happens with non-default compiler flags
@@ -1632,7 +1309,7 @@ impl Display for CompilationFailure {
     }
 }
 
-/// Run a procedure which will detect panics in the compiler and print nicer
+/// Runs a procedure which will detect panics in the compiler and print nicer
 /// error messages rather than just failing the test.
 ///
 /// The diagnostic emitter yielded to the procedure should be used for reporting
@@ -1699,7 +1376,6 @@ pub fn diagnostics_registry() -> errors::registry::Registry {
     all_errors.extend_from_slice(&rustc_privacy::DIAGNOSTICS);
     // FIXME: need to figure out a way to get these back in here
     // all_errors.extend_from_slice(get_codegen_backend(sess).diagnostics());
-    all_errors.extend_from_slice(&rustc_codegen_utils::DIAGNOSTICS);
     all_errors.extend_from_slice(&rustc_metadata::DIAGNOSTICS);
     all_errors.extend_from_slice(&rustc_passes::DIAGNOSTICS);
     all_errors.extend_from_slice(&rustc_plugin::DIAGNOSTICS);

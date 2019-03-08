@@ -1,24 +1,14 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::TyCtxt;
 use rustc::mir::*;
 use rustc_data_structures::indexed_vec::Idx;
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 
 pub struct Deaggregator;
 
 impl MirPass for Deaggregator {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _source: MirSource,
+                          _source: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         let (basic_blocks, local_decls) = mir.basic_blocks_and_local_decls_mut();
         let local_decls = &*local_decls;

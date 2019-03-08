@@ -1,43 +1,19 @@
 #!/usr/bin/env bash
-# Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
 
 set -ex
 
 source shared.sh
 
-LLVM=7.0.0
+LLVM=llvmorg-8.0.0-rc2
 
-mkdir clang
-cd clang
+mkdir llvm-project
+cd llvm-project
 
-curl https://releases.llvm.org/$LLVM/llvm-$LLVM.src.tar.xz | \
-  xz -d | \
-  tar xf -
+curl -L https://github.com/llvm/llvm-project/archive/$LLVM.tar.gz | \
+  tar xzf - --strip-components=1
 
-cd llvm-$LLVM.src
-
-mkdir -p tools/clang
-
-curl https://releases.llvm.org/$LLVM/cfe-$LLVM.src.tar.xz | \
-  xz -d | \
-  tar xf - -C tools/clang --strip-components=1
-
-mkdir -p tools/lld
-
-curl https://releases.llvm.org/$LLVM/lld-$LLVM.src.tar.xz | \
-  xz -d | \
-  tar xf - -C tools/lld --strip-components=1
-
-mkdir ../clang-build
-cd ../clang-build
+mkdir clang-build
+cd clang-build
 
 # For whatever reason the default set of include paths for clang is different
 # than that of gcc. As a result we need to manually include our sysroot's
@@ -51,20 +27,21 @@ cd ../clang-build
 #
 # [1]: https://sourceware.org/ml/crossgcc/2008-11/msg00028.html
 INC="/rustroot/include"
-INC="$INC:/rustroot/lib/gcc/x86_64-unknown-linux-gnu/4.8.5/include-fixed"
+INC="$INC:/rustroot/lib/gcc/x86_64-unknown-linux-gnu/5.5.0/include-fixed"
 INC="$INC:/usr/include"
 
 hide_output \
-    cmake ../llvm-$LLVM.src \
+    cmake ../llvm \
       -DCMAKE_C_COMPILER=/rustroot/bin/gcc \
       -DCMAKE_CXX_COMPILER=/rustroot/bin/g++ \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/rustroot \
       -DLLVM_TARGETS_TO_BUILD=X86 \
+      -DLLVM_ENABLE_PROJECTS="clang;lld" \
       -DC_INCLUDE_DIRS="$INC"
 
 hide_output make -j10
 hide_output make install
 
 cd ../..
-rm -rf clang
+rm -rf llvm-project

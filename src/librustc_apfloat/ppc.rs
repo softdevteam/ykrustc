@@ -1,15 +1,5 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use {Category, ExpInt, Float, FloatConvert, Round, ParseError, Status, StatusAnd};
-use ieee;
+use crate::{Category, ExpInt, Float, FloatConvert, Round, ParseError, Status, StatusAnd};
+use crate::ieee;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -134,7 +124,7 @@ impl<F: Float> Neg for DoubleFloat<F> {
 }
 
 impl<F: FloatConvert<Fallback<F>>> fmt::Display for DoubleFloat<F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&Fallback::from(*self), f)
     }
 }
@@ -288,7 +278,7 @@ where
         //   \   /
         //   Normal
         //
-        // e.g. NaN * NaN = NaN
+        // e.g., NaN * NaN = NaN
         //      Zero * Inf = NaN
         //      Normal * Zero = Zero
         //      Normal * Inf = Inf

@@ -1,24 +1,13 @@
-// Copyright 2014-2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use boxed::FnBox;
-use cmp;
-use ffi::CStr;
-use io;
-use libc;
-use mem;
-use ptr;
-use sys::cloudabi::abi;
-use sys::time::dur2intervals;
-use sys_common::thread::*;
-use time::Duration;
+use crate::boxed::FnBox;
+use crate::cmp;
+use crate::ffi::CStr;
+use crate::io;
+use crate::mem;
+use crate::ptr;
+use crate::sys::cloudabi::abi;
+use crate::sys::time::checked_dur2intervals;
+use crate::sys_common::thread::*;
+use crate::time::Duration;
 
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 
@@ -32,7 +21,8 @@ unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
 
 impl Thread {
-    pub unsafe fn new<'a>(stack: usize, p: Box<dyn FnBox() + 'a>) -> io::Result<Thread> {
+    // unsafe: see thread::Builder::spawn_unchecked for safety requirements
+    pub unsafe fn new(stack: usize, p: Box<dyn FnBox()>) -> io::Result<Thread> {
         let p = box p;
         let mut native: libc::pthread_t = mem::zeroed();
         let mut attr: libc::pthread_attr_t = mem::zeroed();
@@ -69,13 +59,15 @@ impl Thread {
     }
 
     pub fn sleep(dur: Duration) {
+        let timeout = checked_dur2intervals(&dur)
+            .expect("overflow converting duration to nanoseconds");
         unsafe {
             let subscription = abi::subscription {
                 type_: abi::eventtype::CLOCK,
                 union: abi::subscription_union {
                     clock: abi::subscription_clock {
                         clock_id: abi::clockid::MONOTONIC,
-                        timeout: dur2intervals(&dur),
+                        timeout,
                         ..mem::zeroed()
                     },
                 },
@@ -118,7 +110,6 @@ pub mod guard {
     pub unsafe fn init() -> Option<Guard> {
         None
     }
-    pub unsafe fn deinit() {}
 }
 
 fn min_stack_size(_: *const libc::pthread_attr_t) -> usize {

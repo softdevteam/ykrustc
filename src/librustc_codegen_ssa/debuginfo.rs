@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use syntax_pos::{BytePos, Span};
 use rustc::hir::def_id::CrateNum;
 use std::cell::Cell;
@@ -23,21 +13,20 @@ impl<D> FunctionDebugContext<D> {
         match *self {
             FunctionDebugContext::RegularContext(ref data) => data,
             FunctionDebugContext::DebugInfoDisabled => {
-                span_bug!(span, "{}", FunctionDebugContext::<D>::debuginfo_disabled_message());
+                span_bug!(
+                    span,
+                    "debuginfo: Error trying to access FunctionDebugContext \
+                     although debug info is disabled!",
+                );
             }
             FunctionDebugContext::FunctionWithoutDebugInfo => {
-                span_bug!(span, "{}", FunctionDebugContext::<D>::should_be_ignored_message());
+                span_bug!(
+                    span,
+                    "debuginfo: Error trying to access FunctionDebugContext \
+                     for function that should be ignored by debug info!",
+                );
             }
         }
-    }
-
-    fn debuginfo_disabled_message() -> &'static str {
-        "debuginfo: Error trying to access FunctionDebugContext although debug info is disabled!"
-    }
-
-    fn should_be_ignored_message() -> &'static str {
-        "debuginfo: Error trying to access FunctionDebugContext for function that should be \
-         ignored by debug info!"
     }
 }
 

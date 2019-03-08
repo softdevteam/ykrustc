@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Support for "weak linkage" to symbols on Unix
 //!
 //! Some I/O operations we do in libstd require newer versions of OSes but we
@@ -26,17 +16,15 @@
 //! symbol, but that caused Debian to detect an unnecessarily strict versioned
 //! dependency on libc6 (#23628).
 
-use libc;
-
-use ffi::CString;
-use marker;
-use mem;
-use sync::atomic::{AtomicUsize, Ordering};
+use crate::ffi::CStr;
+use crate::marker;
+use crate::mem;
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 macro_rules! weak {
     (fn $name:ident($($t:ty),*) -> $ret:ty) => (
-        static $name: ::sys::weak::Weak<unsafe extern fn($($t),*) -> $ret> =
-            ::sys::weak::Weak::new(stringify!($name));
+        static $name: crate::sys::weak::Weak<unsafe extern fn($($t),*) -> $ret> =
+            crate::sys::weak::Weak::new(concat!(stringify!($name), '\0'));
     )
 }
 
@@ -55,25 +43,58 @@ impl<F> Weak<F> {
         }
     }
 
-    pub fn get(&self) -> Option<&F> {
+    pub fn get(&self) -> Option<F> {
         assert_eq!(mem::size_of::<F>(), mem::size_of::<usize>());
         unsafe {
             if self.addr.load(Ordering::SeqCst) == 1 {
                 self.addr.store(fetch(self.name), Ordering::SeqCst);
             }
-            if self.addr.load(Ordering::SeqCst) == 0 {
-                None
-            } else {
-                mem::transmute::<&AtomicUsize, Option<&F>>(&self.addr)
+            match self.addr.load(Ordering::SeqCst) {
+                0 => None,
+                addr => Some(mem::transmute_copy::<usize, F>(&addr)),
             }
         }
     }
 }
 
 unsafe fn fetch(name: &str) -> usize {
-    let name = match CString::new(name) {
+    let name = match CStr::from_bytes_with_nul(name.as_bytes()) {
         Ok(cstr) => cstr,
         Err(..) => return 0,
     };
     libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) as usize
+}
+
+#[cfg(not(target_os = "linux"))]
+macro_rules! syscall {
+    (fn $name:ident($($arg_name:ident: $t:ty),*) -> $ret:ty) => (
+        unsafe fn $name($($arg_name: $t),*) -> $ret {
+            use super::os;
+
+            weak! { fn $name($($t),*) -> $ret }
+
+            if let Some(fun) = $name.get() {
+                fun($($arg_name),*)
+            } else {
+                os::set_errno(libc::ENOSYS);
+                -1
+            }
+        }
+    )
+}
+
+#[cfg(target_os = "linux")]
+macro_rules! syscall {
+    (fn $name:ident($($arg_name:ident: $t:ty),*) -> $ret:ty) => (
+        unsafe fn $name($($arg_name:$t),*) -> $ret {
+            // This looks like a hack, but concat_idents only accepts idents
+            // (not paths).
+            use libc::*;
+
+            syscall(
+                concat_idents!(SYS_, $name),
+                $($arg_name as c_long),*
+            ) as $ret
+        }
+    )
 }

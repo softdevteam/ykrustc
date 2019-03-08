@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Simplifying Candidates
 //!
 //! *Simplifying* a match pair `place @ pattern` means breaking it down
@@ -22,52 +12,65 @@
 //! sort of test: for example, testing which variant an enum is, or
 //! testing a value against a constant.
 
-use build::{BlockAnd, BlockAndExtension, Builder};
-use build::matches::{Ascription, Binding, MatchPair, Candidate};
-use hair::*;
-use rustc::mir::*;
+use crate::build::Builder;
+use crate::build::matches::{Ascription, Binding, MatchPair, Candidate};
+use crate::hair::{self, *};
+use rustc::ty;
+use rustc::ty::layout::{Integer, IntegerExt, Size};
+use syntax::attr::{SignedInt, UnsignedInt};
+use rustc::hir::RangeEnd;
 
 use std::mem;
 
 impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     pub fn simplify_candidate<'pat>(&mut self,
-                                    block: BasicBlock,
-                                    candidate: &mut Candidate<'pat, 'tcx>)
-                                    -> BlockAnd<()> {
+                                    candidate: &mut Candidate<'pat, 'tcx>) {
         // repeatedly simplify match pairs until fixed point is reached
         loop {
             let match_pairs = mem::replace(&mut candidate.match_pairs, vec![]);
-            let mut progress = match_pairs.len(); // count how many were simplified
+            let mut changed = false;
             for match_pair in match_pairs {
                 match self.simplify_match_pair(match_pair, candidate) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        changed = true;
+                    }
                     Err(match_pair) => {
                         candidate.match_pairs.push(match_pair);
-                        progress -= 1; // this one was not simplified
                     }
                 }
             }
-            if progress == 0 {
-                return block.unit(); // if we were not able to simplify any, done.
+            if !changed {
+                return; // if we were not able to simplify any, done.
             }
         }
     }
 
-    /// Tries to simplify `match_pair`, returning true if
+    /// Tries to simplify `match_pair`, returning `Ok(())` if
     /// successful. If successful, new match pairs and bindings will
     /// have been pushed into the candidate. If no simplification is
-    /// possible, Err is returned and no changes are made to
+    /// possible, `Err` is returned and no changes are made to
     /// candidate.
     fn simplify_match_pair<'pat>(&mut self,
                                  match_pair: MatchPair<'pat, 'tcx>,
                                  candidate: &mut Candidate<'pat, 'tcx>)
                                  -> Result<(), MatchPair<'pat, 'tcx>> {
+        let tcx = self.hir.tcx();
         match *match_pair.pattern.kind {
-            PatternKind::AscribeUserType { ref subpattern, ref user_ty, user_ty_span } => {
+            PatternKind::AscribeUserType {
+                ref subpattern,
+                ascription: hair::pattern::Ascription {
+                    variance,
+                    ref user_ty,
+                    user_ty_span,
+                },
+            } => {
+                // Apply the type ascription to the value at `match_pair.place`, which is the
+                // value being matched, taking the variance field into account.
                 candidate.ascriptions.push(Ascription {
                     span: user_ty_span,
                     user_ty: user_ty.clone(),
                     source: match_pair.place.clone(),
+                    variance,
                 });
 
                 candidate.match_pairs.push(MatchPair::new(match_pair.place, subpattern));
@@ -104,7 +107,41 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 Err(match_pair)
             }
 
-            PatternKind::Range { .. } => {
+            PatternKind::Range(PatternRange { lo, hi, ty, end }) => {
+                let (range, bias) = match ty.sty {
+                    ty::Char => {
+                        (Some(('\u{0000}' as u128, '\u{10FFFF}' as u128, Size::from_bits(32))), 0)
+                    }
+                    ty::Int(ity) => {
+                        // FIXME(49937): refactor these bit manipulations into interpret.
+                        let size = Integer::from_attr(&tcx, SignedInt(ity)).size();
+                        let max = !0u128 >> (128 - size.bits());
+                        let bias = 1u128 << (size.bits() - 1);
+                        (Some((0, max, size)), bias)
+                    }
+                    ty::Uint(uty) => {
+                        // FIXME(49937): refactor these bit manipulations into interpret.
+                        let size = Integer::from_attr(&tcx, UnsignedInt(uty)).size();
+                        let max = !0u128 >> (128 - size.bits());
+                        (Some((0, max, size)), 0)
+                    }
+                    _ => (None, 0),
+                };
+                if let Some((min, max, sz)) = range {
+                    if let (Some(lo), Some(hi)) = (lo.val.try_to_bits(sz), hi.val.try_to_bits(sz)) {
+                        // We want to compare ranges numerically, but the order of the bitwise
+                        // representation of signed integers does not match their numeric order.
+                        // Thus, to correct the ordering, we need to shift the range of signed
+                        // integers to correct the comparison. This is achieved by XORing with a
+                        // bias (see pattern/_match.rs for another pertinent example of this
+                        // pattern).
+                        let (lo, hi) = (lo ^ bias, hi ^ bias);
+                        if lo <= min && (hi > max || hi == max && end == RangeEnd::Included) {
+                            // Irrefutable pattern match.
+                            return Ok(());
+                        }
+                    }
+                }
                 Err(match_pair)
             }
 
@@ -137,7 +174,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 } else {
                     Err(match_pair)
                 }
-            },
+            }
 
             PatternKind::Array { ref prefix, ref slice, ref suffix } => {
                 self.prefix_slice_suffix(&mut candidate.match_pairs,

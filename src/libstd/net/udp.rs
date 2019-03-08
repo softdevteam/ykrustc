@@ -1,19 +1,9 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use fmt;
-use io::{self, Error, ErrorKind};
-use net::{ToSocketAddrs, SocketAddr, Ipv4Addr, Ipv6Addr};
-use sys_common::net as net_imp;
-use sys_common::{AsInner, FromInner, IntoInner};
-use time::Duration;
+use crate::fmt;
+use crate::io::{self, Error, ErrorKind};
+use crate::net::{ToSocketAddrs, SocketAddr, Ipv4Addr, Ipv6Addr};
+use crate::sys_common::net as net_imp;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::time::Duration;
 
 /// A UDP socket.
 ///
@@ -79,7 +69,7 @@ impl UdpSocket {
     ///
     /// # Examples
     ///
-    /// Create a UDP socket bound to `127.0.0.1:3400`:
+    /// Creates a UDP socket bound to `127.0.0.1:3400`:
     ///
     /// ```no_run
     /// use std::net::UdpSocket;
@@ -87,7 +77,7 @@ impl UdpSocket {
     /// let socket = UdpSocket::bind("127.0.0.1:3400").expect("couldn't bind to address");
     /// ```
     ///
-    /// Create a UDP socket bound to `127.0.0.1:3400`. If the socket cannot be
+    /// Creates a UDP socket bound to `127.0.0.1:3400`. If the socket cannot be
     /// bound to that address, create a UDP socket bound to `127.0.0.1:3401`:
     ///
     /// ```no_run
@@ -168,7 +158,7 @@ impl UdpSocket {
     /// This will return an error when the IP version of the local socket
     /// does not match that returned from [`ToSocketAddrs`].
     ///
-    /// See <https://github.com/rust-lang/rust/issues/34202> for more details.
+    /// See issue #34202 for more details.
     ///
     /// [`ToSocketAddrs`]: ../../std/net/trait.ToSocketAddrs.html
     ///
@@ -600,7 +590,7 @@ impl UdpSocket {
         self.0.leave_multicast_v6(multiaddr, interface)
     }
 
-    /// Get the value of the `SO_ERROR` option on this socket.
+    /// Gets the value of the `SO_ERROR` option on this socket.
     ///
     /// This will retrieve the stored error in the underlying socket, clearing
     /// the field in the process. This can be useful for checking errors between
@@ -637,7 +627,7 @@ impl UdpSocket {
     ///
     /// # Examples
     ///
-    /// Create a UDP socket bound to `127.0.0.1:3400` and connect the socket to
+    /// Creates a UDP socket bound to `127.0.0.1:3400` and connect the socket to
     /// `127.0.0.1:8080`:
     ///
     /// ```no_run
@@ -752,7 +742,7 @@ impl UdpSocket {
     /// Moves this UDP socket into or out of nonblocking mode.
     ///
     /// This will result in `recv`, `recv_from`, `send`, and `send_to`
-    /// operations becoming nonblocking, i.e. immediately returning from their
+    /// operations becoming nonblocking, i.e., immediately returning from their
     /// calls. If the IO operation is successful, `Ok` is returned and no
     /// further action is required. If the IO operation could not be completed
     /// and needs to be retried, an error with kind
@@ -766,7 +756,7 @@ impl UdpSocket {
     ///
     /// # Examples
     ///
-    /// Create a UDP socket bound to `127.0.0.1:7878` and read bytes in
+    /// Creates a UDP socket bound to `127.0.0.1:7878` and read bytes in
     /// nonblocking mode:
     ///
     /// ```no_run
@@ -818,13 +808,13 @@ impl fmt::Debug for UdpSocket {
 
 #[cfg(all(test, not(any(target_os = "cloudabi", target_os = "emscripten"))))]
 mod tests {
-    use io::ErrorKind;
-    use net::*;
-    use net::test::{next_test_ip4, next_test_ip6};
-    use sync::mpsc::channel;
-    use sys_common::AsInner;
-    use time::{Instant, Duration};
-    use thread;
+    use crate::io::ErrorKind;
+    use crate::net::*;
+    use crate::net::test::{next_test_ip4, next_test_ip6};
+    use crate::sync::mpsc::channel;
+    use crate::sys_common::AsInner;
+    use crate::time::{Instant, Duration};
+    use crate::thread;
 
     fn each_ip(f: &mut dyn FnMut(SocketAddr, SocketAddr)) {
         f(next_test_ip4(), next_test_ip4());
@@ -1030,8 +1020,14 @@ mod tests {
         let mut buf = [0; 10];
 
         let start = Instant::now();
-        let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
-        assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        loop {
+            let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
+            if kind != ErrorKind::Interrupted {
+                assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut,
+                        "unexpected_error: {:?}", kind);
+                break;
+            }
+        }
         assert!(start.elapsed() > Duration::from_millis(400));
     }
 
@@ -1049,8 +1045,14 @@ mod tests {
         assert_eq!(b"hello world", &buf[..]);
 
         let start = Instant::now();
-        let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
-        assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        loop {
+            let kind = stream.recv_from(&mut buf).err().expect("expected error").kind();
+            if kind != ErrorKind::Interrupted {
+                assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut,
+                        "unexpected_error: {:?}", kind);
+                break;
+            }
+        }
         assert!(start.elapsed() > Duration::from_millis(400));
     }
 

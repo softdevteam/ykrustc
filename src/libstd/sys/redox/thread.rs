@@ -1,20 +1,10 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use boxed::FnBox;
-use ffi::CStr;
-use io;
-use mem;
-use sys_common::thread::start_thread;
-use sys::{cvt, syscall};
-use time::Duration;
+use crate::boxed::FnBox;
+use crate::ffi::CStr;
+use crate::io;
+use crate::mem;
+use crate::sys_common::thread::start_thread;
+use crate::sys::{cvt, syscall};
+use crate::time::Duration;
 
 pub const DEFAULT_MIN_STACK_SIZE: usize = 2 * 1024 * 1024;
 
@@ -28,7 +18,8 @@ unsafe impl Send for Thread {}
 unsafe impl Sync for Thread {}
 
 impl Thread {
-    pub unsafe fn new<'a>(_stack: usize, p: Box<dyn FnBox() + 'a>) -> io::Result<Thread> {
+    // unsafe: see thread::Builder::spawn_unchecked for safety requirements
+    pub unsafe fn new(_stack: usize, p: Box<dyn FnBox()>) -> io::Result<Thread> {
         let p = box p;
 
         let id = cvt(syscall::clone(syscall::CLONE_VM | syscall::CLONE_FS | syscall::CLONE_FILES))?;
@@ -91,5 +82,4 @@ pub mod guard {
     pub type Guard = !;
     pub unsafe fn current() -> Option<Guard> { None }
     pub unsafe fn init() -> Option<Guard> { None }
-    pub unsafe fn deinit() {}
 }

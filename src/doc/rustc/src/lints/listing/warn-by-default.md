@@ -24,7 +24,7 @@ warning: attempt to add with overflow
 
 ## dead-code
 
-This lint detects detect unused, unexported items. Some
+This lint detects unused, unexported items. Some
 example code that triggers this lint:
 
 ```rust
@@ -44,7 +44,7 @@ warning: function is never used: `foo`
 
 ## deprecated
 
-This lint detects detects use of deprecated items. Some
+This lint detects use of deprecated items. Some
 example code that triggers this lint:
 
 ```rust
@@ -119,7 +119,7 @@ warning: found struct without foreign-function-safe representation annotation in
 
 ## late-bound-lifetime-arguments
 
-This lint detects detects generic lifetime arguments in path segments with
+This lint detects generic lifetime arguments in path segments with
 late bound lifetime parameters. Some example code that triggers this lint:
 
 ```rust
@@ -285,26 +285,6 @@ warning: functions generic over types must be mangled
   |
 ```
 
-## overflowing-literals
-
-This lint detects literal out of range for its type. Some
-example code that triggers this lint:
-
-```rust
-let x: u8 = 1000;
-```
-
-This will produce:
-
-```text
-warning: literal out of range for u8
- --> src/main.rs:2:17
-  |
-2 |     let x: u8 = 1000;
-  |                 ^^^^
-  |
-```
-
 ## path-statements
 
 This lint detects path statements with no effect. Some example code that
@@ -381,7 +361,7 @@ extern crate macro_crate_test;
 
 ## private-in-public
 
-This lint detects detect private items in public interfaces not caught by the old implementation. Some
+This lint detects private items in public interfaces not caught by the old implementation. Some
 example code that triggers this lint:
 
 ```rust,ignore
@@ -659,7 +639,7 @@ warning: unknown lint: `not_a_real_lint`
 
 ## unreachable-code
 
-This lint detects detects unreachable code paths. Some example code that
+This lint detects unreachable code paths. Some example code that
 triggers this lint:
 
 ```rust,no_run
@@ -681,7 +661,7 @@ warning: unreachable statement
 
 ## unreachable-patterns
 
-This lint detects detects unreachable patterns. Some
+This lint detects unreachable patterns. Some
 example code that triggers this lint:
 
 ```rust
@@ -716,11 +696,11 @@ annotations now.
 
 ## unused-allocation
 
-This lint detects detects unnecessary allocations that can be eliminated.
+This lint detects unnecessary allocations that can be eliminated.
 
 ## unused-assignments
 
-This lint detects detect assignments that will never be read. Some
+This lint detects assignments that will never be read. Some
 example code that triggers this lint:
 
 ```rust
@@ -741,7 +721,7 @@ warning: value assigned to `x` is never read
 
 ## unused-attributes
 
-This lint detects detects attributes that were not used by the compiler. Some
+This lint detects attributes that were not used by the compiler. Some
 example code that triggers this lint:
 
 ```rust
@@ -785,7 +765,7 @@ warning: comparison is useless due to type limits
 
 ## unused-doc-comment
 
-This lint detects detects doc comments that aren't used by rustdoc. Some
+This lint detects doc comments that aren't used by rustdoc. Some
 example code that triggers this lint:
 
 ```rust
@@ -831,7 +811,7 @@ warning: unused import: `std::collections::HashMap`
 
 ## unused-macros
 
-This lint detects detects macros that were not used. Some example code that
+This lint detects macros that were not used. Some example code that
 triggers this lint:
 
 ```rust
@@ -884,7 +864,7 @@ warning: unused `std::result::Result` that must be used
 
 ## unused-mut
 
-This lint detects detect mut variables which don't need to be mutable. Some
+This lint detects mut variables which don't need to be mutable. Some
 example code that triggers this lint:
 
 ```rust
@@ -946,7 +926,7 @@ warning: unnecessary `unsafe` block
 
 ## unused-variables
 
-This lint detects detect variables which are not used in any way. Some
+This lint detects variables which are not used in any way. Some
 example code that triggers this lint:
 
 ```rust

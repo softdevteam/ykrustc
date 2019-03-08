@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Android-specific raw type definitions
 
 #![stable(feature = "raw_ext", since = "1.1.0")]
@@ -18,7 +8,7 @@
                               definitions")]
 #![allow(deprecated)]
 
-use os::raw::c_long;
+use crate::os::raw::c_long;
 
 #[stable(feature = "pthread_t", since = "1.8.0")]
 pub type pthread_t = c_long;
@@ -29,8 +19,8 @@ pub use self::arch::{dev_t, mode_t, blkcnt_t, blksize_t, ino_t, nlink_t, off_t, 
 
 #[cfg(any(target_arch = "arm", target_arch = "x86"))]
 mod arch {
-    use os::raw::{c_uint, c_uchar, c_ulonglong, c_longlong, c_ulong};
-    use os::unix::raw::{uid_t, gid_t};
+    use crate::os::raw::{c_uint, c_uchar, c_ulonglong, c_longlong, c_ulong};
+    use crate::os::unix::raw::{uid_t, gid_t};
 
     #[stable(feature = "raw_ext", since = "1.1.0")]
     pub type dev_t = u64;
@@ -99,8 +89,8 @@ mod arch {
 
 #[cfg(target_arch = "aarch64")]
 mod arch {
-    use os::raw::{c_uchar, c_ulong};
-    use os::unix::raw::{uid_t, gid_t};
+    use crate::os::raw::{c_uchar, c_ulong};
+    use crate::os::unix::raw::{uid_t, gid_t};
 
     #[stable(feature = "raw_ext", since = "1.1.0")]
     pub type dev_t = u64;
@@ -167,8 +157,8 @@ mod arch {
 
 #[cfg(target_arch = "x86_64")]
 mod arch {
-    use os::raw::{c_uint, c_long, c_ulong};
-    use os::unix::raw::{uid_t, gid_t};
+    use crate::os::raw::{c_uint, c_long, c_ulong};
+    use crate::os::unix::raw::{uid_t, gid_t};
 
     #[stable(feature = "raw_ext", since = "1.1.0")]
     pub type dev_t = u64;

@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Codegen the completed AST to the LLVM IR.
 //!
 //! Some functions here, such as codegen_block and codegen_expr, return a value --
@@ -17,16 +7,16 @@
 //!
 //! Hopefully useful general knowledge about codegen:
 //!
-//!   * There's no way to find out the Ty type of a Value.  Doing so
-//!     would be "trying to get the eggs out of an omelette" (credit:
-//!     pcwalton).  You can, instead, find out its llvm::Type by calling val_ty,
-//!     but one llvm::Type corresponds to many `Ty`s; for instance, tup(int, int,
-//!     int) and rec(x=int, y=int, z=int) will have the same llvm::Type.
+//! * There's no way to find out the `Ty` type of a Value. Doing so
+//!   would be "trying to get the eggs out of an omelette" (credit:
+//!   pcwalton). You can, instead, find out its `llvm::Type` by calling `val_ty`,
+//!   but one `llvm::Type` corresponds to many `Ty`s; for instance, `tup(int, int,
+//!   int)` and `rec(x=int, y=int, z=int)` will have the same `llvm::Type`.
 
-use {ModuleCodegen, ModuleKind, CachedModuleCodegen};
+use crate::{ModuleCodegen, ModuleKind, CachedModuleCodegen};
 
 use rustc::dep_graph::cgu_reuse_tracker::CguReuse;
-use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
+use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::middle::lang_items::StartFnLangItem;
 use rustc::middle::weak_lang_items;
 use rustc::mir::mono::{Stats, CodegenUnitNameBuilder};
@@ -38,27 +28,27 @@ use rustc::util::common::{time, print_time_passes_entry};
 use rustc::util::profiling::ProfileCategory;
 use rustc::session::config::{self, EntryFnType, Lto};
 use rustc::session::Session;
-use mir::place::PlaceRef;
-use back::write::{OngoingCodegen, start_async_codegen, submit_pre_lto_module_to_llvm,
-    submit_post_lto_module_to_llvm};
-use {MemFlags, CrateInfo};
-use callee;
 use rustc_mir::monomorphize::item::DefPathBasedNames;
-use common::{RealPredicate, TypeKind, IntPredicate};
-use meth;
-use mir;
 use rustc::util::time_graph;
 use rustc::util::nodemap::DefIdSet;
 use rustc_mir::monomorphize::Instance;
 use rustc_mir::monomorphize::partitioning::{CodegenUnit, CodegenUnitExt};
-use mono_item::MonoItem;
 use rustc::util::nodemap::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::sync::Lrc;
 use rustc_codegen_utils::{symbol_names_test, check_for_rustc_errors_attr};
 use rustc::ty::layout::{FAT_PTR_ADDR, FAT_PTR_EXTRA};
+use crate::mir::place::PlaceRef;
+use crate::back::write::{OngoingCodegen, start_async_codegen, submit_pre_lto_module_to_llvm,
+    submit_post_lto_module_to_llvm};
+use crate::{MemFlags, CrateInfo};
+use crate::callee;
+use crate::common::{RealPredicate, TypeKind, IntPredicate};
+use crate::meth;
+use crate::mir;
+use crate::mono_item::MonoItem;
 
-use traits::*;
+use crate::traits::*;
 
 use std::any::Any;
 use std::cmp;
@@ -69,7 +59,7 @@ use syntax_pos::Span;
 use syntax::attr;
 use rustc::hir;
 
-use mir::operand::OperandValue;
+use crate::mir::operand::OperandValue;
 
 use std::marker::PhantomData;
 
@@ -167,7 +157,7 @@ pub fn compare_simd_types<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     bx.sext(cmp, ret_ty)
 }
 
-/// Retrieve the information we are losing (making dynamic) in an unsizing
+/// Retrieves the information we are losing (making dynamic) in an unsizing
 /// adjustment.
 ///
 /// The `old_info` argument is a bit funny. It is intended for use
@@ -193,7 +183,7 @@ pub fn unsized_info<'tcx, Cx: CodegenMethods<'tcx>>(
         (_, &ty::Dynamic(ref data, ..)) => {
             let vtable_ptr = cx.layout_of(cx.tcx().mk_mut_ptr(target))
                 .field(cx, FAT_PTR_EXTRA);
-            cx.static_ptrcast(meth::get_vtable(cx, source, data.principal()),
+            cx.const_ptrcast(meth::get_vtable(cx, source, data.principal()),
                             cx.backend_type(vtable_ptr))
         }
         _ => bug!("unsized_info: invalid unsizing {:?} -> {:?}",
@@ -269,7 +259,7 @@ pub fn coerce_unsized_into<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
         let (base, info) = match bx.load_operand(src).val {
             OperandValue::Pair(base, info) => {
                 // fat-ptr to fat-ptr unsize preserves the vtable
-                // i.e. &'a fmt::Debug+Send => &'a fmt::Debug
+                // i.e., &'a fmt::Debug+Send => &'a fmt::Debug
                 // So we need to pointercast the base to ensure
                 // the types match up.
                 let thin_ptr = dst.layout.field(bx.cx(), FAT_PTR_ADDR);
@@ -358,21 +348,13 @@ fn cast_shift_rhs<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     }
 }
 
-/// Returns whether this session's target will use SEH-based unwinding.
+/// Returns `true` if this session's target will use SEH-based unwinding.
 ///
 /// This is only true for MSVC targets, and even then the 64-bit MSVC target
 /// currently uses SEH-ish unwinding with DWARF info tables to the side (same as
 /// 64-bit MinGW) instead of "full SEH".
 pub fn wants_msvc_seh(sess: &Session) -> bool {
     sess.target.target.options.is_like_msvc
-}
-
-pub fn call_assume<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
-    bx: &mut Bx,
-    val: Bx::Value
-) {
-    let assume_intrinsic = bx.cx().get_intrinsic("llvm.assume");
-    bx.call(assume_intrinsic, &[val], None);
 }
 
 pub fn from_immediate<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
@@ -389,7 +371,7 @@ pub fn from_immediate<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 pub fn to_immediate<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     val: Bx::Value,
-    layout: layout::TyLayout,
+    layout: layout::TyLayout<'_>,
 ) -> Bx::Value {
     if let layout::Abi::Scalar(ref scalar) = layout.abi {
         return to_immediate_scalar(bx, val, scalar);
@@ -455,15 +437,13 @@ pub fn codegen_instance<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     mir::codegen_mir::<Bx>(cx, lldecl, &mir, instance, sig);
 }
 
-/// Create the `main` function which will initialize the rust runtime and call
+/// Creates the `main` function which will initialize the rust runtime and call
 /// users main function.
 pub fn maybe_create_entry_wrapper<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx
 ) {
-    let (main_def_id, span) = match *cx.sess().entry_fn.borrow() {
-        Some((id, span, _)) => {
-            (cx.tcx().hir.local_def_id(id), span)
-        }
+    let (main_def_id, span) = match cx.tcx().entry_fn(LOCAL_CRATE) {
+        Some((def_id, _)) => { (def_id, cx.tcx().def_span(def_id)) },
         None => return,
     };
 
@@ -477,7 +457,7 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 
     let main_llfn = cx.get_fn(instance);
 
-    let et = cx.sess().entry_fn.get().map(|e| e.2);
+    let et = cx.tcx().entry_fn(LOCAL_CRATE).map(|e| e.1);
     match et {
         Some(EntryFnType::Main) => create_entry_fn::<Bx>(cx, span, main_llfn, main_def_id, true),
         Some(EntryFnType::Start) => create_entry_fn::<Bx>(cx, span, main_llfn, main_def_id, false),
@@ -572,9 +552,9 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                                                             &["crate"],
                                                             Some("metadata")).as_str()
                                                                              .to_string();
-    let metadata_llvm_module = backend.new_metadata(tcx.sess, &metadata_cgu_name);
+    let mut metadata_llvm_module = backend.new_metadata(tcx, &metadata_cgu_name);
     let metadata = time(tcx.sess, "write metadata", || {
-        backend.write_metadata(tcx, &metadata_llvm_module)
+        backend.write_metadata(tcx, &mut metadata_llvm_module)
     });
     tcx.sess.profiler(|p| p.end_activity(ProfileCategory::Codegen));
 
@@ -657,9 +637,9 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                                                        &["crate"],
                                                        Some("allocator")).as_str()
                                                                          .to_string();
-        let modules = backend.new_metadata(tcx.sess, &llmod_id);
+        let mut modules = backend.new_metadata(tcx, &llmod_id);
         time(tcx.sess, "write allocator module", || {
-            backend.codegen_allocator(tcx, &modules, kind)
+            backend.codegen_allocator(tcx, &mut modules, kind)
         });
 
         Some(ModuleCodegen {
@@ -823,7 +803,7 @@ fn assert_and_save_dep_graph<'ll, 'tcx>(tcx: TyCtxt<'ll, 'tcx, 'tcx>) {
 }
 
 impl CrateInfo {
-    pub fn new(tcx: TyCtxt) -> CrateInfo {
+    pub fn new(tcx: TyCtxt<'_, '_, '_>) -> CrateInfo {
         let mut info = CrateInfo {
             panic_runtime: None,
             compiler_builtins: None,
@@ -837,20 +817,10 @@ impl CrateInfo {
             used_crates_dynamic: cstore::used_crates(tcx, LinkagePreference::RequireDynamic),
             used_crates_static: cstore::used_crates(tcx, LinkagePreference::RequireStatic),
             used_crate_source: Default::default(),
-            wasm_imports: Default::default(),
             lang_item_to_crate: Default::default(),
             missing_lang_items: Default::default(),
         };
         let lang_items = tcx.lang_items();
-
-        let load_wasm_items = tcx.sess.crate_types.borrow()
-            .iter()
-            .any(|c| *c != config::CrateType::Rlib) &&
-            tcx.sess.opts.target_triple.triple() == "wasm32-unknown-unknown";
-
-        if load_wasm_items {
-            info.load_wasm_imports(tcx, LOCAL_CRATE);
-        }
 
         let crates = tcx.crates();
 
@@ -879,9 +849,6 @@ impl CrateInfo {
             if tcx.is_no_builtins(cnum) {
                 info.is_no_builtins.insert(cnum);
             }
-            if load_wasm_items {
-                info.load_wasm_imports(tcx, cnum);
-            }
             let missing = tcx.missing_lang_items(cnum);
             for &item in missing.iter() {
                 if let Ok(id) = lang_items.require(item) {
@@ -900,24 +867,48 @@ impl CrateInfo {
 
         return info
     }
-
-    fn load_wasm_imports(&mut self, tcx: TyCtxt, cnum: CrateNum) {
-        self.wasm_imports.extend(tcx.wasm_import_module_map(cnum).iter().map(|(&id, module)| {
-            let instance = Instance::mono(tcx, id);
-            let import_name = tcx.symbol_name(instance);
-
-            (import_name.to_string(), module.clone())
-        }));
-    }
 }
 
-fn is_codegened_item(tcx: TyCtxt, id: DefId) -> bool {
+fn is_codegened_item(tcx: TyCtxt<'_, '_, '_>, id: DefId) -> bool {
     let (all_mono_items, _) =
         tcx.collect_and_partition_mono_items(LOCAL_CRATE);
     all_mono_items.contains(&id)
 }
 
-pub fn provide_both(providers: &mut Providers) {
+pub fn provide_both(providers: &mut Providers<'_>) {
+    providers.backend_optimization_level = |tcx, cratenum| {
+        let for_speed = match tcx.sess.opts.optimize {
+            // If globally no optimisation is done, #[optimize] has no effect.
+            //
+            // This is done because if we ended up "upgrading" to `-O2` here, we’d populate the
+            // pass manager and it is likely that some module-wide passes (such as inliner or
+            // cross-function constant propagation) would ignore the `optnone` annotation we put
+            // on the functions, thus necessarily involving these functions into optimisations.
+            config::OptLevel::No => return config::OptLevel::No,
+            // If globally optimise-speed is already specified, just use that level.
+            config::OptLevel::Less => return config::OptLevel::Less,
+            config::OptLevel::Default => return config::OptLevel::Default,
+            config::OptLevel::Aggressive => return config::OptLevel::Aggressive,
+            // If globally optimize-for-size has been requested, use -O2 instead (if optimize(size)
+            // are present).
+            config::OptLevel::Size => config::OptLevel::Default,
+            config::OptLevel::SizeMin => config::OptLevel::Default,
+        };
+
+        let (defids, _) = tcx.collect_and_partition_mono_items(cratenum);
+        for id in &*defids {
+            let hir::CodegenFnAttrs { optimize, .. } = tcx.codegen_fn_attrs(*id);
+            match optimize {
+                attr::OptimizeAttr::None => continue,
+                attr::OptimizeAttr::Size => continue,
+                attr::OptimizeAttr::Speed => {
+                    return for_speed;
+                }
+            }
+        }
+        return tcx.sess.opts.optimize;
+    };
+
     providers.dllimport_foreign_items = |tcx, krate| {
         let module_map = tcx.foreign_modules(krate);
         let module_map = module_map.iter()

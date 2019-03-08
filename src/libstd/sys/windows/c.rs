@@ -1,24 +1,15 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! C definitions used by libnative that don't belong in liblibc
 
 #![allow(nonstandard_style)]
 #![cfg_attr(test, allow(dead_code))]
 #![unstable(issue = "0", feature = "windows_c")]
 
-use os::raw::{c_int, c_uint, c_ulong, c_long, c_longlong, c_ushort, c_char};
+use crate::os::raw::{c_int, c_uint, c_ulong, c_long, c_longlong, c_ushort, c_char};
 #[cfg(target_arch = "x86_64")]
-use os::raw::c_ulonglong;
+use crate::os::raw::c_ulonglong;
+use crate::ptr;
+
 use libc::{wchar_t, size_t, c_void};
-use ptr;
 
 pub use self::FILE_INFO_BY_HANDLE_CLASS::*;
 pub use self::EXCEPTION_DISPOSITION::*;
@@ -67,12 +58,15 @@ pub type LPWSAPROTOCOL_INFO = *mut WSAPROTOCOL_INFO;
 pub type LPSTR = *mut CHAR;
 pub type LPWSTR = *mut WCHAR;
 pub type LPFILETIME = *mut FILETIME;
+pub type LPWSABUF = *mut WSABUF;
+pub type LPWSAOVERLAPPED = *mut c_void;
+pub type LPWSAOVERLAPPED_COMPLETION_ROUTINE = *mut c_void;
 
 pub type PCONDITION_VARIABLE = *mut CONDITION_VARIABLE;
 pub type PLARGE_INTEGER = *mut c_longlong;
 pub type PSRWLOCK = *mut SRWLOCK;
 
-pub type SOCKET = ::os::windows::raw::SOCKET;
+pub type SOCKET = crate::os::windows::raw::SOCKET;
 pub type socklen_t = c_int;
 pub type ADDRESS_FAMILY = USHORT;
 
@@ -335,6 +329,12 @@ pub struct WSADATA {
 }
 
 #[repr(C)]
+pub struct WSABUF {
+    pub len: ULONG,
+    pub buf: *mut CHAR,
+}
+
+#[repr(C)]
 pub struct WSAPROTOCOL_INFO {
     pub dwServiceFlags1: DWORD,
     pub dwServiceFlags2: DWORD,
@@ -451,7 +451,7 @@ pub struct MOUNT_POINT_REPARSE_BUFFER {
     pub PathBuffer: WCHAR,
 }
 
-pub type LPPROGRESS_ROUTINE = ::option::Option<unsafe extern "system" fn(
+pub type LPPROGRESS_ROUTINE = crate::option::Option<unsafe extern "system" fn(
     TotalFileSize: LARGE_INTEGER,
     TotalBytesTransferred: LARGE_INTEGER,
     StreamSize: LARGE_INTEGER,
@@ -998,6 +998,22 @@ extern "system" {
                                dwProcessId: DWORD,
                                lpProtocolInfo: LPWSAPROTOCOL_INFO)
                                -> c_int;
+    pub fn WSASend(s: SOCKET,
+                   lpBuffers: LPWSABUF,
+                   dwBufferCount: DWORD,
+                   lpNumberOfBytesSent: LPDWORD,
+                   dwFlags: DWORD,
+                   lpOverlapped: LPWSAOVERLAPPED,
+                   lpCompletionRoutine: LPWSAOVERLAPPED_COMPLETION_ROUTINE)
+                   -> c_int;
+    pub fn WSARecv(s: SOCKET,
+                   lpBuffers: LPWSABUF,
+                   dwBufferCount: DWORD,
+                   lpNumberOfBytesRecvd: LPDWORD,
+                   lpFlags: LPDWORD,
+                   lpOverlapped: LPWSAOVERLAPPED,
+                   lpCompletionRoutine: LPWSAOVERLAPPED_COMPLETION_ROUTINE)
+                   -> c_int;
     pub fn GetCurrentProcessId() -> DWORD;
     pub fn WSASocketW(af: c_int,
                       kind: c_int,
@@ -1035,9 +1051,6 @@ extern "system" {
 
     pub fn SetLastError(dwErrCode: DWORD);
     pub fn GetCommandLineW() -> *mut LPCWSTR;
-    pub fn LocalFree(ptr: *mut c_void);
-    pub fn CommandLineToArgvW(lpCmdLine: *mut LPCWSTR,
-                              pNumArgs: *mut c_int) -> *mut *mut u16;
     pub fn GetTempPathW(nBufferLength: DWORD,
                         lpBuffer: LPCWSTR) -> DWORD;
     pub fn OpenProcessToken(ProcessHandle: HANDLE,

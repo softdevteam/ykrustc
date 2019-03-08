@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A single-producer single-consumer concurrent queue
 //!
 //! This module contains the implementation of an SPSC queue which can be used
@@ -16,11 +6,11 @@
 
 // http://www.1024cores.net/home/lock-free-algorithms/queues/unbounded-spsc-queue
 
-use boxed::Box;
 use core::ptr;
 use core::cell::UnsafeCell;
 
-use sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use crate::boxed::Box;
+use crate::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use super::cache_aligned::CacheAligned;
 
@@ -243,10 +233,10 @@ impl<T, ProducerAddition, ConsumerAddition> Drop for Queue<T, ProducerAddition, 
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests {
-    use sync::Arc;
     use super::Queue;
-    use thread;
-    use sync::mpsc::channel;
+    use crate::sync::Arc;
+    use crate::thread;
+    use crate::sync::mpsc::channel;
 
     #[test]
     fn smoke() {

@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // ignore-tidy-linelength
 
 // Require LLVM with DW_TAG_variant_part and a gdb and lldb that can
@@ -41,7 +31,7 @@
 // lldb-command:run
 
 // lldb-command:print case1
-// lldbr-check:(generic_tuple_style_enum::Regular<u16, u32, u64>::Case1) case1 = { = 0 = 31868 = 31868 = 31868 = 31868 }
+// lldbr-check:(generic_tuple_style_enum::Regular<u16, u32, u64>::Case1) case1 = { __0 = 0 __1 = 31868 __2 = 31868 __3 = 31868 __4 = 31868 }
 
 // lldb-command:print case2
 // lldbr-check:(generic_tuple_style_enum::Regular<i16, i32, i64>::Case2) case2 = Regular<i16, i32, i64>::Case2 { Case1: 0, Case2: 286331153, Case3: 286331153 }
@@ -50,7 +40,7 @@
 // lldbr-check:(generic_tuple_style_enum::Regular<i16, i32, i64>::Case3) case3 = Regular<i16, i32, i64>::Case3 { Case1: 0, Case2: 6438275382588823897 }
 
 // lldb-command:print univariant
-// lldbr-check:(generic_tuple_style_enum::Univariant<i64>) univariant = { TheOnlyCase = { = -1 } }
+// lldbr-check:(generic_tuple_style_enum::Univariant<i64>) univariant = Univariant<i64> { TheOnlyCase: Univariant<i64>::TheOnlyCase(-1) }
 
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]

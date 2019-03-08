@@ -1,22 +1,10 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![stable(feature = "metadata_ext", since = "1.1.0")]
 
-use libc;
-
-use fs::Metadata;
-use sys_common::AsInner;
+use crate::fs::Metadata;
+use crate::sys_common::AsInner;
 
 #[allow(deprecated)]
-use os::linux::raw;
+use crate::os::linux::raw;
 
 /// OS-specific extensions to [`fs::Metadata`].
 ///
@@ -191,7 +179,7 @@ pub trait MetadataExt {
     /// ```
     #[stable(feature = "metadata_ext2", since = "1.8.0")]
     fn st_size(&self) -> u64;
-    /// Returns the last access time.
+    /// Returns the last access time of the file, in seconds since Unix Epoch.
     ///
     /// # Examples
     ///
@@ -208,7 +196,9 @@ pub trait MetadataExt {
     /// ```
     #[stable(feature = "metadata_ext2", since = "1.8.0")]
     fn st_atime(&self) -> i64;
-    /// Returns the last access time, nano seconds part.
+    /// Returns the last access time of the file, in nanoseconds since [`st_atime`].
+    ///
+    /// [`st_atime`]: #tymethod.st_atime
     ///
     /// # Examples
     ///
@@ -225,7 +215,7 @@ pub trait MetadataExt {
     /// ```
     #[stable(feature = "metadata_ext2", since = "1.8.0")]
     fn st_atime_nsec(&self) -> i64;
-    /// Returns the last modification time.
+    /// Returns the last modification time of the file, in seconds since Unix Epoch.
     ///
     /// # Examples
     ///
@@ -242,7 +232,9 @@ pub trait MetadataExt {
     /// ```
     #[stable(feature = "metadata_ext2", since = "1.8.0")]
     fn st_mtime(&self) -> i64;
-    /// Returns the last modification time, nano seconds part.
+    /// Returns the last modification time of the file, in nanoseconds since [`st_mtime`].
+    ///
+    /// [`st_mtime`]: #tymethod.st_mtime
     ///
     /// # Examples
     ///
@@ -259,7 +251,7 @@ pub trait MetadataExt {
     /// ```
     #[stable(feature = "metadata_ext2", since = "1.8.0")]
     fn st_mtime_nsec(&self) -> i64;
-    /// Returns the last status change time.
+    /// Returns the last status change time of the file, in seconds since Unix Epoch.
     ///
     /// # Examples
     ///
@@ -276,7 +268,9 @@ pub trait MetadataExt {
     /// ```
     #[stable(feature = "metadata_ext2", since = "1.8.0")]
     fn st_ctime(&self) -> i64;
-    /// Returns the last status change time, nano seconds part.
+    /// Returns the last status change time of the file, in nanoseconds since [`st_ctime`].
+    ///
+    /// [`st_ctime`]: #tymethod.st_ctime
     ///
     /// # Examples
     ///

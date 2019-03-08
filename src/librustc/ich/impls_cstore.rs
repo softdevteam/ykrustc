@@ -1,33 +1,21 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module contains `HashStable` implementations for various data types
 //! from rustc::middle::cstore in no particular order.
 
-use middle;
-
-impl_stable_hash_for!(enum middle::cstore::DepKind {
+impl_stable_hash_for!(enum crate::middle::cstore::DepKind {
     UnexportedMacrosOnly,
     MacrosOnly,
     Implicit,
     Explicit
 });
 
-impl_stable_hash_for!(enum middle::cstore::NativeLibraryKind {
+impl_stable_hash_for!(enum crate::middle::cstore::NativeLibraryKind {
     NativeStatic,
     NativeStaticNobundle,
     NativeFramework,
     NativeUnknown
 });
 
-impl_stable_hash_for!(struct middle::cstore::NativeLibrary {
+impl_stable_hash_for!(struct crate::middle::cstore::NativeLibrary {
     kind,
     name,
     cfg,
@@ -35,30 +23,30 @@ impl_stable_hash_for!(struct middle::cstore::NativeLibrary {
     wasm_import_module
 });
 
-impl_stable_hash_for!(struct middle::cstore::ForeignModule {
+impl_stable_hash_for!(struct crate::middle::cstore::ForeignModule {
     foreign_items,
     def_id
 });
 
-impl_stable_hash_for!(enum middle::cstore::LinkagePreference {
+impl_stable_hash_for!(enum crate::middle::cstore::LinkagePreference {
     RequireDynamic,
     RequireStatic
 });
 
-impl_stable_hash_for!(struct middle::cstore::ExternCrate {
+impl_stable_hash_for!(struct crate::middle::cstore::ExternCrate {
     src,
     span,
     path_len,
     direct
 });
 
-impl_stable_hash_for!(enum middle::cstore::ExternCrateSource {
+impl_stable_hash_for!(enum crate::middle::cstore::ExternCrateSource {
     Extern(def_id),
     Use,
     Path,
 });
 
-impl_stable_hash_for!(struct middle::cstore::CrateSource {
+impl_stable_hash_for!(struct crate::middle::cstore::CrateSource {
     dylib,
     rlib,
     rmeta

@@ -1,19 +1,9 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! # Categorization
 //!
 //! The job of the categorization module is to analyze an expression to
 //! determine what kind of memory is used in evaluating it (for example,
 //! where dereferences occur and what kind of pointer is dereferenced;
-//! whether the memory is mutable; etc)
+//! whether the memory is mutable, etc.).
 //!
 //! Categorization effectively transforms all of our expressions into
 //! expressions of the following forms (the actual enum has many more
@@ -26,21 +16,21 @@
 //!       | E.comp    // access to an interior component
 //!
 //! Imagine a routine ToAddr(Expr) that evaluates an expression and returns an
-//! address where the result is to be found.  If Expr is a place, then this
-//! is the address of the place.  If Expr is an rvalue, this is the address of
+//! address where the result is to be found. If Expr is a place, then this
+//! is the address of the place. If `Expr` is an rvalue, this is the address of
 //! some temporary spot in memory where the result is stored.
 //!
-//! Now, cat_expr() classifies the expression Expr and the address A=ToAddr(Expr)
+//! Now, `cat_expr()` classifies the expression `Expr` and the address `A = ToAddr(Expr)`
 //! as follows:
 //!
-//! - cat: what kind of expression was this?  This is a subset of the
+//! - `cat`: what kind of expression was this? This is a subset of the
 //!   full expression forms which only includes those that we care about
 //!   for the purpose of the analysis.
-//! - mutbl: mutability of the address A
-//! - ty: the type of data found at the address A
+//! - `mutbl`: mutability of the address `A`.
+//! - `ty`: the type of data found at the address `A`.
 //!
 //! The resulting categorization tree differs somewhat from the expressions
-//! themselves.  For example, auto-derefs are explicit.  Also, an index a[b] is
+//! themselves. For example, auto-derefs are explicit. Also, an index a[b] is
 //! decomposed into two operations: a dereference to reach the array data and
 //! then an index to jump forward to the relevant item.
 //!
@@ -68,19 +58,19 @@ pub use self::Note::*;
 
 use self::Aliasability::*;
 
-use middle::region;
-use hir::def_id::{DefId, LocalDefId};
-use hir::Node;
-use infer::InferCtxt;
-use hir::def::{Def, CtorKind};
-use ty::adjustment;
-use ty::{self, Ty, TyCtxt};
-use ty::fold::TypeFoldable;
-use ty::layout::VariantIdx;
+use crate::middle::region;
+use crate::hir::def_id::{DefId, LocalDefId};
+use crate::hir::Node;
+use crate::infer::InferCtxt;
+use crate::hir::def::{Def, CtorKind};
+use crate::ty::adjustment;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::fold::TypeFoldable;
+use crate::ty::layout::VariantIdx;
 
-use hir::{MutImmutable, MutMutable, PatKind};
-use hir::pat_util::EnumerateAndAdjustIterator;
-use hir;
+use crate::hir::{MutImmutable, MutMutable, PatKind};
+use crate::hir::pat_util::EnumerateAndAdjustIterator;
+use crate::hir;
 use syntax::ast::{self, Name};
 use syntax_pos::Span;
 
@@ -90,7 +80,7 @@ use std::hash::{Hash, Hasher};
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::indexed_vec::Idx;
 use std::rc::Rc;
-use util::nodemap::ItemLocalSet;
+use crate::util::nodemap::ItemLocalSet;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Categorization<'tcx> {
@@ -98,7 +88,7 @@ pub enum Categorization<'tcx> {
     ThreadLocal(ty::Region<'tcx>),       // value that cannot move, but still restricted in scope
     StaticItem,
     Upvar(Upvar),                        // upvar referenced by closure env
-    Local(ast::NodeId),                  // local variable
+    Local(hir::HirId),                   // local variable
     Deref(cmt<'tcx>, PointerKind<'tcx>), // deref of a ptr
     Interior(cmt<'tcx>, InteriorKind),   // something interior: field, tuple, etc
     Downcast(cmt<'tcx>, DefId),          // selects a particular enum variant (*1)
@@ -127,7 +117,7 @@ pub enum PointerKind<'tcx> {
 }
 
 // We use the term "interior" to mean "something reachable from the
-// base without a pointer dereference", e.g. a field
+// base without a pointer dereference", e.g., a field
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InteriorKind {
     InteriorField(FieldIndex),
@@ -153,8 +143,8 @@ impl Hash for FieldIndex {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum InteriorOffsetKind {
-    Index,   // e.g. `array_expr[index_expr]`
-    Pattern, // e.g. `fn foo([_, a, _, _]: [A; 4]) { ... }`
+    Index,   // e.g., `array_expr[index_expr]`
+    Pattern, // e.g., `fn foo([_, a, _, _]: [A; 4]) { ... }`
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -184,7 +174,7 @@ pub enum Note {
 // which the value is stored.
 //
 // *WARNING* The field `cmt.type` is NOT necessarily the same as the
-// result of `node_id_to_type(cmt.id)`.
+// result of `node_type(cmt.id)`.
 //
 // (FIXME: rewrite the following comment given that `@x` managed
 // pointers have been obsolete for quite some time.)
@@ -208,9 +198,9 @@ pub struct cmt_<'tcx> {
 pub type cmt<'tcx> = Rc<cmt_<'tcx>>;
 
 pub enum ImmutabilityBlame<'tcx> {
-    ImmLocal(ast::NodeId),
+    ImmLocal(hir::HirId),
     ClosureEnv(LocalDefId),
-    LocalDeref(ast::NodeId),
+    LocalDeref(hir::HirId),
     AdtFieldDeref(&'tcx ty::AdtDef, &'tcx ty::FieldDef)
 }
 
@@ -240,8 +230,8 @@ impl<'tcx> cmt_<'tcx> {
             Categorization::Deref(ref base_cmt, BorrowedPtr(ty::ImmBorrow, _)) => {
                 // try to figure out where the immutable reference came from
                 match base_cmt.cat {
-                    Categorization::Local(node_id) =>
-                        Some(ImmutabilityBlame::LocalDeref(node_id)),
+                    Categorization::Local(hir_id) =>
+                        Some(ImmutabilityBlame::LocalDeref(hir_id)),
                     Categorization::Interior(ref base_cmt, InteriorField(field_index)) => {
                         base_cmt.resolve_field(field_index.0).map(|(adt_def, field_def)| {
                             ImmutabilityBlame::AdtFieldDeref(adt_def, field_def)
@@ -257,8 +247,8 @@ impl<'tcx> cmt_<'tcx> {
                     _ => None
                 }
             }
-            Categorization::Local(node_id) => {
-                Some(ImmutabilityBlame::ImmLocal(node_id))
+            Categorization::Local(hir_id) => {
+                Some(ImmutabilityBlame::ImmLocal(hir_id))
             }
             Categorization::Rvalue(..) |
             Categorization::Upvar(..) |
@@ -348,7 +338,7 @@ impl MutabilityCategory {
 
     fn from_local(tcx: TyCtxt<'_, '_, '_>, tables: &ty::TypeckTables<'_>,
                   id: ast::NodeId) -> MutabilityCategory {
-        let ret = match tcx.hir.get(id) {
+        let ret = match tcx.hir().get(id) {
             Node::Binding(p) => match p.node {
                 PatKind::Binding(..) => {
                     let bm = *tables.pat_binding_modes()
@@ -362,7 +352,7 @@ impl MutabilityCategory {
                 }
                 _ => span_bug!(p.span, "expected identifier pattern")
             },
-            _ => span_bug!(tcx.hir.span(id), "expected identifier pattern")
+            _ => span_bug!(tcx.hir().span(id), "expected identifier pattern")
         };
         debug!("MutabilityCategory::{}(tcx, id={:?}) => {:?}",
                "from_local", id, ret);
@@ -453,15 +443,16 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
         }
     }
 
-    pub fn type_moves_by_default(&self,
-                                 param_env: ty::ParamEnv<'tcx>,
-                                 ty: Ty<'tcx>,
-                                 span: Span)
-                                 -> bool {
-        self.infcx.map(|infcx| infcx.type_moves_by_default(param_env, ty, span))
+    pub fn type_is_copy_modulo_regions(
+        &self,
+        param_env: ty::ParamEnv<'tcx>,
+        ty: Ty<'tcx>,
+        span: Span,
+    ) -> bool {
+        self.infcx.map(|infcx| infcx.type_is_copy_modulo_regions(param_env, ty, span))
             .or_else(|| {
                 self.tcx.lift_to_global(&(param_env, ty)).map(|(param_env, ty)| {
-                    ty.moves_by_default(self.tcx.global_tcx(), param_env, span)
+                    ty.is_copy_modulo_regions(self.tcx.global_tcx(), param_env, span)
                 })
             })
             .unwrap_or(true)
@@ -495,9 +486,9 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
             // FIXME
             None if self.is_tainted_by_errors() => Err(()),
             None => {
-                let id = self.tcx.hir.hir_to_node_id(id);
+                let id = self.tcx.hir().hir_to_node_id(id);
                 bug!("no type for node {}: {} in mem_categorization",
-                     id, self.tcx.hir.node_to_string(id));
+                     id, self.tcx.hir().node_to_string(id));
             }
         }
     }
@@ -506,7 +497,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                    hir_id: hir::HirId)
                    -> McResult<Ty<'tcx>> {
         self.resolve_type_vars_or_error(hir_id,
-                                        self.tables.node_id_to_type_opt(hir_id))
+                                        self.tables.node_type_opt(hir_id))
     }
 
     pub fn expr_ty(&self, expr: &hir::Expr) -> McResult<Ty<'tcx>> {
@@ -641,7 +632,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
     }
 
     pub fn cat_expr_unadjusted(&self, expr: &hir::Expr) -> McResult<cmt_<'tcx>> {
-        debug!("cat_expr: id={} expr={:?}", expr.id, expr);
+        debug!("cat_expr: id={} expr={:?}", expr.hir_id, expr);
 
         let expr_ty = self.expr_ty(expr)?;
         match expr.node {
@@ -657,10 +648,10 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
             hir::ExprKind::Field(ref base, f_ident) => {
                 let base_cmt = Rc::new(self.cat_expr(&base)?);
                 debug!("cat_expr(cat_field): id={} expr={:?} base={:?}",
-                       expr.id,
+                       expr.hir_id,
                        expr,
                        base_cmt);
-                let f_index = self.tcx.field_index(expr.id, self.tables);
+                let f_index = self.tcx.field_index(expr.hir_id, self.tables);
                 Ok(self.cat_field(expr, base_cmt, f_index, f_ident, expr_ty))
             }
 
@@ -697,7 +688,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
             hir::ExprKind::Block(..) | hir::ExprKind::Loop(..) | hir::ExprKind::Match(..) |
             hir::ExprKind::Lit(..) | hir::ExprKind::Break(..) |
             hir::ExprKind::Continue(..) | hir::ExprKind::Struct(..) | hir::ExprKind::Repeat(..) |
-            hir::ExprKind::InlineAsm(..) | hir::ExprKind::Box(..) => {
+            hir::ExprKind::InlineAsm(..) | hir::ExprKind::Box(..) | hir::ExprKind::Err => {
                 Ok(self.cat_rvalue_node(expr.hir_id, expr.span, expr_ty))
             }
         }
@@ -713,7 +704,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                hir_id, expr_ty, def);
 
         match def {
-            Def::StructCtor(..) | Def::VariantCtor(..) | Def::Const(..) |
+            Def::StructCtor(..) | Def::VariantCtor(..) | Def::Const(..) | Def::ConstParam(..) |
             Def::AssociatedConst(..) | Def::Fn(..) | Def::Method(..) | Def::SelfCtor(..) => {
                 Ok(self.cat_rvalue_node(hir_id, span, expr_ty))
             }
@@ -750,7 +741,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                 Ok(cmt_ {
                     hir_id,
                     span,
-                    cat: Categorization::Local(vid),
+                    cat: Categorization::Local(self.tcx.hir().node_to_hir_id(vid)),
                     mutbl: MutabilityCategory::from_local(self.tcx, self.tables, vid),
                     ty: expr_ty,
                     note: NoteNone
@@ -770,7 +761,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                  fn_node_id: ast::NodeId)
                  -> McResult<cmt_<'tcx>>
     {
-        let fn_hir_id = self.tcx.hir.node_to_hir_id(fn_node_id);
+        let fn_hir_id = self.tcx.hir().node_to_hir_id(fn_node_id);
 
         // An upvar can have up to 3 components. We translate first to a
         // `Categorization::Upvar`, which is itself a fiction -- it represents the reference to the
@@ -815,8 +806,8 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
             ref t => span_bug!(span, "unexpected type for fn in mem_categorization: {:?}", t),
         };
 
-        let closure_expr_def_id = self.tcx.hir.local_def_id(fn_node_id);
-        let var_hir_id = self.tcx.hir.node_to_hir_id(var_id);
+        let closure_expr_def_id = self.tcx.hir().local_def_id(fn_node_id);
+        let var_hir_id = self.tcx.hir().node_to_hir_id(var_id);
         let upvar_id = ty::UpvarId {
             var_path: ty::UpvarPath { hir_id: var_hir_id },
             closure_expr_id: closure_expr_def_id.to_local(),
@@ -961,7 +952,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
 
         debug!("cat_rvalue_node: promotable = {:?}", promotable);
 
-        // Always promote `[T; 0]` (even when e.g. borrowed mutably).
+        // Always promote `[T; 0]` (even when e.g., borrowed mutably).
         let promotable = match expr_ty.sty {
             ty::Array(_, len) if len.assert_usize(self.tcx) == Some(0) => true,
             _ => promotable,
@@ -1320,17 +1311,17 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                     Def::Err => {
                         debug!("access to unresolvable pattern {:?}", pat);
                         return Err(())
-                    },
+                    }
                     Def::Variant(variant_did) |
                     Def::VariantCtor(variant_did, ..) => {
                         self.cat_downcast_if_needed(pat, cmt, variant_did)
-                    },
-                    _ => cmt
+                    }
+                    _ => cmt,
                 };
 
                 for fp in field_pats {
                     let field_ty = self.pat_ty_adjusted(&fp.node.pat)?; // see (*2)
-                    let f_index = self.tcx.field_index(fp.node.id, self.tables);
+                    let f_index = self.tcx.field_index(fp.node.hir_id, self.tables);
                     let cmt_field = Rc::new(self.cat_field(pat, cmt.clone(), f_index,
                                                            fp.node.ident, field_ty));
                     self.cat_pattern_(cmt_field, &fp.node.pat, op)?;
@@ -1356,7 +1347,7 @@ impl<'a, 'gcx, 'tcx> MemCategorizationContext<'a, 'gcx, 'tcx> {
                 }
             }
 
-                PatKind::Box(ref subpat) | PatKind::Ref(ref subpat, _) => {
+            PatKind::Box(ref subpat) | PatKind::Ref(ref subpat, _) => {
                 // box p1, &p1, &mut p1.  we can ignore the mutability of
                 // PatKind::Ref since that information is already contained
                 // in the type.
@@ -1504,7 +1495,7 @@ impl<'tcx> cmt_<'tcx> {
                 "non-place".into()
             }
             Categorization::Local(vid) => {
-                if tcx.hir.is_argument(vid) {
+                if tcx.hir().is_argument(tcx.hir().hir_to_node_id(vid)) {
                     "argument"
                 } else {
                     "local variable"

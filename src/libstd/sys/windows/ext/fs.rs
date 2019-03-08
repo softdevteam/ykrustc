@@ -1,22 +1,12 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Windows-specific extensions for the primitives in the `std::fs` module.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use fs::{self, OpenOptions, Metadata};
-use io;
-use path::Path;
-use sys;
-use sys_common::{AsInnerMut, AsInner};
+use crate::fs::{self, OpenOptions, Metadata};
+use crate::io;
+use crate::path::Path;
+use crate::sys;
+use crate::sys_common::{AsInnerMut, AsInner};
 
 /// Windows-specific extensions to [`File`].
 ///
@@ -136,7 +126,7 @@ pub trait OpenOptionsExt {
     ///
     /// By default `share_mode` is set to
     /// `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`. This allows
-    /// other processes to to read, write, and delete/rename the same file
+    /// other processes to read, write, and delete/rename the same file
     /// while it is open. Removing any of the flags will prevent other
     /// processes from performing the corresponding operation until the file
     /// handle is closed.
@@ -230,13 +220,27 @@ pub trait OpenOptionsExt {
     /// the specified value (or combines it with `custom_flags` and `attributes`
     /// to set the `dwFlagsAndAttributes` for [`CreateFile`]).
     ///
-    /// By default, `security_qos_flags` is set to `SECURITY_ANONYMOUS`. For
-    /// information about possible values, see [Impersonation Levels] on the
-    /// Windows Dev Center site.
+    /// By default `security_qos_flags` is not set. It should be specified when
+    /// opening a named pipe, to control to which degree a server process can
+    /// act on behalf of a client process (security impersonation level).
     ///
+    /// When `security_qos_flags` is not set a malicious program can gain the
+    /// elevated privileges of a privileged Rust process when it allows opening
+    /// user-specified paths, by tricking it into opening a named pipe. So
+    /// arguably `security_qos_flags` should also be set when opening arbitrary
+    /// paths. However the bits can then conflict with other flags, specifically
+    /// `FILE_FLAG_OPEN_NO_RECALL`.
+    ///
+    /// For information about possible values, see [Impersonation Levels] on the
+    /// Windows Dev Center site. The `SECURITY_SQOS_PRESENT` flag is set
+    /// automatically when using this method.
+
     /// # Examples
     ///
     /// ```no_run
+    /// # #[cfg(for_demonstration_only)]
+    /// extern crate winapi;
+    /// # mod winapi { pub const SECURITY_IDENTIFICATION: u32 = 0; }
     /// use std::fs::OpenOptions;
     /// use std::os::windows::prelude::*;
     ///
@@ -245,9 +249,9 @@ pub trait OpenOptionsExt {
     ///     .create(true)
     ///
     ///     // Sets the flag value to `SecurityIdentification`.
-    ///     .security_qos_flags(1)
+    ///     .security_qos_flags(winapi::SECURITY_IDENTIFICATION)
     ///
-    ///     .open("foo.txt");
+    ///     .open(r"\\.\pipe\MyPipe");
     /// ```
     ///
     /// [`CreateFile`]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa363858.aspx
@@ -451,10 +455,10 @@ impl MetadataExt for Metadata {
 /// [`FileType`]: ../../../../std/fs/struct.FileType.html
 #[unstable(feature = "windows_file_type_ext", issue = "0")]
 pub trait FileTypeExt {
-    /// Returns whether this file type is a symbolic link that is also a directory.
+    /// Returns `true` if this file type is a symbolic link that is also a directory.
     #[unstable(feature = "windows_file_type_ext", issue = "0")]
     fn is_symlink_dir(&self) -> bool;
-    /// Returns whether this file type is a symbolic link that is also a file.
+    /// Returns `true` if this file type is a symbolic link that is also a file.
     #[unstable(feature = "windows_file_type_ext", issue = "0")]
     fn is_symlink_file(&self) -> bool;
 }

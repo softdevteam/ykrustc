@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // @has issue_25001/struct.Foo.html
 pub struct Foo<T>(T);
 
@@ -19,17 +9,17 @@ pub trait Bar {
 
 impl Foo<u8> {
     // @has - '//*[@id="method.pass"]//code' 'fn pass()'
-    // @has - '//*[@id="pass.v"]//code' 'fn pass()'
+    // @has - '//code[@id="pass.v"]' 'fn pass()'
     pub fn pass() {}
 }
 impl Foo<u16> {
     // @has - '//*[@id="method.pass-1"]//code' 'fn pass() -> usize'
-    // @has - '//*[@id="pass.v-1"]//code' 'fn pass() -> usize'
+    // @has - '//code[@id="pass.v-1"]' 'fn pass() -> usize'
     pub fn pass() -> usize { 42 }
 }
 impl Foo<u32> {
     // @has - '//*[@id="method.pass-2"]//code' 'fn pass() -> isize'
-    // @has - '//*[@id="pass.v-2"]//code' 'fn pass() -> isize'
+    // @has - '//code[@id="pass.v-2"]' 'fn pass() -> isize'
     pub fn pass() -> isize { 42 }
 }
 

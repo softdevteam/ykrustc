@@ -1,27 +1,16 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module provides linkage between rustc::middle::graph and
 //! libgraphviz traits, specialized to attaching borrowck analysis
 //! data to rendered labels.
 
-pub use self::Variant::*;
+pub use Variant::*;
 
 pub use rustc::cfg::graphviz::{Node, Edge};
 use rustc::cfg::graphviz as cfg_dot;
 
-use borrowck;
-use borrowck::{BorrowckCtxt, LoanPath};
-use dot;
+use crate::borrowck::{self, BorrowckCtxt, LoanPath};
+use crate::dataflow::{DataFlowOperator, DataFlowContext, EntryOrExit};
+use log::debug;
 use rustc::cfg::CFGIndex;
-use dataflow::{DataFlowOperator, DataFlowContext, EntryOrExit};
 use std::rc::Rc;
 
 #[derive(Debug, Copy, Clone)]
@@ -63,7 +52,7 @@ impl<'a, 'tcx> DataflowLabeller<'a, 'tcx> {
         sets
     }
 
-    fn dataflow_for_variant(&self, e: EntryOrExit, n: &Node, v: Variant) -> String {
+    fn dataflow_for_variant(&self, e: EntryOrExit, n: &Node<'_>, v: Variant) -> String {
         let cfgidx = n.0;
         match v {
             Loans   => self.dataflow_loans_for(e, cfgidx),
@@ -99,7 +88,7 @@ impl<'a, 'tcx> DataflowLabeller<'a, 'tcx> {
         let dfcx = &self.analysis_data.loans;
         let loan_index_to_path = |loan_index| {
             let all_loans = &self.analysis_data.all_loans;
-            let l: &borrowck::Loan = &all_loans[loan_index];
+            let l: &borrowck::Loan<'_> = &all_loans[loan_index];
             l.loan_path()
         };
         self.build_set(e, cfgidx, dfcx, loan_index_to_path)

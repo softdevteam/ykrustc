@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
 
 set -e
 
@@ -28,17 +19,19 @@ travis_time_start
 
 if [ -f "$docker_dir/$image/Dockerfile" ]; then
     if [ "$CI" != "" ]; then
-      cksum=$(find $docker_dir/$image $docker_dir/scripts -type f | \
-        sort | \
-        xargs cat | \
-        sha512sum | \
+      hash_key=/tmp/.docker-hash-key.txt
+      rm -f "${hash_key}"
+      echo $image >> $hash_key
+      find $docker_dir -type f | sort | xargs cat >> $hash_key
+      docker --version >> $hash_key
+      cksum=$(sha512sum $hash_key | \
         awk '{print $1}')
       s3url="s3://$SCCACHE_BUCKET/docker/$cksum"
       url="https://s3-us-west-1.amazonaws.com/$SCCACHE_BUCKET/docker/$cksum"
       echo "Attempting to download $s3url"
       rm -f /tmp/rustci_docker_cache
       set +e
-      retry curl -f -L -C - -o /tmp/rustci_docker_cache "$url"
+      retry curl -y 30 -Y 10 --connect-timeout 30 -f -L -C - -o /tmp/rustci_docker_cache "$url"
       loaded_images=$(docker load -i /tmp/rustci_docker_cache | sed 's/.* sha/sha/')
       set -e
       echo "Downloaded containers:\n$loaded_images"

@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Terminfo database interface.
 
 use std::collections::HashMap;
@@ -15,18 +5,16 @@ use std::env;
 use std::error;
 use std::fmt;
 use std::fs::File;
-use std::io::prelude::*;
-use std::io;
-use std::io::BufReader;
+use std::io::{self, prelude::*, BufReader};
 use std::path::Path;
 
-use Attr;
-use color;
-use Terminal;
-use self::searcher::get_dbpath_for_term;
-use self::parser::compiled::{parse, msys_terminfo};
-use self::parm::{expand, Variables, Param};
+use crate::Attr;
+use crate::color;
+use crate::Terminal;
 
+use searcher::get_dbpath_for_term;
+use parser::compiled::{parse, msys_terminfo};
+use parm::{expand, Variables, Param};
 
 /// A parsed terminfo database entry.
 #[derive(Debug)]
@@ -59,7 +47,7 @@ impl error::Error for Error {
     }
 
     fn cause(&self) -> Option<&dyn error::Error> {
-        use self::Error::*;
+        use Error::*;
         match *self {
             IoError(ref e) => Some(e),
             _ => None,
@@ -68,8 +56,8 @@ impl error::Error for Error {
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::Error::*;
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use Error::*;
         match *self {
             TermUnset => Ok(()),
             MalformedTerminfo(ref e) => e.fmt(f),
@@ -79,7 +67,7 @@ impl fmt::Display for Error {
 }
 
 impl TermInfo {
-    /// Create a TermInfo based on current environment.
+    /// Creates a TermInfo based on current environment.
     pub fn from_env() -> Result<TermInfo, Error> {
         let term = match env::var("TERM") {
             Ok(name) => TermInfo::from_name(&name),
@@ -94,7 +82,7 @@ impl TermInfo {
         }
     }
 
-    /// Create a TermInfo for the named terminal.
+    /// Creates a TermInfo for the named terminal.
     pub fn from_name(name: &str) -> Result<TermInfo, Error> {
         get_dbpath_for_term(name)
             .ok_or_else(|| {
@@ -221,7 +209,7 @@ impl<T: Write + Send> Terminal for TerminfoTerminal<T> {
 }
 
 impl<T: Write + Send> TerminfoTerminal<T> {
-    /// Create a new TerminfoTerminal with the given TermInfo and Write.
+    /// Creates a new TerminfoTerminal with the given TermInfo and Write.
     pub fn new_with_terminfo(out: T, terminfo: TermInfo) -> TerminfoTerminal<T> {
         let nc = if terminfo.strings.contains_key("setaf") &&
                     terminfo.strings.contains_key("setab") {
@@ -237,7 +225,7 @@ impl<T: Write + Send> TerminfoTerminal<T> {
         }
     }
 
-    /// Create a new TerminfoTerminal for the current environment with the given Write.
+    /// Creates a new TerminfoTerminal for the current environment with the given Write.
     ///
     /// Returns `None` when the terminfo cannot be found or parsed.
     pub fn new(out: T) -> Option<TerminfoTerminal<T>> {

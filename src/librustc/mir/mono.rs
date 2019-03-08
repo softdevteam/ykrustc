@@ -1,22 +1,12 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
+use crate::hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
 use syntax::ast::NodeId;
 use syntax::symbol::{Symbol, InternedString};
-use ty::{Instance, TyCtxt};
-use util::nodemap::FxHashMap;
+use crate::ty::{Instance, TyCtxt};
+use crate::util::nodemap::FxHashMap;
 use rustc_data_structures::base_n;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasherResult,
                                            StableHasher};
-use ich::{Fingerprint, StableHashingContext, NodeIdHashingMode};
+use crate::ich::{Fingerprint, StableHashingContext, NodeIdHashingMode};
 use std::fmt;
 use std::hash::Hash;
 
@@ -67,7 +57,7 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for MonoItem<'tcx> {
 
 pub struct CodegenUnit<'tcx> {
     /// A name for this CGU. Incremental compilation requires that
-    /// name be unique amongst **all** crates.  Therefore, it should
+    /// name be unique amongst **all** crates. Therefore, it should
     /// contain something unique to this crate (e.g., a module path)
     /// as well as the crate name and disambiguator.
     name: InternedString,
@@ -272,7 +262,7 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> CodegenUnitNameBuilder<'a, 'gcx, 'tcx> {
     ///
     /// The '.' before `<special-suffix>` makes sure that names with a special
     /// suffix can never collide with a name built out of regular Rust
-    /// identifiers (e.g. module paths).
+    /// identifiers (e.g., module paths).
     pub fn build_cgu_name<I, C, S>(&mut self,
                                    cnum: CrateNum,
                                    components: I,

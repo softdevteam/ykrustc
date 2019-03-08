@@ -1,13 +1,11 @@
-error: module `FooBar` should have a snake case name such as `foo_bar`
-  --> $DIR/lint-non-snake-case-modules.rs:14:1
+error: module `FooBar` should have a snake case name
+  --> $DIR/lint-non-snake-case-modules.rs:4:5
    |
-LL | / mod FooBar { //~ ERROR module `FooBar` should have a snake case name such as `foo_bar`
-LL | |     pub struct S;
-LL | | }
-   | |_^
+LL | mod FooBar { //~ ERROR module `FooBar` should have a snake case name
+   |     ^^^^^^ help: convert the identifier to snake case: `foo_bar`
    |
 note: lint level defined here
-  --> $DIR/lint-non-snake-case-modules.rs:11:9
+  --> $DIR/lint-non-snake-case-modules.rs:1:9
    |
 LL | #![deny(non_snake_case)]
    |         ^^^^^^^^^^^^^^

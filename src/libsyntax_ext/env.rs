@@ -1,21 +1,10 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // The compiler code necessary to support the env! extension.  Eventually this
 // should all get sucked into either the compiler syntax extension plugin
 // interface.
 //
 
 use syntax::ast::{self, Ident, GenericArg};
-use syntax::ext::base::*;
-use syntax::ext::base;
+use syntax::ext::base::{self, *};
 use syntax::ext::build::AstBuilder;
 use syntax::symbol::{keywords, Symbol};
 use syntax_pos::Span;
@@ -23,7 +12,7 @@ use syntax::tokenstream;
 
 use std::env;
 
-pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt,
+pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt<'_>,
                               sp: Span,
                               tts: &[tokenstream::TokenTree])
                               -> Box<dyn base::MacResult + 'cx> {
@@ -54,7 +43,7 @@ pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt,
     MacEager::expr(e)
 }
 
-pub fn expand_env<'cx>(cx: &'cx mut ExtCtxt,
+pub fn expand_env<'cx>(cx: &'cx mut ExtCtxt<'_>,
                        sp: Span,
                        tts: &[tokenstream::TokenTree])
                        -> Box<dyn base::MacResult + 'cx> {
@@ -89,7 +78,7 @@ pub fn expand_env<'cx>(cx: &'cx mut ExtCtxt,
     let e = match env::var(&*var.as_str()) {
         Err(_) => {
             cx.span_err(sp, &msg.as_str());
-            cx.expr_usize(sp, 0)
+            return DummyResult::expr(sp);
         }
         Ok(s) => cx.expr_str(sp, Symbol::intern(&s)),
     };

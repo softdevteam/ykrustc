@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A module for working with processes.
 //!
 //! This module is mostly concerned with spawning and interacting with child
@@ -116,17 +106,17 @@
 
 #![stable(feature = "process", since = "1.0.0")]
 
-use io::prelude::*;
+use crate::io::prelude::*;
 
-use ffi::OsStr;
-use fmt;
-use fs;
-use io::{self, Initializer};
-use path::Path;
-use str;
-use sys::pipe::{read2, AnonPipe};
-use sys::process as imp;
-use sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
+use crate::ffi::OsStr;
+use crate::fmt;
+use crate::fs;
+use crate::io::{self, Initializer};
+use crate::path::Path;
+use crate::str;
+use crate::sys::pipe::{read2, AnonPipe};
+use crate::sys::process as imp;
+use crate::sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
 
 /// Representation of a running or exited child process.
 ///
@@ -437,7 +427,7 @@ impl Command {
     /// The search path to be used may be controlled by setting the
     /// `PATH` environment variable on the Command,
     /// but this has some implementation limitations on Windows
-    /// (see <https://github.com/rust-lang/rust/issues/37519>).
+    /// (see issue #37519).
     ///
     /// # Examples
     ///
@@ -455,7 +445,7 @@ impl Command {
         Command { inner: imp::Command::new(program.as_ref()) }
     }
 
-    /// Add an argument to pass to the program.
+    /// Adds an argument to pass to the program.
     ///
     /// Only one argument can be passed per use. So instead of:
     ///
@@ -497,7 +487,7 @@ impl Command {
         self
     }
 
-    /// Add multiple arguments to pass to the program.
+    /// Adds multiple arguments to pass to the program.
     ///
     /// To pass a single argument see [`arg`].
     ///
@@ -550,7 +540,7 @@ impl Command {
         self
     }
 
-    /// Add or update multiple environment variable mappings.
+    /// Adds or updates multiple environment variable mappings.
     ///
     /// # Examples
     ///
@@ -628,7 +618,7 @@ impl Command {
     ///
     /// # Platform-specific behavior
     ///
-    /// If the program path is relative (e.g. `"./script.sh"`), it's ambiguous
+    /// If the program path is relative (e.g., `"./script.sh"`), it's ambiguous
     /// whether it should be interpreted relative to the parent's working
     /// directory or relative to `current_dir`. The behavior in this case is
     /// platform specific and unstable, and it's recommended to use
@@ -1025,7 +1015,7 @@ impl From<ChildStdin> for Stdio {
     ///
     /// `ChildStdin` will be converted to `Stdio` using `Stdio::from` under the hood.
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use std::process::{Command, Stdio};
     ///
     /// let reverse = Command::new("rev")
@@ -1054,7 +1044,7 @@ impl From<ChildStdout> for Stdio {
     ///
     /// `ChildStdout` will be converted to `Stdio` using `Stdio::from` under the hood.
     ///
-    /// ```rust
+    /// ```rust,no_run
     /// use std::process::{Command, Stdio};
     ///
     /// let hello = Command::new("echo")
@@ -1297,7 +1287,7 @@ impl Child {
     ///
     /// let mut command = Command::new("ls");
     /// if let Ok(child) = command.spawn() {
-    ///     println!("Child's id is {}", child.id());
+    ///     println!("Child's ID is {}", child.id());
     /// } else {
     ///     println!("ls command didn't start");
     /// }
@@ -1342,7 +1332,7 @@ impl Child {
     ///
     /// This function will not block the calling thread and will only
     /// check to see if the child process has exited or not. If the child has
-    /// exited then on Unix the process id is reaped. This function is
+    /// exited then on Unix the process ID is reaped. This function is
     /// guaranteed to repeatedly return a successful exit status so long as the
     /// child has already exited.
     ///
@@ -1491,8 +1481,8 @@ impl Child {
 /// [platform-specific behavior]: #platform-specific-behavior
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn exit(code: i32) -> ! {
-    ::sys_common::cleanup();
-    ::sys::os::exit(code)
+    crate::sys_common::cleanup();
+    crate::sys::os::exit(code)
 }
 
 /// Terminates the process in an abnormal fashion.
@@ -1553,7 +1543,7 @@ pub fn exit(code: i32) -> ! {
 /// [panic hook]: ../../std/panic/fn.set_hook.html
 #[stable(feature = "process_abort", since = "1.17.0")]
 pub fn abort() -> ! {
-    unsafe { ::sys::abort_internal() };
+    unsafe { crate::sys::abort_internal() };
 }
 
 /// Returns the OS-assigned process identifier associated with this process.
@@ -1571,7 +1561,7 @@ pub fn abort() -> ! {
 ///
 #[stable(feature = "getpid", since = "1.26.0")]
 pub fn id() -> u32 {
-    ::sys::os::getpid()
+    crate::sys::os::getpid()
 }
 
 /// A trait for implementing arbitrary return types in the `main` function.
@@ -1633,10 +1623,10 @@ impl Termination for ExitCode {
 
 #[cfg(all(test, not(any(target_os = "cloudabi", target_os = "emscripten"))))]
 mod tests {
-    use io::prelude::*;
+    use crate::io::prelude::*;
 
-    use io::ErrorKind;
-    use str;
+    use crate::io::ErrorKind;
+    use crate::str;
     use super::{Command, Output, Stdio};
 
     // FIXME(#10380) these tests should not all be ignored on android.
@@ -1681,7 +1671,7 @@ mod tests {
     #[cfg(unix)]
     #[cfg_attr(target_os = "android", ignore)]
     fn signal_reported_right() {
-        use os::unix::process::ExitStatusExt;
+        use crate::os::unix::process::ExitStatusExt;
 
         let mut p = Command::new("/bin/sh")
                             .arg("-c").arg("read a")
@@ -1751,8 +1741,8 @@ mod tests {
     #[cfg_attr(target_os = "android", ignore)]
     #[cfg(unix)]
     fn uid_works() {
-        use os::unix::prelude::*;
-        use libc;
+        use crate::os::unix::prelude::*;
+
         let mut p = Command::new("/bin/sh")
                             .arg("-c").arg("true")
                             .uid(unsafe { libc::getuid() })
@@ -1765,8 +1755,7 @@ mod tests {
     #[cfg_attr(target_os = "android", ignore)]
     #[cfg(unix)]
     fn uid_to_root_fails() {
-        use os::unix::prelude::*;
-        use libc;
+        use crate::os::unix::prelude::*;
 
         // if we're already root, this isn't a valid test. Most of the bots run
         // as non-root though (android is an exception).
@@ -1890,44 +1879,8 @@ mod tests {
     }
 
     #[test]
-    fn test_inherit_env() {
-        use env;
-
-        let result = env_cmd().output().unwrap();
-        let output = String::from_utf8(result.stdout).unwrap();
-
-        for (ref k, ref v) in env::vars() {
-            // Don't check android RANDOM variable which seems to change
-            // whenever the shell runs, and our `env_cmd` is indeed running a
-            // shell which means it'll get a different RANDOM than we probably
-            // have.
-            //
-            // Also skip env vars with `-` in the name on android because, well,
-            // I'm not sure. It appears though that the `set` command above does
-            // not print env vars with `-` in the name, so we just skip them
-            // here as we won't find them in the output. Note that most env vars
-            // use `_` instead of `-`, but our build system sets a few env vars
-            // with `-` in the name.
-            if cfg!(target_os = "android") &&
-               (*k == "RANDOM" || k.contains("-")) {
-                continue
-            }
-
-            // Windows has hidden environment variables whose names start with
-            // equals signs (`=`). Those do not show up in the output of the
-            // `set` command.
-            assert!((cfg!(windows) && k.starts_with("=")) ||
-                    k.starts_with("DYLD") ||
-                    output.contains(&format!("{}={}", *k, *v)) ||
-                    output.contains(&format!("{}='{}'", *k, *v)),
-                    "output doesn't contain `{}={}`\n{}",
-                    k, v, output);
-        }
-    }
-
-    #[test]
     fn test_override_env() {
-        use env;
+        use crate::env;
 
         // In some build environments (such as chrooted Nix builds), `env` can
         // only be found in the explicitly-provided PATH env variable, not in
@@ -1956,7 +1909,7 @@ mod tests {
 
     #[test]
     fn test_capture_env_at_spawn() {
-        use env;
+        use crate::env;
 
         let mut cmd = env_cmd();
         cmd.env("RUN_TEST_NEW_ENV1", "123");
@@ -2025,14 +1978,14 @@ mod tests {
         }
     }
 
-    /// Test that process creation flags work by debugging a process.
+    /// Tests that process creation flags work by debugging a process.
     /// Other creation flags make it hard or impossible to detect
     /// behavioral changes in the process.
     #[test]
     #[cfg(windows)]
     fn test_creation_flags() {
-        use os::windows::process::CommandExt;
-        use sys::c::{BOOL, DWORD, INFINITE};
+        use crate::os::windows::process::CommandExt;
+        use crate::sys::c::{BOOL, DWORD, INFINITE};
         #[repr(C, packed)]
         struct DEBUG_EVENT {
             pub event_code: DWORD,

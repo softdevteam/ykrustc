@@ -1,23 +1,13 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Error Reporting for Anonymous Region Lifetime Errors
 //! where both the regions are anonymous.
 
-use infer::error_reporting::nice_region_error::NiceRegionError;
-use infer::SubregionOrigin;
-use ty::RegionKind;
-use hir::{Expr, ExprKind::Closure};
-use hir::Node;
-use util::common::ErrorReported;
-use infer::lexical_region_resolve::RegionResolutionError::SubSupConflict;
+use crate::infer::error_reporting::nice_region_error::NiceRegionError;
+use crate::infer::SubregionOrigin;
+use crate::ty::RegionKind;
+use crate::hir::{Expr, ExprKind::Closure};
+use crate::hir::Node;
+use crate::util::common::ErrorReported;
+use crate::infer::lexical_region_resolve::RegionResolutionError::SubSupConflict;
 
 impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     /// Print the error message for lifetime errors when binding escapes a closure.
@@ -46,7 +36,8 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     ///              ...because it cannot outlive this closure
     /// ```
     pub(super) fn try_report_outlives_closure(&self) -> Option<ErrorReported> {
-        if let Some(SubSupConflict(origin,
+        if let Some(SubSupConflict(_,
+                                   origin,
                                    ref sub_origin,
                                    _,
                                    ref sup_origin,
@@ -56,7 +47,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
             // closure, provide a specific message pointing this out.
             if let (&SubregionOrigin::BindingTypeIsNotValidAtDecl(ref external_span),
                     &RegionKind::ReFree(ref free_region)) = (&sub_origin, sup_region) {
-                let hir = &self.tcx.hir;
+                let hir = &self.tcx().hir();
                 if let Some(node_id) = hir.as_local_node_id(free_region.scope) {
                     if let Node::Expr(Expr {
                         node: Closure(_, _, _, closure_span, None),
@@ -64,7 +55,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
                     }) = hir.get(node_id) {
                         let sup_sp = sup_origin.span();
                         let origin_sp = origin.span();
-                        let mut err = self.tcx.sess.struct_span_err(
+                        let mut err = self.tcx().sess.struct_span_err(
                             sup_sp,
                             "borrowed data cannot be stored outside of its closure");
                         err.span_label(sup_sp, "cannot be stored outside of its closure");

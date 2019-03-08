@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Parsing of GCC-style Language-Specific Data Area (LSDA)
 //! For details see:
 //!   http://refspecs.linuxfoundation.org/LSB_3.0.0/LSB-PDA/LSB-PDA/ehframechpt.html
@@ -16,12 +6,12 @@
 //!   http://www.airs.com/blog/archives/464
 //!
 //! A reference implementation may be found in the GCC source tree
-//! (<root>/libgcc/unwind-c.c as of this writing)
+//! (`<root>/libgcc/unwind-c.c` as of this writing).
 
 #![allow(non_upper_case_globals)]
 #![allow(unused)]
 
-use dwarf::DwarfReader;
+use crate::dwarf::DwarfReader;
 use core::mem;
 
 pub const DW_EH_PE_omit: u8 = 0xFF;
@@ -61,7 +51,7 @@ pub enum EHAction {
 
 pub const USING_SJLJ_EXCEPTIONS: bool = cfg!(all(target_os = "ios", target_arch = "arm"));
 
-pub unsafe fn find_eh_action(lsda: *const u8, context: &EHContext)
+pub unsafe fn find_eh_action(lsda: *const u8, context: &EHContext<'_>)
     -> Result<EHAction, ()>
 {
     if lsda.is_null() {
@@ -155,7 +145,7 @@ fn round_up(unrounded: usize, align: usize) -> Result<usize, ()> {
 }
 
 unsafe fn read_encoded_pointer(reader: &mut DwarfReader,
-                               context: &EHContext,
+                               context: &EHContext<'_>,
                                encoding: u8)
                                -> Result<usize, ()> {
     if encoding == DW_EH_PE_omit {

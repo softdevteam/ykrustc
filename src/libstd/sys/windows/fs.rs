@@ -1,27 +1,17 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::os::windows::prelude::*;
 
-use os::windows::prelude::*;
-
-use ffi::OsString;
-use fmt;
-use io::{self, Error, SeekFrom};
-use mem;
-use path::{Path, PathBuf};
-use ptr;
-use slice;
-use sync::Arc;
-use sys::handle::Handle;
-use sys::time::SystemTime;
-use sys::{c, cvt};
-use sys_common::FromInner;
+use crate::ffi::OsString;
+use crate::fmt;
+use crate::io::{self, Error, SeekFrom};
+use crate::mem;
+use crate::path::{Path, PathBuf};
+use crate::ptr;
+use crate::slice;
+use crate::sync::Arc;
+use crate::sys::handle::Handle;
+use crate::sys::time::SystemTime;
+use crate::sys::{c, cvt};
+use crate::sys_common::FromInner;
 
 use super::to_u16s;
 
@@ -201,7 +191,11 @@ impl OpenOptions {
     pub fn access_mode(&mut self, access_mode: u32) { self.access_mode = Some(access_mode); }
     pub fn share_mode(&mut self, share_mode: u32) { self.share_mode = share_mode; }
     pub fn attributes(&mut self, attrs: u32) { self.attributes = attrs; }
-    pub fn security_qos_flags(&mut self, flags: u32) { self.security_qos_flags = flags; }
+    pub fn security_qos_flags(&mut self, flags: u32) {
+        // We have to set `SECURITY_SQOS_PRESENT` here, because one of the valid flags we can
+        // receive is `SECURITY_ANONYMOUS = 0x0`, which we can't check for later on.
+        self.security_qos_flags = flags | c::SECURITY_SQOS_PRESENT;
+    }
     pub fn security_attributes(&mut self, attrs: c::LPSECURITY_ATTRIBUTES) {
         self.security_attributes = attrs as usize;
     }
@@ -249,7 +243,6 @@ impl OpenOptions {
         self.custom_flags |
         self.attributes |
         self.security_qos_flags |
-        if self.security_qos_flags != 0 { c::SECURITY_SQOS_PRESENT } else { 0 } |
         if self.create_new { c::FILE_FLAG_OPEN_REPARSE_POINT } else { 0 }
     }
 }
@@ -443,7 +436,7 @@ impl FromInner<c::HANDLE> for File {
 
 impl fmt::Debug for File {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        // FIXME(#24570): add more info here (e.g. mode)
+        // FIXME(#24570): add more info here (e.g., mode)
         let mut b = f.debug_struct("File");
         b.field("handle", &self.handle.raw());
         if let Ok(path) = get_path(&self) {

@@ -1,19 +1,10 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Parsing and validation of builtin attributes
 
-use ast::{self, Attribute, MetaItem, Name, NestedMetaItemKind};
+use crate::ast::{self, Attribute, MetaItem, Name, NestedMetaItemKind};
+use crate::feature_gate::{Features, GatedCfg};
+use crate::parse::ParseSess;
+
 use errors::{Applicability, Handler};
-use feature_gate::{Features, GatedCfg};
-use parse::ParseSess;
 use syntax_pos::{symbol::Symbol, Span};
 
 use super::{list_contains_name, mark_used, MetaItemKind};
@@ -52,7 +43,7 @@ fn handle_errors(sess: &ParseSess, span: Span, error: AttrError) {
             let mut err = struct_span_err!(diag, span, E0565, "{}", msg);
             if is_bytestr {
                 if let Ok(lint_str) = sess.source_map().span_to_snippet(span) {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         span,
                         "consider removing the prefix",
                         format!("{}", &lint_str[1..]),
@@ -71,6 +62,13 @@ pub enum InlineAttr {
     Hint,
     Always,
     Never,
+}
+
+#[derive(Copy, Clone, Hash, PartialEq, RustcEncodable, RustcDecodable)]
+pub enum OptimizeAttr {
+    None,
+    Speed,
+    Size,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -161,9 +159,11 @@ impl StabilityLevel {
 pub struct RustcDeprecation {
     pub since: Symbol,
     pub reason: Symbol,
+    /// A text snippet used to completely replace any use of the deprecated item in an expression.
+    pub suggestion: Option<Symbol>,
 }
 
-/// Check if `attrs` contains an attribute like `#![feature(feature_name)]`.
+/// Checks if `attrs` contains an attribute like `#![feature(feature_name)]`.
 /// This will not perform any "sanity checks" on the form of the attributes.
 pub fn contains_feature_attr(attrs: &[Attribute], feature_name: &str) -> bool {
     attrs.iter().any(|item| {
@@ -177,7 +177,7 @@ pub fn contains_feature_attr(attrs: &[Attribute], feature_name: &str) -> bool {
     })
 }
 
-/// Find the first stability attribute. `None` if none exists.
+/// Finds the first stability attribute. `None` if none exists.
 pub fn find_stability(sess: &ParseSess, attrs: &[Attribute],
                       item_sp: Span) -> Option<Stability> {
     find_stability_generic(sess, attrs.iter(), item_sp)
@@ -189,7 +189,7 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                                  -> Option<Stability>
     where I: Iterator<Item = &'a Attribute>
 {
-    use self::StabilityLevel::*;
+    use StabilityLevel::*;
 
     let mut stab: Option<Stability> = None;
     let mut rustc_depr: Option<RustcDeprecation> = None;
@@ -277,13 +277,14 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                         continue 'outer
                     }
 
-                    get_meta!(since, reason);
+                    get_meta!(since, reason, suggestion);
 
                     match (since, reason) {
                         (Some(since), Some(reason)) => {
                             rustc_depr = Some(RustcDeprecation {
                                 since,
                                 reason,
+                                suggestion,
                             })
                         }
                         (None, _) => {
@@ -446,9 +447,6 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                 }
                 _ => unreachable!()
             }
-        } else {
-            span_err!(diagnostic, attr.span(), E0548, "incorrect stability attribute type");
-            continue
         }
     }
 
@@ -582,7 +580,7 @@ pub struct Deprecation {
     pub note: Option<Symbol>,
 }
 
-/// Find the deprecation attribute. `None` if none exists.
+/// Finds the deprecation attribute. `None` if none exists.
 pub fn find_deprecation(sess: &ParseSess, attrs: &[Attribute],
                         item_sp: Span) -> Option<Deprecation> {
     find_deprecation_generic(sess, attrs.iter(), item_sp)
@@ -598,81 +596,86 @@ fn find_deprecation_generic<'a, I>(sess: &ParseSess,
     let diagnostic = &sess.span_diagnostic;
 
     'outer: for attr in attrs_iter {
-        if attr.path != "deprecated" {
-            continue
+        if !attr.check_name("deprecated") {
+            continue;
         }
-
-        mark_used(attr);
 
         if depr.is_some() {
             span_err!(diagnostic, item_sp, E0550, "multiple deprecated attributes");
             break
         }
 
-        depr = if let Some(metas) = attr.meta_item_list() {
-            let get = |meta: &MetaItem, item: &mut Option<Symbol>| {
-                if item.is_some() {
-                    handle_errors(sess, meta.span, AttrError::MultipleItem(meta.name()));
-                    return false
-                }
-                if let Some(v) = meta.value_str() {
-                    *item = Some(v);
-                    true
-                } else {
-                    if let Some(lit) = meta.name_value_literal() {
-                        handle_errors(
-                            sess,
-                            lit.span,
-                            AttrError::UnsupportedLiteral(
-                                "literal in `deprecated` \
-                                value must be a string",
-                                lit.node.is_bytestr()
-                            ),
-                        );
-                    } else {
-                        span_err!(diagnostic, meta.span, E0551, "incorrect meta item");
+        let meta = attr.meta().unwrap();
+        depr = match &meta.node {
+            MetaItemKind::Word => Some(Deprecation { since: None, note: None }),
+            MetaItemKind::NameValue(..) => {
+                meta.value_str().map(|note| {
+                    Deprecation { since: None, note: Some(note) }
+                })
+            }
+            MetaItemKind::List(list) => {
+                let get = |meta: &MetaItem, item: &mut Option<Symbol>| {
+                    if item.is_some() {
+                        handle_errors(sess, meta.span, AttrError::MultipleItem(meta.name()));
+                        return false
                     }
+                    if let Some(v) = meta.value_str() {
+                        *item = Some(v);
+                        true
+                    } else {
+                        if let Some(lit) = meta.name_value_literal() {
+                            handle_errors(
+                                sess,
+                                lit.span,
+                                AttrError::UnsupportedLiteral(
+                                    "literal in `deprecated` \
+                                    value must be a string",
+                                    lit.node.is_bytestr()
+                                ),
+                            );
+                        } else {
+                            span_err!(diagnostic, meta.span, E0551, "incorrect meta item");
+                        }
 
-                    false
-                }
-            };
+                        false
+                    }
+                };
 
-            let mut since = None;
-            let mut note = None;
-            for meta in metas {
-                match &meta.node {
-                    NestedMetaItemKind::MetaItem(mi) => {
-                        match &*mi.name().as_str() {
-                            "since" => if !get(mi, &mut since) { continue 'outer },
-                            "note" => if !get(mi, &mut note) { continue 'outer },
-                            _ => {
-                                handle_errors(
-                                    sess,
-                                    meta.span,
-                                    AttrError::UnknownMetaItem(mi.name(), &["since", "note"]),
-                                );
-                                continue 'outer
+                let mut since = None;
+                let mut note = None;
+                for meta in list {
+                    match &meta.node {
+                        NestedMetaItemKind::MetaItem(mi) => {
+                            match &*mi.name().as_str() {
+                                "since" => if !get(mi, &mut since) { continue 'outer },
+                                "note" => if !get(mi, &mut note) { continue 'outer },
+                                _ => {
+                                    handle_errors(
+                                        sess,
+                                        meta.span,
+                                        AttrError::UnknownMetaItem(mi.name(), &["since", "note"]),
+                                    );
+                                    continue 'outer
+                                }
                             }
                         }
-                    }
-                    NestedMetaItemKind::Literal(lit) => {
-                        handle_errors(
-                            sess,
-                            lit.span,
-                            AttrError::UnsupportedLiteral(
-                                "item in `deprecated` must be a key/value pair",
-                                false,
-                            ),
-                        );
-                        continue 'outer
+                        NestedMetaItemKind::Literal(lit) => {
+                            handle_errors(
+                                sess,
+                                lit.span,
+                                AttrError::UnsupportedLiteral(
+                                    "item in `deprecated` must be a key/value pair",
+                                    false,
+                                ),
+                            );
+                            continue 'outer
+                        }
                     }
                 }
-            }
 
-            Some(Deprecation {since: since, note: note})
-        } else {
-            Some(Deprecation{since: None, note: None})
-        }
+                Some(Deprecation { since, note })
+            }
+        };
     }
 
     depr
@@ -697,7 +700,7 @@ pub enum IntType {
 impl IntType {
     #[inline]
     pub fn is_signed(self) -> bool {
-        use self::IntType::*;
+        use IntType::*;
 
         match self {
             SignedInt(..) => true,
@@ -714,7 +717,7 @@ impl IntType {
 /// structure layout, `packed` to remove padding, and `transparent` to elegate representation
 /// concerns to the only non-ZST field.
 pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
-    use self::ReprAttr::*;
+    use ReprAttr::*;
 
     let mut acc = Vec::new();
     let diagnostic = &sess.span_diagnostic;
@@ -800,7 +803,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
                                     "incorrect `repr(align)` attribute format");
                                 match value.node {
                                     ast::LitKind::Int(int, ast::LitIntType::Unsuffixed) => {
-                                        err.span_suggestion_with_applicability(
+                                        err.span_suggestion(
                                             item.span,
                                             "use parentheses instead",
                                             format!("align({})", int),
@@ -808,7 +811,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
                                         );
                                     }
                                     ast::LitKind::Str(s, _) => {
-                                        err.span_suggestion_with_applicability(
+                                        err.span_suggestion(
                                             item.span,
                                             "use parentheses instead",
                                             format!("align({})", s),
@@ -834,7 +837,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
 }
 
 fn int_type_of_word(s: &str) -> Option<IntType> {
-    use self::IntType::*;
+    use IntType::*;
 
     match s {
         "i8" => Some(SignedInt(ast::IntTy::I8)),

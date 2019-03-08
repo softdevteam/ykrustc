@@ -1,18 +1,7 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_data_structures::thin_vec::ThinVec;
 
 use syntax::ast;
-use syntax::ext::base::*;
-use syntax::ext::base;
+use syntax::ext::base::{self, *};
 use syntax::feature_gate;
 use syntax::parse::token;
 use syntax::ptr::P;
@@ -20,7 +9,7 @@ use syntax_pos::Span;
 use syntax_pos::symbol::Symbol;
 use syntax::tokenstream::TokenTree;
 
-pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
+pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt<'_>,
                               sp: Span,
                               tts: &[TokenTree])
                               -> Box<dyn base::MacResult + 'cx> {
@@ -30,12 +19,11 @@ pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
                                        sp,
                                        feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_CONCAT_IDENTS);
-        return base::DummyResult::expr(sp);
     }
 
     if tts.is_empty() {
         cx.span_err(sp, "concat_idents! takes 1 or more arguments.");
-        return DummyResult::expr(sp);
+        return DummyResult::any(sp);
     }
 
     let mut res_str = String::new();
@@ -45,7 +33,7 @@ pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
                 TokenTree::Token(_, token::Comma) => {}
                 _ => {
                     cx.span_err(sp, "concat_idents! expecting comma.");
-                    return DummyResult::expr(sp);
+                    return DummyResult::any(sp);
                 }
             }
         } else {
@@ -54,7 +42,7 @@ pub fn expand_syntax_ext<'cx>(cx: &'cx mut ExtCtxt,
                     res_str.push_str(&ident.as_str()),
                 _ => {
                     cx.span_err(sp, "concat_idents! requires ident args.");
-                    return DummyResult::expr(sp);
+                    return DummyResult::any(sp);
                 }
             }
         }

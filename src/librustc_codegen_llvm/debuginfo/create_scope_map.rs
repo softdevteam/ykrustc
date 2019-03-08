@@ -1,20 +1,10 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_codegen_ssa::debuginfo::{FunctionDebugContext, FunctionDebugContextData, MirDebugScope};
 use super::metadata::file_metadata;
 use super::utils::{DIB, span_start};
 
-use llvm;
-use llvm::debuginfo::{DIScope, DISubprogram};
-use common::CodegenCx;
+use crate::llvm;
+use crate::llvm::debuginfo::{DIScope, DISubprogram};
+use crate::common::CodegenCx;
 use rustc::mir::{Mir, SourceScope};
 
 use libc::c_uint;
@@ -26,11 +16,11 @@ use rustc_data_structures::indexed_vec::{Idx, IndexVec};
 
 use syntax_pos::BytePos;
 
-/// Produce DIScope DIEs for each MIR Scope which has variables defined in it.
+/// Produces DIScope DIEs for each MIR Scope which has variables defined in it.
 /// If debuginfo is disabled, the returned vector is empty.
 pub fn create_mir_scopes(
     cx: &CodegenCx<'ll, '_>,
-    mir: &Mir,
+    mir: &Mir<'_>,
     debug_context: &FunctionDebugContext<&'ll DISubprogram>,
 ) -> IndexVec<SourceScope, MirDebugScope<&'ll DIScope>> {
     let null_scope = MirDebugScope {
@@ -65,7 +55,7 @@ pub fn create_mir_scopes(
 }
 
 fn make_mir_scope(cx: &CodegenCx<'ll, '_>,
-                  mir: &Mir,
+                  mir: &Mir<'_>,
                   has_variables: &BitSet<SourceScope>,
                   debug_context: &FunctionDebugContextData<&'ll DISubprogram>,
                   scope: SourceScope,

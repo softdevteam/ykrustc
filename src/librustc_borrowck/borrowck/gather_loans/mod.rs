@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // ----------------------------------------------------------------------
 // Gathering loans
 //
@@ -16,8 +6,8 @@
 // their associated scopes.  In phase two, checking loans, we will then make
 // sure that all of these loans are honored.
 
-use borrowck::*;
-use borrowck::move_data::MoveData;
+use crate::borrowck::*;
+use crate::borrowck::move_data::MoveData;
 use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
@@ -27,8 +17,9 @@ use rustc::ty::{self, TyCtxt};
 use syntax::ast;
 use syntax_pos::Span;
 use rustc::hir;
+use log::debug;
 
-use self::restrictions::RestrictionResult;
+use restrictions::RestrictionResult;
 
 mod lifetime;
 mod restrictions;
@@ -38,13 +29,13 @@ mod move_error;
 pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                     body: hir::BodyId)
                                     -> (Vec<Loan<'tcx>>, move_data::MoveData<'tcx>) {
-    let def_id = bccx.tcx.hir.body_owner_def_id(body);
+    let def_id = bccx.tcx.hir().body_owner_def_id(body);
     let param_env = bccx.tcx.param_env(def_id);
     let mut glcx = GatherLoanCtxt {
         bccx,
         all_loans: Vec::new(),
         item_ub: region::Scope {
-            id: bccx.tcx.hir.body(body).value.hir_id.local_id,
+            id: bccx.tcx.hir().body(body).value.hir_id.local_id,
             data: region::ScopeData::Node
         },
         move_data: MoveData::default(),
@@ -77,7 +68,7 @@ struct GatherLoanCtxt<'a, 'tcx: 'a> {
 
 impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
     fn consume(&mut self,
-               consume_id: ast::NodeId,
+               consume_id: hir::HirId,
                _consume_span: Span,
                cmt: &mc::cmt_<'tcx>,
                mode: euv::ConsumeMode) {
@@ -88,7 +79,7 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
             euv::Move(move_reason) => {
                 gather_moves::gather_move_from_expr(
                     self.bccx, &self.move_data, &mut self.move_error_collector,
-                    self.bccx.tcx.hir.node_to_hir_id(consume_id).local_id, cmt, move_reason);
+                    consume_id.local_id, cmt, move_reason);
             }
             euv::Copy => { }
         }
@@ -124,7 +115,7 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
     }
 
     fn borrow(&mut self,
-              borrow_id: ast::NodeId,
+              borrow_id: hir::HirId,
               borrow_span: Span,
               cmt: &mc::cmt_<'tcx>,
               loan_region: ty::Region<'tcx>,
@@ -135,8 +126,8 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
                bk={:?}, loan_cause={:?})",
                borrow_id, cmt, loan_region,
                bk, loan_cause);
-        let hir_id = self.bccx.tcx.hir.node_to_hir_id(borrow_id);
-        self.guarantee_valid(hir_id.local_id,
+
+        self.guarantee_valid(borrow_id.local_id,
                              borrow_span,
                              cmt,
                              bk,
@@ -145,20 +136,21 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for GatherLoanCtxt<'a, 'tcx> {
     }
 
     fn mutate(&mut self,
-              assignment_id: ast::NodeId,
+              assignment_id: hir::HirId,
               assignment_span: Span,
               assignee_cmt: &mc::cmt_<'tcx>,
               _: euv::MutateMode)
     {
-        self.guarantee_assignment_valid(assignment_id,
+        let node_id = self.bccx.tcx.hir().hir_to_node_id(assignment_id);
+        self.guarantee_assignment_valid(node_id,
                                         assignment_span,
                                         assignee_cmt);
     }
 
-    fn decl_without_init(&mut self, id: ast::NodeId, _span: Span) {
+    fn decl_without_init(&mut self, id: hir::HirId, _span: Span) {
         let ty = self.bccx
                      .tables
-                     .node_id_to_type(self.bccx.tcx.hir.node_to_hir_id(id));
+                     .node_type(id);
         gather_moves::gather_decl(self.bccx, &self.move_data, id, ty);
     }
 }
@@ -280,13 +272,13 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
                     self.mark_loan_path_as_mutated(&lp);
                 }
                 gather_moves::gather_assignment(self.bccx, &self.move_data,
-                                                self.bccx.tcx.hir.node_to_hir_id(assignment_id)
+                                                self.bccx.tcx.hir().node_to_hir_id(assignment_id)
                                                     .local_id,
                                                 assignment_span,
                                                 lp);
             }
             None => {
-                // This can occur with e.g. `*foo() = 5`.  In such
+                // This can occur with e.g., `*foo() = 5`.  In such
                 // cases, there is no need to check for conflicts
                 // with moves etc, just ignore.
             }
@@ -294,7 +286,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
     }
 
     /// Guarantees that `addr_of(cmt)` will be valid for the duration of `static_scope_r`, or
-    /// reports an error.  This may entail taking out loans, which will be added to the
+    /// reports an error. This may entail taking out loans, which will be added to the
     /// `req_loan_map`.
     fn guarantee_valid(&mut self,
                        borrow_id: hir::ItemLocalId,
@@ -437,7 +429,7 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
         // }
     }
 
-    pub fn mark_loan_path_as_mutated(&self, loan_path: &LoanPath) {
+    pub fn mark_loan_path_as_mutated(&self, loan_path: &LoanPath<'_>) {
         //! For mutable loans of content whose mutability derives
         //! from a local variable, mark the mutability decl as necessary.
 
@@ -446,9 +438,8 @@ impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
 
         while let Some(current_path) = wrapped_path {
             wrapped_path = match current_path.kind {
-                LpVar(local_id) => {
+                LpVar(hir_id) => {
                     if !through_borrow {
-                        let hir_id = self.bccx.tcx.hir.node_to_hir_id(local_id);
                         self.bccx.used_mut_nodes.borrow_mut().insert(hir_id);
                     }
                     None

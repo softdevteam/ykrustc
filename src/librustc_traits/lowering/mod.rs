@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 mod environment;
 
 use rustc::hir::def_id::DefId;
@@ -28,12 +18,12 @@ use rustc::traits::{
 };
 use rustc::ty::query::Providers;
 use rustc::ty::{self, List, TyCtxt};
-use rustc::ty::subst::{Subst, Substs};
+use rustc::ty::subst::{Subst, InternalSubsts};
 use syntax::ast;
 
 use std::iter;
 
-crate fn provide(p: &mut Providers) {
+crate fn provide(p: &mut Providers<'_>) {
     *p = Providers {
         program_clauses_for,
         program_clauses_for_env: environment::program_clauses_for_env,
@@ -43,7 +33,7 @@ crate fn provide(p: &mut Providers) {
 }
 
 crate trait Lower<T> {
-    /// Lower a rustc construct (e.g. `ty::TraitPredicate`) to a chalk-like type.
+    /// Lower a rustc construct (e.g., `ty::TraitPredicate`) to a chalk-like type.
     fn lower(&self) -> T;
 }
 
@@ -90,9 +80,9 @@ where
 }
 
 /// `ty::Binder` is used for wrapping a rustc construction possibly containing generic
-/// lifetimes, e.g. `for<'a> T: Fn(&'a i32)`. Instead of representing higher-ranked things
-/// in that leaf-form (i.e. `Holds(Implemented(Binder<TraitPredicate>))` in the previous
-/// example), we model them with quantified domain goals, e.g. as for the previous example:
+/// lifetimes, e.g., `for<'a> T: Fn(&'a i32)`. Instead of representing higher-ranked things
+/// in that leaf-form (i.e., `Holds(Implemented(Binder<TraitPredicate>))` in the previous
+/// example), we model them with quantified domain goals, e.g., as for the previous example:
 /// `forall<'a> { T: Fn(&'a i32) }` which corresponds to something like
 /// `Binder<Holds(Implemented(TraitPredicate))>`.
 impl<'tcx, T> Lower<PolyDomainGoal<'tcx>> for ty::Binder<T>
@@ -168,7 +158,8 @@ crate fn program_clauses_for<'a, 'tcx>(
     def_id: DefId,
 ) -> Clauses<'tcx> {
     match tcx.def_key(def_id).disambiguated_data.data {
-        DefPathData::Trait(_) => program_clauses_for_trait(tcx, def_id),
+        DefPathData::Trait(_) |
+        DefPathData::TraitAlias(_) => program_clauses_for_trait(tcx, def_id),
         DefPathData::Impl => program_clauses_for_impl(tcx, def_id),
         DefPathData::AssocTypeInImpl(..) => program_clauses_for_associated_type_value(tcx, def_id),
         DefPathData::AssocTypeInTrait(..) => program_clauses_for_associated_type_def(tcx, def_id),
@@ -191,7 +182,7 @@ fn program_clauses_for_trait<'a, 'tcx>(
     // }
     // ```
 
-    let bound_vars = Substs::bound_vars_for_item(tcx, def_id);
+    let bound_vars = InternalSubsts::bound_vars_for_item(tcx, def_id);
 
     // `Self: Trait<P1..Pn>`
     let trait_pred = ty::TraitPredicate {
@@ -202,7 +193,7 @@ fn program_clauses_for_trait<'a, 'tcx>(
     };
 
     // `Implemented(Self: Trait<P1..Pn>)`
-    let impl_trait: DomainGoal = trait_pred.lower();
+    let impl_trait: DomainGoal<'_> = trait_pred.lower();
 
     // `FromEnv(Self: Trait<P1..Pn>)`
     let from_env_goal = tcx.mk_goal(impl_trait.into_from_env_goal().into_goal());
@@ -221,7 +212,6 @@ fn program_clauses_for_trait<'a, 'tcx>(
     let where_clauses = &predicates
         .iter()
         .map(|(wc, _)| wc.lower())
-        .map(|wc| wc.subst(tcx, bound_vars))
         .collect::<Vec<_>>();
 
     // Rule Implied-Bound-From-Trait
@@ -242,14 +232,13 @@ fn program_clauses_for_trait<'a, 'tcx>(
         .map(|wc| {
             // we move binders to the left
             wc.map_bound(|goal| ProgramClause {
-                goal: goal.into_from_env_goal(),
-
-                // FIXME: As where clauses can only bind lifetimes for now,
-                // and that named bound regions have a def-id, it is safe
-                // to just inject `hypotheses` (which contains named vars bound at index `0`)
-                // into this binding level. This may change if we ever allow where clauses
-                // to bind types (e.g. for GATs things), because bound types only use a `BoundVar`
+                // FIXME: As where clauses can only bind lifetimes for now, and that named
+                // bound regions have a def-id, it is safe to just inject `bound_vars` and
+                // `hypotheses` (which contain named vars bound at index `0`) into this
+                // binding level. This may change if we ever allow where clauses to bind
+                // types (e.g. for GATs things), because bound types only use a `BoundVar`
                 // index (no def-id).
+                goal: goal.subst(tcx, bound_vars).into_from_env_goal(),
                 hypotheses,
 
                 category: ProgramClauseCategory::ImpliedBound,
@@ -305,7 +294,7 @@ fn program_clauses_for_impl<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId
     // }
     // ```
 
-    let bound_vars = Substs::bound_vars_for_item(tcx, def_id);
+    let bound_vars = InternalSubsts::bound_vars_for_item(tcx, def_id);
 
     let trait_ref = tcx.impl_trait_ref(def_id)
         .expect("not an impl")
@@ -347,7 +336,7 @@ pub fn program_clauses_for_type_def<'a, 'tcx>(
     // }
     // ```
 
-    let bound_vars = Substs::bound_vars_for_item(tcx, def_id);
+    let bound_vars = InternalSubsts::bound_vars_for_item(tcx, def_id);
 
     // `Ty<...>`
     let ty = tcx.type_of(def_id).subst(tcx, bound_vars);
@@ -356,7 +345,6 @@ pub fn program_clauses_for_type_def<'a, 'tcx>(
     let where_clauses = tcx.predicates_of(def_id).predicates
         .iter()
         .map(|(wc, _)| wc.lower())
-        .map(|wc| wc.subst(tcx, bound_vars))
         .collect::<Vec<_>>();
 
     // `WellFormed(Ty<...>) :- WC1, ..., WCm`
@@ -365,7 +353,7 @@ pub fn program_clauses_for_type_def<'a, 'tcx>(
         hypotheses: tcx.mk_goals(
             where_clauses
                 .iter()
-                .cloned()
+                .map(|wc| wc.subst(tcx, bound_vars))
                 .map(|wc| tcx.mk_goal(GoalKind::from_poly_domain_goal(wc, tcx))),
         ),
         category: ProgramClauseCategory::WellFormed,
@@ -393,11 +381,10 @@ pub fn program_clauses_for_type_def<'a, 'tcx>(
         .map(|wc| {
             // move the binders to the left
             wc.map_bound(|goal| ProgramClause {
-                goal: goal.into_from_env_goal(),
-
-                // FIXME: we inject `hypotheses` into this binding level,
-                // which may be incorrect in the future: see the FIXME in
-                // `program_clauses_for_trait`
+                // FIXME: we inject `bound_vars` and `hypotheses` into this binding
+                // level, which may be incorrect in the future: see the FIXME in
+                // `program_clauses_for_trait`.
+                goal: goal.subst(tcx, bound_vars).into_from_env_goal(),
                 hypotheses,
 
                 category: ProgramClauseCategory::ImpliedBound,
@@ -439,7 +426,7 @@ pub fn program_clauses_for_associated_type_def<'a, 'tcx>(
         _ => bug!("not an trait container"),
     };
 
-    let trait_bound_vars = Substs::bound_vars_for_item(tcx, trait_id);
+    let trait_bound_vars = InternalSubsts::bound_vars_for_item(tcx, trait_id);
     let trait_ref = ty::TraitRef {
         def_id: trait_id,
         substs: trait_bound_vars,
@@ -515,7 +502,8 @@ pub fn program_clauses_for_associated_type_def<'a, 'tcx>(
         .unwrap_or(0);
     // Add a new type param after the existing ones (`U` in the comment above).
     let ty_var = ty::Bound(
-        ty::BoundTy::new(ty::INNERMOST, ty::BoundVar::from_u32(offset + 1))
+        ty::INNERMOST,
+        ty::BoundVar::from_u32(offset + 1).into()
     );
 
     // `ProjectionEq(<Self as Trait<P1..Pn>>::AssocType<Pn+1..Pm> = U)`
@@ -559,7 +547,7 @@ pub fn program_clauses_for_associated_type_value<'a, 'tcx>(
     // ```
     //
     // FIXME: For the moment, we don't account for where clauses written on the associated
-    // ty definition (i.e. in the trait def, as in `type AssocType<T> where T: Sized`).
+    // ty definition (i.e., in the trait def, as in `type AssocType<T> where T: Sized`).
     // ```
     // forall<P0..Pm> {
     //   forall<Pn+1..Pm> {
@@ -576,7 +564,7 @@ pub fn program_clauses_for_associated_type_value<'a, 'tcx>(
         _ => bug!("not an impl container"),
     };
 
-    let impl_bound_vars = Substs::bound_vars_for_item(tcx, impl_id);
+    let impl_bound_vars = InternalSubsts::bound_vars_for_item(tcx, impl_id);
 
     // `A0 as Trait<A1..An>`
     let trait_ref = tcx.impl_trait_ref(impl_id)
@@ -587,7 +575,7 @@ pub fn program_clauses_for_associated_type_value<'a, 'tcx>(
     let ty = tcx.type_of(item_id);
 
     // `Implemented(A0: Trait<A1..An>)`
-    let trait_implemented: DomainGoal = ty::TraitPredicate { trait_ref }.lower();
+    let trait_implemented: DomainGoal<'_> = ty::TraitPredicate { trait_ref }.lower();
 
     // `<A0 as Trait<A1..An>>::AssocType<Pn+1..Pm>`
     let projection_ty = ty::ProjectionTy::from_ref_and_name(tcx, trait_ref, item.ident);
@@ -614,7 +602,7 @@ pub fn dump_program_clauses<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     }
 
     let mut visitor = ClauseDumper { tcx };
-    tcx.hir
+    tcx.hir()
         .krate()
         .visit_all_item_likes(&mut visitor.as_deep_visitor());
 }
@@ -624,8 +612,8 @@ struct ClauseDumper<'a, 'tcx: 'a> {
 }
 
 impl<'a, 'tcx> ClauseDumper<'a, 'tcx> {
-    fn process_attrs(&mut self, node_id: ast::NodeId, attrs: &[ast::Attribute]) {
-        let def_id = self.tcx.hir.local_def_id(node_id);
+    fn process_attrs(&mut self, hir_id: hir::HirId, attrs: &[ast::Attribute]) {
+        let def_id = self.tcx.hir().local_def_id_from_hir_id(hir_id);
         for attr in attrs {
             let mut clauses = None;
 
@@ -635,7 +623,7 @@ impl<'a, 'tcx> ClauseDumper<'a, 'tcx> {
 
             if attr.check_name("rustc_dump_env_program_clauses") {
                 let environment = self.tcx.environment(def_id);
-                clauses = Some(self.tcx.program_clauses_for_env(*environment.skip_binder()));
+                clauses = Some(self.tcx.program_clauses_for_env(environment));
             }
 
             if let Some(clauses) = clauses {
@@ -663,26 +651,26 @@ impl<'a, 'tcx> ClauseDumper<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for ClauseDumper<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
-        self.process_attrs(item.id, &item.attrs);
+        self.process_attrs(item.hir_id, &item.attrs);
         intravisit::walk_item(self, item);
     }
 
     fn visit_trait_item(&mut self, trait_item: &'tcx hir::TraitItem) {
-        self.process_attrs(trait_item.id, &trait_item.attrs);
+        self.process_attrs(trait_item.hir_id, &trait_item.attrs);
         intravisit::walk_trait_item(self, trait_item);
     }
 
     fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
-        self.process_attrs(impl_item.id, &impl_item.attrs);
+        self.process_attrs(impl_item.hir_id, &impl_item.attrs);
         intravisit::walk_impl_item(self, impl_item);
     }
 
     fn visit_struct_field(&mut self, s: &'tcx hir::StructField) {
-        self.process_attrs(s.id, &s.attrs);
+        self.process_attrs(s.hir_id, &s.attrs);
         intravisit::walk_struct_field(self, s);
     }
 }

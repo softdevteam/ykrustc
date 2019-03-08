@@ -1,14 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! Platform-dependent platform abstraction
+//! Platform-dependent platform abstraction.
 //!
 //! The `std::sys` module is the abstracted interface through which
 //! `std` talks to the underlying operating system. It has different
@@ -48,6 +38,9 @@ cfg_if! {
     } else if #[cfg(target_arch = "wasm32")] {
         mod wasm;
         pub use self::wasm::*;
+    } else if #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))] {
+        mod sgx;
+        pub use self::sgx::*;
     } else {
         compile_error!("libstd doesn't compile for this platform yet");
     }
@@ -61,8 +54,11 @@ cfg_if! {
 cfg_if! {
     if #[cfg(any(unix, target_os = "redox"))] {
         // On unix we'll document what's already available
+        #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as unix_ext;
-    } else if #[cfg(any(target_os = "cloudabi", target_arch = "wasm32"))] {
+    } else if #[cfg(any(target_os = "cloudabi",
+                        target_arch = "wasm32",
+                        all(target_vendor = "fortanix", target_env = "sgx")))] {
         // On CloudABI and wasm right now the module below doesn't compile
         // (missing things in `libc` which is empty) so just omit everything
         // with an empty module
@@ -71,7 +67,7 @@ cfg_if! {
         pub mod unix_ext {}
     } else {
         // On other platforms like Windows document the bare bones of unix
-        use os::linux as platform;
+        use crate::os::linux as platform;
         #[path = "unix/ext/mod.rs"]
         pub mod unix_ext;
     }
@@ -82,8 +78,11 @@ cfg_if! {
     if #[cfg(windows)] {
         // On windows we'll just be documenting what's already available
         #[allow(missing_docs)]
+        #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as windows_ext;
-    } else if #[cfg(any(target_os = "cloudabi", target_arch = "wasm32"))] {
+    } else if #[cfg(any(target_os = "cloudabi",
+                        target_arch = "wasm32",
+                        all(target_vendor = "fortanix", target_env = "sgx")))] {
         // On CloudABI and wasm right now the shim below doesn't compile, so
         // just omit it
         #[unstable(issue = "0", feature = "std_internals")]

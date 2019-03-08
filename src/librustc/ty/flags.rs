@@ -1,16 +1,6 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use mir::interpret::ConstValue;
-use ty::subst::Substs;
-use ty::{self, Ty, TypeFlags, TypeFoldable};
+use crate::ty::subst::{SubstsRef, UnpackedKind};
+use crate::ty::{self, Ty, TypeFlags, TypeFoldable, InferConst};
+use crate::mir::interpret::ConstValue;
 
 #[derive(Debug)]
 pub struct FlagComputation {
@@ -115,8 +105,12 @@ impl FlagComputation {
                 self.add_substs(&substs.substs);
             }
 
-            &ty::Bound(bound_ty) => {
-                self.add_binder(bound_ty.index);
+            &ty::Bound(debruijn, _) => {
+                self.add_binder(debruijn);
+            }
+
+            &ty::Placeholder(..) => {
+                self.add_flags(TypeFlags::HAS_TY_PLACEHOLDER);
             }
 
             &ty::Infer(infer) => {
@@ -179,7 +173,10 @@ impl FlagComputation {
 
             &ty::Array(tt, len) => {
                 self.add_ty(tt);
-                self.add_const(len);
+                if let ty::LazyConst::Unevaluated(_, substs) = len {
+                    self.add_flags(TypeFlags::HAS_PROJECTION);
+                    self.add_substs(substs);
+                }
             }
 
             &ty::Slice(tt) => {
@@ -236,12 +233,19 @@ impl FlagComputation {
         }
     }
 
-    fn add_const(&mut self, constant: &ty::Const<'_>) {
-        self.add_ty(constant.ty);
-        if let ConstValue::Unevaluated(_, substs) = constant.val {
-            self.add_flags(TypeFlags::HAS_PROJECTION);
-            self.add_substs(substs);
+    fn add_const(&mut self, c: &ty::LazyConst<'_>) {
+        match c {
+            ty::LazyConst::Unevaluated(_, substs) => self.add_substs(substs),
+            // Only done to add the binder for the type. The type flags are
+            // included in `Const::type_flags`.
+            ty::LazyConst::Evaluated(ty::Const { ty, val }) => {
+                self.add_ty(ty);
+                if let ConstValue::Infer(InferConst::Canonical(debruijn, _)) = val {
+                    self.add_binder(*debruijn)
+                }
+            }
         }
+        self.add_flags(c.type_flags());
     }
 
     fn add_existential_projection(&mut self, projection: &ty::ExistentialProjection<'_>) {
@@ -253,13 +257,13 @@ impl FlagComputation {
         self.add_substs(projection_ty.substs);
     }
 
-    fn add_substs(&mut self, substs: &Substs<'_>) {
-        for ty in substs.types() {
-            self.add_ty(ty);
-        }
-
-        for r in substs.regions() {
-            self.add_region(r);
+    fn add_substs(&mut self, substs: SubstsRef<'_>) {
+        for kind in substs {
+            match kind.unpack() {
+                UnpackedKind::Type(ty) => self.add_ty(ty),
+                UnpackedKind::Lifetime(lt) => self.add_region(lt),
+                UnpackedKind::Const(ct) => self.add_const(ct),
+            }
         }
     }
 }

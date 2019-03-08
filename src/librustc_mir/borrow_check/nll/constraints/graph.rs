@@ -1,16 +1,6 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use borrow_check::nll::type_check::Locations;
-use borrow_check::nll::constraints::ConstraintIndex;
-use borrow_check::nll::constraints::{ConstraintSet, OutlivesConstraint};
+use crate::borrow_check::nll::type_check::Locations;
+use crate::borrow_check::nll::constraints::ConstraintIndex;
+use crate::borrow_check::nll::constraints::{ConstraintSet, OutlivesConstraint};
 use rustc::mir::ConstraintCategory;
 use rustc::ty::RegionVid;
 use rustc_data_structures::graph;
@@ -81,7 +71,7 @@ impl ConstraintGraphDirecton for Reverse {
 }
 
 impl<D: ConstraintGraphDirecton> ConstraintGraph<D> {
-    /// Create a "dependency graph" where each region constraint `R1:
+    /// Creates a "dependency graph" where each region constraint `R1:
     /// R2` is treated as an edge `R1 -> R2`. We use this graph to
     /// construct SCCs for region inference but also for error
     /// reporting.
@@ -196,7 +186,7 @@ crate struct RegionGraph<'s, D: ConstraintGraphDirecton> {
 }
 
 impl<'s, D: ConstraintGraphDirecton> RegionGraph<'s, D> {
-    /// Create a "dependency graph" where each region constraint `R1:
+    /// Creates a "dependency graph" where each region constraint `R1:
     /// R2` is treated as an edge `R1 -> R2`. We use this graph to
     /// construct SCCs for region inference but also for error
     /// reporting.

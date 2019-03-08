@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! OS-based thread local storage
 //!
 //! This module provides an implementation of OS-based thread local storage,
@@ -58,10 +48,10 @@
 #![unstable(feature = "thread_local_internals", issue = "0")]
 #![allow(dead_code)] // sys isn't exported yet
 
-use ptr;
-use sync::atomic::{self, AtomicUsize, Ordering};
-use sys::thread_local as imp;
-use sys_common::mutex::Mutex;
+use crate::ptr;
+use crate::sync::atomic::{self, AtomicUsize, Ordering};
+use crate::sys::thread_local as imp;
+use crate::sys_common::mutex::Mutex;
 
 /// A type for TLS keys that are statically allocated.
 ///

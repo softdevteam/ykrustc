@@ -1,21 +1,11 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::io::prelude::*;
 
-use io::prelude::*;
-
-use fmt;
-use io::{self, Initializer};
-use net::{ToSocketAddrs, SocketAddr, Shutdown};
-use sys_common::net as net_imp;
-use sys_common::{AsInner, FromInner, IntoInner};
-use time::Duration;
+use crate::fmt;
+use crate::io::{self, Initializer, IoVec, IoVecMut};
+use crate::net::{ToSocketAddrs, SocketAddr, Shutdown};
+use crate::sys_common::net as net_imp;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::time::Duration;
 
 /// A TCP stream between a local and a remote socket.
 ///
@@ -507,7 +497,7 @@ impl TcpStream {
         self.0.ttl()
     }
 
-    /// Get the value of the `SO_ERROR` option on this socket.
+    /// Gets the value of the `SO_ERROR` option on this socket.
     ///
     /// This will retrieve the stored error in the underlying socket, clearing
     /// the field in the process. This can be useful for checking errors between
@@ -530,7 +520,7 @@ impl TcpStream {
     /// Moves this TCP stream into or out of nonblocking mode.
     ///
     /// This will result in `read`, `write`, `recv` and `send` operations
-    /// becoming nonblocking, i.e. immediately returning from their calls.
+    /// becoming nonblocking, i.e., immediately returning from their calls.
     /// If the IO operation is successful, `Ok` is returned and no further
     /// action is required. If the IO operation could not be completed and needs
     /// to be retried, an error with kind [`io::ErrorKind::WouldBlock`] is
@@ -579,6 +569,10 @@ impl TcpStream {
 impl Read for TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
 
+    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+        self.0.read_vectored(bufs)
+    }
+
     #[inline]
     unsafe fn initializer(&self) -> Initializer {
         Initializer::nop()
@@ -587,11 +581,20 @@ impl Read for TcpStream {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Write for TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.0.write(buf) }
+
+    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+        self.0.write_vectored(bufs)
+    }
+
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> Read for &'a TcpStream {
+impl Read for &TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.0.read(buf) }
+
+    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+        self.0.read_vectored(bufs)
+    }
 
     #[inline]
     unsafe fn initializer(&self) -> Initializer {
@@ -599,8 +602,13 @@ impl<'a> Read for &'a TcpStream {
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a> Write for &'a TcpStream {
+impl Write for &TcpStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.0.write(buf) }
+
+    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+        self.0.write_vectored(bufs)
+    }
+
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
 
@@ -646,7 +654,7 @@ impl TcpListener {
     ///
     /// # Examples
     ///
-    /// Create a TCP listener bound to `127.0.0.1:80`:
+    /// Creates a TCP listener bound to `127.0.0.1:80`:
     ///
     /// ```no_run
     /// use std::net::TcpListener;
@@ -654,7 +662,7 @@ impl TcpListener {
     /// let listener = TcpListener::bind("127.0.0.1:80").unwrap();
     /// ```
     ///
-    /// Create a TCP listener bound to `127.0.0.1:80`. If that fails, create a
+    /// Creates a TCP listener bound to `127.0.0.1:80`. If that fails, create a
     /// TCP listener bound to `127.0.0.1:443`:
     ///
     /// ```no_run
@@ -729,6 +737,9 @@ impl TcpListener {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
+        // On WASM, `TcpStream` is uninhabited (as it's unsupported) and so
+        // the `a` variable here is technically unused.
+        #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
         self.0.accept().map(|(a, b)| (TcpStream(a), b))
     }
 
@@ -818,7 +829,7 @@ impl TcpListener {
         self.0.only_v6()
     }
 
-    /// Get the value of the `SO_ERROR` option on this socket.
+    /// Gets the value of the `SO_ERROR` option on this socket.
     ///
     /// This will retrieve the stored error in the underlying socket, clearing
     /// the field in the process. This can be useful for checking errors between
@@ -840,7 +851,7 @@ impl TcpListener {
     /// Moves this TCP stream into or out of nonblocking mode.
     ///
     /// This will result in the `accept` operation becoming nonblocking,
-    /// i.e. immediately returning from their calls. If the IO operation is
+    /// i.e., immediately returning from their calls. If the IO operation is
     /// successful, `Ok` is returned and no further action is required. If the
     /// IO operation could not be completed and needs to be retried, an error
     /// with kind [`io::ErrorKind::WouldBlock`] is returned.
@@ -918,14 +929,14 @@ impl fmt::Debug for TcpListener {
 
 #[cfg(all(test, not(any(target_os = "cloudabi", target_os = "emscripten"))))]
 mod tests {
-    use io::ErrorKind;
-    use io::prelude::*;
-    use net::*;
-    use net::test::{next_test_ip4, next_test_ip6};
-    use sync::mpsc::channel;
-    use sys_common::AsInner;
-    use time::{Instant, Duration};
-    use thread;
+    use crate::io::{ErrorKind, IoVec, IoVecMut};
+    use crate::io::prelude::*;
+    use crate::net::*;
+    use crate::net::test::{next_test_ip4, next_test_ip6};
+    use crate::sync::mpsc::channel;
+    use crate::sys_common::AsInner;
+    use crate::time::{Instant, Duration};
+    use crate::thread;
 
     fn each_ip(f: &mut dyn FnMut(SocketAddr)) {
         f(next_test_ip4());
@@ -1192,11 +1203,62 @@ mod tests {
     }
 
     #[test]
+    fn read_vectored() {
+        each_ip(&mut |addr| {
+            let srv = t!(TcpListener::bind(&addr));
+            let mut s1 = t!(TcpStream::connect(&addr));
+            let mut s2 = t!(srv.accept()).0;
+
+            let len = s1.write(&[10, 11, 12]).unwrap();
+            assert_eq!(len, 3);
+
+            let mut a = [];
+            let mut b = [0];
+            let mut c = [0; 3];
+            let len = t!(s2.read_vectored(
+                &mut [IoVecMut::new(&mut a), IoVecMut::new(&mut b), IoVecMut::new(&mut c)],
+            ));
+            assert!(len > 0);
+            assert_eq!(b, [10]);
+            // some implementations don't support readv, so we may only fill the first buffer
+            assert!(len == 1 || c == [11, 12, 0]);
+        })
+    }
+
+    #[test]
+    fn write_vectored() {
+        each_ip(&mut |addr| {
+            let srv = t!(TcpListener::bind(&addr));
+            let mut s1 = t!(TcpStream::connect(&addr));
+            let mut s2 = t!(srv.accept()).0;
+
+            let a = [];
+            let b = [10];
+            let c = [11, 12];
+            t!(s1.write_vectored(&[IoVec::new(&a), IoVec::new(&b), IoVec::new(&c)]));
+
+            let mut buf = [0; 4];
+            let len = t!(s2.read(&mut buf));
+            // some implementations don't support writev, so we may only write the first buffer
+            if len == 1 {
+                assert_eq!(buf, [10, 0, 0, 0]);
+            } else {
+                assert_eq!(len, 3);
+                assert_eq!(buf, [10, 11, 12, 0]);
+            }
+        })
+    }
+
+    #[test]
     fn double_bind() {
         each_ip(&mut |addr| {
-            let _listener = t!(TcpListener::bind(&addr));
+            let listener1 = t!(TcpListener::bind(&addr));
             match TcpListener::bind(&addr) {
-                Ok(..) => panic!(),
+                Ok(listener2) => panic!(
+                    "This system (perhaps due to options set by TcpListener::bind) \
+                     permits double binding: {:?} and {:?}",
+                    listener1, listener2
+                ),
                 Err(e) => {
                     assert!(e.kind() == ErrorKind::ConnectionRefused ||
                             e.kind() == ErrorKind::Other ||
@@ -1548,8 +1610,9 @@ mod tests {
 
         let mut buf = [0; 10];
         let start = Instant::now();
-        let kind = stream.read(&mut buf).err().expect("expected error").kind();
-        assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        let kind = stream.read_exact(&mut buf).err().expect("expected error").kind();
+        assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut,
+                "unexpected_error: {:?}", kind);
         assert!(start.elapsed() > Duration::from_millis(400));
         drop(listener);
     }
@@ -1570,8 +1633,9 @@ mod tests {
         assert_eq!(b"hello world", &buf[..]);
 
         let start = Instant::now();
-        let kind = stream.read(&mut buf).err().expect("expected error").kind();
-        assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut);
+        let kind = stream.read_exact(&mut buf).err().expect("expected error").kind();
+        assert!(kind == ErrorKind::WouldBlock || kind == ErrorKind::TimedOut,
+                "unexpected_error: {:?}", kind);
         assert!(start.elapsed() > Duration::from_millis(400));
         drop(listener);
     }
@@ -1676,17 +1740,6 @@ mod tests {
             }
             t!(txdone.send(()));
         })
-    }
-
-    #[test]
-    fn connect_timeout_unroutable() {
-        // this IP is unroutable, so connections should always time out,
-        // provided the network is reachable to begin with.
-        let addr = "10.255.255.1:80".parse().unwrap();
-        let e = TcpStream::connect_timeout(&addr, Duration::from_millis(250)).unwrap_err();
-        assert!(e.kind() == io::ErrorKind::TimedOut ||
-                e.kind() == io::ErrorKind::Other,
-                "bad error: {} {:?}", e, e.kind());
     }
 
     #[test]

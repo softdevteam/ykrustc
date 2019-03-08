@@ -1,14 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-
 // This test case tests the incremental compilation hash (ICH) implementation
 // for let expressions.
 
@@ -54,7 +43,7 @@ impl Foo {
 #[rustc_clean(cfg="cfail2")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
     #[rustc_clean(cfg="cfail3")]
     pub fn method_body() {
         println!("Hello, world!");
@@ -75,7 +64,7 @@ impl Foo {
 #[rustc_clean(cfg="cfail2")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
     #[rustc_clean(cfg="cfail3")]
     #[inline]
     pub fn method_body_inlined() {
@@ -126,7 +115,7 @@ impl Foo {
 impl Foo {
     #[rustc_clean(
         cfg="cfail2",
-        except="Hir,HirBody,FnSignature,TypeckTables,MirOptimized,MirValidated"
+        except="Hir,HirBody,FnSignature,TypeckTables,MirOptimized,MirBuilt"
     )]
     #[rustc_clean(cfg="cfail3")]
     pub fn method_selfmutness(&mut self) { }
@@ -166,7 +155,7 @@ impl Foo {
 impl Foo {
     #[rustc_clean(
         cfg="cfail2",
-        except="Hir,HirBody,FnSignature,TypeckTables,MirOptimized,MirValidated"
+        except="Hir,HirBody,FnSignature,TypeckTables,MirOptimized,MirBuilt"
     )]
     #[rustc_clean(cfg="cfail3")]
     pub fn add_method_parameter(&self, _: i32) { }
@@ -184,7 +173,7 @@ impl Foo {
 #[rustc_clean(cfg="cfail2")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
     #[rustc_clean(cfg="cfail3")]
     pub fn change_method_parameter_name(&self, b: i64) { }
 }
@@ -203,7 +192,7 @@ impl Foo {
 impl Foo {
     #[rustc_clean(
         cfg="cfail2",
-        except="Hir,HirBody,FnSignature,MirOptimized,MirValidated,TypeckTables")]
+        except="Hir,HirBody,FnSignature,MirOptimized,MirBuilt,TypeckTables")]
     #[rustc_clean(cfg="cfail3")]
     pub fn change_method_return_type(&self) -> u8 { 0 }
 }
@@ -238,7 +227,7 @@ impl Foo {
 #[rustc_clean(cfg="cfail2")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
     #[rustc_clean(cfg="cfail3")]
     pub fn change_method_parameter_order(&self, b: i64, a: i64) { }
 }
@@ -257,7 +246,7 @@ impl Foo {
 impl Foo {
     #[rustc_clean(
         cfg="cfail2",
-        except="Hir,HirBody,FnSignature,TypeckTables,MirOptimized,MirValidated"
+        except="Hir,HirBody,FnSignature,TypeckTables,MirOptimized,MirBuilt"
     )]
     #[rustc_clean(cfg="cfail3")]
     pub unsafe fn make_method_unsafe(&self) { }
@@ -275,7 +264,7 @@ impl Foo {
 #[rustc_clean(cfg="cfail2")]
 #[rustc_clean(cfg="cfail3")]
 impl Foo {
-    #[rustc_clean(cfg="cfail2", except="Hir,HirBody,FnSignature,TypeckTables")]
+    #[rustc_clean(cfg="cfail2", except="Hir,HirBody,MirBuilt,FnSignature,TypeckTables")]
     #[rustc_clean(cfg="cfail3")]
     pub extern fn make_method_extern(&self) { }
 }
@@ -459,7 +448,7 @@ impl Bar<u32> {
 impl<T> Bar<T> {
     #[rustc_clean(
         cfg="cfail2",
-        except="GenericsOfItem,FnSignature,TypeckTables,TypeOfItem,MirOptimized,MirValidated"
+        except="GenericsOfItem,FnSignature,TypeckTables,TypeOfItem,MirOptimized,MirBuilt"
     )]
     #[rustc_clean(cfg="cfail3")]
     pub fn add_type_parameter_to_impl(&self) { }
@@ -477,7 +466,7 @@ impl Bar<u32> {
 #[rustc_clean(cfg="cfail2", except="Hir,HirBody")]
 #[rustc_clean(cfg="cfail3")]
 impl Bar<u64> {
-    #[rustc_clean(cfg="cfail2", except="FnSignature,MirOptimized,MirValidated,TypeckTables")]
+    #[rustc_clean(cfg="cfail2", except="FnSignature,MirOptimized,MirBuilt,TypeckTables")]
     #[rustc_clean(cfg="cfail3")]
     pub fn change_impl_self_type(&self) { }
 }

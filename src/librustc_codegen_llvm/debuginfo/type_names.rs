@@ -1,27 +1,17 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Type Names for Debug Info.
 
-use common::CodegenCx;
+use crate::common::CodegenCx;
 use rustc::hir::def_id::DefId;
-use rustc::ty::subst::Substs;
+use rustc::ty::subst::SubstsRef;
 use rustc::ty::{self, Ty};
 use rustc_codegen_ssa::traits::*;
 
 use rustc::hir;
 
 // Compute the name of the type as it should be stored in debuginfo. Does not do
-// any caching, i.e. calling the function twice with the same type will also do
+// any caching, i.e., calling the function twice with the same type will also do
 // the work twice. The `qualified` parameter only affects the first level of the
-// type name, further levels (i.e. type parameters) are always fully qualified.
+// type name, further levels (i.e., type parameters) are always fully qualified.
 pub fn compute_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
                                              t: Ty<'tcx>,
                                              qualified: bool)
@@ -117,12 +107,16 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
             }
         },
         ty::Dynamic(ref trait_data, ..) => {
-            let principal = cx.tcx.normalize_erasing_late_bound_regions(
-                ty::ParamEnv::reveal_all(),
-                &trait_data.principal(),
-            );
-            push_item_name(cx, principal.def_id, false, output);
-            push_type_params(cx, principal.substs, output);
+            if let Some(principal) = trait_data.principal() {
+                let principal = cx.tcx.normalize_erasing_late_bound_regions(
+                    ty::ParamEnv::reveal_all(),
+                    &principal,
+                );
+                push_item_name(cx, principal.def_id, false, output);
+                push_type_params(cx, principal.substs, output);
+            } else {
+                output.push_str("dyn '_");
+            }
         },
         ty::FnDef(..) | ty::FnPtr(_) => {
             let sig = t.fn_sig(cx.tcx);
@@ -131,7 +125,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
             }
 
             let abi = sig.abi();
-            if abi != ::abi::Abi::Rust {
+            if abi != crate::abi::Abi::Rust {
                 output.push_str("extern \"");
                 output.push_str(abi.name());
                 output.push_str("\" ");
@@ -149,7 +143,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
                 output.pop();
             }
 
-            if sig.variadic {
+            if sig.c_variadic {
                 if !sig.inputs().is_empty() {
                     output.push_str(", ...");
                 } else {
@@ -172,6 +166,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
         }
         ty::Error |
         ty::Infer(_) |
+        ty::Placeholder(..) |
         ty::UnnormalizedProjection(..) |
         ty::Projection(..) |
         ty::Bound(..) |
@@ -183,7 +178,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
         }
     }
 
-    fn push_item_name(cx: &CodegenCx,
+    fn push_item_name(cx: &CodegenCx<'_, '_>,
                       def_id: DefId,
                       qualified: bool,
                       output: &mut String) {
@@ -198,13 +193,13 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
         }
     }
 
-    // Pushes the type parameters in the given `Substs` to the output string.
+    // Pushes the type parameters in the given `InternalSubsts` to the output string.
     // This ignores region parameters, since they can't reliably be
     // reconstructed for items from non-local crates. For local crates, this
     // would be possible but with inlining and LTO we have to use the least
     // common denominator - otherwise we would run into conflicts.
     fn push_type_params<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
-                                  substs: &Substs<'tcx>,
+                                  substs: SubstsRef<'tcx>,
                                   output: &mut String) {
         if substs.types().next().is_none() {
             return;

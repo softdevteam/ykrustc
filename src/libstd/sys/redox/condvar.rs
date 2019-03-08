@@ -1,20 +1,10 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::cell::UnsafeCell;
+use crate::intrinsics::{atomic_cxchg, atomic_load, atomic_xadd, atomic_xchg};
+use crate::ptr;
+use crate::time::Duration;
 
-use cell::UnsafeCell;
-use intrinsics::{atomic_cxchg, atomic_load, atomic_xadd, atomic_xchg};
-use ptr;
-use time::Duration;
-
-use sys::mutex::{mutex_unlock, Mutex};
-use sys::syscall::{futex, TimeSpec, FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE};
+use crate::sys::mutex::{mutex_unlock, Mutex};
+use crate::sys::syscall::{futex, TimeSpec, FUTEX_WAIT, FUTEX_WAKE, FUTEX_REQUEUE};
 
 pub struct Condvar {
     lock: UnsafeCell<*mut i32>,
@@ -58,7 +48,7 @@ impl Condvar {
 
             atomic_xadd(seq, 1);
 
-            let _ = futex(seq, FUTEX_REQUEUE, 1, ::usize::MAX, *lock);
+            let _ = futex(seq, FUTEX_REQUEUE, 1, crate::usize::MAX, *lock);
         }
     }
 

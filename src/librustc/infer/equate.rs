@@ -1,22 +1,12 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::combine::{CombineFields, RelationDir};
 use super::{Subtype};
 
-use hir::def_id::DefId;
+use crate::hir::def_id::DefId;
 
-use ty::{self, Ty, TyCtxt};
-use ty::TyVar;
-use ty::subst::Substs;
-use ty::relate::{self, Relate, RelateResult, TypeRelation};
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::TyVar;
+use crate::ty::subst::SubstsRef;
+use crate::ty::relate::{self, Relate, RelateResult, TypeRelation};
 
 /// Ensures `a` is made equal to `b`. Returns `a` on success.
 pub struct Equate<'combine, 'infcx: 'combine, 'gcx: 'infcx+'tcx, 'tcx: 'infcx> {
@@ -43,13 +33,13 @@ impl<'combine, 'infcx, 'gcx, 'tcx> TypeRelation<'infcx, 'gcx, 'tcx>
 
     fn relate_item_substs(&mut self,
                           _item_def_id: DefId,
-                          a_subst: &'tcx Substs<'tcx>,
-                          b_subst: &'tcx Substs<'tcx>)
-                          -> RelateResult<'tcx, &'tcx Substs<'tcx>>
+                          a_subst: SubstsRef<'tcx>,
+                          b_subst: SubstsRef<'tcx>)
+                          -> RelateResult<'tcx, SubstsRef<'tcx>>
     {
-        // NB: Once we are equating types, we don't care about
+        // N.B., once we are equating types, we don't care about
         // variance, so don't try to lookup the variance here. This
-        // also avoids some cycles (e.g. #41849) since looking up
+        // also avoids some cycles (e.g., #41849) since looking up
         // variance requires computing types which can require
         // performing trait matching (which then performs equality
         // unification).

@@ -1,20 +1,10 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir::def_id::DefId;
-use infer::outlives::env::RegionBoundPairs;
-use infer::{GenericKind, VerifyBound};
-use traits;
-use ty::subst::{Subst, Substs};
-use ty::{self, Ty, TyCtxt};
-use util::captures::Captures;
+use crate::hir::def_id::DefId;
+use crate::infer::outlives::env::RegionBoundPairs;
+use crate::infer::{GenericKind, VerifyBound};
+use crate::traits;
+use crate::ty::subst::{Subst, InternalSubsts};
+use crate::ty::{self, Ty, TyCtxt};
+use crate::util::captures::Captures;
 
 /// The `TypeOutlives` struct has the job of "lowering" a `T: 'a`
 /// obligation into a series of `'a: 'b` constraints and "verifys", as
@@ -84,7 +74,7 @@ impl<'cx, 'gcx, 'tcx> VerifyBoundCx<'cx, 'gcx, 'tcx> {
     /// This is an "approximate" check -- it may not find all
     /// applicable bounds, and not all the bounds it returns can be
     /// relied upon. In particular, this check ignores region
-    /// identity.  So, for example, if we have `<T as
+    /// identity. So, for example, if we have `<T as
     /// Trait<'0>>::Item` where `'0` is a region variable, and the
     /// user has `<T as Trait<'a>>::Item: 'b` in the environment, then
     /// the clause from the environment only applies if `'0 = 'a`,
@@ -106,7 +96,7 @@ impl<'cx, 'gcx, 'tcx> VerifyBoundCx<'cx, 'gcx, 'tcx> {
         })
     }
 
-    /// Searches the where clauses in scope for regions that
+    /// Searches the where-clauses in scope for regions that
     /// `projection_ty` is known to outlive. Currently requires an
     /// exact match.
     pub fn projection_declared_bounds_from_trait(
@@ -261,7 +251,7 @@ impl<'cx, 'gcx, 'tcx> VerifyBoundCx<'cx, 'gcx, 'tcx> {
             .map(move |r| r.subst(tcx, projection_ty.substs))
     }
 
-    /// Given the def-id of an associated item, returns any region
+    /// Given the `DefId` of an associated item, returns any region
     /// bounds attached to that associated item from the trait definition.
     ///
     /// For example:
@@ -272,7 +262,7 @@ impl<'cx, 'gcx, 'tcx> VerifyBoundCx<'cx, 'gcx, 'tcx> {
     /// }
     /// ```
     ///
-    /// If we were given the def-id of `Foo::Bar`, we would return
+    /// If we were given the `DefId` of `Foo::Bar`, we would return
     /// `'a`. You could then apply the substitutions from the
     /// projection to convert this into your namespace. This also
     /// works if the user writes `where <Self as Foo<'a>>::Bar: 'a` on
@@ -302,7 +292,7 @@ impl<'cx, 'gcx, 'tcx> VerifyBoundCx<'cx, 'gcx, 'tcx> {
             .iter()
             .map(|(p, _)| *p)
             .collect();
-        let identity_substs = Substs::identity_for_item(tcx, assoc_item_def_id);
+        let identity_substs = InternalSubsts::identity_for_item(tcx, assoc_item_def_id);
         let identity_proj = tcx.mk_projection(assoc_item_def_id, identity_substs);
         self.collect_outlives_from_predicate_list(
             move |ty| ty == identity_proj,

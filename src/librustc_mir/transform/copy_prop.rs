@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Trivial copy propagation pass.
 //!
 //! This uses def-use analysis to remove values that have exactly one def and one use, which must
@@ -29,18 +19,20 @@
 //! (non-mutating) use of `SRC`. These restrictions are conservative and may be relaxed in the
 //! future.
 
-use rustc::mir::{Constant, Local, LocalKind, Location, Place, Mir, Operand, Rvalue, StatementKind};
+use rustc::mir::{
+    Constant, Local, LocalKind, Location, Place, PlaceBase, Mir, Operand, Rvalue, StatementKind
+};
 use rustc::mir::visit::MutVisitor;
 use rustc::ty::TyCtxt;
-use transform::{MirPass, MirSource};
-use util::def_use::DefUseAnalysis;
+use crate::transform::{MirPass, MirSource};
+use crate::util::def_use::DefUseAnalysis;
 
 pub struct CopyPropagation;
 
 impl MirPass for CopyPropagation {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _source: MirSource,
+                          _source: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         // We only run when the MIR optimization level is > 1.
         // This avoids a slow pass, and messing up debug info.
@@ -104,8 +96,10 @@ impl MirPass for CopyPropagation {
 
                     // That use of the source must be an assignment.
                     match statement.kind {
-                        StatementKind::Assign(Place::Local(local), box Rvalue::Use(ref operand)) if
-                                local == dest_local => {
+                        StatementKind::Assign(
+                            Place::Base(PlaceBase::Local(local)),
+                            box Rvalue::Use(ref operand)
+                        ) if local == dest_local => {
                             let maybe_action = match *operand {
                                 Operand::Copy(ref src_place) |
                                 Operand::Move(ref src_place) => {
@@ -154,12 +148,12 @@ fn eliminate_self_assignments<'tcx>(
             if let Some(stmt) = mir[location.block].statements.get(location.statement_index) {
                 match stmt.kind {
                     StatementKind::Assign(
-                        Place::Local(local),
-                        box Rvalue::Use(Operand::Copy(Place::Local(src_local))),
+                        Place::Base(PlaceBase::Local(local)),
+                        box Rvalue::Use(Operand::Copy(Place::Base(PlaceBase::Local(src_local)))),
                     ) |
                     StatementKind::Assign(
-                        Place::Local(local),
-                        box Rvalue::Use(Operand::Move(Place::Local(src_local))),
+                        Place::Base(PlaceBase::Local(local)),
+                        box Rvalue::Use(Operand::Move(Place::Base(PlaceBase::Local(src_local)))),
                     ) if local == dest_local && dest_local == src_local => {}
                     _ => {
                         continue;
@@ -183,10 +177,10 @@ enum Action<'tcx> {
 }
 
 impl<'tcx> Action<'tcx> {
-    fn local_copy(mir: &Mir<'tcx>, def_use_analysis: &DefUseAnalysis, src_place: &Place<'tcx>)
+    fn local_copy(mir: &Mir<'tcx>, def_use_analysis: &DefUseAnalysis<'_>, src_place: &Place<'tcx>)
                   -> Option<Action<'tcx>> {
         // The source must be a local.
-        let src_local = if let Place::Local(local) = *src_place {
+        let src_local = if let Place::Base(PlaceBase::Local(local)) = *src_place {
             local
         } else {
             debug!("  Can't copy-propagate local: source is not a local");
@@ -340,8 +334,8 @@ impl<'tcx> MutVisitor<'tcx> for ConstantPropagationVisitor<'tcx> {
         self.super_operand(operand, location);
 
         match *operand {
-            Operand::Copy(Place::Local(local)) |
-            Operand::Move(Place::Local(local)) if local == self.dest_local => {}
+            Operand::Copy(Place::Base(PlaceBase::Local(local))) |
+            Operand::Move(Place::Base(PlaceBase::Local(local))) if local == self.dest_local => {}
             _ => return,
         }
 

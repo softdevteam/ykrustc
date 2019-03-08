@@ -1,18 +1,8 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Item types.
 
 use std::fmt;
 use syntax::ext::base::MacroKind;
-use clean;
+use crate::clean;
 
 /// Item type. Corresponds to `clean::ItemEnum` variants.
 ///
@@ -52,6 +42,7 @@ pub enum ItemType {
     Existential     = 22,
     ProcAttribute   = 23,
     ProcDerive      = 24,
+    TraitAlias      = 25,
 }
 
 
@@ -96,6 +87,7 @@ impl<'a> From<&'a clean::Item> for ItemType {
             clean::AssociatedTypeItem(..)  => ItemType::AssociatedType,
             clean::ForeignTypeItem         => ItemType::ForeignType,
             clean::KeywordItem(..)         => ItemType::Keyword,
+            clean::TraitAliasItem(..)      => ItemType::TraitAlias,
             clean::ProcMacroItem(ref mac)  => match mac.kind {
                 MacroKind::Bang            => ItemType::Macro,
                 MacroKind::Attr            => ItemType::ProcAttribute,
@@ -110,20 +102,21 @@ impl<'a> From<&'a clean::Item> for ItemType {
 impl From<clean::TypeKind> for ItemType {
     fn from(kind: clean::TypeKind) -> ItemType {
         match kind {
-            clean::TypeKind::Struct   => ItemType::Struct,
-            clean::TypeKind::Union    => ItemType::Union,
-            clean::TypeKind::Enum     => ItemType::Enum,
-            clean::TypeKind::Function => ItemType::Function,
-            clean::TypeKind::Trait    => ItemType::Trait,
-            clean::TypeKind::Module   => ItemType::Module,
-            clean::TypeKind::Static   => ItemType::Static,
-            clean::TypeKind::Const    => ItemType::Constant,
-            clean::TypeKind::Variant  => ItemType::Variant,
-            clean::TypeKind::Typedef  => ItemType::Typedef,
-            clean::TypeKind::Foreign  => ItemType::ForeignType,
-            clean::TypeKind::Macro    => ItemType::Macro,
-            clean::TypeKind::Attr     => ItemType::ProcAttribute,
-            clean::TypeKind::Derive   => ItemType::ProcDerive,
+            clean::TypeKind::Struct     => ItemType::Struct,
+            clean::TypeKind::Union      => ItemType::Union,
+            clean::TypeKind::Enum       => ItemType::Enum,
+            clean::TypeKind::Function   => ItemType::Function,
+            clean::TypeKind::Trait      => ItemType::Trait,
+            clean::TypeKind::Module     => ItemType::Module,
+            clean::TypeKind::Static     => ItemType::Static,
+            clean::TypeKind::Const      => ItemType::Constant,
+            clean::TypeKind::Variant    => ItemType::Variant,
+            clean::TypeKind::Typedef    => ItemType::Typedef,
+            clean::TypeKind::Foreign    => ItemType::ForeignType,
+            clean::TypeKind::Macro      => ItemType::Macro,
+            clean::TypeKind::Attr       => ItemType::ProcAttribute,
+            clean::TypeKind::Derive     => ItemType::ProcDerive,
+            clean::TypeKind::TraitAlias => ItemType::TraitAlias,
         }
     }
 }
@@ -156,6 +149,7 @@ impl ItemType {
             ItemType::Existential     => "existential",
             ItemType::ProcAttribute   => "attr",
             ItemType::ProcDerive      => "derive",
+            ItemType::TraitAlias      => "traitalias",
         }
     }
 
@@ -170,6 +164,7 @@ impl ItemType {
             ItemType::Primitive |
             ItemType::AssociatedType |
             ItemType::Existential |
+            ItemType::TraitAlias |
             ItemType::ForeignType => NameSpace::Type,
 
             ItemType::ExternCrate |
@@ -194,7 +189,7 @@ impl ItemType {
 }
 
 impl fmt::Display for ItemType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.css_class().fmt(f)
     }
 }
@@ -216,7 +211,7 @@ impl NameSpace {
 }
 
 impl fmt::Display for NameSpace {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.to_static_str().fmt(f)
     }
 }

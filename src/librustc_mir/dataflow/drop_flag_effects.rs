@@ -1,16 +1,6 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::mir::{self, Mir, Location};
 use rustc::ty::{self, TyCtxt};
-use util::elaborate_drops::DropFlagState;
+use crate::util::elaborate_drops::DropFlagState;
 
 use super::{MoveDataParamEnv};
 use super::indexes::MovePathIndex;
@@ -54,8 +44,8 @@ pub fn move_path_children_matching<'tcx, F>(move_data: &MoveData<'tcx>,
 /// In both cases, the contents can only be accessed if and only if
 /// their parents are initialized. This implies for example that there
 /// is no need to maintain separate drop flags to track such state.
-///
-/// FIXME: we have to do something for moving slice patterns.
+//
+// FIXME: we have to do something for moving slice patterns.
 fn place_contents_drop_state_cannot_differ<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                                             mir: &Mir<'tcx>,
                                                             place: &mir::Place<'tcx>) -> bool {
@@ -173,7 +163,7 @@ pub(crate) fn drop_flag_effects_for_function_entry<'a, 'gcx, 'tcx, F>(
 {
     let move_data = &ctxt.move_data;
     for arg in mir.args_iter() {
-        let place = mir::Place::Local(arg);
+        let place = mir::Place::Base(mir::PlaceBase::Local(arg));
         let lookup_result = move_data.rev_lookup.find(&place);
         on_lookup_result_bits(tcx, mir, move_data,
                               lookup_result,

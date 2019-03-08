@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![feature(staged_api, allow_internal_unstable)]
 #![stable(feature = "stable", since = "1.0.0")]
 
@@ -33,14 +23,14 @@ pub struct Bar {
 }
 
 #[stable(feature = "stable", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(function)]
 #[macro_export]
 macro_rules! call_unstable_allow {
     () => { $crate::unstable() }
 }
 
 #[stable(feature = "stable", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(struct_field)]
 #[macro_export]
 macro_rules! construct_unstable_allow {
     ($e: expr) => {
@@ -49,21 +39,21 @@ macro_rules! construct_unstable_allow {
 }
 
 #[stable(feature = "stable", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(method)]
 #[macro_export]
 macro_rules! call_method_allow {
     ($e: expr) => { $e.method() }
 }
 
 #[stable(feature = "stable", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(struct_field, struct2_field)]
 #[macro_export]
 macro_rules! access_field_allow {
     ($e: expr) => { $e.x }
 }
 
 #[stable(feature = "stable", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable()]
 #[macro_export]
 macro_rules! pass_through_allow {
     ($e: expr) => { $e }

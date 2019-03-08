@@ -1,12 +1,4 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+#![deny(rust_2018_idioms)]
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -31,6 +23,25 @@ macro_rules! t {
             Err(e) => panic!("{} failed with {}", stringify!($e), e),
         }
     };
+}
+
+// Because Cargo adds the compiler's dylib path to our library search path, llvm-config may
+// break: the dylib path for the compiler, as of this writing, contains a copy of the LLVM
+// shared library, which means that when our freshly built llvm-config goes to load it's
+// associated LLVM, it actually loads the compiler's LLVM. In particular when building the first
+// compiler (i.e., in stage 0) that's a problem, as the compiler's LLVM is likely different from
+// the one we want to use. As such, we restore the environment to what bootstrap saw. This isn't
+// perfect -- we might actually want to see something from Cargo's added library paths -- but
+// for now it works.
+pub fn restore_library_path() {
+    println!("cargo:rerun-if-env-changed=REAL_LIBRARY_PATH_VAR");
+    println!("cargo:rerun-if-env-changed=REAL_LIBRARY_PATH");
+    let key = env::var_os("REAL_LIBRARY_PATH_VAR").expect("REAL_LIBRARY_PATH_VAR");
+    if let Some(env) = env::var_os("REAL_LIBRARY_PATH") {
+        env::set_var(&key, &env);
+    } else {
+        env::remove_var(&key);
+    }
 }
 
 pub fn run(cmd: &mut Command) {
@@ -152,7 +163,7 @@ pub fn mtime(path: &Path) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// Returns whether `dst` is up to date given that the file or files in `src`
+/// Returns `true` if `dst` is up to date given that the file or files in `src`
 /// are used to generate it.
 ///
 /// Uses last-modified time checks to verify this.
@@ -179,12 +190,12 @@ pub struct NativeLibBoilerplate {
 }
 
 impl NativeLibBoilerplate {
-    /// On OSX we don't want to ship the exact filename that compiler-rt builds.
+    /// On macOS we don't want to ship the exact filename that compiler-rt builds.
     /// This conflicts with the system and ours is likely a wildly different
     /// version, so they can't be substituted.
     ///
     /// As a result, we rename it here but we need to also use
-    /// `install_name_tool` on OSX to rename the commands listed inside of it to
+    /// `install_name_tool` on macOS to rename the commands listed inside of it to
     /// ensure it's linked against correctly.
     pub fn fixup_sanitizer_lib_name(&self, sanitizer_name: &str) {
         if env::var("TARGET").unwrap() != "x86_64-apple-darwin" {
@@ -224,14 +235,12 @@ impl Drop for NativeLibBoilerplate {
 // Timestamps are created automatically when the result of `native_lib_boilerplate` goes out
 // of scope, so all the build actions should be completed until then.
 pub fn native_lib_boilerplate(
-    src_name: &str,
+    src_dir: &Path,
     out_name: &str,
     link_name: &str,
     search_subdir: &str,
 ) -> Result<NativeLibBoilerplate, ()> {
-    let current_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let src_dir = current_dir.join("..").join(src_name);
-    rerun_if_changed_anything_in_dir(&src_dir);
+    rerun_if_changed_anything_in_dir(src_dir);
 
     let out_dir = env::var_os("RUSTBUILD_NATIVE_DIR").unwrap_or_else(||
         env::var_os("OUT_DIR").unwrap());
@@ -248,9 +257,9 @@ pub fn native_lib_boilerplate(
     );
 
     let timestamp = out_dir.join("rustbuild.timestamp");
-    if !up_to_date(Path::new("build.rs"), &timestamp) || !up_to_date(&src_dir, &timestamp) {
+    if !up_to_date(Path::new("build.rs"), &timestamp) || !up_to_date(src_dir, &timestamp) {
         Ok(NativeLibBoilerplate {
-            src_dir: src_dir,
+            src_dir: src_dir.to_path_buf(),
             out_dir: out_dir,
         })
     } else {
@@ -279,8 +288,11 @@ pub fn sanitizer_lib_boilerplate(sanitizer_name: &str)
     } else {
         format!("static={}", link_name)
     };
+    // The source for `compiler-rt` comes from the `compiler-builtins` crate, so
+    // load our env var set by cargo to find the source code.
+    let dir = env::var_os("DEP_COMPILER_RT_COMPILER_RT").unwrap();
     let lib = native_lib_boilerplate(
-        "libcompiler_builtins/compiler-rt",
+        dir.as_ref(),
         sanitizer_name,
         &to_link,
         search_path,

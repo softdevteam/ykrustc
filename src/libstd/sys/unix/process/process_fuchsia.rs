@@ -1,20 +1,11 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::io;
+use crate::mem;
+use crate::ptr;
 
-use io;
-use libc::{self, size_t};
-use mem;
-use ptr;
+use crate::sys::process::zircon::{Handle, zx_handle_t};
+use crate::sys::process::process_common::*;
 
-use sys::process::zircon::{Handle, zx_handle_t};
-use sys::process::process_common::*;
+use libc::size_t;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -54,7 +45,7 @@ impl Command {
 
     unsafe fn do_exec(&mut self, stdio: ChildPipes, maybe_envp: Option<&CStringArray>)
                       -> io::Result<zx_handle_t> {
-        use sys::process::zircon::*;
+        use crate::sys::process::zircon::*;
 
         let envp = match maybe_envp {
             Some(envp) => envp.as_ptr(),
@@ -119,7 +110,7 @@ impl Process {
     }
 
     pub fn kill(&mut self) -> io::Result<()> {
-        use sys::process::zircon::*;
+        use crate::sys::process::zircon::*;
 
         unsafe { zx_cvt(zx_task_kill(self.handle.raw()))?; }
 
@@ -127,8 +118,8 @@ impl Process {
     }
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        use default::Default;
-        use sys::process::zircon::*;
+        use crate::default::Default;
+        use crate::sys::process::zircon::*;
 
         let mut proc_info: zx_info_process_t = Default::default();
         let mut actual: size_t = 0;
@@ -150,8 +141,8 @@ impl Process {
     }
 
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        use default::Default;
-        use sys::process::zircon::*;
+        use crate::default::Default;
+        use crate::sys::process::zircon::*;
 
         let mut proc_info: zx_info_process_t = Default::default();
         let mut actual: size_t = 0;

@@ -1,15 +1,5 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The compiler code necessary to implement the `#[derive(Encodable)]`
-//! (and `Decodable`, in decodable.rs) extension.  The idea here is that
+//! (and `Decodable`, in `decodable.rs`) extension. The idea here is that
 //! type-defining items may be tagged with `#[derive(Encodable, Decodable)]`.
 //!
 //! For example, a type like:
@@ -47,7 +37,7 @@
 //! ```
 //!
 //! Other interesting scenarios are when the item has type parameters or
-//! references other non-built-in types.  A type definition like:
+//! references other non-built-in types. A type definition like:
 //!
 //! ```
 //! # #[derive(Encodable, Decodable)] struct Span;
@@ -92,10 +82,10 @@
 //! }
 //! ```
 
-use deriving::{self, pathvec_std};
-use deriving::generic::*;
-use deriving::generic::ty::*;
-use deriving::warn_if_deprecated;
+use crate::deriving::{self, pathvec_std};
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
+use crate::deriving::warn_if_deprecated;
 
 use syntax::ast::{Expr, ExprKind, MetaItem, Mutability};
 use syntax::ext::base::{Annotatable, ExtCtxt};
@@ -104,7 +94,7 @@ use syntax::ptr::P;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
 
-pub fn expand_deriving_rustc_encodable(cx: &mut ExtCtxt,
+pub fn expand_deriving_rustc_encodable(cx: &mut ExtCtxt<'_>,
                                        span: Span,
                                        mitem: &MetaItem,
                                        item: &Annotatable,
@@ -112,7 +102,7 @@ pub fn expand_deriving_rustc_encodable(cx: &mut ExtCtxt,
     expand_deriving_encodable_imp(cx, span, mitem, item, push, "rustc_serialize")
 }
 
-pub fn expand_deriving_encodable(cx: &mut ExtCtxt,
+pub fn expand_deriving_encodable(cx: &mut ExtCtxt<'_>,
                                  span: Span,
                                  mitem: &MetaItem,
                                  item: &Annotatable,
@@ -121,7 +111,7 @@ pub fn expand_deriving_encodable(cx: &mut ExtCtxt,
     expand_deriving_encodable_imp(cx, span, mitem, item, push, "serialize")
 }
 
-fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
+fn expand_deriving_encodable_imp(cx: &mut ExtCtxt<'_>,
                                  span: Span,
                                  mitem: &MetaItem,
                                  item: &Annotatable,
@@ -172,9 +162,9 @@ fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
     trait_def.expand(cx, mitem, item, push)
 }
 
-fn encodable_substructure(cx: &mut ExtCtxt,
+fn encodable_substructure(cx: &mut ExtCtxt<'_>,
                           trait_span: Span,
-                          substr: &Substructure,
+                          substr: &Substructure<'_>,
                           krate: &'static str)
                           -> P<Expr> {
     let encoder = substr.nonself_args[0].clone();

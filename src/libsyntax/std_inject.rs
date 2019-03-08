@@ -1,24 +1,15 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::ast;
+use crate::attr;
+use crate::edition::Edition;
+use crate::ext::hygiene::{Mark, SyntaxContext};
+use crate::symbol::{Symbol, keywords};
+use crate::source_map::{ExpnInfo, MacroAttribute, dummy_spanned, hygiene, respan};
+use crate::ptr::P;
+use crate::tokenstream::TokenStream;
 
-use ast;
-use attr;
 use std::cell::Cell;
 use std::iter;
-use edition::Edition;
-use ext::hygiene::{Mark, SyntaxContext};
-use symbol::{Symbol, keywords};
 use syntax_pos::{DUMMY_SP, Span};
-use source_map::{ExpnInfo, MacroAttribute, dummy_spanned, hygiene, respan};
-use ptr::P;
-use tokenstream::TokenStream;
 
 /// Craft a span that will be ignored by the stability lint's
 /// call to source_map's `is_internal` check.
@@ -29,7 +20,9 @@ fn ignored_span(sp: Span) -> Span {
         call_site: DUMMY_SP,
         def_site: None,
         format: MacroAttribute(Symbol::intern("std_inject")),
-        allow_internal_unstable: true,
+        allow_internal_unstable: Some(vec![
+            Symbol::intern("prelude_import"),
+        ].into()),
         allow_internal_unsafe: false,
         local_inner_macros: false,
         edition: hygiene::default_edition(),
@@ -112,7 +105,7 @@ pub fn maybe_inject_crates_ref(
         vis: respan(span.shrink_to_lo(), ast::VisibilityKind::Inherited),
         node: ast::ItemKind::Use(P(ast::UseTree {
             prefix: ast::Path {
-                segments: iter::once(keywords::CrateRoot.ident())
+                segments: iter::once(keywords::PathRoot.ident())
                     .chain(
                         [name, "prelude", "v1"].iter().cloned()
                             .map(ast::Ident::from_str)

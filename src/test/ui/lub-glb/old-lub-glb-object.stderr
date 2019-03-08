@@ -1,13 +1,14 @@
 error[E0308]: match arms have incompatible types
-  --> $DIR/old-lub-glb-object.rs:20:13
+  --> $DIR/old-lub-glb-object.rs:12:14
    |
-LL |       let z = match 22 { //~ ERROR incompatible types
-   |  _____________^
+LL |       let z = match 22 {
+   |  _____________-
 LL | |         0 => x,
-LL | |         _ => y,
-   | |              - match arm with an incompatible type
+   | |              - this is found to be of type `&dyn for<'a, 'b> Foo<&'a u8, &'b u8>`
+LL | |         _ => y, //~ ERROR match arms have incompatible types
+   | |              ^ expected bound lifetime parameter 'a, found concrete lifetime
 LL | |     };
-   | |_____^ expected bound lifetime parameter 'a, found concrete lifetime
+   | |_____- `match` arms have incompatible types
    |
    = note: expected type `&dyn for<'a, 'b> Foo<&'a u8, &'b u8>`
               found type `&dyn for<'a> Foo<&'a u8, &'a u8>`

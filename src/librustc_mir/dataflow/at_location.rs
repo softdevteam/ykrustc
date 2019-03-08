@@ -1,21 +1,11 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A nice wrapper to consume dataflow results at several CFG
 //! locations.
 
 use rustc::mir::{BasicBlock, Location};
 use rustc_data_structures::bit_set::{BitIter, BitSet, HybridBitSet};
 
-use dataflow::{BitDenotation, BlockSets, DataflowResults};
-use dataflow::move_paths::{HasMoveData, MovePathIndex};
+use crate::dataflow::{BitDenotation, BlockSets, DataflowResults};
+use crate::dataflow::move_paths::{HasMoveData, MovePathIndex};
 
 use std::iter;
 
@@ -36,14 +26,14 @@ pub trait FlowsAtLocation {
     /// effects don't apply to the unwind edge).
     fn reset_to_exit_of(&mut self, bb: BasicBlock);
 
-    /// Build gen + kill sets for statement at `loc`.
+    /// Builds gen and kill sets for statement at `loc`.
     ///
     /// Note that invoking this method alone does not change the
     /// `curr_state` -- you must invoke `apply_local_effect`
     /// afterwards.
     fn reconstruct_statement_effect(&mut self, loc: Location);
 
-    /// Build gen + kill sets for terminator for `loc`.
+    /// Builds gen and kill sets for terminator for `loc`.
     ///
     /// Note that invoking this method alone does not change the
     /// `curr_state` -- you must invoke `apply_local_effect`
@@ -67,22 +57,22 @@ pub trait FlowsAtLocation {
 /// effects at any point in the control-flow graph by starting with
 /// the state at the start of the basic block (`reset_to_entry_of`)
 /// and then replaying the effects of statements and terminators
-/// (e.g. via `reconstruct_statement_effect` and
+/// (e.g., via `reconstruct_statement_effect` and
 /// `reconstruct_terminator_effect`; don't forget to call
 /// `apply_local_effect`).
-pub struct FlowAtLocation<BD>
+pub struct FlowAtLocation<'tcx, BD>
 where
-    BD: BitDenotation,
+    BD: BitDenotation<'tcx>,
 {
-    base_results: DataflowResults<BD>,
+    base_results: DataflowResults<'tcx, BD>,
     curr_state: BitSet<BD::Idx>,
     stmt_gen: HybridBitSet<BD::Idx>,
     stmt_kill: HybridBitSet<BD::Idx>,
 }
 
-impl<BD> FlowAtLocation<BD>
+impl<'tcx, BD> FlowAtLocation<'tcx, BD>
 where
-    BD: BitDenotation,
+    BD: BitDenotation<'tcx>,
 {
     /// Iterate over each bit set in the current state.
     pub fn each_state_bit<F>(&self, f: F)
@@ -102,7 +92,7 @@ where
         self.stmt_gen.iter().for_each(f)
     }
 
-    pub fn new(results: DataflowResults<BD>) -> Self {
+    pub fn new(results: DataflowResults<'tcx, BD>) -> Self {
         let bits_per_block = results.sets().bits_per_block();
         let curr_state = BitSet::new_empty(bits_per_block);
         let stmt_gen = HybridBitSet::new_empty(bits_per_block);
@@ -125,7 +115,7 @@ where
     }
 
     /// Returns an iterator over the elements present in the current state.
-    pub fn iter_incoming(&self) -> iter::Peekable<BitIter<BD::Idx>> {
+    pub fn iter_incoming(&self) -> iter::Peekable<BitIter<'_, BD::Idx>> {
         self.curr_state.iter().peekable()
     }
 
@@ -134,7 +124,7 @@ where
     /// Invokes `f` with an iterator over the resulting state.
     pub fn with_iter_outgoing<F>(&self, f: F)
     where
-        F: FnOnce(BitIter<BD::Idx>),
+        F: FnOnce(BitIter<'_, BD::Idx>),
     {
         let mut curr_state = self.curr_state.clone();
         curr_state.union(&self.stmt_gen);
@@ -143,8 +133,8 @@ where
     }
 }
 
-impl<BD> FlowsAtLocation for FlowAtLocation<BD>
-    where BD: BitDenotation
+impl<'tcx, BD> FlowsAtLocation for FlowAtLocation<'tcx, BD>
+    where BD: BitDenotation<'tcx>
 {
     fn reset_to_entry_of(&mut self, bb: BasicBlock) {
         self.curr_state.overwrite(self.base_results.sets().on_entry_set_for(bb.index()));
@@ -213,9 +203,9 @@ impl<BD> FlowsAtLocation for FlowAtLocation<BD>
 }
 
 
-impl<'tcx, T> FlowAtLocation<T>
+impl<'tcx, T> FlowAtLocation<'tcx, T>
 where
-    T: HasMoveData<'tcx> + BitDenotation<Idx = MovePathIndex>,
+    T: HasMoveData<'tcx> + BitDenotation<'tcx, Idx = MovePathIndex>,
 {
     pub fn has_any_child_of(&self, mpi: T::Idx) -> Option<T::Idx> {
         // We process `mpi` before the loop below, for two reasons:

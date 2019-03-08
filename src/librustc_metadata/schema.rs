@@ -1,14 +1,4 @@
-// Copyright 2012-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use index;
+use crate::index;
 
 use rustc::hir;
 use rustc::hir::def::{self, CtorKind};
@@ -40,7 +30,7 @@ pub fn rustc_version() -> String {
 }
 
 /// Metadata encoding version.
-/// NB: increment this if you change the format of metadata such that
+/// N.B., increment this if you change the format of metadata such that
 /// the rustc version can't be found to compare with `rustc_version()`.
 pub const METADATA_VERSION: u8 = 4;
 
@@ -52,7 +42,7 @@ pub const METADATA_VERSION: u8 = 4;
 /// This header is followed by the position of the `CrateRoot`,
 /// which is encoded as a 32-bit big-endian unsigned integer,
 /// and further followed by the rustc version string.
-pub const METADATA_HEADER: &'static [u8; 12] =
+pub const METADATA_HEADER: &[u8; 12] =
     &[0, 0, 0, 0, b'r', b'u', b's', b't', 0, 0, 0, METADATA_VERSION];
 
 /// A value of type T referred to by its absolute position
@@ -196,7 +186,8 @@ pub struct CrateRoot {
     pub has_panic_handler: bool,
     pub has_default_lib_allocator: bool,
     pub plugin_registrar_fn: Option<DefIndex>,
-    pub macro_derive_registrar: Option<DefIndex>,
+    pub proc_macro_decls_static: Option<DefIndex>,
+    pub proc_macro_stability: Option<attr::Stability>,
 
     pub crate_deps: LazySeq<CrateDep>,
     pub dylib_dependency_formats: LazySeq<Option<LinkagePreference>>,
@@ -326,6 +317,7 @@ pub enum EntryKind<'tcx> {
     AssociatedType(AssociatedContainer),
     AssociatedExistential(AssociatedContainer),
     AssociatedConst(AssociatedContainer, ConstQualif, Lazy<RenderedConst>),
+    TraitAlias(Lazy<TraitAliasData<'tcx>>),
 }
 
 impl<'a, 'gcx> HashStable<StableHashingContext<'a>> for EntryKind<'gcx> {
@@ -379,6 +371,9 @@ impl<'a, 'gcx> HashStable<StableHashingContext<'a>> for EntryKind<'gcx> {
             }
             EntryKind::Trait(ref trait_data) => {
                 trait_data.hash_stable(hcx, hasher);
+            }
+            EntryKind::TraitAlias(ref trait_alias_data) => {
+                trait_alias_data.hash_stable(hcx, hasher);
             }
             EntryKind::Impl(ref impl_data) => {
                 impl_data.hash_stable(hcx, hasher);
@@ -485,6 +480,15 @@ impl_stable_hash_for!(struct TraitData<'tcx> {
 });
 
 #[derive(RustcEncodable, RustcDecodable)]
+pub struct TraitAliasData<'tcx> {
+    pub super_predicates: Lazy<ty::GenericPredicates<'tcx>>,
+}
+
+impl_stable_hash_for!(struct TraitAliasData<'tcx> {
+    super_predicates
+});
+
+#[derive(RustcEncodable, RustcDecodable)]
 pub struct ImplData<'tcx> {
     pub polarity: hir::ImplPolarity,
     pub defaultness: hir::Defaultness,
@@ -515,7 +519,7 @@ pub enum AssociatedContainer {
     ImplFinal,
 }
 
-impl_stable_hash_for!(enum ::schema::AssociatedContainer {
+impl_stable_hash_for!(enum crate::schema::AssociatedContainer {
     TraitRequired,
     TraitWithDefault,
     ImplDefault,

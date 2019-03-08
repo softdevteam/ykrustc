@@ -1,34 +1,24 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+#![deny(rust_2018_idioms)]
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/")]
 
+#![feature(bind_by_move_pattern_guards)]
 #![feature(rustc_private)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(nll)]
 #![feature(set_stdio)]
-#![feature(slice_sort_by_cached_key)]
 #![feature(test)]
 #![feature(vec_remove_item)]
 #![feature(ptr_offset_from)]
 #![feature(crate_visibility_modifier)]
 #![feature(const_fn)]
 #![feature(drain_filter)]
+#![feature(inner_deref)]
 
 #![recursion_limit="256"]
 
-extern crate arena;
 extern crate getopts;
 extern crate env_logger;
 extern crate rustc;
@@ -40,16 +30,13 @@ extern crate rustc_lint;
 extern crate rustc_metadata;
 extern crate rustc_target;
 extern crate rustc_typeck;
+extern crate rustc_interface;
 extern crate serialize;
-#[macro_use] extern crate syntax;
+extern crate syntax;
 extern crate syntax_pos;
 extern crate test as testing;
 #[macro_use] extern crate log;
 extern crate rustc_errors as errors;
-extern crate pulldown_cmark;
-extern crate tempfile;
-extern crate minifier;
-extern crate parking_lot;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
@@ -276,7 +263,7 @@ fn opts() -> Vec<RustcOptGroup> {
         unstable("resource-suffix", |o| {
             o.optopt("",
                      "resource-suffix",
-                     "suffix to add to CSS and JavaScript files, e.g. \"light.css\" will become \
+                     "suffix to add to CSS and JavaScript files, e.g., \"light.css\" will become \
                       \"light-suffix.css\"",
                      "PATH")
         }),
@@ -338,6 +325,29 @@ fn opts() -> Vec<RustcOptGroup> {
                        "enable-index-page",
                        "To enable generation of the index page")
         }),
+        unstable("static-root-path", |o| {
+            o.optopt("",
+                     "static-root-path",
+                     "Path string to force loading static files from in output pages. \
+                      If not set, uses combinations of '../' to reach the documentation root.",
+                     "PATH")
+        }),
+        unstable("disable-per-crate-search", |o| {
+            o.optflag("",
+                      "disable-per-crate-search",
+                      "disables generating the crate selector on the search box")
+        }),
+        unstable("persist-doctests", |o| {
+             o.optopt("",
+                       "persist-doctests",
+                       "Directory to persist doctest executables into",
+                       "PATH")
+        }),
+        unstable("generate-redirect-pages", |o| {
+            o.optflag("",
+                      "generate-redirect-pages",
+                      "Generate extra pages to support legacy URLs and tool links")
+        }),
     ]
 }
 
@@ -387,9 +397,21 @@ fn main_args(args: &[String]) -> isize {
         info!("going to format");
         let (error_format, treat_err_as_bug, ui_testing) = diag_opts;
         let diag = core::new_handler(error_format, None, treat_err_as_bug, ui_testing);
-        html::render::run(krate, renderopts, passes.into_iter().collect(), renderinfo, &diag)
-            .expect("failed to generate documentation");
-        0
+        match html::render::run(
+            krate,
+            renderopts,
+            passes.into_iter().collect(),
+            renderinfo,
+            &diag,
+        ) {
+            Ok(_) => rustc_driver::EXIT_SUCCESS,
+            Err(e) => {
+                diag.struct_err(&format!("couldn't generate documentation: {}", e.error))
+                    .note(&format!("failed to create or modify \"{}\"", e.file.display()))
+                    .emit();
+                rustc_driver::EXIT_FAILURE
+            }
+        }
     })
 }
 
@@ -419,28 +441,6 @@ where R: 'static + Send,
         }
 
         krate.version = crate_version;
-
-        info!("Executing passes");
-
-        for pass in &passes {
-            // determine if we know about this pass
-            let pass = match passes::find_pass(pass) {
-                Some(pass) => if let Some(pass) = pass.late_fn() {
-                    pass
-                } else {
-                    // not a late pass, but still valid so don't report the error
-                    continue
-                }
-                None => {
-                    error!("unknown pass {}, skipping", *pass);
-
-                    continue
-                },
-            };
-
-            // run it
-            krate = pass(krate);
-        }
 
         tx.send(f(Output {
             krate: krate,

@@ -1,20 +1,10 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Generalized type folding mechanism. The setup is a bit convoluted
 //! but allows for convenient usage. Let T be an instance of some
 //! "foldable type" (one which implements `TypeFoldable`) and F be an
 //! instance of a "folder" (a type which implements `TypeFolder`). Then
 //! the setup is intended to be:
 //!
-//!   T.fold_with(F) --calls--> F.fold_T(T) --calls--> T.super_fold_with(F)
+//!     T.fold_with(F) --calls--> F.fold_T(T) --calls--> T.super_fold_with(F)
 //!
 //! This way, when you define a new folder F, you can override
 //! `fold_T()` to customize the behavior, and invoke `T.super_fold_with()`
@@ -35,17 +25,18 @@
 //! proper thing.
 //!
 //! A `TypeFoldable` T can also be visited by a `TypeVisitor` V using similar setup:
-//!   T.visit_with(V) --calls--> V.visit_T(T) --calls--> T.super_visit_with(V).
-//! These methods return true to indicate that the visitor has found what it is looking for
-//! and does not need to visit anything else.
+//!
+//!     T.visit_with(V) --calls--> V.visit_T(T) --calls--> T.super_visit_with(V).
+//!
+//! These methods return true to indicate that the visitor has found what it is
+//! looking for, and does not need to visit anything else.
 
-use mir::interpret::ConstValue;
-use hir::def_id::DefId;
-use ty::{self, Binder, Ty, TyCtxt, TypeFlags};
+use crate::hir::def_id::DefId;
+use crate::ty::{self, Binder, Ty, TyCtxt, TypeFlags};
 
 use std::collections::BTreeMap;
 use std::fmt;
-use util::nodemap::FxHashSet;
+use crate::util::nodemap::FxHashSet;
 
 /// The TypeFoldable trait is implemented for every type that can be folded.
 /// Basically, every type that has a corresponding method in TypeFolder.
@@ -63,7 +54,7 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
         self.super_visit_with(visitor)
     }
 
-    /// True if `self` has any late-bound regions that are either
+    /// Returns `true` if `self` has any late-bound regions that are either
     /// bound by `binder` or bound by some binder outside of `binder`.
     /// If `binder` is `ty::INNERMOST`, this indicates whether
     /// there are any late-bound regions that appear free.
@@ -71,7 +62,7 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
         self.visit_with(&mut HasEscapingVarsVisitor { outer_index: binder })
     }
 
-    /// True if this `self` has any regions that escape `binder` (and
+    /// Returns `true` if this `self` has any regions that escape `binder` (and
     /// hence are not bound by it).
     fn has_vars_bound_above(&self, binder: ty::DebruijnIndex) -> bool {
         self.has_vars_bound_at_or_above(binder.shifted_in(1))
@@ -100,16 +91,18 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
         self.has_type_flags(TypeFlags::HAS_TY_INFER)
     }
     fn needs_infer(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_TY_INFER | TypeFlags::HAS_RE_INFER)
+        self.has_type_flags(
+            TypeFlags::HAS_TY_INFER | TypeFlags::HAS_RE_INFER | TypeFlags::HAS_CT_INFER
+        )
     }
-    fn has_skol(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_RE_SKOL)
+    fn has_placeholders(&self) -> bool {
+        self.has_type_flags(TypeFlags::HAS_RE_PLACEHOLDER | TypeFlags::HAS_TY_PLACEHOLDER)
     }
     fn needs_subst(&self) -> bool {
         self.has_type_flags(TypeFlags::NEEDS_SUBST)
     }
-    fn has_re_skol(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_RE_SKOL)
+    fn has_re_placeholders(&self) -> bool {
+        self.has_type_flags(TypeFlags::HAS_RE_PLACEHOLDER)
     }
     fn has_closure_types(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_TY_CLOSURE)
@@ -120,13 +113,13 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
         self.has_type_flags(TypeFlags::HAS_FREE_REGIONS)
     }
 
-    /// True if there any any un-erased free regions.
+    /// True if there are any un-erased free regions.
     fn has_erasable_regions(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_FREE_REGIONS)
     }
 
     /// Indicates whether this value references only 'global'
-    /// types/lifetimes that are the same regardless of what fn we are
+    /// generic parameters that are the same regardless of what fn we are
     /// in. This is used for caching.
     fn is_global(&self) -> bool {
         !self.has_type_flags(TypeFlags::HAS_FREE_LOCAL_NAMES)
@@ -152,7 +145,7 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
     }
 }
 
-/// The TypeFolder trait defines the actual *folding*. There is a
+/// The `TypeFolder` trait defines the actual *folding*. There is a
 /// method defined for every foldable type. Each of these has a
 /// default implementation that does an "identity" fold. Within each
 /// identity fold, it should invoke `foo.fold_with(self)` to fold each
@@ -174,7 +167,7 @@ pub trait TypeFolder<'gcx: 'tcx, 'tcx> : Sized {
         r.super_fold_with(self)
     }
 
-    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+    fn fold_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
         c.super_fold_with(self)
     }
 }
@@ -192,7 +185,7 @@ pub trait TypeVisitor<'tcx> : Sized {
         r.super_visit_with(self)
     }
 
-    fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
+    fn visit_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> bool {
         c.super_visit_with(self)
     }
 }
@@ -273,7 +266,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         });
     }
 
-    /// True if `callback` returns true for every region appearing free in `value`.
+    /// Returns `true` if `callback` returns true for every region appearing free in `value`.
     pub fn all_free_regions_meet(
         self,
         value: &impl TypeFoldable<'tcx>,
@@ -282,7 +275,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         !self.any_free_region_meets(value, |r| !callback(r))
     }
 
-    /// True if `callback` returns true for some region appearing free in `value`.
+    /// Returns `true` if `callback` returns true for some region appearing free in `value`.
     pub fn any_free_region_meets(
         self,
         value: &impl TypeFoldable<'tcx>,
@@ -303,8 +296,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             /// ^          ^          ^     ^
             /// |          |          |     | here, would be shifted in 1
             /// |          |          | here, would be shifted in 2
-            /// |          | here, would be INNERMOST shifted in by 1
-            /// | here, initially, binder would be INNERMOST
+            /// |          | here, would be `INNERMOST` shifted in by 1
+            /// | here, initially, binder would be `INNERMOST`
             /// ```
             ///
             /// You see that, initially, *any* bound value is free,
@@ -374,6 +367,7 @@ pub struct RegionFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
 }
 
 impl<'a, 'gcx, 'tcx> RegionFolder<'a, 'gcx, 'tcx> {
+    #[inline]
     pub fn new(
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
         skipped_regions: &'a mut bool,
@@ -460,8 +454,8 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for BoundVarReplacer<'a, 'gcx, 'tcx>
 
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
         match t.sty {
-            ty::Bound(bound_ty) => {
-                if bound_ty.index == self.current_index {
+            ty::Bound(debruijn, bound_ty) => {
+                if debruijn == self.current_index {
                     let fld_t = &mut self.fld_t;
                     let ty = fld_t(bound_ty);
                     ty::fold::shift_vars(
@@ -506,12 +500,12 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for BoundVarReplacer<'a, 'gcx, 'tcx>
 }
 
 impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
-    /// Replace all regions bound by the given `Binder` with the
+    /// Replaces all regions bound by the given `Binder` with the
     /// results returned by the closure; the closure is expected to
     /// return a free region (relative to this binder), and hence the
     /// binder is removed in the return type. The closure is invoked
     /// once for each unique `BoundRegion`; multiple references to the
-    /// same `BoundRegion` will reuse the previous result.  A map is
+    /// same `BoundRegion` will reuse the previous result. A map is
     /// returned at the end with each bound region and the free region
     /// that replaced it.
     ///
@@ -526,11 +520,11 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
               T: TypeFoldable<'tcx>
     {
         // identity for bound types
-        let fld_t = |bound_ty| self.mk_ty(ty::Bound(bound_ty));
+        let fld_t = |bound_ty| self.mk_ty(ty::Bound(ty::INNERMOST, bound_ty));
         self.replace_escaping_bound_vars(value.skip_binder(), fld_r, fld_t)
     }
 
-    /// Replace all escaping bound vars. The `fld_r` closure replaces escaping
+    /// Replaces all escaping bound vars. The `fld_r` closure replaces escaping
     /// bound regions while the `fld_t` closure replaces escaping bound types.
     pub fn replace_escaping_bound_vars<T, F, G>(
         self,
@@ -542,22 +536,29 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
               G: FnMut(ty::BoundTy) -> ty::Ty<'tcx>,
               T: TypeFoldable<'tcx>
     {
-        let mut map = BTreeMap::new();
+        use rustc_data_structures::fx::FxHashMap;
+
+        let mut region_map = BTreeMap::new();
+        let mut type_map = FxHashMap::default();
 
         if !value.has_escaping_bound_vars() {
-            (value.clone(), map)
+            (value.clone(), region_map)
         } else {
             let mut real_fld_r = |br| {
-                *map.entry(br).or_insert_with(|| fld_r(br))
+                *region_map.entry(br).or_insert_with(|| fld_r(br))
             };
 
-            let mut replacer = BoundVarReplacer::new(self, &mut real_fld_r, &mut fld_t);
+            let mut real_fld_t = |bound_ty| {
+                *type_map.entry(bound_ty).or_insert_with(|| fld_t(bound_ty))
+            };
+
+            let mut replacer = BoundVarReplacer::new(self, &mut real_fld_r, &mut real_fld_t);
             let result = value.fold_with(&mut replacer);
-            (result, map)
+            (result, region_map)
         }
     }
 
-    /// Replace all types or regions bound by the given `Binder`. The `fld_r`
+    /// Replaces all types or regions bound by the given `Binder`. The `fld_r`
     /// closure replaces bound regions while the `fld_t` closure replaces bound
     /// types.
     pub fn replace_bound_vars<T, F, G>(
@@ -573,7 +574,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         self.replace_escaping_bound_vars(value.skip_binder(), fld_r, fld_t)
     }
 
-    /// Replace any late-bound regions bound in `value` with
+    /// Replaces any late-bound regions bound in `value` with
     /// free variants attached to `all_outlive_scope`.
     pub fn liberate_late_bound_regions<T>(
         &self,
@@ -587,31 +588,6 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 bound_region: br
             }))
         }).0
-    }
-
-    /// Flattens multiple binding levels into one. So `for<'a> for<'b> Foo`
-    /// becomes `for<'a,'b> Foo`.
-    pub fn flatten_late_bound_regions<T>(self, bound2_value: &Binder<Binder<T>>)
-                                         -> Binder<T>
-        where T: TypeFoldable<'tcx>
-    {
-        let bound0_value = bound2_value.skip_binder().skip_binder();
-        let value = self.fold_regions(bound0_value, &mut false, |region, current_depth| {
-            match *region {
-                ty::ReLateBound(debruijn, br) => {
-                    // We assume no regions bound *outside* of the
-                    // binders in `bound2_value` (nmatsakis added in
-                    // the course of this PR; seems like a reasonable
-                    // sanity check though).
-                    assert!(debruijn == current_depth);
-                    self.mk_region(ty::ReLateBound(current_depth, br))
-                }
-                _ => {
-                    region
-                }
-            }
-        });
-        Binder::bind(value)
     }
 
     /// Returns a set of all late-bound regions that are constrained
@@ -643,7 +619,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         collector.regions
     }
 
-    /// Replace any late-bound regions bound in `value` with `'erased`. Useful in codegen but also
+    /// Replaces any late-bound regions bound in `value` with `'erased`. Useful in codegen but also
     /// method lookup and a few other places where precise region relationships are not required.
     pub fn erase_late_bound_regions<T>(self, value: &Binder<T>) -> T
         where T : TypeFoldable<'tcx>
@@ -651,13 +627,13 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         self.replace_late_bound_regions(value, |_| self.types.re_erased).0
     }
 
-    /// Rewrite any late-bound regions so that they are anonymous.  Region numbers are
+    /// Rewrite any late-bound regions so that they are anonymous. Region numbers are
     /// assigned starting at 1 and increasing monotonically in the order traversed
     /// by the fold operation.
     ///
     /// The chief purpose of this function is to canonicalize regions so that two
     /// `FnSig`s or `TraitRef`s which are equivalent up to region naming will become
-    /// structurally identical.  For example, `for<'a, 'b> fn(&'a isize, &'b isize)` and
+    /// structurally identical. For example, `for<'a, 'b> fn(&'a isize, &'b isize)` and
     /// `for<'a, 'b> fn(&'b isize, &'a isize)` will become identical after anonymization.
     pub fn anonymize_late_bound_regions<T>(self, sig: &Binder<T>) -> Binder<T>
         where T : TypeFoldable<'tcx>,
@@ -679,24 +655,31 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 // vars. See comment on `shift_vars_through_binders` method in
 // `subst.rs` for more details.
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+enum Direction {
+    In,
+    Out,
+}
+
 struct Shifter<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-
     current_index: ty::DebruijnIndex,
     amount: u32,
+    direction: Direction,
 }
 
 impl Shifter<'a, 'gcx, 'tcx> {
-    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, amount: u32) -> Self {
+    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>, amount: u32, direction: Direction) -> Self {
         Shifter {
             tcx,
             current_index: ty::INNERMOST,
             amount,
+            direction,
         }
     }
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
+impl TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
     fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> { self.tcx }
 
     fn fold_binder<T: TypeFoldable<'tcx>>(&mut self, t: &ty::Binder<T>) -> ty::Binder<T> {
@@ -712,7 +695,14 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
                 if self.amount == 0 || debruijn < self.current_index {
                     r
                 } else {
-                    let shifted = ty::ReLateBound(debruijn.shifted_in(self.amount), br);
+                    let debruijn = match self.direction {
+                        Direction::In => debruijn.shifted_in(self.amount),
+                        Direction::Out => {
+                            assert!(debruijn.as_u32() >= self.amount);
+                            debruijn.shifted_out(self.amount)
+                        }
+                    };
+                    let shifted = ty::ReLateBound(debruijn, br);
                     self.tcx.mk_region(shifted)
                 }
             }
@@ -722,16 +712,20 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for Shifter<'a, 'gcx, 'tcx> {
 
     fn fold_ty(&mut self, ty: ty::Ty<'tcx>) -> ty::Ty<'tcx> {
         match ty.sty {
-            ty::Bound(bound_ty) => {
-                if self.amount == 0 || bound_ty.index < self.current_index {
+            ty::Bound(debruijn, bound_ty) => {
+                if self.amount == 0 || debruijn < self.current_index {
                     ty
                 } else {
-                    let shifted = ty::BoundTy {
-                        index: bound_ty.index.shifted_in(self.amount),
-                        var: bound_ty.var,
-                        kind: bound_ty.kind,
+                    let debruijn = match self.direction {
+                        Direction::In => debruijn.shifted_in(self.amount),
+                        Direction::Out => {
+                            assert!(debruijn.as_u32() >= self.amount);
+                            debruijn.shifted_out(self.amount)
+                        }
                     };
-                    self.tcx.mk_ty(ty::Bound(shifted))
+                    self.tcx.mk_ty(
+                        ty::Bound(debruijn, bound_ty)
+                    )
                 }
             }
 
@@ -763,7 +757,18 @@ pub fn shift_vars<'a, 'gcx, 'tcx, T>(
     debug!("shift_vars(value={:?}, amount={})",
            value, amount);
 
-    value.fold_with(&mut Shifter::new(tcx, amount))
+    value.fold_with(&mut Shifter::new(tcx, amount, Direction::In))
+}
+
+pub fn shift_out_vars<'a, 'gcx, 'tcx, T>(
+    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+    value: &T,
+    amount: u32
+) -> T where T: TypeFoldable<'tcx> {
+    debug!("shift_out_vars(value={:?}, amount={})",
+           value, amount);
+
+    value.fold_with(&mut Shifter::new(tcx, amount, Direction::Out))
 }
 
 /// An "escaping var" is a bound var whose binder is not part of `t`. A bound var can be a
@@ -792,7 +797,7 @@ pub fn shift_vars<'a, 'gcx, 'tcx, T>(
 /// scope to which it is attached, etc. An escaping var represents
 /// a bound var for which this processing has not yet been done.
 struct HasEscapingVarsVisitor {
-    /// Anything bound by `outer_index` or "above" is escaping
+    /// Anything bound by `outer_index` or "above" is escaping.
     outer_index: ty::DebruijnIndex,
 }
 
@@ -837,15 +842,14 @@ impl<'tcx> TypeVisitor<'tcx> for HasTypeFlagsVisitor {
         flags.intersects(self.flags)
     }
 
-    fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
-        if let ConstValue::Unevaluated(..) = c.val {
-            let projection_flags = TypeFlags::HAS_NORMALIZABLE_PROJECTION |
-                TypeFlags::HAS_PROJECTION;
-            if projection_flags.intersects(self.flags) {
-                return true;
-            }
+    fn visit_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> bool {
+        let flags = c.type_flags();
+        debug!("HasTypeFlagsVisitor: c={:?} c.flags={:?} self.flags={:?}", c, flags, self.flags);
+        if flags.intersects(self.flags) {
+            true
+        } else {
+            c.super_visit_with(self)
         }
-        c.super_visit_with(self)
     }
 }
 
@@ -855,10 +859,10 @@ struct LateBoundRegionsCollector {
     current_index: ty::DebruijnIndex,
     regions: FxHashSet<ty::BoundRegion>,
 
-    /// If true, we only want regions that are known to be
+    /// `true` if we only want regions that are known to be
     /// "constrained" when you equate this type with another type. In
-    /// particular, if you have e.g. `&'a u32` and `&'b u32`, equating
-    /// them constraints `'a == 'b`.  But if you have `<&'a u32 as
+    /// particular, if you have e.g., `&'a u32` and `&'b u32`, equating
+    /// them constraints `'a == 'b`. But if you have `<&'a u32 as
     /// Trait>::Foo` and `<&'b u32 as Trait>::Foo`, normalizing those
     /// types may mean that `'a` and `'b` don't appear in the results,
     /// so they are not considered *constrained*.

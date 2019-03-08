@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The compiler code necessary to implement the `#[derive]` extensions.
 
 use rustc_data_structures::sync::Lrc;
@@ -100,7 +90,7 @@ derive_traits! {
 }
 
 #[inline] // because `name` is a compile-time constant
-fn warn_if_deprecated(ecx: &mut ExtCtxt, sp: Span, name: &str) {
+fn warn_if_deprecated(ecx: &mut ExtCtxt<'_>, sp: Span, name: &str) {
     if let Some(replacement) = match name {
         "Encodable" => Some("RustcEncodable"),
         "Decodable" => Some("RustcDecodable"),
@@ -141,16 +131,21 @@ fn hygienic_type_parameter(item: &Annotatable, base: &str) -> String {
 }
 
 /// Constructs an expression that calls an intrinsic
-fn call_intrinsic(cx: &ExtCtxt,
+fn call_intrinsic(cx: &ExtCtxt<'_>,
                   mut span: Span,
                   intrinsic: &str,
                   args: Vec<P<ast::Expr>>)
                   -> P<ast::Expr> {
-    if cx.current_expansion.mark.expn_info().unwrap().allow_internal_unstable {
+    let intrinsic_allowed_via_allow_internal_unstable = cx
+        .current_expansion.mark.expn_info().unwrap()
+        .allow_internal_unstable.map_or(false, |features| features.iter().any(|&s|
+            s == "core_intrinsics"
+        ));
+    if intrinsic_allowed_via_allow_internal_unstable {
         span = span.with_ctxt(cx.backtrace());
     } else { // Avoid instability errors with user defined curstom derives, cc #36316
         let mut info = cx.current_expansion.mark.expn_info().unwrap();
-        info.allow_internal_unstable = true;
+        info.allow_internal_unstable = Some(vec![Symbol::intern("core_intrinsics")].into());
         let mark = Mark::fresh(Mark::root());
         mark.set_expn_info(info);
         span = span.with_ctxt(SyntaxContext::empty().apply_mark(mark));
@@ -163,6 +158,5 @@ fn call_intrinsic(cx: &ExtCtxt,
         id: ast::DUMMY_NODE_ID,
         rules: ast::BlockCheckMode::Unsafe(ast::CompilerGenerated),
         span,
-        recovered: false,
     }))
 }

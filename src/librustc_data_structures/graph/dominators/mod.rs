@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Algorithm citation:
 //! A Simple, Fast Dominance Algorithm.
 //! Keith D. Cooper, Timothy J. Harvey, and Ken Kennedy
@@ -127,7 +117,7 @@ impl<Node: Idx> Dominators<Node> {
         self.immediate_dominators[node].unwrap()
     }
 
-    pub fn dominators(&self, node: Node) -> Iter<Node> {
+    pub fn dominators(&self, node: Node) -> Iter<'_, Node> {
         assert!(self.is_reachable(node), "node {:?} is not reachable", node);
         Iter {
             dominators: self,
@@ -146,7 +136,7 @@ impl<Node: Idx> Dominators<Node> {
     }
 }
 
-pub struct Iter<'dom, Node: Idx + 'dom> {
+pub struct Iter<'dom, Node: Idx> {
     dominators: &'dom Dominators<Node>,
     node: Option<Node>,
 }
@@ -181,7 +171,7 @@ impl<Node: Idx> DominatorTree<Node> {
 }
 
 impl<Node: Idx> fmt::Debug for DominatorTree<Node> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(
             &DominatorTreeNode {
                 tree: self,
@@ -198,7 +188,7 @@ struct DominatorTreeNode<'tree, Node: Idx> {
 }
 
 impl<'tree, Node: Idx> fmt::Debug for DominatorTreeNode<'tree, Node> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let subtrees: Vec<_> = self.tree
             .children(self.node)
             .iter()

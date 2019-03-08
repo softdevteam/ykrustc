@@ -1,18 +1,8 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Windows SEH
 //!
 //! On Windows (currently only on MSVC), the default exception handling
 //! mechanism is Structured Exception Handling (SEH). This is quite different
-//! than Dwarf-based exception handling (e.g. what other unix platforms use) in
+//! than Dwarf-based exception handling (e.g., what other unix platforms use) in
 //! terms of compiler internals, so LLVM is required to have a good deal of
 //! extra support for SEH.
 //!
@@ -62,7 +52,7 @@ use core::any::Any;
 use core::mem;
 use core::raw;
 
-use windows as c;
+use crate::windows as c;
 use libc::{c_int, c_uint};
 
 // First up, a whole bunch of type definitions. There's a few platform-specific
@@ -304,12 +294,12 @@ pub unsafe fn cleanup(payload: [u64; 2]) -> Box<dyn Any + Send> {
     })
 }
 
-// This is required by the compiler to exist (e.g. it's a lang item), but
+// This is required by the compiler to exist (e.g., it's a lang item), but
 // it's never actually called by the compiler because __C_specific_handler
 // or _except_handler3 is the personality function that is always used.
 // Hence this is just an aborting stub.
 #[lang = "eh_personality"]
 #[cfg(not(test))]
 fn rust_eh_personality() {
-    unsafe { ::core::intrinsics::abort() }
+    unsafe { core::intrinsics::abort() }
 }

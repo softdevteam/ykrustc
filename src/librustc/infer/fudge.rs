@@ -1,16 +1,6 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use infer::type_variable::TypeVariableMap;
-use ty::{self, Ty, TyCtxt};
-use ty::fold::{TypeFoldable, TypeFolder};
+use crate::infer::type_variable::TypeVariableMap;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::fold::{TypeFoldable, TypeFolder};
 
 use super::InferCtxt;
 use super::RegionVariableOrigin;
@@ -32,13 +22,13 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     /// closure `f`. In our example above, what this closure will do
     /// is to unify the expectation (`Option<&[u32]>`) with the actual
     /// return type (`Option<?T>`, where `?T` represents the variable
-    /// instantiated for `T`).  This will cause `?T` to be unified
+    /// instantiated for `T`). This will cause `?T` to be unified
     /// with `&?a [u32]`, where `?a` is a fresh lifetime variable. The
     /// input type (`?T`) is then returned by `f()`.
     ///
     /// At this point, `fudge_regions_if_ok` will normalize all type
     /// variables, converting `?T` to `&?a [u32]` and end the
-    /// snapshot.  The problem is that we can't just return this type
+    /// snapshot. The problem is that we can't just return this type
     /// out, because it references the region variable `?a`, and that
     /// region variable was popped when we popped the snapshot.
     ///

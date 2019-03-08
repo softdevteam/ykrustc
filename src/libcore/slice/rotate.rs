@@ -1,15 +1,5 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use cmp;
-use mem;
+use mem::{self, MaybeUninit};
 use ptr;
 
 /// Rotation is much faster if it has access to a little bit of memory. This
@@ -26,12 +16,6 @@ union RawArray<T> {
 }
 
 impl<T> RawArray<T> {
-    fn new() -> Self {
-        unsafe { mem::uninitialized() }
-    }
-    fn ptr(&self) -> *mut T {
-        unsafe { &self.typed as *const T as *mut T }
-    }
     fn cap() -> usize {
         if mem::size_of::<T>() == 0 {
             usize::max_value()
@@ -42,7 +26,7 @@ impl<T> RawArray<T> {
 }
 
 /// Rotates the range `[mid-left, mid+right)` such that the element at `mid`
-/// becomes the first element.  Equivalently, rotates the range `left`
+/// becomes the first element. Equivalently, rotates the range `left`
 /// elements to the left or `right` elements to the right.
 ///
 /// # Safety
@@ -52,10 +36,10 @@ impl<T> RawArray<T> {
 /// # Algorithm
 ///
 /// For longer rotations, swap the left-most `delta = min(left, right)`
-/// elements with the right-most `delta` elements.  LLVM vectorizes this,
+/// elements with the right-most `delta` elements. LLVM vectorizes this,
 /// which is profitable as we only reach this step for a "large enough"
-/// rotation.  Doing this puts `delta` elements on the larger side into the
-/// correct position, leaving a smaller rotate problem.  Demonstration:
+/// rotation. Doing this puts `delta` elements on the larger side into the
+/// correct position, leaving a smaller rotate problem. Demonstration:
 ///
 /// ```text
 /// [ 6 7 8 9 10 11 12 13 . 1 2 3 4 5 ]
@@ -88,8 +72,8 @@ pub unsafe fn ptr_rotate<T>(mut left: usize, mid: *mut T, mut right: usize) {
         }
     }
 
-    let rawarray = RawArray::new();
-    let buf = rawarray.ptr();
+    let mut rawarray = MaybeUninit::<RawArray<T>>::uninitialized();
+    let buf = &mut (*rawarray.as_mut_ptr()).typed as *mut [T; 2] as *mut T;
 
     let dim = mid.sub(left).add(right);
     if left <= right {

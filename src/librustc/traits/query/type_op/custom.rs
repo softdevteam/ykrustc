@@ -1,22 +1,12 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use infer::{InferCtxt, InferOk};
+use crate::infer::{InferCtxt, InferOk};
 use std::fmt;
-use traits::query::Fallible;
+use crate::traits::query::Fallible;
 
-use infer::canonical::query_response;
-use infer::canonical::QueryRegionConstraint;
+use crate::infer::canonical::query_response;
+use crate::infer::canonical::QueryRegionConstraint;
 use std::rc::Rc;
 use syntax::source_map::DUMMY_SP;
-use traits::{ObligationCause, TraitEngine, TraitEngineExt};
+use crate::traits::{ObligationCause, TraitEngine, TraitEngineExt};
 
 pub struct CustomTypeOp<F, G> {
     closure: F,

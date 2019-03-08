@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! System bindings for the wasm/web platform
 //!
 //! This module contains the facade (aka platform-specific) implementations of
@@ -24,13 +14,12 @@
 //! compiling for wasm. That way it's a compile time error for something that's
 //! guaranteed to be a runtime error!
 
-use io;
-use os::raw::c_char;
-use ptr;
-use sys::os_str::Buf;
-use sys_common::{AsInner, FromInner};
-use ffi::{OsString, OsStr};
-use time::Duration;
+use crate::os::raw::c_char;
+use crate::ptr;
+use crate::sys::os_str::Buf;
+use crate::sys_common::{AsInner, FromInner};
+use crate::ffi::{OsString, OsStr};
+use crate::time::Duration;
 
 pub mod alloc;
 pub mod args;
@@ -39,6 +28,7 @@ pub mod backtrace;
 pub mod cmath;
 pub mod env;
 pub mod fs;
+pub mod io;
 pub mod memchr;
 pub mod net;
 pub mod os;
@@ -73,17 +63,17 @@ cfg_if! {
 pub fn init() {
 }
 
-pub fn unsupported<T>() -> io::Result<T> {
+pub fn unsupported<T>() -> crate::io::Result<T> {
     Err(unsupported_err())
 }
 
-pub fn unsupported_err() -> io::Error {
-    io::Error::new(io::ErrorKind::Other,
+pub fn unsupported_err() -> crate::io::Error {
+    crate::io::Error::new(crate::io::ErrorKind::Other,
                    "operation not supported on wasm yet")
 }
 
-pub fn decode_error_kind(_code: i32) -> io::ErrorKind {
-    io::ErrorKind::Other
+pub fn decode_error_kind(_code: i32) -> crate::io::ErrorKind {
+    crate::io::ErrorKind::Other
 }
 
 // This enum is used as the storage for a bunch of types which can't actually
@@ -178,7 +168,7 @@ impl ExitSysCall {
         };
         unsafe {
             syscall(SysCallIndex::Exit, &mut call_record);
-            ::intrinsics::abort();
+            crate::intrinsics::abort();
         }
     }
 }

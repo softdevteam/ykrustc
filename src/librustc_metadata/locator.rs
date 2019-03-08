@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Finds crate binaries and loads their metadata
 //!
 //! Might I be the first to welcome you to a world of platform differences,
@@ -37,7 +27,7 @@
 //!
 //! The reason for this is that any of B's types could be composed of C's types,
 //! any function in B could return a type from C, etc. To be able to guarantee
-//! that we can always typecheck/translate any function, we have to have
+//! that we can always type-check/translate any function, we have to have
 //! complete knowledge of the whole ecosystem, not just our immediate
 //! dependencies.
 //!
@@ -222,9 +212,9 @@
 //! no means all of the necessary details. Take a look at the rest of
 //! metadata::locator or metadata::creader for all the juicy details!
 
-use cstore::{MetadataRef, MetadataBlob};
-use creader::Library;
-use schema::{METADATA_HEADER, rustc_version};
+use crate::cstore::{MetadataRef, MetadataBlob};
+use crate::creader::Library;
+use crate::schema::{METADATA_HEADER, rustc_version};
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::svh::Svh;
@@ -236,6 +226,7 @@ use rustc::util::nodemap::FxHashMap;
 
 use errors::DiagnosticBuilder;
 use syntax::symbol::Symbol;
+use syntax::struct_span_err;
 use syntax_pos::Span;
 use rustc_target::spec::{Target, TargetTriple};
 
@@ -251,11 +242,15 @@ use flate2::read::DeflateDecoder;
 
 use rustc_data_structures::owning_ref::OwningRef;
 
+use log::{debug, info, warn};
+
+#[derive(Clone)]
 pub struct CrateMismatch {
     path: PathBuf,
     got: String,
 }
 
+#[derive(Clone)]
 pub struct Context<'a> {
     pub sess: &'a Session,
     pub span: Span,
@@ -265,7 +260,7 @@ pub struct Context<'a> {
     pub extra_filename: Option<&'a str>,
     // points to either self.sess.target.target or self.sess.host, must match triple
     pub target: &'a Target,
-    pub triple: &'a TargetTriple,
+    pub triple: TargetTriple,
     pub filesearch: FileSearch<'a>,
     pub root: &'a Option<CratePaths>,
     pub rejected_via_hash: Vec<CrateMismatch>,
@@ -293,7 +288,7 @@ enum CrateFlavor {
 }
 
 impl fmt::Display for CrateFlavor {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match *self {
             CrateFlavor::Rlib => "rlib",
             CrateFlavor::Rmeta => "rmeta",
@@ -309,6 +304,14 @@ impl CratePaths {
 }
 
 impl<'a> Context<'a> {
+    pub fn reset(&mut self) {
+        self.rejected_via_hash.clear();
+        self.rejected_via_triple.clear();
+        self.rejected_via_kind.clear();
+        self.rejected_via_version.clear();
+        self.rejected_via_filename.clear();
+    }
+
     pub fn maybe_load_library_crate(&mut self) -> Option<Library> {
         let mut seen_paths = FxHashSet::default();
         match self.extra_filename {
@@ -406,7 +409,7 @@ impl<'a> Context<'a> {
                                            add);
 
             if (self.ident == "std" || self.ident == "core")
-                && self.triple != &TargetTriple::from_triple(config::host_triple()) {
+                && self.triple != TargetTriple::from_triple(config::host_triple()) {
                 err.note(&format!("the `{}` target may not be installed", self.triple));
             }
             err.span_label(self.span, "can't find crate");
@@ -610,7 +613,7 @@ impl<'a> Context<'a> {
             }
         }
 
-        let mut err: Option<DiagnosticBuilder> = None;
+        let mut err: Option<DiagnosticBuilder<'_>> = None;
         for (lib, kind) in m {
             info!("{} reading metadata from: {}", flavor, lib.display());
             let (hash, metadata) =
@@ -661,7 +664,7 @@ impl<'a> Context<'a> {
             // Ok so at this point we've determined that `(lib, kind)` above is
             // a candidate crate to load, and that `slot` is either none (this
             // is the first crate of its kind) or if some the previous path has
-            // the exact same hash (e.g. it's the exact same crate).
+            // the exact same hash (e.g., it's the exact same crate).
             //
             // In principle these two candidate crates are exactly the same so
             // we can choose either of them to link. As a stupidly gross hack,
@@ -678,7 +681,7 @@ impl<'a> Context<'a> {
             // candidates are all canonicalized, so we canonicalize the sysroot
             // as well.
             if let Some((ref prev, _)) = ret {
-                let sysroot = self.sess.sysroot();
+                let sysroot = &self.sess.sysroot;
                 let sysroot = sysroot.canonicalize()
                                      .unwrap_or_else(|_| sysroot.to_path_buf());
                 if prev.starts_with(&sysroot) {
@@ -713,7 +716,7 @@ impl<'a> Context<'a> {
 
         let root = metadata.get_root();
         if let Some(is_proc_macro) = self.is_proc_macro {
-            if root.macro_derive_registrar.is_some() != is_proc_macro {
+            if root.proc_macro_decls_static.is_some() != is_proc_macro {
                 return None;
             }
         }
@@ -725,7 +728,7 @@ impl<'a> Context<'a> {
             }
         }
 
-        if &root.triple != self.triple {
+        if root.triple != self.triple {
             info!("Rejecting via crate triple: expected {} got {}",
                   self.triple,
                   root.triple);
@@ -925,7 +928,7 @@ fn get_metadata_section_imp(target: &Target,
     }
 }
 
-// A diagnostic function for dumping crate metadata to an output stream
+/// A diagnostic function for dumping crate metadata to an output stream.
 pub fn list_file_metadata(target: &Target,
                           path: &Path,
                           loader: &dyn MetadataLoader,

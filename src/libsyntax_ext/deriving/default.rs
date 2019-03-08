@@ -1,25 +1,16 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use deriving::path_std;
-use deriving::generic::*;
-use deriving::generic::ty::*;
+use crate::deriving::path_std;
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
 
 use syntax::ast::{Expr, MetaItem};
-use syntax::ext::base::{Annotatable, ExtCtxt};
+use syntax::ext::base::{Annotatable, DummyResult, ExtCtxt};
 use syntax::ext::build::AstBuilder;
 use syntax::ptr::P;
 use syntax::symbol::Symbol;
+use syntax::span_err;
 use syntax_pos::Span;
 
-pub fn expand_deriving_default(cx: &mut ExtCtxt,
+pub fn expand_deriving_default(cx: &mut ExtCtxt<'_>,
                                span: Span,
                                mitem: &MetaItem,
                                item: &Annotatable,
@@ -52,7 +43,10 @@ pub fn expand_deriving_default(cx: &mut ExtCtxt,
     trait_def.expand(cx, mitem, item, push)
 }
 
-fn default_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure) -> P<Expr> {
+fn default_substructure(cx: &mut ExtCtxt<'_>,
+                        trait_span: Span,
+                        substr: &Substructure<'_>)
+                        -> P<Expr> {
     let default_ident = cx.std_path(&["default", "Default", "default"]);
     let default_call = |span| cx.expr_call_global(span, default_ident.clone(), Vec::new());
 
@@ -79,7 +73,7 @@ fn default_substructure(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructur
             span_err!(cx, trait_span, E0665,
                       "`Default` cannot be derived for enums, only structs");
             // let compilation continue
-            cx.expr_usize(trait_span, 0)
+            DummyResult::raw_expr(trait_span, true)
         }
         _ => cx.span_bug(trait_span, "Non-static method in `derive(Default)`"),
     };

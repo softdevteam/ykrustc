@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // RFC 736 (and Issue 21407): functional struct update should respect privacy.
 
 // The `foo` module attempts to maintains an invariant that each `S`
@@ -16,12 +6,12 @@ use self::foo::S;
 mod foo {
     use std::cell::{UnsafeCell};
 
-    static mut count : UnsafeCell<u64> = UnsafeCell::new(1);
+    static mut COUNT : UnsafeCell<u64> = UnsafeCell::new(1);
 
     pub struct S { pub a: u8, pub b: String, secret_uid: u64 }
 
     pub fn make_secrets(a: u8, b: String) -> S {
-        let val = unsafe { let p = count.get(); let val = *p; *p = val + 1; val };
+        let val = unsafe { let p = COUNT.get(); let val = *p; *p = val + 1; val };
         println!("creating {}, uid {}", b, val);
         S { a: a, b: b, secret_uid: val }
     }

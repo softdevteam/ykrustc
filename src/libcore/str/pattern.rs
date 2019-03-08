@@ -1,17 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The string Pattern API.
 //!
-//! For more details, see the traits `Pattern`, `Searcher`,
-//! `ReverseSearcher` and `DoubleEndedSearcher`.
+//! For more details, see the traits [`Pattern`], [`Searcher`],
+//! [`ReverseSearcher`], and [`DoubleEndedSearcher`].
 
 #![unstable(feature = "pattern",
             reason = "API not fully fleshed out and ready to be stabilized",
@@ -127,7 +117,7 @@ pub unsafe trait Searcher<'a> {
     /// `[Reject(0, 1), Reject(1, 2), Match(2, 5), Reject(5, 8)]`
     fn next(&mut self) -> SearchStep;
 
-    /// Find the next `Match` result. See `next()`
+    /// Finds the next `Match` result. See `next()`
     ///
     /// Unlike next(), there is no guarantee that the returned ranges
     /// of this and next_reject will overlap. This will return (start_match, end_match),
@@ -144,7 +134,7 @@ pub unsafe trait Searcher<'a> {
         }
     }
 
-    /// Find the next `Reject` result. See `next()` and `next_match()`
+    /// Finds the next `Reject` result. See `next()` and `next_match()`
     ///
     /// Unlike next(), there is no guarantee that the returned ranges
     /// of this and next_match will overlap.
@@ -195,7 +185,7 @@ pub unsafe trait ReverseSearcher<'a>: Searcher<'a> {
     /// `[Reject(7, 8), Match(4, 7), Reject(1, 4), Reject(0, 1)]`
     fn next_back(&mut self) -> SearchStep;
 
-    /// Find the next `Match` result. See `next_back()`
+    /// Finds the next `Match` result. See `next_back()`
     #[inline]
     fn next_match_back(&mut self) -> Option<(usize, usize)>{
         loop {
@@ -207,7 +197,7 @@ pub unsafe trait ReverseSearcher<'a>: Searcher<'a> {
         }
     }
 
-    /// Find the next `Reject` result. See `next_back()`
+    /// Finds the next `Reject` result. See `next_back()`
     #[inline]
     fn next_reject_back(&mut self) -> Option<(usize, usize)>{
         loop {
@@ -397,7 +387,7 @@ unsafe impl<'a> ReverseSearcher<'a> for CharSearcher<'a> {
                     let found_char = index - shift;
                     if let Some(slice) = haystack.get(found_char..(found_char + self.utf8_size)) {
                         if slice == &self.utf8_encoded[0..self.utf8_size] {
-                            // move finger to before the character found (i.e. at its start index)
+                            // move finger to before the character found (i.e., at its start index)
                             self.finger_back = found_char;
                             return Some((self.finger_back, self.finger_back + self.utf8_size));
                         }
@@ -435,8 +425,7 @@ impl<'a> Pattern<'a> for char {
     #[inline]
     fn into_searcher(self, haystack: &'a str) -> Self::Searcher {
         let mut utf8_encoded = [0; 4];
-        self.encode_utf8(&mut utf8_encoded);
-        let utf8_size = self.len_utf8();
+        let utf8_size = self.encode_utf8(&mut utf8_encoded).len();
         CharSearcher {
             haystack,
             finger: 0,
@@ -1016,7 +1005,7 @@ struct TwoWaySearcher {
     It can be proven that the following is an equivalent definition of a local period
     for a factorization (u, v): any positive integer r such that x[i] == x[i+r] for
     all i such that |u| - r <= i <= |u| - 1 and such that both x[i] and x[i+r] are
-    defined. (i.e. i > 0 and i + r < |x|).
+    defined. (i.e., i > 0 and i + r < |x|).
 
     Using the above reformulation, it is easy to prove that
 

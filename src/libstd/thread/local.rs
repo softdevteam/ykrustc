@@ -1,21 +1,11 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Thread local storage
 
 #![unstable(feature = "thread_local_internals", issue = "0")]
 
-use cell::UnsafeCell;
-use fmt;
-use hint;
-use mem;
+use crate::cell::UnsafeCell;
+use crate::fmt;
+use crate::hint;
+use crate::mem;
 
 /// A thread local storage key which owns its contents.
 ///
@@ -79,9 +69,6 @@ use mem;
 ///    destroyed, but not all platforms have this guard. Those platforms that do
 ///    not guard typically have a synthetic limit after which point no more
 ///    destructors are run.
-/// 3. On macOS, initializing TLS during destruction of other TLS slots can
-///    sometimes cancel *all* destructors for the current thread, whether or not
-///    the slots have already had their destructors run or not.
 ///
 /// [`with`]: ../../std/thread/struct.LocalKey.html#method.with
 /// [`thread_local!`]: ../../std/macro.thread_local.html
@@ -139,7 +126,7 @@ impl<T: 'static> fmt::Debug for LocalKey<T> {
 /// [`std::thread::LocalKey`]: ../std/thread/struct.LocalKey.html
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(thread_local_internals)]
 macro_rules! thread_local {
     // empty (base case for the recursion)
     () => {};
@@ -161,7 +148,7 @@ macro_rules! thread_local {
            reason = "should not be necessary",
            issue = "0")]
 #[macro_export]
-#[allow_internal_unstable]
+#[allow_internal_unstable(thread_local_internals, cfg_target_thread_local, thread_local)]
 #[allow_internal_unsafe]
 macro_rules! __thread_local_inner {
     (@key $(#[$attr:meta])* $vis:vis $name:ident, $t:ty, $init:expr) => {
@@ -269,7 +256,7 @@ impl<T: 'static> LocalKey<T> {
         //      ptr::write(ptr, Some(value))
         //
         // Due to this pattern it's possible for the destructor of the value in
-        // `ptr` (e.g. if this is being recursively initialized) to re-access
+        // `ptr` (e.g., if this is being recursively initialized) to re-access
         // TLS, in which case there will be a `&` and `&mut` pointer to the same
         // value (an aliasing violation). To avoid setting the "I'm running a
         // destructor" flag we just use `mem::replace` which should sequence the
@@ -319,14 +306,14 @@ impl<T: 'static> LocalKey<T> {
 #[doc(hidden)]
 #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
 pub mod statik {
-    use cell::UnsafeCell;
-    use fmt;
+    use crate::cell::UnsafeCell;
+    use crate::fmt;
 
     pub struct Key<T> {
         inner: UnsafeCell<Option<T>>,
     }
 
-    unsafe impl<T> ::marker::Sync for Key<T> { }
+    unsafe impl<T> Sync for Key<T> { }
 
     impl<T> fmt::Debug for Key<T> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -350,11 +337,11 @@ pub mod statik {
 #[doc(hidden)]
 #[cfg(target_thread_local)]
 pub mod fast {
-    use cell::{Cell, UnsafeCell};
-    use fmt;
-    use mem;
-    use ptr;
-    use sys::fast_thread_local::{register_dtor, requires_move_before_drop};
+    use crate::cell::{Cell, UnsafeCell};
+    use crate::fmt;
+    use crate::mem;
+    use crate::ptr;
+    use crate::sys::fast_thread_local::{register_dtor, requires_move_before_drop};
 
     pub struct Key<T> {
         inner: UnsafeCell<Option<T>>,
@@ -421,11 +408,11 @@ pub mod fast {
 
 #[doc(hidden)]
 pub mod os {
-    use cell::{Cell, UnsafeCell};
-    use fmt;
-    use marker;
-    use ptr;
-    use sys_common::thread_local::StaticKey as OsStaticKey;
+    use crate::cell::{Cell, UnsafeCell};
+    use crate::fmt;
+    use crate::marker;
+    use crate::ptr;
+    use crate::sys_common::thread_local::StaticKey as OsStaticKey;
 
     pub struct Key<T> {
         // OS-TLS key that we'll use to key off.
@@ -439,7 +426,7 @@ pub mod os {
         }
     }
 
-    unsafe impl<T> ::marker::Sync for Key<T> { }
+    unsafe impl<T> Sync for Key<T> { }
 
     struct Value<T: 'static> {
         key: &'static Key<T>,
@@ -493,9 +480,9 @@ pub mod os {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests {
-    use sync::mpsc::{channel, Sender};
-    use cell::{Cell, UnsafeCell};
-    use thread;
+    use crate::sync::mpsc::{channel, Sender};
+    use crate::cell::{Cell, UnsafeCell};
+    use crate::thread;
 
     struct Foo(Sender<()>);
 
@@ -614,11 +601,8 @@ mod tests {
     }
 
     // Note that this test will deadlock if TLS destructors aren't run (this
-    // requires the destructor to be run to pass the test). macOS has a known bug
-    // where dtors-in-dtors may cancel other destructors, so we just ignore this
-    // test on macOS.
+    // requires the destructor to be run to pass the test).
     #[test]
-    #[cfg_attr(target_os = "macos", ignore)]
     fn dtors_in_dtors_in_dtors() {
         struct S1(Sender<()>);
         thread_local!(static K1: UnsafeCell<Option<S1>> = UnsafeCell::new(None));
@@ -644,8 +628,8 @@ mod tests {
 
 #[cfg(test)]
 mod dynamic_tests {
-    use cell::RefCell;
-    use collections::HashMap;
+    use crate::cell::RefCell;
+    use crate::collections::HashMap;
 
     #[test]
     fn smoke() {

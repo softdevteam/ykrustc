@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of the install aspects of the compiler.
 //!
 //! This module is responsible for installing the standard library,
@@ -18,48 +8,51 @@ use std::fs;
 use std::path::{Path, PathBuf, Component};
 use std::process::Command;
 
-use dist::{self, pkgname, sanitize_sh, tmpdir};
+use crate::dist::{self, pkgname, sanitize_sh, tmpdir};
 
-use builder::{Builder, RunConfig, ShouldRun, Step};
-use cache::Interned;
-use config::Config;
+use crate::builder::{Builder, RunConfig, ShouldRun, Step};
+use crate::cache::Interned;
+use crate::config::Config;
 
-pub fn install_docs(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_docs(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "docs", "rust-docs", stage, Some(host));
 }
 
-pub fn install_std(builder: &Builder, stage: u32, target: Interned<String>) {
+pub fn install_std(builder: &Builder<'_>, stage: u32, target: Interned<String>) {
     install_sh(builder, "std", "rust-std", stage, Some(target));
 }
 
-pub fn install_cargo(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_cargo(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "cargo", "cargo", stage, Some(host));
 }
 
-pub fn install_rls(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_rls(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "rls", "rls", stage, Some(host));
 }
-pub fn install_clippy(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_clippy(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "clippy", "clippy", stage, Some(host));
 }
+pub fn install_miri(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
+    install_sh(builder, "miri", "miri", stage, Some(host));
+}
 
-pub fn install_rustfmt(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_rustfmt(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "rustfmt", "rustfmt", stage, Some(host));
 }
 
-pub fn install_analysis(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_analysis(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "analysis", "rust-analysis", stage, Some(host));
 }
 
-pub fn install_src(builder: &Builder, stage: u32) {
+pub fn install_src(builder: &Builder<'_>, stage: u32) {
     install_sh(builder, "src", "rust-src", stage, None);
 }
-pub fn install_rustc(builder: &Builder, stage: u32, host: Interned<String>) {
+pub fn install_rustc(builder: &Builder<'_>, stage: u32, host: Interned<String>) {
     install_sh(builder, "rustc", "rustc", stage, Some(host));
 }
 
 fn install_sh(
-    builder: &Builder,
+    builder: &Builder<'_>,
     package: &str,
     name: &str,
     stage: u32,
@@ -162,7 +155,7 @@ macro_rules! install {
             }
 
             #[allow(dead_code)]
-            fn should_install(builder: &Builder) -> bool {
+            fn should_install(builder: &Builder<'_>) -> bool {
                 builder.config.tools.as_ref().map_or(false, |t| t.contains($path))
             }
         }
@@ -173,12 +166,12 @@ macro_rules! install {
             const ONLY_HOSTS: bool = $only_hosts;
             $(const $c: bool = true;)*
 
-            fn should_run(run: ShouldRun) -> ShouldRun {
+            fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
                 let $_config = &run.builder.config;
                 run.path($path).default_condition($default_cond)
             }
 
-            fn make_run(run: RunConfig) {
+            fn make_run(run: RunConfig<'_>) {
                 run.builder.ensure($name {
                     stage: run.builder.top_stage,
                     target: run.target,
@@ -186,7 +179,7 @@ macro_rules! install {
                 });
             }
 
-            fn run($sel, $builder: &Builder) {
+            fn run($sel, $builder: &Builder<'_>) {
                 $run_item
             }
         })+
@@ -227,6 +220,14 @@ install!((self, builder, _config),
             builder.info(&format!("skipping Install clippy stage{} ({})", self.stage, self.target));
         }
     };
+    Miri, "miri", Self::should_build(_config), only_hosts: true, {
+        if builder.ensure(dist::Miri { stage: self.stage, target: self.target }).is_some() ||
+            Self::should_install(builder) {
+            install_miri(builder, self.stage, self.target);
+        } else {
+            builder.info(&format!("skipping Install miri stage{} ({})", self.stage, self.target));
+        }
+    };
     Rustfmt, "rustfmt", Self::should_build(_config), only_hosts: true, {
         if builder.ensure(dist::Rustfmt { stage: self.stage, target: self.target }).is_some() ||
             Self::should_install(builder) {
@@ -261,20 +262,20 @@ impl Step for Src {
     const DEFAULT: bool = true;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let config = &run.builder.config;
         let cond = config.extended &&
             config.tools.as_ref().map_or(true, |t| t.contains("src"));
         run.path("src").default_condition(cond)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Src {
             stage: run.builder.top_stage,
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         builder.ensure(dist::Src);
         install_src(builder, self.stage);
     }

@@ -1,24 +1,14 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /*!
  * Methods for the various MIR types. These are intended for use after
  * building is complete.
  */
 
-use mir::*;
-use ty::subst::{Subst, Substs};
-use ty::{self, AdtDef, Ty, TyCtxt};
-use ty::layout::VariantIdx;
-use hir;
-use ty::util::IntTypeExt;
+use crate::mir::*;
+use crate::ty::subst::{Subst, SubstsRef};
+use crate::ty::{self, AdtDef, Ty, TyCtxt};
+use crate::ty::layout::VariantIdx;
+use crate::hir;
+use crate::ty::util::IntTypeExt;
 
 #[derive(Copy, Clone, Debug)]
 pub enum PlaceTy<'tcx> {
@@ -27,7 +17,7 @@ pub enum PlaceTy<'tcx> {
 
     /// Downcast to a particular variant of an enum.
     Downcast { adt_def: &'tcx AdtDef,
-               substs: &'tcx Substs<'tcx>,
+               substs: SubstsRef<'tcx>,
                variant_index: VariantIdx },
 }
 
@@ -85,8 +75,7 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
                          elem: &PlaceElem<'tcx>)
                          -> PlaceTy<'tcx>
     {
-        self.projection_ty_core(tcx, elem, |_, _, ty| -> Result<Ty<'tcx>, ()> { Ok(ty) })
-            .unwrap()
+        self.projection_ty_core(tcx, elem, |_, _, ty| ty)
     }
 
     /// `place_ty.projection_ty_core(tcx, elem, |...| { ... })`
@@ -94,12 +83,12 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
     /// `Ty` or downcast variant corresponding to that projection.
     /// The `handle_field` callback must map a `Field` to its `Ty`,
     /// (which should be trivial when `T` = `Ty`).
-    pub fn projection_ty_core<V, T, E>(
+    pub fn projection_ty_core<V, T>(
         self,
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
         elem: &ProjectionElem<'tcx, V, T>,
-        mut handle_field: impl FnMut(&Self, &Field, &T) -> Result<Ty<'tcx>, E>)
-        -> Result<PlaceTy<'tcx>, E>
+        mut handle_field: impl FnMut(&Self, &Field, &T) -> Ty<'tcx>)
+        -> PlaceTy<'tcx>
     where
         V: ::std::fmt::Debug, T: ::std::fmt::Debug
     {
@@ -150,10 +139,10 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
                     }
                 },
             ProjectionElem::Field(ref f, ref fty) =>
-                PlaceTy::Ty { ty: handle_field(&self, f, fty)? },
+                PlaceTy::Ty { ty: handle_field(&self, f, fty) },
         };
         debug!("projection_ty self: {:?} elem: {:?} yields: {:?}", self, elem, answer);
-        Ok(answer)
+        answer
     }
 }
 
@@ -169,10 +158,10 @@ impl<'tcx> Place<'tcx> {
         where D: HasLocalDecls<'tcx>
     {
         match *self {
-            Place::Local(index) =>
+            Place::Base(PlaceBase::Local(index)) =>
                 PlaceTy::Ty { ty: local_decls.local_decls()[index].ty },
-            Place::Promoted(ref data) => PlaceTy::Ty { ty: data.1 },
-            Place::Static(ref data) =>
+            Place::Base(PlaceBase::Promoted(ref data)) => PlaceTy::Ty { ty: data.1 },
+            Place::Base(PlaceBase::Static(ref data)) =>
                 PlaceTy::Ty { ty: data.ty },
             Place::Projection(ref proj) =>
                 proj.base.ty(local_decls, tcx).projection_ty(tcx, &proj.elem),
@@ -289,7 +278,7 @@ impl<'tcx> Rvalue<'tcx> {
     }
 
     #[inline]
-    /// Returns whether this rvalue is deeply initialized (most rvalues) or
+    /// Returns `true` if this rvalue is deeply initialized (most rvalues) or
     /// whether its only shallowly initialized (`Rvalue::Box`).
     pub fn initialization_state(&self) -> RvalueInitializationState {
         match *self {

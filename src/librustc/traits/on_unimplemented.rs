@@ -1,19 +1,9 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use fmt_macros::{Parser, Piece, Position};
 
-use hir::def_id::DefId;
-use ty::{self, TyCtxt, GenericParamDefKind};
-use util::common::ErrorReported;
-use util::nodemap::FxHashMap;
+use crate::hir::def_id::DefId;
+use crate::ty::{self, TyCtxt, GenericParamDefKind};
+use crate::util::common::ErrorReported;
+use crate::util::nodemap::FxHashMap;
 
 use syntax::ast::{MetaItem, NestedMetaItem};
 use syntax::attr;
@@ -167,10 +157,7 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedDirective {
                 note: None,
             }))
         } else {
-            return Err(parse_error(tcx, attr.span,
-                                   "`#[rustc_on_unimplemented]` requires a value",
-                                   "value required here",
-                                   Some(r#"eg `#[rustc_on_unimplemented(message="foo")]`"#)));
+            return Err(ErrorReported);
         };
         debug!("of_item({:?}/{:?}) = {:?}", trait_def_id, impl_def_id, result);
         result
@@ -244,7 +231,7 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
     {
         let name = tcx.item_name(trait_def_id);
         let generics = tcx.generics_of(trait_def_id);
-        let parser = Parser::new(&self.0, None);
+        let parser = Parser::new(&self.0, None, vec![], false);
         let mut result = Ok(());
         for token in parser {
             match token {
@@ -293,7 +280,8 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
         let generics = tcx.generics_of(trait_ref.def_id);
         let generic_map = generics.params.iter().filter_map(|param| {
             let value = match param.kind {
-                GenericParamDefKind::Type {..} => {
+                GenericParamDefKind::Type { .. } |
+                GenericParamDefKind::Const => {
                     trait_ref.substs[param.index as usize].to_string()
                 },
                 GenericParamDefKind::Lifetime => return None
@@ -303,7 +291,7 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
         }).collect::<FxHashMap<String, String>>();
         let empty_string = String::new();
 
-        let parser = Parser::new(&self.0, None);
+        let parser = Parser::new(&self.0, None, vec![], false);
         parser.map(|p|
             match p {
                 Piece::String(s) => s,

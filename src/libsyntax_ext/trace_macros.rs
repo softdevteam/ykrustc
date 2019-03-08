@@ -1,21 +1,10 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use syntax::ext::base::ExtCtxt;
-use syntax::ext::base;
+use syntax::ext::base::{self, ExtCtxt};
 use syntax::feature_gate;
 use syntax::symbol::keywords;
 use syntax_pos::Span;
 use syntax::tokenstream::TokenTree;
 
-pub fn expand_trace_macros(cx: &mut ExtCtxt,
+pub fn expand_trace_macros(cx: &mut ExtCtxt<'_>,
                            sp: Span,
                            tt: &[TokenTree])
                            -> Box<dyn base::MacResult + 'static> {
@@ -25,7 +14,6 @@ pub fn expand_trace_macros(cx: &mut ExtCtxt,
                                        sp,
                                        feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_TRACE_MACROS);
-        return base::DummyResult::any(sp);
     }
 
     match (tt.len(), tt.first()) {
@@ -38,5 +26,5 @@ pub fn expand_trace_macros(cx: &mut ExtCtxt,
         _ => cx.span_err(sp, "trace_macros! accepts only `true` or `false`"),
     }
 
-    base::DummyResult::any(sp)
+    base::DummyResult::any_valid(sp)
 }

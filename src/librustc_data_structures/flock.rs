@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Simple file-locking apis for each OS.
 //!
 //! This is not meant to be in the standard library, it does nothing with
@@ -24,12 +14,9 @@ cfg_if! {
     if #[cfg(unix)] {
         use std::ffi::{CString, OsStr};
         use std::os::unix::prelude::*;
-        use libc;
 
         #[cfg(any(target_os = "linux", target_os = "android"))]
         mod os {
-            use libc;
-
             #[repr(C)]
             pub struct flock {
                 pub l_type: libc::c_short,
@@ -41,18 +28,10 @@ cfg_if! {
                 // not actually here, but brings in line with freebsd
                 pub l_sysid: libc::c_int,
             }
-
-            pub const F_RDLCK: libc::c_short = 0;
-            pub const F_WRLCK: libc::c_short = 1;
-            pub const F_UNLCK: libc::c_short = 2;
-            pub const F_SETLK: libc::c_int = 6;
-            pub const F_SETLKW: libc::c_int = 7;
         }
 
         #[cfg(target_os = "freebsd")]
         mod os {
-            use libc;
-
             #[repr(C)]
             pub struct flock {
                 pub l_start: libc::off_t,
@@ -62,12 +41,6 @@ cfg_if! {
                 pub l_whence: libc::c_short,
                 pub l_sysid: libc::c_int,
             }
-
-            pub const F_RDLCK: libc::c_short = 1;
-            pub const F_UNLCK: libc::c_short = 2;
-            pub const F_WRLCK: libc::c_short = 3;
-            pub const F_SETLK: libc::c_int = 12;
-            pub const F_SETLKW: libc::c_int = 13;
         }
 
         #[cfg(any(target_os = "dragonfly",
@@ -75,8 +48,6 @@ cfg_if! {
                   target_os = "netbsd",
                   target_os = "openbsd"))]
         mod os {
-            use libc;
-
             #[repr(C)]
             pub struct flock {
                 pub l_start: libc::off_t,
@@ -88,18 +59,10 @@ cfg_if! {
                 // not actually here, but brings in line with freebsd
                 pub l_sysid: libc::c_int,
             }
-
-            pub const F_RDLCK: libc::c_short = 1;
-            pub const F_UNLCK: libc::c_short = 2;
-            pub const F_WRLCK: libc::c_short = 3;
-            pub const F_SETLK: libc::c_int = 8;
-            pub const F_SETLKW: libc::c_int = 9;
         }
 
         #[cfg(target_os = "haiku")]
         mod os {
-            use libc;
-
             #[repr(C)]
             pub struct flock {
                 pub l_type: libc::c_short,
@@ -111,18 +74,10 @@ cfg_if! {
                 // not actually here, but brings in line with freebsd
                 pub l_sysid: libc::c_int,
             }
-
-            pub const F_RDLCK: libc::c_short = 0x0040;
-            pub const F_UNLCK: libc::c_short = 0x0200;
-            pub const F_WRLCK: libc::c_short = 0x0400;
-            pub const F_SETLK: libc::c_int = 0x0080;
-            pub const F_SETLKW: libc::c_int = 0x0100;
         }
 
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         mod os {
-            use libc;
-
             #[repr(C)]
             pub struct flock {
                 pub l_start: libc::off_t,
@@ -134,18 +89,10 @@ cfg_if! {
                 // not actually here, but brings in line with freebsd
                 pub l_sysid: libc::c_int,
             }
-
-            pub const F_RDLCK: libc::c_short = 1;
-            pub const F_UNLCK: libc::c_short = 2;
-            pub const F_WRLCK: libc::c_short = 3;
-            pub const F_SETLK: libc::c_int = 8;
-            pub const F_SETLKW: libc::c_int = 9;
         }
 
         #[cfg(target_os = "solaris")]
         mod os {
-            use libc;
-
             #[repr(C)]
             pub struct flock {
                 pub l_type: libc::c_short,
@@ -155,12 +102,6 @@ cfg_if! {
                 pub l_sysid: libc::c_int,
                 pub l_pid: libc::pid_t,
             }
-
-            pub const F_RDLCK: libc::c_short = 1;
-            pub const F_WRLCK: libc::c_short = 2;
-            pub const F_UNLCK: libc::c_short = 3;
-            pub const F_SETLK: libc::c_int = 6;
-            pub const F_SETLKW: libc::c_int = 7;
         }
 
         #[derive(Debug)]
@@ -192,9 +133,9 @@ cfg_if! {
                 }
 
                 let lock_type = if exclusive {
-                    os::F_WRLCK
+                    libc::F_WRLCK as libc::c_short
                 } else {
-                    os::F_RDLCK
+                    libc::F_RDLCK as libc::c_short
                 };
 
                 let flock = os::flock {
@@ -205,7 +146,7 @@ cfg_if! {
                     l_type: lock_type,
                     l_sysid: 0,
                 };
-                let cmd = if wait { os::F_SETLKW } else { os::F_SETLK };
+                let cmd = if wait { libc::F_SETLKW } else { libc::F_SETLK };
                 let ret = unsafe {
                     libc::fcntl(fd, cmd, &flock)
                 };
@@ -226,11 +167,11 @@ cfg_if! {
                     l_len: 0,
                     l_pid: 0,
                     l_whence: libc::SEEK_SET as libc::c_short,
-                    l_type: os::F_UNLCK,
+                    l_type: libc::F_UNLCK as libc::c_short,
                     l_sysid: 0,
                 };
                 unsafe {
-                    libc::fcntl(self.fd, os::F_SETLK, &flock);
+                    libc::fcntl(self.fd, libc::F_SETLK, &flock);
                     libc::close(self.fd);
                 }
             }

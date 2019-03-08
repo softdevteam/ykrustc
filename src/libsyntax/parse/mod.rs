@@ -1,28 +1,19 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+//! The main parser interface.
 
-//! The main parser interface
+use crate::ast::{self, CrateConfig, NodeId};
+use crate::early_buffered_lints::{BufferedEarlyLint, BufferedEarlyLintId};
+use crate::source_map::{SourceMap, FilePathMapping};
+use crate::feature_gate::UnstableFeatures;
+use crate::parse::parser::Parser;
+use crate::symbol::Symbol;
+use crate::tokenstream::{TokenStream, TokenTree};
+use crate::diagnostics::plugin::ErrorMap;
+use crate::print::pprust::token_to_string;
 
+use errors::{FatalError, Level, Handler, ColorConfig, Diagnostic, DiagnosticBuilder};
 use rustc_data_structures::sync::{Lrc, Lock};
-use ast::{self, CrateConfig, NodeId};
-use early_buffered_lints::{BufferedEarlyLint, BufferedEarlyLintId};
-use source_map::{SourceMap, FilePathMapping};
 use syntax_pos::{Span, SourceFile, FileName, MultiSpan};
-use errors::{Handler, ColorConfig, Diagnostic, DiagnosticBuilder};
-use feature_gate::UnstableFeatures;
-use parse::parser::Parser;
-use ptr::P;
-use str::char_at;
-use symbol::Symbol;
-use tokenstream::{TokenStream, TokenTree};
-use diagnostics::plugin::ErrorMap;
+use log::debug;
 
 use rustc_data_structures::fx::FxHashSet;
 use std::borrow::Cow;
@@ -47,12 +38,11 @@ pub struct ParseSess {
     pub unstable_features: UnstableFeatures,
     pub config: CrateConfig,
     pub missing_fragment_specifiers: Lock<FxHashSet<Span>>,
-    /// Places where raw identifiers were used. This is used for feature gating
-    /// raw identifiers
+    /// Places where raw identifiers were used. This is used for feature-gating raw identifiers.
     pub raw_identifier_spans: Lock<Vec<Span>>,
-    /// The registered diagnostics codes
+    /// The registered diagnostics codes.
     crate registered_diagnostics: Lock<ErrorMap>,
-    /// Used to determine and report recursive mod inclusions
+    /// Used to determine and report recursive module inclusions.
     included_mod_stack: Lock<Vec<PathBuf>>,
     source_map: Lrc<SourceMap>,
     pub buffered_lints: Lock<Vec<BufferedEarlyLint>>,
@@ -82,6 +72,7 @@ impl ParseSess {
         }
     }
 
+    #[inline]
     pub fn source_map(&self) -> &SourceMap {
         &self.source_map
     }
@@ -136,50 +127,33 @@ pub fn parse_crate_attrs_from_file<'a>(input: &Path, sess: &'a ParseSess)
 }
 
 pub fn parse_crate_from_source_str(name: FileName, source: String, sess: &ParseSess)
-                                       -> PResult<ast::Crate> {
+                                       -> PResult<'_, ast::Crate> {
     new_parser_from_source_str(sess, name, source).parse_crate_mod()
 }
 
 pub fn parse_crate_attrs_from_source_str(name: FileName, source: String, sess: &ParseSess)
-                                             -> PResult<Vec<ast::Attribute>> {
+                                             -> PResult<'_, Vec<ast::Attribute>> {
     new_parser_from_source_str(sess, name, source).parse_inner_attributes()
 }
 
-crate fn parse_expr_from_source_str(name: FileName, source: String, sess: &ParseSess)
-                                      -> PResult<P<ast::Expr>> {
-    new_parser_from_source_str(sess, name, source).parse_expr()
-}
-
-/// Parses an item.
-///
-/// Returns `Ok(Some(item))` when successful, `Ok(None)` when no item was found, and `Err`
-/// when a syntax error occurred.
-crate fn parse_item_from_source_str(name: FileName, source: String, sess: &ParseSess)
-                                      -> PResult<Option<P<ast::Item>>> {
-    new_parser_from_source_str(sess, name, source).parse_item()
-}
-
-crate fn parse_stmt_from_source_str(name: FileName, source: String, sess: &ParseSess)
-                                      -> PResult<Option<ast::Stmt>> {
-    new_parser_from_source_str(sess, name, source).parse_stmt()
-}
-
-pub fn parse_stream_from_source_str(name: FileName, source: String, sess: &ParseSess,
-                                    override_span: Option<Span>)
-                                    -> TokenStream {
+pub fn parse_stream_from_source_str(
+    name: FileName,
+    source: String,
+    sess: &ParseSess,
+    override_span: Option<Span>,
+) -> (TokenStream, Vec<lexer::UnmatchedBrace>) {
     source_file_to_stream(sess, sess.source_map().new_source_file(name, source), override_span)
 }
 
-/// Create a new parser from a source string
-pub fn new_parser_from_source_str(sess: &ParseSess, name: FileName, source: String)
-                                      -> Parser {
+/// Creates a new parser from a source string.
+pub fn new_parser_from_source_str(sess: &ParseSess, name: FileName, source: String) -> Parser<'_> {
     panictry_buffer!(&sess.span_diagnostic, maybe_new_parser_from_source_str(sess, name, source))
 }
 
-/// Create a new parser from a source string. Returns any buffered errors from lexing the initial
+/// Creates a new parser from a source string. Returns any buffered errors from lexing the initial
 /// token stream.
 pub fn maybe_new_parser_from_source_str(sess: &ParseSess, name: FileName, source: String)
-    -> Result<Parser, Vec<Diagnostic>>
+    -> Result<Parser<'_>, Vec<Diagnostic>>
 {
     let mut parser = maybe_source_file_to_parser(sess,
                                                  sess.source_map().new_source_file(name, source))?;
@@ -187,10 +161,18 @@ pub fn maybe_new_parser_from_source_str(sess: &ParseSess, name: FileName, source
     Ok(parser)
 }
 
-/// Create a new parser, handling errors as appropriate
+/// Creates a new parser, handling errors as appropriate
 /// if the file doesn't exist
 pub fn new_parser_from_file<'a>(sess: &'a ParseSess, path: &Path) -> Parser<'a> {
     source_file_to_parser(sess, file_to_source_file(sess, path, None))
+}
+
+/// Creates a new parser, returning buffered diagnostics if the file doesn't
+/// exist or from lexing the initial token stream.
+pub fn maybe_new_parser_from_file<'a>(sess: &'a ParseSess, path: &Path)
+    -> Result<Parser<'a>, Vec<Diagnostic>> {
+    let file = try_file_to_source_file(sess, path, None).map_err(|db| vec![db])?;
+    maybe_source_file_to_parser(sess, file)
 }
 
 /// Given a session, a crate config, a path, and a span, add
@@ -208,19 +190,21 @@ crate fn new_sub_parser_from_file<'a>(sess: &'a ParseSess,
 }
 
 /// Given a source_file and config, return a parser
-fn source_file_to_parser(sess: & ParseSess, source_file: Lrc<SourceFile>) -> Parser {
+fn source_file_to_parser(sess: &ParseSess, source_file: Lrc<SourceFile>) -> Parser<'_> {
     panictry_buffer!(&sess.span_diagnostic,
                      maybe_source_file_to_parser(sess, source_file))
 }
 
 /// Given a source_file and config, return a parser. Returns any buffered errors from lexing the
 /// initial token stream.
-fn maybe_source_file_to_parser(sess: &ParseSess, source_file: Lrc<SourceFile>)
-    -> Result<Parser, Vec<Diagnostic>>
-{
+fn maybe_source_file_to_parser(
+    sess: &ParseSess,
+    source_file: Lrc<SourceFile>,
+) -> Result<Parser<'_>, Vec<Diagnostic>> {
     let end_pos = source_file.end_pos;
-    let mut parser = stream_to_parser(sess, maybe_file_to_stream(sess, source_file, None)?);
-
+    let (stream, unclosed_delims) = maybe_file_to_stream(sess, source_file, None)?;
+    let mut parser = stream_to_parser(sess, stream);
+    parser.unclosed_delims = unclosed_delims;
     if parser.token == token::Eof && parser.span.is_dummy() {
         parser.span = Span::new(end_pos, end_pos, parser.span.ctxt());
     }
@@ -230,7 +214,7 @@ fn maybe_source_file_to_parser(sess: &ParseSess, source_file: Lrc<SourceFile>)
 
 // must preserve old name for now, because quote! from the *existing*
 // compiler expands into it
-pub fn new_parser_from_tts(sess: &ParseSess, tts: Vec<TokenTree>) -> Parser {
+pub fn new_parser_from_tts(sess: &ParseSess, tts: Vec<TokenTree>) -> Parser<'_> {
     stream_to_parser(sess, tts.into_iter().collect())
 }
 
@@ -238,52 +222,84 @@ pub fn new_parser_from_tts(sess: &ParseSess, tts: Vec<TokenTree>) -> Parser {
 // base abstractions
 
 /// Given a session and a path and an optional span (for error reporting),
-/// add the path to the session's source_map and return the new source_file.
+/// add the path to the session's source_map and return the new source_file or
+/// error when a file can't be read.
+fn try_file_to_source_file(sess: &ParseSess, path: &Path, spanopt: Option<Span>)
+                   -> Result<Lrc<SourceFile>, Diagnostic> {
+    sess.source_map().load_file(path)
+    .map_err(|e| {
+        let msg = format!("couldn't read {}: {}", path.display(), e);
+        let mut diag = Diagnostic::new(Level::Fatal, &msg);
+        if let Some(sp) = spanopt {
+            diag.set_span(sp);
+        }
+        diag
+    })
+}
+
+/// Given a session and a path and an optional span (for error reporting),
+/// add the path to the session's `source_map` and return the new `source_file`.
 fn file_to_source_file(sess: &ParseSess, path: &Path, spanopt: Option<Span>)
                    -> Lrc<SourceFile> {
-    match sess.source_map().load_file(path) {
+    match try_file_to_source_file(sess, path, spanopt) {
         Ok(source_file) => source_file,
-        Err(e) => {
-            let msg = format!("couldn't read {}: {}", path.display(), e);
-            match spanopt {
-                Some(sp) => sess.span_diagnostic.span_fatal(sp, &msg).raise(),
-                None => sess.span_diagnostic.fatal(&msg).raise()
-            }
+        Err(d) => {
+            DiagnosticBuilder::new_diagnostic(&sess.span_diagnostic, d).emit();
+            FatalError.raise();
         }
     }
 }
 
-/// Given a source_file, produce a sequence of token-trees
-pub fn source_file_to_stream(sess: &ParseSess,
-                             source_file: Lrc<SourceFile>,
-                             override_span: Option<Span>) -> TokenStream {
+/// Given a source_file, produces a sequence of token trees.
+pub fn source_file_to_stream(
+    sess: &ParseSess,
+    source_file: Lrc<SourceFile>,
+    override_span: Option<Span>,
+) -> (TokenStream, Vec<lexer::UnmatchedBrace>) {
     panictry_buffer!(&sess.span_diagnostic, maybe_file_to_stream(sess, source_file, override_span))
 }
 
-/// Given a source file, produce a sequence of token-trees. Returns any buffered errors from
+/// Given a source file, produces a sequence of token trees. Returns any buffered errors from
 /// parsing the token tream.
-pub fn maybe_file_to_stream(sess: &ParseSess,
-                            source_file: Lrc<SourceFile>,
-                            override_span: Option<Span>) -> Result<TokenStream, Vec<Diagnostic>> {
+pub fn maybe_file_to_stream(
+    sess: &ParseSess,
+    source_file: Lrc<SourceFile>,
+    override_span: Option<Span>,
+) -> Result<(TokenStream, Vec<lexer::UnmatchedBrace>), Vec<Diagnostic>> {
     let mut srdr = lexer::StringReader::new_or_buffered_errs(sess, source_file, override_span)?;
     srdr.real_token();
 
     match srdr.parse_all_token_trees() {
-        Ok(stream) => Ok(stream),
+        Ok(stream) => Ok((stream, srdr.unmatched_braces)),
         Err(err) => {
             let mut buffer = Vec::with_capacity(1);
             err.buffer(&mut buffer);
+            // Not using `emit_unclosed_delims` to use `db.buffer`
+            for unmatched in srdr.unmatched_braces {
+                let mut db = sess.span_diagnostic.struct_span_err(unmatched.found_span, &format!(
+                    "incorrect close delimiter: `{}`",
+                    token_to_string(&token::Token::CloseDelim(unmatched.found_delim)),
+                ));
+                db.span_label(unmatched.found_span, "incorrect close delimiter");
+                if let Some(sp) = unmatched.candidate_span {
+                    db.span_label(sp, "close delimiter possibly meant for this");
+                }
+                if let Some(sp) = unmatched.unclosed_span {
+                    db.span_label(sp, "un-closed delimiter");
+                }
+                db.buffer(&mut buffer);
+            }
             Err(buffer)
         }
     }
 }
 
-/// Given stream and the `ParseSess`, produce a parser
-pub fn stream_to_parser(sess: &ParseSess, stream: TokenStream) -> Parser {
+/// Given stream and the `ParseSess`, produces a parser.
+pub fn stream_to_parser(sess: &ParseSess, stream: TokenStream) -> Parser<'_> {
     Parser::new(sess, stream, None, true, false)
 }
 
-/// Parse a string representing a character literal into its final form.
+/// Parses a string representing a character literal into its final form.
 /// Rather than just accepting/rejecting a given literal, unescapes it as
 /// well. Can take any slice prefixed by a character escape. Returns the
 /// character and the number of characters consumed.
@@ -342,15 +358,14 @@ fn char_lit(lit: &str, diag: Option<(Span, &Handler)>) -> (char, isize) {
     }
 }
 
-/// Parse a string representing a string literal into its final form. Does
-/// unescaping.
+/// Parses a string representing a string literal into its final form. Does unescaping.
 pub fn str_lit(lit: &str, diag: Option<(Span, &Handler)>) -> String {
     debug!("str_lit: given {}", lit.escape_default());
     let mut res = String::with_capacity(lit.len());
 
     let error = |i| format!("lexer should have rejected {} at {}", lit, i);
 
-    /// Eat everything up to a non-whitespace
+    /// Eat everything up to a non-whitespace.
     fn eat<'a>(it: &mut iter::Peekable<str::CharIndices<'a>>) {
         loop {
             match it.peek().map(|x| x.1) {
@@ -411,7 +426,7 @@ pub fn str_lit(lit: &str, diag: Option<(Span, &Handler)>) -> String {
     res
 }
 
-/// Parse a string representing a raw string literal into its final form. The
+/// Parses a string representing a raw string literal into its final form. The
 /// only operation this does is convert embedded CRLF into a single LF.
 fn raw_str_lit(lit: &str) -> String {
     debug!("raw_str_lit: given {}", lit.escape_default());
@@ -436,9 +451,7 @@ fn raw_str_lit(lit: &str) -> String {
 
 // check if `s` looks like i32 or u1234 etc.
 fn looks_like_width_suffix(first_chars: &[char], s: &str) -> bool {
-    s.len() > 1 &&
-        first_chars.contains(&char_at(s, 0)) &&
-        s[1..].chars().all(|c| '0' <= c && c <= '9')
+    s.starts_with(first_chars) && s[1..].chars().all(|c| c.is_ascii_digit())
 }
 
 macro_rules! err {
@@ -457,6 +470,7 @@ crate fn lit_token(lit: token::Lit, suf: Option<Symbol>, diag: Option<(Span, &Ha
     match lit {
        token::Byte(i) => (true, Some(LitKind::Byte(byte_lit(&i.as_str()).0))),
        token::Char(i) => (true, Some(LitKind::Char(char_lit(&i.as_str(), diag).0))),
+       token::Err(i) => (true, Some(LitKind::Err(i))),
 
         // There are some valid suffixes for integer and float literals,
         // so all the handling is done internally.
@@ -511,6 +525,7 @@ fn filtered_float_lit(data: Symbol, suffix: Option<Symbol>, diag: Option<(Span, 
                 } else {
                     let msg = format!("invalid suffix `{}` for float literal", suf);
                     diag.struct_span_err(span, &msg)
+                        .span_label(span, format!("invalid suffix `{}`", suf))
                         .help("valid suffixes are `f32` and `f64`")
                         .emit();
                 }
@@ -537,7 +552,7 @@ fn float_lit(s: &str, suffix: Option<Symbol>, diag: Option<(Span, &Handler)>)
     filtered_float_lit(Symbol::intern(s), suffix, diag)
 }
 
-/// Parse a string representing a byte literal into its final form. Similar to `char_lit`
+/// Parses a string representing a byte literal into its final form. Similar to `char_lit`.
 fn byte_lit(lit: &str) -> (u8, usize) {
     let err = |i| format!("lexer accepted invalid byte literal {} step {}", lit, i);
 
@@ -574,7 +589,7 @@ fn byte_str_lit(lit: &str) -> Lrc<Vec<u8>> {
 
     let error = |i| panic!("lexer should have rejected {} at {}", lit, i);
 
-    /// Eat everything up to a non-whitespace
+    /// Eat everything up to a non-whitespace.
     fn eat<I: Iterator<Item=(usize, u8)>>(it: &mut iter::Peekable<I>) {
         loop {
             match it.peek().map(|x| x.1) {
@@ -645,11 +660,11 @@ fn integer_lit(s: &str, suffix: Option<Symbol>, diag: Option<(Span, &Handler)>)
     let orig = s;
     let mut ty = ast::LitIntType::Unsuffixed;
 
-    if char_at(s, 0) == '0' && s.len() > 1 {
-        match char_at(s, 1) {
-            'x' => base = 16,
-            'o' => base = 8,
-            'b' => base = 2,
+    if s.starts_with('0') && s.len() > 1 {
+        match s.as_bytes()[1] {
+            b'x' => base = 16,
+            b'o' => base = 8,
+            b'b' => base = 2,
             _ => { }
         }
     }
@@ -664,7 +679,11 @@ fn integer_lit(s: &str, suffix: Option<Symbol>, diag: Option<(Span, &Handler)>)
                 _ => None,
             };
             if let Some(err) = err {
-                err!(diag, |span, diag| diag.span_err(span, err));
+                err!(diag, |span, diag| {
+                    diag.struct_span_err(span, err)
+                        .span_label(span, "not supported")
+                        .emit();
+                });
             }
             return filtered_float_lit(Symbol::intern(s), Some(suf), diag)
         }
@@ -703,6 +722,7 @@ fn integer_lit(s: &str, suffix: Option<Symbol>, diag: Option<(Span, &Handler)>)
                     } else {
                         let msg = format!("invalid suffix `{}` for numeric literal", suf);
                         diag.struct_span_err(span, &msg)
+                            .span_label(span, format!("invalid suffix `{}`", suf))
                             .help("the suffix must be one of the integral types \
                                    (`u32`, `isize`, etc)")
                             .emit();
@@ -736,10 +756,11 @@ fn integer_lit(s: &str, suffix: Option<Symbol>, diag: Option<(Span, &Handler)>)
     })
 }
 
-/// `SeqSep` : a sequence separator (token)
-/// and whether a trailing separator is allowed.
+/// A sequence separator.
 pub struct SeqSep {
+    /// The seperator token.
     pub sep: Option<token::Token>,
+    /// `true` if a trailing separator is allowed.
     pub trailing_sep_allowed: bool,
 }
 
@@ -762,15 +783,24 @@ impl SeqSep {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{self, Ident, PatKind};
+    use crate::attr::first_attr_value_str_by_name;
+    use crate::ptr::P;
+    use crate::print::pprust::item_to_string;
+    use crate::tokenstream::{DelimSpan, TokenTree};
+    use crate::util::parser_testing::string_to_stream;
+    use crate::util::parser_testing::{string_to_expr, string_to_item};
+    use crate::with_globals;
     use syntax_pos::{Span, BytePos, Pos, NO_EXPANSION};
-    use ast::{self, Ident, PatKind};
-    use attr::first_attr_value_str_by_name;
-    use parse;
-    use print::pprust::item_to_string;
-    use tokenstream::{self, DelimSpan, TokenTree};
-    use util::parser_testing::string_to_stream;
-    use util::parser_testing::{string_to_expr, string_to_item};
-    use with_globals;
+
+    /// Parses an item.
+    ///
+    /// Returns `Ok(Some(item))` when successful, `Ok(None)` when no item was found, and `Err`
+    /// when a syntax error occurred.
+    fn parse_item_from_source_str(name: FileName, source: String, sess: &ParseSess)
+                                        -> PResult<'_, Option<P<ast::Item>>> {
+        new_parser_from_source_str(sess, name, source).parse_item()
+    }
 
     // produce a syntax_pos::span
     fn sp(a: u32, b: u32) -> Span {
@@ -798,42 +828,41 @@ mod tests {
                     Some(&TokenTree::Token(_, token::Ident(name_macro_rules, false))),
                     Some(&TokenTree::Token(_, token::Not)),
                     Some(&TokenTree::Token(_, token::Ident(name_zip, false))),
-                    Some(&TokenTree::Delimited(_, ref macro_delimed)),
+                    Some(&TokenTree::Delimited(_, macro_delim, ref macro_tts)),
                 )
                 if name_macro_rules.name == "macro_rules"
                 && name_zip.name == "zip" => {
-                    let tts = &macro_delimed.stream().trees().collect::<Vec<_>>();
+                    let tts = &macro_tts.trees().collect::<Vec<_>>();
                     match (tts.len(), tts.get(0), tts.get(1), tts.get(2)) {
                         (
                             3,
-                            Some(&TokenTree::Delimited(_, ref first_delimed)),
+                            Some(&TokenTree::Delimited(_, first_delim, ref first_tts)),
                             Some(&TokenTree::Token(_, token::FatArrow)),
-                            Some(&TokenTree::Delimited(_, ref second_delimed)),
+                            Some(&TokenTree::Delimited(_, second_delim, ref second_tts)),
                         )
-                        if macro_delimed.delim == token::Paren => {
-                            let tts = &first_delimed.stream().trees().collect::<Vec<_>>();
+                        if macro_delim == token::Paren => {
+                            let tts = &first_tts.trees().collect::<Vec<_>>();
                             match (tts.len(), tts.get(0), tts.get(1)) {
                                 (
                                     2,
                                     Some(&TokenTree::Token(_, token::Dollar)),
                                     Some(&TokenTree::Token(_, token::Ident(ident, false))),
                                 )
-                                if first_delimed.delim == token::Paren && ident.name == "a" => {},
-                                _ => panic!("value 3: {:?}", *first_delimed),
+                                if first_delim == token::Paren && ident.name == "a" => {},
+                                _ => panic!("value 3: {:?} {:?}", first_delim, first_tts),
                             }
-                            let tts = &second_delimed.stream().trees().collect::<Vec<_>>();
+                            let tts = &second_tts.trees().collect::<Vec<_>>();
                             match (tts.len(), tts.get(0), tts.get(1)) {
                                 (
                                     2,
                                     Some(&TokenTree::Token(_, token::Dollar)),
                                     Some(&TokenTree::Token(_, token::Ident(ident, false))),
                                 )
-                                if second_delimed.delim == token::Paren
-                                && ident.name == "a" => {},
-                                _ => panic!("value 4: {:?}", *second_delimed),
+                                if second_delim == token::Paren && ident.name == "a" => {},
+                                _ => panic!("value 4: {:?} {:?}", second_delim, second_tts),
                             }
                         },
-                        _ => panic!("value 2: {:?}", *macro_delimed),
+                        _ => panic!("value 2: {:?} {:?}", macro_delim, macro_tts),
                     }
                 },
                 _ => panic!("value: {:?}",tts),
@@ -846,31 +875,29 @@ mod tests {
         with_globals(|| {
             let tts = string_to_stream("fn a (b : i32) { b; }".to_string());
 
-            let expected = TokenStream::concat(vec![
+            let expected = TokenStream::new(vec![
                 TokenTree::Token(sp(0, 2), token::Ident(Ident::from_str("fn"), false)).into(),
                 TokenTree::Token(sp(3, 4), token::Ident(Ident::from_str("a"), false)).into(),
                 TokenTree::Delimited(
                     DelimSpan::from_pair(sp(5, 6), sp(13, 14)),
-                    tokenstream::Delimited {
-                        delim: token::DelimToken::Paren,
-                        tts: TokenStream::concat(vec![
-                            TokenTree::Token(sp(6, 7),
-                                             token::Ident(Ident::from_str("b"), false)).into(),
-                            TokenTree::Token(sp(8, 9), token::Colon).into(),
-                            TokenTree::Token(sp(10, 13),
-                                             token::Ident(Ident::from_str("i32"), false)).into(),
-                        ]).into(),
-                    }).into(),
+                    token::DelimToken::Paren,
+                    TokenStream::new(vec![
+                        TokenTree::Token(sp(6, 7),
+                                         token::Ident(Ident::from_str("b"), false)).into(),
+                        TokenTree::Token(sp(8, 9), token::Colon).into(),
+                        TokenTree::Token(sp(10, 13),
+                                         token::Ident(Ident::from_str("i32"), false)).into(),
+                    ]).into(),
+                ).into(),
                 TokenTree::Delimited(
                     DelimSpan::from_pair(sp(15, 16), sp(20, 21)),
-                    tokenstream::Delimited {
-                        delim: token::DelimToken::Brace,
-                        tts: TokenStream::concat(vec![
-                            TokenTree::Token(sp(17, 18),
-                                             token::Ident(Ident::from_str("b"), false)).into(),
-                            TokenTree::Token(sp(18, 19), token::Semi).into(),
-                        ]).into(),
-                    }).into()
+                    token::DelimToken::Brace,
+                    TokenStream::new(vec![
+                        TokenTree::Token(sp(17, 18),
+                                         token::Ident(Ident::from_str("b"), false)).into(),
+                        TokenTree::Token(sp(18, 19), token::Semi).into(),
+                    ]).into(),
+                ).into()
             ]);
 
             assert_eq!(tts, expected);
@@ -911,20 +938,20 @@ mod tests {
         struct PatIdentVisitor {
             spans: Vec<Span>
         }
-        impl<'a> ::visit::Visitor<'a> for PatIdentVisitor {
+        impl<'a> crate::visit::Visitor<'a> for PatIdentVisitor {
             fn visit_pat(&mut self, p: &'a ast::Pat) {
                 match p.node {
                     PatKind::Ident(_ , ref spannedident, _) => {
                         self.spans.push(spannedident.span.clone());
                     }
                     _ => {
-                        ::visit::walk_pat(self, p);
+                        crate::visit::walk_pat(self, p);
                     }
                 }
             }
         }
         let mut v = PatIdentVisitor { spans: Vec::new() };
-        ::visit::walk_item(&mut v, &item);
+        crate::visit::walk_item(&mut v, &item);
         return v.spans;
     }
 
@@ -977,23 +1004,25 @@ mod tests {
         with_globals(|| {
             let sess = ParseSess::new(FilePathMapping::empty());
 
-            let name = FileName::Custom("source".to_string());
+            let name_1 = FileName::Custom("crlf_source_1".to_string());
             let source = "/// doc comment\r\nfn foo() {}".to_string();
-            let item = parse_item_from_source_str(name.clone(), source, &sess)
+            let item = parse_item_from_source_str(name_1, source, &sess)
                 .unwrap().unwrap();
             let doc = first_attr_value_str_by_name(&item.attrs, "doc").unwrap();
             assert_eq!(doc, "/// doc comment");
 
+            let name_2 = FileName::Custom("crlf_source_2".to_string());
             let source = "/// doc comment\r\n/// line 2\r\nfn foo() {}".to_string();
-            let item = parse_item_from_source_str(name.clone(), source, &sess)
+            let item = parse_item_from_source_str(name_2, source, &sess)
                 .unwrap().unwrap();
             let docs = item.attrs.iter().filter(|a| a.path == "doc")
                         .map(|a| a.value_str().unwrap().to_string()).collect::<Vec<_>>();
             let b: &[_] = &["/// doc comment".to_string(), "/// line 2".to_string()];
             assert_eq!(&docs[..], b);
 
+            let name_3 = FileName::Custom("clrf_source_3".to_string());
             let source = "/** doc comment\r\n *  with CRLF */\r\nfn foo() {}".to_string();
-            let item = parse_item_from_source_str(name, source, &sess).unwrap().unwrap();
+            let item = parse_item_from_source_str(name_3, source, &sess).unwrap().unwrap();
             let doc = first_attr_value_str_by_name(&item.attrs, "doc").unwrap();
             assert_eq!(doc, "/** doc comment\n *  with CRLF */");
         });
@@ -1001,9 +1030,15 @@ mod tests {
 
     #[test]
     fn ttdelim_span() {
+        fn parse_expr_from_source_str(
+            name: FileName, source: String, sess: &ParseSess
+        ) -> PResult<'_, P<ast::Expr>> {
+            new_parser_from_source_str(sess, name, source).parse_expr()
+        }
+
         with_globals(|| {
             let sess = ParseSess::new(FilePathMapping::empty());
-            let expr = parse::parse_expr_from_source_str(PathBuf::from("foo").into(),
+            let expr = parse_expr_from_source_str(PathBuf::from("foo").into(),
                 "foo!( fn main() { body } )".to_string(), &sess).unwrap();
 
             let tts: Vec<_> = match expr.node {

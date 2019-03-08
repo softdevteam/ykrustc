@@ -1,21 +1,11 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Routine to compute the strongly connected components (SCCs) of a
 //! graph, as well as the resulting DAG if each SCC is replaced with a
 //! node in the graph. This uses Tarjan's algorithm that completes in
 //! O(n) time.
 
-use fx::FxHashSet;
-use graph::{DirectedGraph, WithNumNodes, WithSuccessors};
-use indexed_vec::{Idx, IndexVec};
+use crate::fx::FxHashSet;
+use crate::graph::{DirectedGraph, WithNumNodes, WithSuccessors};
+use crate::indexed_vec::{Idx, IndexVec};
 use std::ops::Range;
 
 mod test;
@@ -103,7 +93,7 @@ impl<S: Idx> SccData<S> {
     }
 }
 
-struct SccsConstruction<'c, G: DirectedGraph + WithNumNodes + WithSuccessors + 'c, S: Idx> {
+struct SccsConstruction<'c, G: DirectedGraph + WithNumNodes + WithSuccessors, S: Idx> {
     graph: &'c G,
 
     /// The state of each node; used during walk to record the stack
@@ -210,7 +200,7 @@ where
         }
     }
 
-    /// Visit a node during the DFS. We first examine its current
+    /// Visits a node during the DFS. We first examine its current
     /// state -- if it is not yet visited (`NotVisited`), we can push
     /// it onto the stack and start walking its successors.
     ///

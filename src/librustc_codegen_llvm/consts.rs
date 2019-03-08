@@ -1,30 +1,20 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
+use crate::llvm::{self, SetUnnamedAddr, True};
+use crate::debuginfo;
+use crate::monomorphize::MonoItem;
+use crate::common::CodegenCx;
+use crate::monomorphize::Instance;
+use crate::base;
+use crate::type_::Type;
+use crate::type_of::LayoutLlvmExt;
+use crate::value::Value;
 use libc::c_uint;
-use llvm::{self, SetUnnamedAddr, True};
 use rustc::hir::def_id::DefId;
 use rustc::mir::interpret::{ConstValue, Allocation, read_target_uint,
     Pointer, ErrorHandled, GlobalId};
 use rustc::hir::Node;
-use debuginfo;
-use monomorphize::MonoItem;
-use common::CodegenCx;
-use monomorphize::Instance;
 use syntax_pos::Span;
 use rustc_target::abi::HasDataLayout;
 use syntax_pos::symbol::LocalInternedString;
-use base;
-use type_::Type;
-use type_of::LayoutLlvmExt;
-use value::Value;
 use rustc::ty::{self, Ty};
 use rustc_codegen_ssa::traits::*;
 
@@ -81,7 +71,7 @@ pub fn codegen_static_initializer(
     let static_ = cx.tcx.const_eval(param_env.and(cid))?;
 
     let alloc = match static_.val {
-        ConstValue::ByRef(_, alloc, n) if n.bytes() == 0 => alloc,
+        ConstValue::ByRef(ptr, alloc) if ptr.offset.bytes() == 0 => alloc,
         _ => bug!("static const eval returned {:#?}", static_),
     };
     Ok((const_alloc_to_llvm(cx, alloc), alloc))
@@ -94,7 +84,7 @@ fn set_global_alignment(cx: &CodegenCx<'ll, '_>,
     // Note: GCC and Clang also allow `__attribute__((aligned))` on variables,
     // which can force it to be smaller.  Rust doesn't support this yet.
     if let Some(min) = cx.sess().target.target.options.min_global_align {
-        match ty::layout::Align::from_bits(min, min) {
+        match Align::from_bits(min) {
             Ok(min) => align = align.max(min),
             Err(err) => {
                 cx.sess().err(&format!("invalid minimum global alignment: {}", err));
@@ -102,7 +92,7 @@ fn set_global_alignment(cx: &CodegenCx<'ll, '_>,
         }
     }
     unsafe {
-        llvm::LLVMSetAlignment(gv, align.abi() as u32);
+        llvm::LLVMSetAlignment(gv, align.bytes() as u32);
     }
 }
 
@@ -171,19 +161,14 @@ pub fn ptrcast(val: &'ll Value, ty: &'ll Type) -> &'ll Value {
     }
 }
 
-impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
-
-    fn static_ptrcast(&self, val: &'ll Value, ty: &'ll Type) -> &'ll Value {
-        ptrcast(val, ty)
-    }
-
-    fn static_bitcast(&self, val: &'ll Value, ty: &'ll Type) -> &'ll Value {
+impl CodegenCx<'ll, 'tcx> {
+    crate fn const_bitcast(&self, val: &'ll Value, ty: &'ll Type) -> &'ll Value {
         unsafe {
             llvm::LLVMConstBitCast(val, ty)
         }
     }
 
-    fn static_addr_of_mut(
+    crate fn static_addr_of_mut(
         &self,
         cv: &'ll Value,
         align: Align,
@@ -209,32 +194,7 @@ impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         }
     }
 
-    fn static_addr_of(
-        &self,
-        cv: &'ll Value,
-        align: Align,
-        kind: Option<&str>,
-    ) -> &'ll Value {
-        if let Some(&gv) = self.const_globals.borrow().get(&cv) {
-            unsafe {
-                // Upgrade the alignment in cases where the same constant is used with different
-                // alignment requirements
-                let llalign = align.abi() as u32;
-                if llalign > llvm::LLVMGetAlignment(gv) {
-                    llvm::LLVMSetAlignment(gv, llalign);
-                }
-            }
-            return gv;
-        }
-        let gv = self.static_addr_of_mut(cv, align, kind);
-        unsafe {
-            llvm::LLVMSetGlobalConstant(gv, True);
-        }
-        self.const_globals.borrow_mut().insert(cv, gv);
-        gv
-    }
-
-    fn get_static(&self, def_id: DefId) -> &'ll Value {
+    crate fn get_static(&self, def_id: DefId) -> &'ll Value {
         let instance = Instance::mono(self.tcx, def_id);
         if let Some(&g) = self.instances.borrow().get(&instance) {
             return g;
@@ -253,10 +213,10 @@ impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
         debug!("get_static: sym={} instance={:?}", sym, instance);
 
-        let g = if let Some(id) = self.tcx.hir.as_local_node_id(def_id) {
+        let g = if let Some(id) = self.tcx.hir().as_local_node_id(def_id) {
 
             let llty = self.layout_of(ty).llvm_type(self);
-            let (g, attrs) = match self.tcx.hir.get(id) {
+            let (g, attrs) = match self.tcx.hir().get(id) {
                 Node::Item(&hir::Item {
                     ref attrs, span, node: hir::ItemKind::Static(..), ..
                 }) => {
@@ -315,17 +275,17 @@ impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 self.use_dll_storage_attrs && !self.tcx.is_foreign_item(def_id) &&
                 // ThinLTO can't handle this workaround in all cases, so we don't
                 // emit the attrs. Instead we make them unnecessary by disallowing
-                // dynamic linking when cross-language LTO is enabled.
-                !self.tcx.sess.opts.debugging_opts.cross_lang_lto.enabled();
+                // dynamic linking when linker plugin based LTO is enabled.
+                !self.tcx.sess.opts.cg.linker_plugin_lto.enabled();
 
             // If this assertion triggers, there's something wrong with commandline
             // argument validation.
-            debug_assert!(!(self.tcx.sess.opts.debugging_opts.cross_lang_lto.enabled() &&
+            debug_assert!(!(self.tcx.sess.opts.cg.linker_plugin_lto.enabled() &&
                             self.tcx.sess.target.target.options.is_like_msvc &&
                             self.tcx.sess.opts.cg.prefer_dynamic));
 
             if needs_dll_storage_attr {
-                // This item is external but not foreign, i.e. it originates from an external Rust
+                // This item is external but not foreign, i.e., it originates from an external Rust
                 // crate. Since we don't know whether this crate will be linked dynamically or
                 // statically in the final application, we always mark such symbols as 'dllimport'.
                 // If final linkage happens to be static, we rely on compiler-emitted __imp_ stubs
@@ -353,6 +313,33 @@ impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
         self.instances.borrow_mut().insert(instance, g);
         g
+    }
+}
+
+impl StaticMethods for CodegenCx<'ll, 'tcx> {
+    fn static_addr_of(
+        &self,
+        cv: &'ll Value,
+        align: Align,
+        kind: Option<&str>,
+    ) -> &'ll Value {
+        if let Some(&gv) = self.const_globals.borrow().get(&cv) {
+            unsafe {
+                // Upgrade the alignment in cases where the same constant is used with different
+                // alignment requirements
+                let llalign = align.bytes() as u32;
+                if llalign > llvm::LLVMGetAlignment(gv) {
+                    llvm::LLVMSetAlignment(gv, llalign);
+                }
+            }
+            return gv;
+        }
+        let gv = self.static_addr_of_mut(cv, align, kind);
+        unsafe {
+            llvm::LLVMSetGlobalConstant(gv, True);
+        }
+        self.const_globals.borrow_mut().insert(cv, gv);
+        gv
     }
 
     fn codegen_static(
@@ -429,7 +416,7 @@ impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 //
                 // By default a global's alignment can be freely increased.
                 // This allows LLVM to generate more performant instructions
-                // e.g. using load-aligned into a SIMD register.
+                // e.g., using load-aligned into a SIMD register.
                 //
                 // However, on macOS 10.10 or below, the dynamic linker does not
                 // respect any alignment given on the TLS (radar 24221680).
@@ -497,10 +484,5 @@ impl StaticMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 self.used_statics.borrow_mut().push(cast);
             }
         }
-    }
-    unsafe fn static_replace_all_uses(&self, old_g: &'ll Value, new_g: &'ll Value) {
-        let bitcast = llvm::LLVMConstPointerCast(new_g, self.val_ty(old_g));
-        llvm::LLVMReplaceAllUsesWith(old_g, bitcast);
-        llvm::LLVMDeleteGlobal(old_g);
     }
 }

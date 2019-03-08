@@ -1,16 +1,6 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-/// Entry point of thread panic, for details, see std::macros
+/// Entry point of thread panic. For details, see `std::macros`.
 #[macro_export]
-#[allow_internal_unstable]
+#[allow_internal_unstable(core_panic, __rust_unstable_column)]
 #[stable(feature = "core", since = "1.6.0")]
 macro_rules! panic {
     () => (
@@ -55,9 +45,12 @@ macro_rules! assert_eq {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
                     panic!(r#"assertion failed: `(left == right)`
   left: `{:?}`,
- right: `{:?}`"#, left_val, right_val)
+ right: `{:?}`"#, &*left_val, &*right_val)
                 }
             }
         }
@@ -69,9 +62,12 @@ macro_rules! assert_eq {
         match (&($left), &($right)) {
             (left_val, right_val) => {
                 if !(*left_val == *right_val) {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
                     panic!(r#"assertion failed: `(left == right)`
   left: `{:?}`,
- right: `{:?}`: {}"#, left_val, right_val,
+ right: `{:?}`: {}"#, &*left_val, &*right_val,
                            format_args!($($arg)+))
                 }
             }
@@ -106,9 +102,12 @@ macro_rules! assert_ne {
         match (&$left, &$right) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
                     panic!(r#"assertion failed: `(left != right)`
   left: `{:?}`,
- right: `{:?}`"#, left_val, right_val)
+ right: `{:?}`"#, &*left_val, &*right_val)
                 }
             }
         }
@@ -120,9 +119,12 @@ macro_rules! assert_ne {
         match (&($left), &($right)) {
             (left_val, right_val) => {
                 if *left_val == *right_val {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
                     panic!(r#"assertion failed: `(left != right)`
   left: `{:?}`,
- right: `{:?}`: {}"#, left_val, right_val,
+ right: `{:?}`: {}"#, &*left_val, &*right_val,
                            format_args!($($arg)+))
                 }
             }
@@ -238,6 +240,10 @@ macro_rules! debug_assert_ne {
 /// with converting downstream errors.
 ///
 /// The `?` operator was added to replace `try!` and should be used instead.
+/// Furthermore, `try` is a reserved word in Rust 2018, so if you must use
+/// it, you will need to use the [raw-identifier syntax][ris]: `r#try`.
+///
+/// [ris]: https://doc.rust-lang.org/nightly/rust-by-example/compatibility/raw_identifiers.html
 ///
 /// `try!` matches the given [`Result`]. In case of the `Ok` variant, the
 /// expression has the value of the wrapped value.
@@ -278,14 +284,14 @@ macro_rules! debug_assert_ne {
 ///
 /// // The previous method of quick returning Errors
 /// fn write_to_file_using_try() -> Result<(), MyError> {
-///     let mut file = try!(File::create("my_best_friends.txt"));
-///     try!(file.write_all(b"This is a list of my best friends."));
+///     let mut file = r#try!(File::create("my_best_friends.txt"));
+///     r#try!(file.write_all(b"This is a list of my best friends."));
 ///     Ok(())
 /// }
 ///
 /// // This is equivalent to:
 /// fn write_to_file_using_match() -> Result<(), MyError> {
-///     let mut file = try!(File::create("my_best_friends.txt"));
+///     let mut file = r#try!(File::create("my_best_friends.txt"));
 ///     match file.write_all(b"This is a list of my best friends.") {
 ///         Ok(v) => v,
 ///         Err(e) => return Err(From::from(e)),
@@ -296,14 +302,14 @@ macro_rules! debug_assert_ne {
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(alias = "?")]
-macro_rules! try {
+macro_rules! r#try {
     ($expr:expr) => (match $expr {
         $crate::result::Result::Ok(val) => val,
         $crate::result::Result::Err(err) => {
             return $crate::result::Result::Err($crate::convert::From::from(err))
         }
     });
-    ($expr:expr,) => (try!($expr));
+    ($expr:expr,) => (r#try!($expr));
 }
 
 /// Write formatted data into a buffer.
@@ -415,7 +421,7 @@ macro_rules! write {
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(format_args_nl)]
 macro_rules! writeln {
     ($dst:expr) => (
         write!($dst, "\n")
@@ -438,7 +444,7 @@ macro_rules! writeln {
 /// * Iterators that dynamically terminate.
 ///
 /// If the determination that the code is unreachable proves incorrect, the
-/// program immediately terminates with a [`panic!`].  The function [`unreachable_unchecked`],
+/// program immediately terminates with a [`panic!`]. The function [`unreachable_unchecked`],
 /// which belongs to the [`std::hint`] module, informs the compiler to
 /// optimize the code out of the release version entirely.
 ///
@@ -499,7 +505,7 @@ macro_rules! unreachable {
 /// A standardized placeholder for marking unfinished code.
 ///
 /// This can be useful if you are prototyping and are just looking to have your
-/// code typecheck, or if you're implementing a trait that requires multiple
+/// code type-check, or if you're implementing a trait that requires multiple
 /// methods, and you're only planning on using one of them.
 ///
 /// # Panics
@@ -551,6 +557,23 @@ macro_rules! unreachable {
 macro_rules! unimplemented {
     () => (panic!("not yet implemented"));
     ($($arg:tt)+) => (panic!("not yet implemented: {}", format_args!($($arg)*)));
+}
+
+/// A macro to create an array of [`MaybeUninit`]
+///
+/// This macro constructs an uninitialized array of the type `[MaybeUninit<K>; N]`.
+///
+/// [`MaybeUninit`]: mem/union.MaybeUninit.html
+#[macro_export]
+#[unstable(feature = "maybe_uninit_array", issue = "53491")]
+macro_rules! uninitialized_array {
+    // This `into_initialized` is safe because an array of `MaybeUninit` does not
+    // require initialization.
+    // FIXME(#49147): Could be replaced by an array initializer, once those can
+    // be any const expression.
+    ($t:ty; $size:expr) => (unsafe {
+        MaybeUninit::<[MaybeUninit<$t>; $size]>::uninitialized().into_initialized()
+    });
 }
 
 /// Built-in macros to the compiler itself.

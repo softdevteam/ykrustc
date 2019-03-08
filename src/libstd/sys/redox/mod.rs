@@ -1,16 +1,6 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(dead_code, missing_docs, nonstandard_style)]
 
-use io::{self, ErrorKind};
+use crate::io::ErrorKind;
 
 pub use libc::strlen;
 pub use self::rand::hashmap_random_keys;
@@ -27,6 +17,7 @@ pub mod ext;
 pub mod fast_thread_local;
 pub mod fd;
 pub mod fs;
+pub mod io;
 pub mod memchr;
 pub mod mutex;
 pub mod net;
@@ -73,8 +64,8 @@ pub fn decode_error_kind(errno: i32) -> ErrorKind {
     }
 }
 
-pub fn cvt(result: Result<usize, syscall::Error>) -> io::Result<usize> {
-    result.map_err(|err| io::Error::from_raw_os_error(err.errno))
+pub fn cvt(result: Result<usize, syscall::Error>) -> crate::io::Result<usize> {
+    result.map_err(|err| crate::io::Error::from_raw_os_error(err.errno))
 }
 
 #[doc(hidden)]
@@ -92,9 +83,9 @@ macro_rules! impl_is_minus_one {
 
 impl_is_minus_one! { i8 i16 i32 i64 isize }
 
-pub fn cvt_libc<T: IsMinusOne>(t: T) -> io::Result<T> {
+pub fn cvt_libc<T: IsMinusOne>(t: T) -> crate::io::Result<T> {
     if t.is_minus_one() {
-        Err(io::Error::last_os_error())
+        Err(crate::io::Error::last_os_error())
     } else {
         Ok(t)
     }
@@ -102,5 +93,5 @@ pub fn cvt_libc<T: IsMinusOne>(t: T) -> io::Result<T> {
 
 /// On Redox, use an illegal instruction to abort
 pub unsafe fn abort_internal() -> ! {
-    ::core::intrinsics::abort();
+    core::intrinsics::abort();
 }

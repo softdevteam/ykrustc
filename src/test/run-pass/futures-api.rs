@@ -1,40 +1,28 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+// aux-build:arc_wake.rs
 
-#![feature(arbitrary_self_types, futures_api, pin)]
+#![feature(arbitrary_self_types, futures_api)]
 #![allow(unused)]
+
+extern crate arc_wake;
 
 use std::future::Future;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{self, AtomicUsize},
 };
 use std::task::{
-    Poll, Wake, Waker, LocalWaker,
-    local_waker, local_waker_from_nonlocal,
+    Poll, Waker,
 };
+use arc_wake::ArcWake;
 
 struct Counter {
-    local_wakes: AtomicUsize,
-    nonlocal_wakes: AtomicUsize,
+    wakes: AtomicUsize,
 }
 
-impl Wake for Counter {
-    fn wake(this: &Arc<Self>) {
-        this.nonlocal_wakes.fetch_add(1, atomic::Ordering::SeqCst);
-    }
-
-    unsafe fn wake_local(this: &Arc<Self>) {
-        this.local_wakes.fetch_add(1, atomic::Ordering::SeqCst);
+impl ArcWake for Counter {
+    fn wake(arc_self: &Arc<Self>) {
+        arc_self.wakes.fetch_add(1, atomic::Ordering::SeqCst);
     }
 }
 
@@ -42,40 +30,28 @@ struct MyFuture;
 
 impl Future for MyFuture {
     type Output = ();
-    fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
-        // Wake once locally
-        lw.wake();
-        // Wake twice non-locally
-        let waker = lw.clone().into_waker();
+    fn poll(self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
+        // Wake twice
         waker.wake();
         waker.wake();
         Poll::Ready(())
     }
 }
 
-fn test_local_waker() {
+fn test_waker() {
     let counter = Arc::new(Counter {
-        local_wakes: AtomicUsize::new(0),
-        nonlocal_wakes: AtomicUsize::new(0),
+        wakes: AtomicUsize::new(0),
     });
-    let waker = unsafe { local_waker(counter.clone()) };
-    assert_eq!(Poll::Ready(()), Pin::new(&mut MyFuture).poll(&waker));
-    assert_eq!(1, counter.local_wakes.load(atomic::Ordering::SeqCst));
-    assert_eq!(2, counter.nonlocal_wakes.load(atomic::Ordering::SeqCst));
-}
+    let waker = ArcWake::into_waker(counter.clone());
+    assert_eq!(2, Arc::strong_count(&counter));
 
-fn test_local_as_nonlocal_waker() {
-    let counter = Arc::new(Counter {
-        local_wakes: AtomicUsize::new(0),
-        nonlocal_wakes: AtomicUsize::new(0),
-    });
-    let waker: LocalWaker = local_waker_from_nonlocal(counter.clone());
     assert_eq!(Poll::Ready(()), Pin::new(&mut MyFuture).poll(&waker));
-    assert_eq!(0, counter.local_wakes.load(atomic::Ordering::SeqCst));
-    assert_eq!(3, counter.nonlocal_wakes.load(atomic::Ordering::SeqCst));
+    assert_eq!(2, counter.wakes.load(atomic::Ordering::SeqCst));
+
+    drop(waker);
+    assert_eq!(1, Arc::strong_count(&counter));
 }
 
 fn main() {
-    test_local_waker();
-    test_local_as_nonlocal_waker();
+    test_waker();
 }

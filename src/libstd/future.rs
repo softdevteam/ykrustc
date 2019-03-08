@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Asynchronous values.
 
 use core::cell::Cell;
@@ -15,13 +5,13 @@ use core::marker::Unpin;
 use core::pin::Pin;
 use core::option::Option;
 use core::ptr::NonNull;
-use core::task::{LocalWaker, Poll};
+use core::task::{Waker, Poll};
 use core::ops::{Drop, Generator, GeneratorState};
 
 #[doc(inline)]
 pub use core::future::*;
 
-/// Wrap a future in a generator.
+/// Wrap a generator in a future.
 ///
 /// This function returns a `GenFuture` underneath, but hides it in `impl Trait` to give
 /// better error messages (`impl Future` rather than `GenFuture<[closure.....]>`).
@@ -42,8 +32,10 @@ impl<T: Generator<Yield = ()>> !Unpin for GenFuture<T> {}
 #[unstable(feature = "gen_future", issue = "50547")]
 impl<T: Generator<Yield = ()>> Future for GenFuture<T> {
     type Output = T::Return;
-    fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
-        set_task_waker(lw, || match unsafe { Pin::get_mut_unchecked(self).0.resume() } {
+    fn poll(self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
+        // Safe because we're !Unpin + !Drop mapping to a ?Unpin value
+        let gen = unsafe { Pin::map_unchecked_mut(self, |s| &mut s.0) };
+        set_task_waker(waker, || match gen.resume() {
             GeneratorState::Yielded(()) => Poll::Pending,
             GeneratorState::Complete(x) => Poll::Ready(x),
         })
@@ -51,10 +43,10 @@ impl<T: Generator<Yield = ()>> Future for GenFuture<T> {
 }
 
 thread_local! {
-    static TLS_WAKER: Cell<Option<NonNull<LocalWaker>>> = Cell::new(None);
+    static TLS_WAKER: Cell<Option<NonNull<Waker>>> = Cell::new(None);
 }
 
-struct SetOnDrop(Option<NonNull<LocalWaker>>);
+struct SetOnDrop(Option<NonNull<Waker>>);
 
 impl Drop for SetOnDrop {
     fn drop(&mut self) {
@@ -66,12 +58,12 @@ impl Drop for SetOnDrop {
 
 #[unstable(feature = "gen_future", issue = "50547")]
 /// Sets the thread-local task context used by async/await futures.
-pub fn set_task_waker<F, R>(lw: &LocalWaker, f: F) -> R
+pub fn set_task_waker<F, R>(waker: &Waker, f: F) -> R
 where
     F: FnOnce() -> R
 {
     let old_waker = TLS_WAKER.with(|tls_waker| {
-        tls_waker.replace(Some(NonNull::from(lw)))
+        tls_waker.replace(Some(NonNull::from(waker)))
     });
     let _reset_waker = SetOnDrop(old_waker);
     f()
@@ -86,7 +78,7 @@ where
 /// retrieved by a surrounding call to get_task_waker.
 pub fn get_task_waker<F, R>(f: F) -> R
 where
-    F: FnOnce(&LocalWaker) -> R
+    F: FnOnce(&Waker) -> R
 {
     let waker_ptr = TLS_WAKER.with(|tls_waker| {
         // Clear the entry so that nested `get_task_waker` calls
@@ -95,10 +87,10 @@ where
     });
     let _reset_waker = SetOnDrop(waker_ptr);
 
-    let mut waker_ptr = waker_ptr.expect(
-        "TLS LocalWaker not set. This is a rustc bug. \
+    let waker_ptr = waker_ptr.expect(
+        "TLS Waker not set. This is a rustc bug. \
         Please file an issue on https://github.com/rust-lang/rust.");
-    unsafe { f(waker_ptr.as_mut()) }
+    unsafe { f(waker_ptr.as_ref()) }
 }
 
 #[unstable(feature = "gen_future", issue = "50547")]
@@ -107,5 +99,5 @@ pub fn poll_with_tls_waker<F>(f: Pin<&mut F>) -> Poll<F::Output>
 where
     F: Future
 {
-    get_task_waker(|lw| F::poll(f, lw))
+    get_task_waker(|waker| F::poll(f, waker))
 }

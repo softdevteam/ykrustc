@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 mod sip;
 
 use std::hash::{Hash, Hasher};
@@ -83,9 +73,11 @@ fn test_writer_hasher() {
     let cs: &mut [u8] = &mut [1, 2, 3];
     let ptr = cs.as_ptr();
     let slice_ptr = cs as *const [u8];
+    #[cfg(not(miri))] // Miri cannot hash pointers
     assert_eq!(hash(&slice_ptr), hash(&ptr) + cs.len() as u64);
 
     let slice_ptr = cs as *mut [u8];
+    #[cfg(not(miri))] // Miri cannot hash pointers
     assert_eq!(hash(&slice_ptr), hash(&ptr) + cs.len() as u64);
 }
 

@@ -1,22 +1,12 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Defines the set of legal keys that can be used in queries.
 
-use infer::canonical::Canonical;
-use hir::def_id::{CrateNum, DefId, LOCAL_CRATE, DefIndex};
-use traits;
-use ty::{self, Ty, TyCtxt};
-use ty::subst::Substs;
-use ty::fast_reject::SimplifiedType;
-use mir;
+use crate::infer::canonical::Canonical;
+use crate::hir::def_id::{CrateNum, DefId, LOCAL_CRATE, DefIndex};
+use crate::traits;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::subst::SubstsRef;
+use crate::ty::fast_reject::SimplifiedType;
+use crate::mir;
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -119,7 +109,7 @@ impl Key for (DefId, SimplifiedType) {
     }
 }
 
-impl<'tcx> Key for (DefId, &'tcx Substs<'tcx>) {
+impl<'tcx> Key for (DefId, SubstsRef<'tcx>) {
     fn query_crate(&self) -> CrateNum {
         self.0.krate
     }
@@ -146,7 +136,7 @@ impl<'tcx> Key for ty::PolyTraitRef<'tcx>{
     }
 }
 
-impl<'tcx> Key for &'tcx ty::Const<'tcx> {
+impl<'tcx> Key for ty::Const<'tcx> {
     fn query_crate(&self) -> CrateNum {
         LOCAL_CRATE
     }

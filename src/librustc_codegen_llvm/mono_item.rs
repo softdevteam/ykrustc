@@ -1,19 +1,9 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use attributes;
-use base;
-use context::CodegenCx;
-use llvm;
-use monomorphize::Instance;
-use type_of::LayoutLlvmExt;
+use crate::attributes;
+use crate::base;
+use crate::context::CodegenCx;
+use crate::llvm;
+use crate::monomorphize::Instance;
+use crate::type_of::LayoutLlvmExt;
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::mono::{Linkage, Visibility};
 use rustc::ty::TypeFoldable;
@@ -46,10 +36,10 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     }
 
     fn predefine_fn(&self,
-                              instance: Instance<'tcx>,
-                              linkage: Linkage,
-                              visibility: Visibility,
-                              symbol_name: &str) {
+                    instance: Instance<'tcx>,
+                    linkage: Linkage,
+                    visibility: Visibility,
+                    symbol_name: &str) {
         assert!(!instance.substs.needs_infer() &&
                 !instance.substs.has_param_types());
 
@@ -63,7 +53,7 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             llvm::SetUniqueComdat(self.llmod, lldecl);
         }
 
-        // If we're compiling the compiler-builtins crate, e.g. the equivalent of
+        // If we're compiling the compiler-builtins crate, e.g., the equivalent of
         // compiler-rt, then we want to implicitly compile everything with hidden
         // visibility as we're going to link this object all over the place but
         // don't want the symbols to get exported.
@@ -82,7 +72,12 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         if instance.def.is_inline(self.tcx) {
             attributes::inline(self, lldecl, attributes::InlineAttr::Hint);
         }
-        attributes::from_fn_attrs(self, lldecl, Some(instance.def.def_id()));
+        attributes::from_fn_attrs(
+            self,
+            lldecl,
+            Some(instance.def.def_id()),
+            mono_sig,
+        );
 
         self.instances.borrow_mut().insert(instance, lldecl);
     }

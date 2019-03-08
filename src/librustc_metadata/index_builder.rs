@@ -1,19 +1,9 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Builder types for generating the "item data" section of the
 //! metadata. This section winds up looking like this:
 //!
 //! ```
 //! <common::data> // big list of item-like things...
-//!    <common::data_item> // ...for most def-ids, there is an entry.
+//!    <common::data_item> // ...for most `DefId`s, there is an entry.
 //!    </common::data_item>
 //! </common::data>
 //! ```
@@ -55,10 +45,10 @@
 //! give a callback fn, rather than taking a closure: it allows us to
 //! easily control precisely what data is given to that fn.
 
-use encoder::EncodeContext;
-use index::Index;
-use schema::*;
-use isolated_encoder::IsolatedEncoder;
+use crate::encoder::EncodeContext;
+use crate::index::Index;
+use crate::schema::*;
+use crate::isolated_encoder::IsolatedEncoder;
 
 use rustc::hir;
 use rustc::hir::def_id::DefId;
@@ -90,12 +80,12 @@ impl<'a, 'b, 'tcx> DerefMut for IndexBuilder<'a, 'b, 'tcx> {
 impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
     pub fn new(ecx: &'a mut EncodeContext<'b, 'tcx>) -> Self {
         IndexBuilder {
-            items: Index::new(ecx.tcx.hir.definitions().def_index_counts_lo_hi()),
+            items: Index::new(ecx.tcx.hir().definitions().def_index_counts_lo_hi()),
             ecx,
         }
     }
 
-    /// Emit the data for a def-id to the metadata. The function to
+    /// Emit the data for a `DefId` to the metadata. The function to
     /// emit the data is `op`, and it will be given `data` as
     /// arguments. This `record` function will call `op` to generate
     /// the `Entry` (which may point to other encoded information)
@@ -139,25 +129,25 @@ impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
 }
 
 /// Trait used for data that can be passed from outside a dep-graph
-/// task.  The data must either be of some safe type, such as a
+/// task. The data must either be of some safe type, such as a
 /// `DefId` index, or implement the `read` method so that it can add
 /// a read of whatever dep-graph nodes are appropriate.
 pub trait DepGraphRead {
-    fn read(&self, tcx: TyCtxt);
+    fn read(&self, tcx: TyCtxt<'_, '_, '_>);
 }
 
 impl DepGraphRead for DefId {
-    fn read(&self, _tcx: TyCtxt) {}
+    fn read(&self, _tcx: TyCtxt<'_, '_, '_>) {}
 }
 
 impl DepGraphRead for ast::NodeId {
-    fn read(&self, _tcx: TyCtxt) {}
+    fn read(&self, _tcx: TyCtxt<'_, '_, '_>) {}
 }
 
 impl<T> DepGraphRead for Option<T>
     where T: DepGraphRead
 {
-    fn read(&self, tcx: TyCtxt) {
+    fn read(&self, tcx: TyCtxt<'_, '_, '_>) {
         match *self {
             Some(ref v) => v.read(tcx),
             None => (),
@@ -168,7 +158,7 @@ impl<T> DepGraphRead for Option<T>
 impl<T> DepGraphRead for [T]
     where T: DepGraphRead
 {
-    fn read(&self, tcx: TyCtxt) {
+    fn read(&self, tcx: TyCtxt<'_, '_, '_>) {
         for i in self {
             i.read(tcx);
         }
@@ -181,7 +171,7 @@ macro_rules! read_tuple {
             where $($name: DepGraphRead),*
         {
             #[allow(non_snake_case)]
-            fn read(&self, tcx: TyCtxt) {
+            fn read(&self, tcx: TyCtxt<'_, '_, '_>) {
                 let &($(ref $name),*) = self;
                 $($name.read(tcx);)*
             }
@@ -194,8 +184,8 @@ read_tuple!(A, B, C);
 macro_rules! read_hir {
     ($t:ty) => {
         impl<'tcx> DepGraphRead for &'tcx $t {
-            fn read(&self, tcx: TyCtxt) {
-                tcx.hir.read(self.id);
+            fn read(&self, tcx: TyCtxt<'_, '_, '_>) {
+                tcx.hir().read_by_hir_id(self.hir_id);
             }
         }
     }
@@ -218,17 +208,17 @@ read_hir!(hir::MacroDef);
 pub struct Untracked<T>(pub T);
 
 impl<T> DepGraphRead for Untracked<T> {
-    fn read(&self, _tcx: TyCtxt) {}
+    fn read(&self, _tcx: TyCtxt<'_, '_, '_>) {}
 }
 
 /// Newtype that can be used to package up misc data extracted from a
-/// HIR node that doesn't carry its own id. This will allow an
+/// HIR node that doesn't carry its own ID. This will allow an
 /// arbitrary `T` to be passed in, but register a read on the given
-/// node-id.
-pub struct FromId<T>(pub ast::NodeId, pub T);
+/// `NodeId`.
+pub struct FromId<T>(pub hir::HirId, pub T);
 
 impl<T> DepGraphRead for FromId<T> {
-    fn read(&self, tcx: TyCtxt) {
-        tcx.hir.read(self.0);
+    fn read(&self, tcx: TyCtxt<'_, '_, '_>) {
+        tcx.hir().read_by_hir_id(self.0);
     }
 }

@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::fmt::Debug;
 use std::iter::{self, FromIterator};
 use std::slice;
@@ -22,7 +12,7 @@ use rustc_serialize as serialize;
 
 /// Represents some newtyped `usize` wrapper.
 ///
-/// (purpose: avoid mixing indexes for different bitvector domains.)
+/// Purpose: avoid mixing indexes for different bitvector domains.
 pub trait Idx: Copy + 'static + Ord + Debug + Hash {
     fn new(idx: usize) -> Self;
 
@@ -98,10 +88,16 @@ macro_rules! newtype_index {
      @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]) => (
-        #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, $($derives),*)]
+        #[derive(Copy, PartialEq, Eq, Hash, PartialOrd, Ord, $($derives),*)]
         #[rustc_layout_scalar_valid_range_end($max)]
         $v struct $type {
             private: u32
+        }
+
+        impl Clone for $type {
+            fn clone(&self) -> Self {
+                *self
+            }
         }
 
         impl $type {
@@ -145,22 +141,22 @@ macro_rules! newtype_index {
 
             #[inline]
             $v const unsafe fn from_u32_unchecked(value: u32) -> Self {
-                $type { private: value }
+                unsafe { $type { private: value } }
             }
 
-            /// Extract value of this index as an integer.
+            /// Extracts the value of this index as an integer.
             #[inline]
             $v fn index(self) -> usize {
                 self.as_usize()
             }
 
-            /// Extract value of this index as a usize.
+            /// Extracts the value of this index as a `u32`.
             #[inline]
             $v fn as_u32(self) -> u32 {
                 self.private
             }
 
-            /// Extract value of this index as a u32.
+            /// Extracts the value of this index as a `usize`.
             #[inline]
             $v fn as_usize(self) -> usize {
                 self.as_u32() as usize
@@ -261,7 +257,7 @@ macro_rules! newtype_index {
      @type         [$type:ident]
      @debug_format [$debug_format:tt]) => (
         impl ::std::fmt::Debug for $type {
-            fn fmt(&self, fmt: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+            fn fmt(&self, fmt: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 write!(fmt, $debug_format, self.as_u32())
             }
         }
@@ -328,12 +324,13 @@ macro_rules! newtype_index {
                    derive [$($derives:ident,)+]
                    $($tokens:tt)*) => (
         newtype_index!(
-            @derives      [$($derives,)+ RustcDecodable, RustcEncodable,]
+            @derives      [$($derives,)+ RustcEncodable,]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
             @debug_format [$debug_format]
                           $($tokens)*);
+        newtype_index!(@decodable $type);
     );
 
     // The case where no derives are added, but encodable is overridden. Don't
@@ -360,12 +357,29 @@ macro_rules! newtype_index {
      @debug_format [$debug_format:tt]
                    $($tokens:tt)*) => (
         newtype_index!(
-            @derives      [RustcDecodable, RustcEncodable,]
+            @derives      [RustcEncodable,]
             @type         [$type]
             @max          [$max]
             @vis          [$v]
             @debug_format [$debug_format]
                           $($tokens)*);
+        newtype_index!(@decodable $type);
+    );
+
+    (@decodable $type:ident) => (
+        impl $type {
+            fn __decodable__impl__hack() {
+                mod __more_hacks_because__self_doesnt_work_in_functions {
+                    extern crate serialize;
+                    use self::serialize::{Decodable, Decoder};
+                    impl Decodable for super::$type {
+                        fn decode<D: Decoder>(d: &mut D) -> Result<Self, D::Error> {
+                            d.read_u32().map(Self::from)
+                        }
+                    }
+                }
+            }
+        }
     );
 
     // Rewrite final without comma to one that includes comma
@@ -481,7 +495,7 @@ impl<I: Idx, T: serialize::Decodable> serialize::Decodable for IndexVec<I, T> {
 }
 
 impl<I: Idx, T: fmt::Debug> fmt::Debug for IndexVec<I, T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.raw, fmt)
     }
 }
@@ -559,7 +573,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> slice::Iter<T> {
+    pub fn iter(&self) -> slice::Iter<'_, T> {
         self.raw.iter()
     }
 
@@ -575,7 +589,7 @@ impl<I: Idx, T> IndexVec<I, T> {
     }
 
     #[inline]
-    pub fn iter_mut(&mut self) -> slice::IterMut<T> {
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
 
@@ -627,7 +641,7 @@ impl<I: Idx, T> IndexVec<I, T> {
         self.raw.get_mut(index.index())
     }
 
-    /// Return mutable references to two distinct elements, a and b. Panics if a == b.
+    /// Returns mutable references to two distinct elements, a and b. Panics if a == b.
     #[inline]
     pub fn pick2_mut(&mut self, a: I, b: I) -> (&mut T, &mut T) {
         let (ai, bi) = (a.index(), b.index());

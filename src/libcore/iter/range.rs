@@ -1,16 +1,6 @@
-// Copyright 2013-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use convert::TryFrom;
 use mem;
-use ops::{self, Add, Sub};
+use ops::{self, Add, Sub, Try};
 use usize;
 
 use super::{FusedIterator, TrustedLen};
@@ -30,19 +20,19 @@ pub trait Step: Clone + PartialOrd + Sized {
     /// without overflow.
     fn steps_between(start: &Self, end: &Self) -> Option<usize>;
 
-    /// Replaces this step with `1`, returning itself
+    /// Replaces this step with `1`, returning itself.
     fn replace_one(&mut self) -> Self;
 
-    /// Replaces this step with `0`, returning itself
+    /// Replaces this step with `0`, returning itself.
     fn replace_zero(&mut self) -> Self;
 
-    /// Adds one to this step, returning the result
+    /// Adds one to this step, returning the result.
     fn add_one(&self) -> Self;
 
-    /// Subtracts one to this step, returning the result
+    /// Subtracts one to this step, returning the result.
     fn sub_one(&self) -> Self;
 
-    /// Add an usize, returning None on overflow
+    /// Adds a `usize`, returning `None` on overflow.
     fn add_usize(&self, n: usize) -> Option<Self>;
 }
 
@@ -166,14 +156,14 @@ macro_rules! step_impl_no_between {
 }
 
 step_impl_unsigned!(usize u8 u16);
-#[cfg(not(target_pointer_witdth = "16"))]
+#[cfg(not(target_pointer_width = "16"))]
 step_impl_unsigned!(u32);
-#[cfg(target_pointer_witdth = "16")]
+#[cfg(target_pointer_width = "16")]
 step_impl_no_between!(u32);
 step_impl_signed!([isize: usize] [i8: u8] [i16: u16]);
-#[cfg(not(target_pointer_witdth = "16"))]
+#[cfg(not(target_pointer_width = "16"))]
 step_impl_signed!([i32: u32]);
-#[cfg(target_pointer_witdth = "16")]
+#[cfg(target_pointer_width = "16")]
 step_impl_no_between!(i32);
 #[cfg(target_pointer_width = "64")]
 step_impl_unsigned!(u64);
@@ -378,11 +368,11 @@ impl<A: Step> Iterator for ops::RangeInclusive<A> {
                 Some(Less) => {
                     self.is_empty = Some(false);
                     self.start = plus_n.add_one();
-                    return Some(plus_n)
+                    return Some(plus_n);
                 }
                 Some(Equal) => {
                     self.is_empty = Some(true);
-                    return Some(plus_n)
+                    return Some(plus_n);
                 }
                 _ => {}
             }
@@ -390,6 +380,34 @@ impl<A: Step> Iterator for ops::RangeInclusive<A> {
 
         self.is_empty = Some(true);
         None
+    }
+
+    #[inline]
+    fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    where
+        Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Ok=B>
+    {
+        self.compute_is_empty();
+
+        if self.is_empty() {
+            return Try::from_ok(init);
+        }
+
+        let mut accum = init;
+
+        while self.start < self.end {
+            let n = self.start.add_one();
+            let n = mem::replace(&mut self.start, n);
+            accum = f(accum, n)?;
+        }
+
+        self.is_empty = Some(true);
+
+        if self.start == self.end {
+            accum = f(accum, self.start.clone())?;
+        }
+
+        Try::from_ok(accum)
     }
 
     #[inline]
@@ -424,6 +442,33 @@ impl<A: Step> DoubleEndedIterator for ops::RangeInclusive<A> {
         } else {
             self.end.clone()
         })
+    }
+
+    #[inline]
+    fn try_rfold<B, F, R>(&mut self, init: B, mut f: F) -> R where
+        Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Ok=B>
+    {
+        self.compute_is_empty();
+
+        if self.is_empty() {
+            return Try::from_ok(init);
+        }
+
+        let mut accum = init;
+
+        while self.start < self.end {
+            let n = self.end.sub_one();
+            let n = mem::replace(&mut self.end, n);
+            accum = f(accum, n)?;
+        }
+
+        self.is_empty = Some(true);
+
+        if self.start == self.end {
+            accum = f(accum, self.start.clone())?;
+        }
+
+        Try::from_ok(accum)
     }
 }
 

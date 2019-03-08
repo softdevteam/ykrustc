@@ -1,13 +1,5 @@
-
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 
 // #[test_case] is used by custom test authors to mark tests
 // When building for test, it needs to make the item public and gensym the name
@@ -28,7 +20,7 @@ use syntax::source_map::{ExpnInfo, MacroAttribute};
 use syntax::feature_gate;
 
 pub fn expand(
-    ecx: &mut ExtCtxt,
+    ecx: &mut ExtCtxt<'_>,
     attr_sp: Span,
     _meta_item: &ast::MetaItem,
     anno_item: Annotatable
@@ -39,8 +31,6 @@ pub fn expand(
                                        attr_sp,
                                        feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_CUSTOM_TEST_FRAMEWORKS);
-
-        return vec![anno_item];
     }
 
     if !ecx.ecfg.should_test { return vec![]; }
@@ -51,7 +41,10 @@ pub fn expand(
             call_site: DUMMY_SP,
             def_site: None,
             format: MacroAttribute(Symbol::intern("test_case")),
-            allow_internal_unstable: true,
+            allow_internal_unstable: Some(vec![
+                Symbol::intern("test"),
+                Symbol::intern("rustc_attrs"),
+            ].into()),
             allow_internal_unsafe: false,
             local_inner_macros: false,
             edition: hygiene::default_edition(),

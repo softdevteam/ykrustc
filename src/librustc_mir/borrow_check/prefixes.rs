@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! From the NLL RFC: "The deep [aka 'supporting'] prefixes for an
 //! place are formed by stripping away fields and derefs, except that
 //! we stop when we reach the deref of a shared reference. [...] "
@@ -21,7 +11,7 @@ use super::MirBorrowckCtxt;
 
 use rustc::hir;
 use rustc::ty::{self, TyCtxt};
-use rustc::mir::{Mir, Place, ProjectionElem};
+use rustc::mir::{Mir, Place, PlaceBase, ProjectionElem};
 
 pub trait IsPrefixOf<'tcx> {
     fn is_prefix_of(&self, other: &Place<'tcx>) -> bool;
@@ -36,8 +26,9 @@ impl<'tcx> IsPrefixOf<'tcx> for Place<'tcx> {
             }
 
             match *cursor {
-                Place::Promoted(_) |
-                Place::Local(_) | Place::Static(_) => return false,
+                Place::Base(PlaceBase::Promoted(_)) |
+                Place::Base(PlaceBase::Local(_)) |
+                Place::Base(PlaceBase::Static(_)) => return false,
                 Place::Projection(ref proj) => {
                     cursor = &proj.base;
                 }
@@ -87,21 +78,18 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
 impl<'cx, 'gcx, 'tcx> Iterator for Prefixes<'cx, 'gcx, 'tcx> {
     type Item = &'cx Place<'tcx>;
     fn next(&mut self) -> Option<Self::Item> {
-        let mut cursor = match self.next {
-            None => return None,
-            Some(place) => place,
-        };
+        let mut cursor = self.next?;
 
         // Post-processing `place`: Enqueue any remaining
         // work. Also, `place` may not be a prefix itself, but
-        // may hold one further down (e.g. we never return
+        // may hold one further down (e.g., we never return
         // downcasts here, but may return a base of a downcast).
 
         'cursor: loop {
             let proj = match *cursor {
-                Place::Promoted(_) |
-                Place::Local(_) | // search yielded this leaf
-                Place::Static(_) => {
+                Place::Base(PlaceBase::Promoted(_)) |
+                Place::Base(PlaceBase::Local(_)) | // search yielded this leaf
+                Place::Base(PlaceBase::Static(_)) => {
                     self.next = None;
                     return Some(cursor);
                 }

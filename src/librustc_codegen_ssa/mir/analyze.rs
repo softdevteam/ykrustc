@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! An analysis to determine which locals require allocas and
 //! which do not.
 
@@ -20,7 +10,7 @@ use rustc::mir::traversal;
 use rustc::ty;
 use rustc::ty::layout::{LayoutOf, HasTyCtxt};
 use super::FunctionCx;
-use traits::*;
+use crate::traits::*;
 
 pub fn non_ssa_locals<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     fx: &FunctionCx<'a, 'tcx, Bx>
@@ -43,7 +33,7 @@ pub fn non_ssa_locals<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
             // These sorts of types require an alloca. Note that
             // is_llvm_immediate() may *still* be true, particularly
             // for newtypes, but we currently force some types
-            // (e.g. structs) into an alloca unconditionally, just so
+            // (e.g., structs) into an alloca unconditionally, just so
             // that we don't have to deal with having two pathways
             // (gep vs extractvalue etc).
             analyzer.not_ssa(mir::Local::new(index));
@@ -113,7 +103,7 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
                     location: Location) {
         debug!("visit_assign(block={:?}, place={:?}, rvalue={:?})", block, place, rvalue);
 
-        if let mir::Place::Local(index) = *place {
+        if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
             self.assign(index, location);
             if !self.fx.rvalue_creates_operand(rvalue) {
                 self.not_ssa(index);
@@ -227,9 +217,9 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
 
             PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy) |
             PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => {
-                // Reads from uninitialized variables (e.g. in dead code, after
+                // Reads from uninitialized variables (e.g., in dead code, after
                 // optimizations) require locals to be in (uninitialized) memory.
-                // NB: there can be uninitialized reads of a local visited after
+                // N.B., there can be uninitialized reads of a local visited after
                 // an assignment to that local, if they happen on disjoint paths.
                 let ssa_read = match self.first_assignment(local) {
                     Some(assignment_location) => {
@@ -255,7 +245,8 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
             }
 
             PlaceContext::MutatingUse(MutatingUseContext::Drop) => {
-                let ty = mir::Place::Local(local).ty(self.fx.mir, self.fx.cx.tcx());
+                let ty = mir::Place::Base(mir::PlaceBase::Local(local)).ty(self.fx.mir,
+                                                                           self.fx.cx.tcx());
                 let ty = self.fx.monomorphize(&ty.to_ty(self.fx.cx.tcx()));
 
                 // Only need the place if we're actually dropping it.

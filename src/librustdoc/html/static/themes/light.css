@@ -1,15 +1,3 @@
-/**
- * Copyright 2015 The Rust Project Developers. See the COPYRIGHT
- * file at the top-level directory of this distribution and at
- * http://rust-lang.org/COPYRIGHT.
- *
- * Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
- * http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
- * <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
- * option. This file may not be copied, modified, or distributed
- * except according to those terms.
- */
-
 /* General structure and fonts */
 
 body {
@@ -79,27 +67,11 @@ pre {
 }
 
 .docblock h1, .docblock h2, .docblock h3, .docblock h4, .docblock h5 {
-	border-bottom-color: #DDD;
+	border-bottom-color: #ddd;
 }
 
-.docblock table {
+.docblock table, .docblock table td, .docblock table th {
 	border-color: #ddd;
-}
-
-.docblock table td {
-	border-top-color: #ddd;
-	border-bottom-color: #ddd;
-}
-
-.docblock table th {
-	border-top-color: #ddd;
-	border-bottom-color: #ddd;
-}
-
-:target { background: #FDFFD3; }
-
-:target > .in-band {
-	background: #FDFFD3;
 }
 
 .content .method .where,
@@ -114,6 +86,7 @@ pre {
 }
 .content .highlighted a, .content .highlighted span { color: #000 !important; }
 .content .highlighted.trait { background-color: #c7b6ff; }
+.content .highlighted.traitalias { background-color: #c7b6ff; }
 .content .highlighted.mod,
 .content .highlighted.externcrate { background-color: #afc6e4; }
 .content .highlighted.enum { background-color: #b4d1b9; }
@@ -146,6 +119,7 @@ pre {
 .content span.externcrate,
 .content span.mod, .content a.mod, .block a.current.mod { color: #4d76ae; }
 .content span.trait, .content a.trait, .block a.current.trait { color: #7c5af3; }
+.content span.traitalias, .content a.traitalias, .block a.current.traitalias { color: #6841f1; }
 .content span.fn, .content a.fn, .block a.current.fn,
 .content span.method, .content a.method, .block a.current.method,
 .content span.tymethod, .content a.tymethod, .block a.current.tymethod,
@@ -174,12 +148,23 @@ a {
 	color: #3873AD;
 }
 
+.stab.internal a {
+	color: #304FFE;
+}
+
 a.test-arrow {
 	color: #f5f5f5;
 }
 
 .collapse-toggle {
 	color: #999;
+}
+
+#crate-search {
+	color: #555;
+	background-color: white;
+	border-color: #e0e0e0;
+	box-shadow: 0px 0 0 1px #e0e0e0, 0 0 0 2px transparent;
 }
 
 .search-input {
@@ -192,13 +177,18 @@ a.test-arrow {
 	border-color: #66afe9;
 }
 
-.stab.unstable { background: #FFF5D6; border-color: #FFC600; }
-.stab.deprecated { background: #F3DFFF; border-color: #7F0087; }
-.stab.portability { background: #C4ECFF; border-color: #7BA5DB; }
+#crate-search + .search-input {
+	box-shadow: 1px 0 0 1px #e0e0e0, 0 0 0 2px transparent;
+}
 
 .module-item .stab {
 	color: #000;
 }
+
+.stab.unstable { background: #FFF5D6; border-color: #FFC600; }
+.stab.internal { background: #FFB9B3; border-color: #B71C1C; }
+.stab.deprecated { background: #F3DFFF; border-color: #7F0087; }
+.stab.portability { background: #C4ECFF; border-color: #7BA5DB; }
 
 #help > div {
 	background: #e9e9e9;
@@ -243,7 +233,7 @@ a.test-arrow:hover{
 	color: #999;
 }
 
-:target > code {
+:target > code, :target > .in-band {
 	background: #FDFFD3;
 }
 
@@ -279,7 +269,7 @@ pre.ignore:hover, .information:hover + pre.ignore {
 	color: rgba(255,142,0,1);
 }
 
-.search-failed > a {
+.search-failed a {
 	color: #0089ff;
 }
 
@@ -407,6 +397,21 @@ kbd {
 	color: #999;
 }
 
-.impl-items code {
-	background-color: rgba(0, 0, 0, 0);
+#sidebar-toggle {
+	background-color: #F1F1F1;
+}
+#sidebar-toggle:hover {
+	background-color: #E0E0E0;
+}
+#source-sidebar {
+	background-color: #F1F1F1;
+}
+#source-sidebar > .title {
+	border-bottom-color: #ccc;
+}
+div.files > a:hover, div.name:hover {
+	background-color: #E0E0E0;
+}
+div.files > .selected {
+	background-color: #fff;
 }

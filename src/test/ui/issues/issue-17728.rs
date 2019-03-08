@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::fmt::{Debug, Formatter, Error};
 use std::collections::HashMap;
 
@@ -23,7 +13,7 @@ trait TraversesWorld {
         let maybe_room = room.direction_to_room.get(&direction);
         match maybe_room {
             Some(entry) => Ok(entry),
-            //~^ ERROR 25:28: 25:37: lifetime mismatch [E0623]
+            //~^ ERROR lifetime mismatch [E0623]
             _ => Err("Direction does not exist in room.")
         }
     }
@@ -107,7 +97,7 @@ impl Debug for Player {
 }
 
 fn str_to_direction(to_parse: &str) -> RoomDirection {
-    match to_parse { //~ ERROR match arms have incompatible types
+    match to_parse {
         "w" | "west" => RoomDirection::West,
         "e" | "east" => RoomDirection::East,
         "n" | "north" => RoomDirection::North,
@@ -118,6 +108,7 @@ fn str_to_direction(to_parse: &str) -> RoomDirection {
         "down" => RoomDirection::Down,
         _ => None
     }
+        //~^^ ERROR match arms have incompatible types
 }
 
 fn main() {

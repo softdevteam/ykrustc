@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /// Stream channels
 ///
 /// This is the flavor of channels which are optimized for one sender and one
@@ -22,17 +12,18 @@ pub use self::UpgradeResult::*;
 pub use self::SelectionResult::*;
 use self::Message::*;
 
-use cell::UnsafeCell;
 use core::cmp;
 use core::isize;
-use ptr;
-use thread;
-use time::Instant;
 
-use sync::atomic::{AtomicIsize, AtomicUsize, Ordering, AtomicBool};
-use sync::mpsc::Receiver;
-use sync::mpsc::blocking::{self, SignalToken};
-use sync::mpsc::spsc_queue as spsc;
+use crate::cell::UnsafeCell;
+use crate::ptr;
+use crate::thread;
+use crate::time::Instant;
+
+use crate::sync::atomic::{AtomicIsize, AtomicUsize, Ordering, AtomicBool};
+use crate::sync::mpsc::Receiver;
+use crate::sync::mpsc::blocking::{self, SignalToken};
+use crate::sync::mpsc::spsc_queue as spsc;
 
 const DISCONNECTED: isize = isize::MIN;
 #[cfg(test)]

@@ -1,15 +1,5 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use {Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
-use {Float, FloatConvert, ParseError, Round, Status, StatusAnd};
+use crate::{Category, ExpInt, IEK_INF, IEK_NAN, IEK_ZERO};
+use crate::{Float, FloatConvert, ParseError, Round, Status, StatusAnd};
 
 use smallvec::{SmallVec, smallvec};
 use std::cmp::{self, Ordering};
@@ -196,7 +186,7 @@ impl Semantics for X87DoubleExtendedS {
     ///  exponent = all 1's, integer bit 0, significand 0 ("pseudoinfinity")
     ///  exponent = all 1's, integer bit 0, significand nonzero ("pseudoNaN")
     ///  exponent = 0, integer bit 1 ("pseudodenormal")
-    ///  exponent!=0 nor all 1's, integer bit 0 ("unnormal")
+    ///  exponent != 0 nor all 1's, integer bit 0 ("unnormal")
     /// At the moment, the first two are treated as NaNs, the second two as Normal.
     fn from_bits(bits: u128) -> IeeeFloat<Self> {
         let sign = bits & (1 << (Self::BITS - 1));
@@ -335,7 +325,7 @@ impl<S> Neg for IeeeFloat<S> {
 /// 1.01E-2              4        2       0.0101
 /// 1.01E-2              4        1       1.01E-2
 impl<S: Semantics> fmt::Display for IeeeFloat<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let width = f.width().unwrap_or(3);
         let alternate = f.alternate();
 
@@ -571,7 +561,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
             }
             // Fill with zeros up to precision.
             if !truncate_zero && precision > digits - 1 {
-                for _ in 0..precision - digits + 1 {
+                for _ in 0..=precision - digits {
                     f.write_char('0')?;
                 }
             }
@@ -624,7 +614,7 @@ impl<S: Semantics> fmt::Display for IeeeFloat<S> {
 }
 
 impl<S: Semantics> fmt::Debug for IeeeFloat<S> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}({:?} | {}{:?} * 2^{})",
                self, self.category,
                if self.sign { "-" } else { "+" },
@@ -926,7 +916,7 @@ impl<S: Semantics> Float for IeeeFloat<S> {
 
         // In case MSB resides at the left-hand side of radix point, shift the
         // mantissa right by some amount to make sure the MSB reside right before
-        // the radix point (i.e. "MSB . rest-significant-bits").
+        // the radix point (i.e., "MSB . rest-significant-bits").
         if omsb > S::PRECISION {
             let bits = omsb - S::PRECISION;
             loss = sig::shift_right(&mut wide_sig, &mut self.exp, bits).combine(loss);
@@ -1559,11 +1549,11 @@ impl<S: Semantics> IeeeFloat<S> {
         }
     }
 
-    /// Returns TRUE if, when truncating the current number, with BIT the
+    /// Returns `true` if, when truncating the current number, with `bit` the
     /// new LSB, with the given lost fraction and rounding mode, the result
     /// would need to be rounded away from zero (i.e., by increasing the
-    /// signficand). This routine must work for Category::Zero of both signs, and
-    /// Category::Normal numbers.
+    /// signficand). This routine must work for `Category::Zero` of both signs, and
+    /// `Category::Normal` numbers.
     fn round_away_from_zero(&self, round: Round, loss: Loss, bit: usize) -> bool {
         // NaNs and infinities should not have lost fractions.
         assert!(self.is_finite_non_zero() || self.is_zero());
@@ -1969,7 +1959,7 @@ impl<S: Semantics> IeeeFloat<S> {
         // in a Limb. When this would overflow do we do a single
         // bignum multiplication, and then revert again to multiplication
         // in a Limb.
-        let mut chars = s[first_sig_digit..last_sig_digit + 1].chars();
+        let mut chars = s[first_sig_digit..=last_sig_digit].chars();
         loop {
             let mut val = 0;
             let mut multiplier = 1;
@@ -2267,7 +2257,7 @@ impl Loss {
         more_significant
     }
 
-    /// Return the fraction lost were a bignum truncated losing the least
+    /// Returns the fraction lost were a bignum truncated losing the least
     /// significant `bits` bits.
     fn through_truncation(limbs: &[Limb], bits: usize) -> Loss {
         if bits == 0 {
@@ -2330,12 +2320,12 @@ mod sig {
         Ordering::Equal
     }
 
-    /// Extract the given bit.
+    /// Extracts the given bit.
     pub(super) fn get_bit(limbs: &[Limb], bit: usize) -> bool {
         limbs[bit / LIMB_BITS] & (1 << (bit % LIMB_BITS)) != 0
     }
 
-    /// Set the given bit.
+    /// Sets the given bit.
     pub(super) fn set_bit(limbs: &mut [Limb], bit: usize) {
         limbs[bit / LIMB_BITS] |= 1 << (bit % LIMB_BITS);
     }
@@ -2345,13 +2335,13 @@ mod sig {
         limbs[bit / LIMB_BITS] &= !(1 << (bit % LIMB_BITS));
     }
 
-    /// Shift `dst` left `bits` bits, subtract `bits` from its exponent.
+    /// Shifts `dst` left `bits` bits, subtract `bits` from its exponent.
     pub(super) fn shift_left(dst: &mut [Limb], exp: &mut ExpInt, bits: usize) {
         if bits > 0 {
             // Our exponent should not underflow.
             *exp = exp.checked_sub(bits as ExpInt).unwrap();
 
-            // Jump is the inter-limb jump; shift is is intra-limb shift.
+            // Jump is the inter-limb jump; shift is the intra-limb shift.
             let jump = bits / LIMB_BITS;
             let shift = bits % LIMB_BITS;
 
@@ -2377,7 +2367,7 @@ mod sig {
         }
     }
 
-    /// Shift `dst` right `bits` bits noting lost fraction.
+    /// Shifts `dst` right `bits` bits noting lost fraction.
     pub(super) fn shift_right(dst: &mut [Limb], exp: &mut ExpInt, bits: usize) -> Loss {
         let loss = Loss::through_truncation(dst, bits);
 
@@ -2385,7 +2375,7 @@ mod sig {
             // Our exponent should not overflow.
             *exp = exp.checked_add(bits as ExpInt).unwrap();
 
-            // Jump is the inter-limb jump; shift is is intra-limb shift.
+            // Jump is the inter-limb jump; shift is the intra-limb shift.
             let jump = bits / LIMB_BITS;
             let shift = bits % LIMB_BITS;
 
@@ -2413,7 +2403,7 @@ mod sig {
         loss
     }
 
-    /// Copy the bit vector of width `src_bits` from `src`, starting at bit SRC_LSB,
+    /// Copies the bit vector of width `src_bits` from `src`, starting at bit SRC_LSB,
     /// to `dst`, such that the bit SRC_LSB becomes the least significant bit of `dst`.
     /// All high bits above `src_bits` in `dst` are zero-filled.
     pub(super) fn extract(dst: &mut [Limb], src: &[Limb], src_bits: usize, src_lsb: usize) {
@@ -2674,7 +2664,7 @@ mod sig {
 
         // In case MSB resides at the left-hand side of radix point, shift the
         // mantissa right by some amount to make sure the MSB reside right before
-        // the radix point (i.e. "MSB . rest-significant-bits").
+        // the radix point (i.e., "MSB . rest-significant-bits").
         //
         // Note that the result is not normalized when "omsb < precision". So, the
         // caller needs to call IeeeFloat::normalize() if normalized value is

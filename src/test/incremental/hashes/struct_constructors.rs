@@ -1,14 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-
 // This test case tests the incremental compilation hash (ICH) implementation
 // for struct constructor expressions.
 
@@ -43,7 +32,7 @@ pub fn change_field_value_regular_struct() -> RegularStruct {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_field_value_regular_struct() -> RegularStruct {
     RegularStruct {
@@ -94,7 +83,7 @@ pub fn add_field_regular_struct() -> RegularStruct {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_field_regular_struct() -> RegularStruct {
     let struct1 = RegularStruct {
@@ -129,7 +118,7 @@ pub fn change_field_label_regular_struct() -> RegularStruct {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_field_label_regular_struct() -> RegularStruct {
     let struct1 = RegularStruct {
@@ -164,7 +153,7 @@ pub fn change_constructor_path_regular_struct() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_path_regular_struct() {
     let _ = RegularStruct2 {
@@ -185,7 +174,7 @@ pub mod change_constructor_path_indirectly_regular_struct {
 
     #[rustc_clean(
         cfg="cfail2",
-        except="FnSignature,Hir,HirBody,MirOptimized,MirValidated,TypeckTables"
+        except="FnSignature,Hir,HirBody,MirOptimized,MirBuilt,TypeckTables"
     )]
     #[rustc_clean(cfg="cfail3")]
     pub fn function() -> Struct {
@@ -208,7 +197,7 @@ pub fn change_field_value_tuple_struct() -> TupleStruct {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_field_value_tuple_struct() -> TupleStruct {
     TupleStruct(0, 1, 3)
@@ -225,7 +214,7 @@ pub fn change_constructor_path_tuple_struct() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_path_tuple_struct() {
     let _ = TupleStruct2(0, 1, 2);
@@ -242,7 +231,7 @@ pub mod change_constructor_path_indirectly_tuple_struct {
 
     #[rustc_clean(
         cfg="cfail2",
-        except="FnSignature,Hir,HirBody,MirOptimized,MirValidated,TypeckTables"
+        except="FnSignature,Hir,HirBody,MirOptimized,MirBuilt,TypeckTables"
     )]
     #[rustc_clean(cfg="cfail3")]
     pub fn function() -> Struct {

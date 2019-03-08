@@ -1,23 +1,13 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Type substitutions.
 
-use hir::def_id::DefId;
-use infer::canonical::Canonical;
-use ty::{self, BoundVar, Lift, List, Ty, TyCtxt};
-use ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
+use crate::hir::def_id::DefId;
+use crate::infer::canonical::Canonical;
+use crate::ty::{self, Lift, List, Ty, TyCtxt, InferConst, ParamConst};
+use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
+use crate::mir::interpret::ConstValue;
 
 use serialize::{self, Encodable, Encoder, Decodable, Decoder};
 use syntax_pos::{Span, DUMMY_SP};
-use rustc_data_structures::indexed_vec::Idx;
 use smallvec::SmallVec;
 
 use core::intrinsics;
@@ -28,24 +18,26 @@ use std::mem;
 use std::num::NonZeroUsize;
 
 /// An entity in the Rust type system, which can be one of
-/// several kinds (only types and lifetimes for now).
+/// several kinds (types, lifetimes, and consts).
 /// To reduce memory usage, a `Kind` is a interned pointer,
 /// with the lowest 2 bits being reserved for a tag to
-/// indicate the type (`Ty` or `Region`) it points to.
+/// indicate the type (`Ty`, `Region`, or `Const`) it points to.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Kind<'tcx> {
     ptr: NonZeroUsize,
-    marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>)>
+    marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, &'tcx ty::LazyConst<'tcx>)>
 }
 
 const TAG_MASK: usize = 0b11;
 const TYPE_TAG: usize = 0b00;
 const REGION_TAG: usize = 0b01;
+const CONST_TAG: usize = 0b10;
 
 #[derive(Debug, RustcEncodable, RustcDecodable, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UnpackedKind<'tcx> {
     Lifetime(ty::Region<'tcx>),
     Type(Ty<'tcx>),
+    Const(&'tcx ty::LazyConst<'tcx>),
 }
 
 impl<'tcx> UnpackedKind<'tcx> {
@@ -60,6 +52,11 @@ impl<'tcx> UnpackedKind<'tcx> {
                 // Ensure we can use the tag bits.
                 assert_eq!(mem::align_of_val(ty) & TAG_MASK, 0);
                 (TYPE_TAG, ty as *const _ as usize)
+            }
+            UnpackedKind::Const(ct) => {
+                // Ensure we can use the tag bits.
+                assert_eq!(mem::align_of_val(ct) & TAG_MASK, 0);
+                (CONST_TAG, ct as *const _ as usize)
             }
         };
 
@@ -96,6 +93,12 @@ impl<'tcx> From<Ty<'tcx>> for Kind<'tcx> {
     }
 }
 
+impl<'tcx> From<&'tcx ty::LazyConst<'tcx>> for Kind<'tcx> {
+    fn from(c: &'tcx ty::LazyConst<'tcx>) -> Kind<'tcx> {
+        UnpackedKind::Const(c).pack()
+    }
+}
+
 impl<'tcx> Kind<'tcx> {
     #[inline]
     pub fn unpack(self) -> UnpackedKind<'tcx> {
@@ -104,6 +107,7 @@ impl<'tcx> Kind<'tcx> {
             match ptr & TAG_MASK {
                 REGION_TAG => UnpackedKind::Lifetime(&*((ptr & !TAG_MASK) as *const _)),
                 TYPE_TAG => UnpackedKind::Type(&*((ptr & !TAG_MASK) as *const _)),
+                CONST_TAG => UnpackedKind::Const(&*((ptr & !TAG_MASK) as *const _)),
                 _ => intrinsics::unreachable()
             }
         }
@@ -115,6 +119,7 @@ impl<'tcx> fmt::Debug for Kind<'tcx> {
         match self.unpack() {
             UnpackedKind::Lifetime(lt) => write!(f, "{:?}", lt),
             UnpackedKind::Type(ty) => write!(f, "{:?}", ty),
+            UnpackedKind::Const(ct) => write!(f, "{:?}", ct),
         }
     }
 }
@@ -124,6 +129,7 @@ impl<'tcx> fmt::Display for Kind<'tcx> {
         match self.unpack() {
             UnpackedKind::Lifetime(lt) => write!(f, "{}", lt),
             UnpackedKind::Type(ty) => write!(f, "{}", ty),
+            UnpackedKind::Const(ct) => write!(f, "{}", ct),
         }
     }
 }
@@ -133,8 +139,9 @@ impl<'a, 'tcx> Lift<'tcx> for Kind<'a> {
 
     fn lift_to_tcx<'cx, 'gcx>(&self, tcx: TyCtxt<'cx, 'gcx, 'tcx>) -> Option<Self::Lifted> {
         match self.unpack() {
-            UnpackedKind::Lifetime(a) => a.lift_to_tcx(tcx).map(|a| a.into()),
-            UnpackedKind::Type(a) => a.lift_to_tcx(tcx).map(|a| a.into()),
+            UnpackedKind::Lifetime(lt) => lt.lift_to_tcx(tcx).map(|lt| lt.into()),
+            UnpackedKind::Type(ty) => ty.lift_to_tcx(tcx).map(|ty| ty.into()),
+            UnpackedKind::Const(ct) => ct.lift_to_tcx(tcx).map(|ct| ct.into()),
         }
     }
 }
@@ -144,6 +151,7 @@ impl<'tcx> TypeFoldable<'tcx> for Kind<'tcx> {
         match self.unpack() {
             UnpackedKind::Lifetime(lt) => lt.fold_with(folder).into(),
             UnpackedKind::Type(ty) => ty.fold_with(folder).into(),
+            UnpackedKind::Const(ct) => ct.fold_with(folder).into(),
         }
     }
 
@@ -151,6 +159,7 @@ impl<'tcx> TypeFoldable<'tcx> for Kind<'tcx> {
         match self.unpack() {
             UnpackedKind::Lifetime(lt) => lt.visit_with(visitor),
             UnpackedKind::Type(ty) => ty.visit_with(visitor),
+            UnpackedKind::Const(ct) => ct.visit_with(visitor),
         }
     }
 }
@@ -168,33 +177,36 @@ impl<'tcx> Decodable for Kind<'tcx> {
 }
 
 /// A substitution mapping generic parameters to new values.
-pub type Substs<'tcx> = List<Kind<'tcx>>;
+pub type InternalSubsts<'tcx> = List<Kind<'tcx>>;
 
-impl<'a, 'gcx, 'tcx> Substs<'tcx> {
-    /// Creates a `Substs` that maps each generic parameter to itself.
+pub type SubstsRef<'tcx> = &'tcx InternalSubsts<'tcx>;
+
+impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
+    /// Creates a `InternalSubsts` that maps each generic parameter to itself.
     pub fn identity_for_item(tcx: TyCtxt<'a, 'gcx, 'tcx>, def_id: DefId)
-                             -> &'tcx Substs<'tcx> {
-        Substs::for_item(tcx, def_id, |param, _| {
+                             -> SubstsRef<'tcx> {
+        Self::for_item(tcx, def_id, |param, _| {
             tcx.mk_param_from_def(param)
         })
     }
 
-    /// Creates a `Substs` that maps each generic parameter to a higher-ranked
+    /// Creates a `InternalSubsts` that maps each generic parameter to a higher-ranked
     /// var bound at index `0`. For types, we use a `BoundVar` index equal to
     /// the type parameter index. For regions, we use the `BoundRegion::BrNamed`
-    /// variant (which has a def-id).
+    /// variant (which has a `DefId`).
     pub fn bound_vars_for_item(
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
         def_id: DefId
-    ) -> &'tcx Substs<'tcx> {
-        Substs::for_item(tcx, def_id, |param, _| {
+    ) -> SubstsRef<'tcx> {
+        Self::for_item(tcx, def_id, |param, _| {
             match param.kind {
                 ty::GenericParamDefKind::Type { .. } => {
-                    tcx.mk_ty(ty::Bound(ty::BoundTy {
-                        index: ty::INNERMOST,
-                        var: ty::BoundVar::from(param.index),
-                        kind: ty::BoundTyKind::Param(param.name),
-                    })).into()
+                    tcx.mk_ty(
+                        ty::Bound(ty::INNERMOST, ty::BoundTy {
+                            var: ty::BoundVar::from(param.index),
+                            kind: ty::BoundTyKind::Param(param.name),
+                        })
+                    ).into()
                 }
 
                 ty::GenericParamDefKind::Lifetime => {
@@ -203,25 +215,34 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
                         ty::BoundRegion::BrNamed(param.def_id, param.name)
                     )).into()
                 }
+
+                ty::GenericParamDefKind::Const => {
+                    tcx.mk_lazy_const(ty::LazyConst::Evaluated(ty::Const {
+                        val: ConstValue::Infer(
+                            InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from(param.index))
+                        ),
+                        ty: tcx.type_of(def_id),
+                    })).into()
+                }
             }
         })
     }
 
-    /// Creates a `Substs` for generic parameter definitions,
+    /// Creates a `InternalSubsts` for generic parameter definitions,
     /// by calling closures to obtain each kind.
-    /// The closures get to observe the `Substs` as they're
+    /// The closures get to observe the `InternalSubsts` as they're
     /// being built, which can be used to correctly
     /// substitute defaults of generic parameters.
     pub fn for_item<F>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                        def_id: DefId,
                        mut mk_kind: F)
-                       -> &'tcx Substs<'tcx>
+                       -> SubstsRef<'tcx>
     where F: FnMut(&ty::GenericParamDef, &[Kind<'tcx>]) -> Kind<'tcx>
     {
         let defs = tcx.generics_of(def_id);
         let count = defs.count();
         let mut substs = SmallVec::with_capacity(count);
-        Substs::fill_item(&mut substs, tcx, defs, &mut mk_kind);
+        Self::fill_item(&mut substs, tcx, defs, &mut mk_kind);
         tcx.intern_substs(&substs)
     }
 
@@ -229,10 +250,10 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
                         tcx: TyCtxt<'a, 'gcx, 'tcx>,
                         def_id: DefId,
                         mut mk_kind: F)
-                        -> &'tcx Substs<'tcx>
+                        -> SubstsRef<'tcx>
     where F: FnMut(&ty::GenericParamDef, &[Kind<'tcx>]) -> Kind<'tcx>
     {
-        Substs::for_item(tcx, def_id, |param, substs| {
+        Self::for_item(tcx, def_id, |param, substs| {
             self.get(param.index as usize)
                 .cloned()
                 .unwrap_or_else(|| mk_kind(param, substs))
@@ -247,9 +268,9 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
     {
         if let Some(def_id) = defs.parent {
             let parent_defs = tcx.generics_of(def_id);
-            Substs::fill_item(substs, tcx, parent_defs, mk_kind);
+            Self::fill_item(substs, tcx, parent_defs, mk_kind);
         }
-        Substs::fill_single(substs, defs, mk_kind)
+        Self::fill_single(substs, defs, mk_kind)
     }
 
     fn fill_single<F>(substs: &mut SmallVec<[Kind<'tcx>; 8]>,
@@ -292,6 +313,29 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
     }
 
     #[inline]
+    pub fn consts(&'a self) -> impl DoubleEndedIterator<Item = &'tcx ty::LazyConst<'tcx>> + 'a {
+        self.iter().filter_map(|k| {
+            if let UnpackedKind::Const(ct) = k.unpack() {
+                Some(ct)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[inline]
+    pub fn non_erasable_generics(
+        &'a self
+    ) -> impl DoubleEndedIterator<Item = UnpackedKind<'tcx>> + 'a {
+        self.iter().filter_map(|k| {
+            match k.unpack() {
+                UnpackedKind::Lifetime(_) => None,
+                generic => Some(generic),
+            }
+        })
+    }
+
+    #[inline]
     pub fn type_at(&self, i: usize) -> Ty<'tcx> {
         if let UnpackedKind::Type(ty) = self[i].unpack() {
             ty
@@ -310,30 +354,39 @@ impl<'a, 'gcx, 'tcx> Substs<'tcx> {
     }
 
     #[inline]
+    pub fn const_at(&self, i: usize) -> &'tcx ty::LazyConst<'tcx> {
+        if let UnpackedKind::Const(ct) = self[i].unpack() {
+            ct
+        } else {
+            bug!("expected const for param #{} in {:?}", i, self);
+        }
+    }
+
+    #[inline]
     pub fn type_for_def(&self, def: &ty::GenericParamDef) -> Kind<'tcx> {
         self.type_at(def.index as usize).into()
     }
 
     /// Transform from substitutions for a child of `source_ancestor`
-    /// (e.g. a trait or impl) to substitutions for the same child
+    /// (e.g., a trait or impl) to substitutions for the same child
     /// in a different item, with `target_substs` as the base for
     /// the target impl/trait, with the source child-specific
-    /// parameters (e.g. method parameters) on top of that base.
+    /// parameters (e.g., method parameters) on top of that base.
     pub fn rebase_onto(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
                        source_ancestor: DefId,
-                       target_substs: &Substs<'tcx>)
-                       -> &'tcx Substs<'tcx> {
+                       target_substs: SubstsRef<'tcx>)
+                       -> SubstsRef<'tcx> {
         let defs = tcx.generics_of(source_ancestor);
         tcx.mk_substs(target_substs.iter().chain(&self[defs.params.len()..]).cloned())
     }
 
     pub fn truncate_to(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>, generics: &ty::Generics)
-                       -> &'tcx Substs<'tcx> {
+                       -> SubstsRef<'tcx> {
         tcx.mk_substs(self.iter().take(generics.count()).cloned())
     }
 }
 
-impl<'tcx> TypeFoldable<'tcx> for &'tcx Substs<'tcx> {
+impl<'tcx> TypeFoldable<'tcx> for SubstsRef<'tcx> {
     fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
         let params: SmallVec<[_; 8]> = self.iter().map(|k| k.fold_with(folder)).collect();
 
@@ -351,7 +404,7 @@ impl<'tcx> TypeFoldable<'tcx> for &'tcx Substs<'tcx> {
     }
 }
 
-impl<'tcx> serialize::UseSpecializedDecodable for &'tcx Substs<'tcx> {}
+impl<'tcx> serialize::UseSpecializedDecodable for SubstsRef<'tcx> {}
 
 ///////////////////////////////////////////////////////////////////////////
 // Public trait `Subst`
@@ -477,6 +530,21 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
 
         return t1;
     }
+
+    fn fold_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
+        if !c.needs_subst() {
+            return c;
+        }
+
+        if let ty::LazyConst::Evaluated(ty::Const {
+            val: ConstValue::Param(p),
+            ..
+        }) = c {
+            self.const_for_param(*p, c)
+        } else {
+            c.super_fold_with(self)
+        }
+    }
 }
 
 impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
@@ -502,7 +570,35 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
         self.shift_vars_through_binders(ty)
     }
 
-    /// It is sometimes necessary to adjust the debruijn indices during substitution. This occurs
+    fn const_for_param(
+        &self,
+        p: ParamConst,
+        source_cn: &'tcx ty::LazyConst<'tcx>
+    ) -> &'tcx ty::LazyConst<'tcx> {
+        // Look up the const in the substitutions. It really should be in there.
+        let opt_cn = self.substs.get(p.index as usize).map(|k| k.unpack());
+        let cn = match opt_cn {
+            Some(UnpackedKind::Const(cn)) => cn,
+            _ => {
+                let span = self.span.unwrap_or(DUMMY_SP);
+                span_bug!(
+                    span,
+                    "Const parameter `{:?}` ({:?}/{}) out of range \
+                     when substituting (root type={:?}) substs={:?}",
+                    p,
+                    source_cn,
+                    p.index,
+                    self.root_ty,
+                    self.substs,
+                );
+            }
+        };
+
+        // FIXME(const_generics): shift const through binders
+        cn
+    }
+
+    /// It is sometimes necessary to adjust the De Bruijn indices during substitution. This occurs
     /// when we are substituting a type with escaping bound vars into a context where we have
     /// passed through binders. That's quite a mouthful. Let's see an example:
     ///
@@ -521,9 +617,9 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
     ///
     /// Here the `'a` lifetime is bound in the outer function, but appears as an argument of the
     /// inner one. Therefore, that appearance will have a DebruijnIndex of 2, because we must skip
-    /// over the inner binder (remember that we count Debruijn indices from 1). However, in the
+    /// over the inner binder (remember that we count De Bruijn indices from 1). However, in the
     /// definition of `MetaFunc`, the binder is not visible, so the type `&'a int` will have a
-    /// debruijn index of 1. It's only during the substitution that we can see we must increase the
+    /// De Bruijn index of 1. It's only during the substitution that we can see we must increase the
     /// depth by 1 to account for the binder that we passed through.
     ///
     /// As a second example, consider this twist:
@@ -542,7 +638,7 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
     ///                      DebruijnIndex of 2
     ///
     /// As indicated in the diagram, here the same type `&'a int` is substituted once, but in the
-    /// first case we do not increase the Debruijn index and in the second case we do. The reason
+    /// first case we do not increase the De Bruijn index and in the second case we do. The reason
     /// is that only in the second case have we passed through a fn binder.
     fn shift_vars_through_binders(&self, ty: Ty<'tcx>) -> Ty<'tcx> {
         debug!("shift_vars(ty={:?}, binders_passed={:?}, has_escaping_bound_vars={:?})",
@@ -568,51 +664,14 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
 
 pub type CanonicalUserSubsts<'tcx> = Canonical<'tcx, UserSubsts<'tcx>>;
 
-impl CanonicalUserSubsts<'tcx> {
-    /// True if this represents a substitution like
-    ///
-    /// ```text
-    /// [?0, ?1, ?2]
-    /// ```
-    ///
-    /// i.e., each thing is mapped to a canonical variable with the same index.
-    pub fn is_identity(&self) -> bool {
-        if self.value.user_self_ty.is_some() {
-            return false;
-        }
-
-        self.value.substs.iter().zip(BoundVar::new(0)..).all(|(kind, cvar)| {
-            match kind.unpack() {
-                UnpackedKind::Type(ty) => match ty.sty {
-                    ty::Bound(b) => {
-                        // We only allow a `ty::INNERMOST` index in substitutions.
-                        assert_eq!(b.index, ty::INNERMOST);
-                        cvar == b.var
-                    }
-                    _ => false,
-                },
-
-                UnpackedKind::Lifetime(r) => match r {
-                    ty::ReLateBound(index, br) => {
-                        // We only allow a `ty::INNERMOST` index in substitutions.
-                        assert_eq!(*index, ty::INNERMOST);
-                        cvar == br.assert_bound_var()
-                    }
-                    _ => false,
-                },
-            }
-        })
-    }
-}
-
 /// Stores the user-given substs to reach some fully qualified path
 /// (e.g., `<T>::Item` or `<T as Trait>::Item`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
 pub struct UserSubsts<'tcx> {
     /// The substitutions for the item as given by the user.
-    pub substs: &'tcx Substs<'tcx>,
+    pub substs: SubstsRef<'tcx>,
 
-    /// The self-type, in the case of a `<T>::Item` path (when applied
+    /// The self type, in the case of a `<T>::Item` path (when applied
     /// to an inherent impl). See `UserSelfTy` below.
     pub user_self_ty: Option<UserSelfTy<'tcx>>,
 }
@@ -632,8 +691,8 @@ BraceStructLiftImpl! {
     }
 }
 
-/// Specifies the user-given self-type. In the case of a path that
-/// refers to a member in an inherent impl, this self-type is
+/// Specifies the user-given self type. In the case of a path that
+/// refers to a member in an inherent impl, this self type is
 /// sometimes needed to constrain the type parameters on the impl. For
 /// example, in this code:
 ///
@@ -643,11 +702,11 @@ BraceStructLiftImpl! {
 /// ```
 ///
 /// when you then have a path like `<Foo<&'static u32>>::method`,
-/// this struct would carry the def-id of the impl along with the
-/// self-type `Foo<u32>`. Then we can instantiate the parameters of
+/// this struct would carry the `DefId` of the impl along with the
+/// self type `Foo<u32>`. Then we can instantiate the parameters of
 /// the impl (with the substs from `UserSubsts`) and apply those to
-/// the self-type, giving `Foo<?A>`. Finally, we unify that with
-/// the self-type here, which contains `?A` to be `&'static u32`
+/// the self type, giving `Foo<?A>`. Finally, we unify that with
+/// the self type here, which contains `?A` to be `&'static u32`
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
 pub struct UserSelfTy<'tcx> {
     pub impl_def_id: DefId,

@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Collection types.
 //!
 //! Rust's standard collection library provides efficient implementations of the
@@ -333,8 +323,8 @@
 //! // A client of the bar. They have a blood alcohol level.
 //! struct Person { blood_alcohol: f32 }
 //!
-//! // All the orders made to the bar, by client id.
-//! let orders = vec![1,2,1,2,3,4,1,2,2,3,4,1,1,1];
+//! // All the orders made to the bar, by client ID.
+//! let orders = vec![1, 2, 1, 2, 3, 4, 1, 2, 2, 3, 4, 1, 1, 1];
 //!
 //! // Our clients.
 //! let mut blood_alcohol = BTreeMap::new();
@@ -422,7 +412,7 @@
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_deprecated(reason = "moved to `std::ops::Bound`", since = "1.26.0")]
 #[doc(hidden)]
-pub use ops::Bound;
+pub use crate::ops::Bound;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::collections::{BinaryHeap, BTreeMap, BTreeSet};
 #[stable(feature = "rust1", since = "1.0.0")]

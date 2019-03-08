@@ -1,23 +1,12 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::{probe, MethodCallee};
 
-use astconv::AstConv;
-use check::{FnCtxt, PlaceOp, callee, Needs};
-use hir::GenericArg;
-use hir::def_id::DefId;
-use rustc::ty::subst::Substs;
+use crate::astconv::AstConv;
+use crate::check::{FnCtxt, PlaceOp, callee, Needs};
+use crate::hir::GenericArg;
+use crate::hir::def_id::DefId;
+use rustc::ty::subst::{Subst, SubstsRef};
 use rustc::traits;
 use rustc::ty::{self, Ty, GenericParamDefKind};
-use rustc::ty::subst::Subst;
 use rustc::ty::adjustment::{Adjustment, Adjust, OverloadedDeref};
 use rustc::ty::adjustment::{AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
 use rustc::ty::fold::TypeFoldable;
@@ -161,9 +150,9 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
         let (_, n) = autoderef.nth(pick.autoderefs).unwrap();
         assert_eq!(n, pick.autoderefs);
 
-        let mut adjustments = autoderef.adjust_steps(Needs::None);
+        let mut adjustments = autoderef.adjust_steps(self, Needs::None);
 
-        let mut target = autoderef.unambiguous_final_ty();
+        let mut target = autoderef.unambiguous_final_ty(self);
 
         if let Some(mutbl) = pick.autoref {
             let region = self.next_region_var(infer::Autoref(self.span));
@@ -202,7 +191,7 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
             assert!(pick.unsize.is_none());
         }
 
-        autoderef.finalize();
+        autoderef.finalize(self);
 
         // Write out the final adjustments.
         self.apply_adjustments(self.self_expr, adjustments);
@@ -219,7 +208,7 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
     fn fresh_receiver_substs(&mut self,
                              self_ty: Ty<'tcx>,
                              pick: &probe::Pick<'tcx>)
-                             -> &'tcx Substs<'tcx> {
+                             -> SubstsRef<'tcx> {
         match pick.kind {
             probe::InherentImplPick => {
                 let impl_def_id = pick.item.container.id();
@@ -290,7 +279,11 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
             .include_raw_pointers()
             .filter_map(|(ty, _)|
                 match ty.sty {
-                    ty::Dynamic(ref data, ..) => Some(closure(self, ty, data.principal())),
+                    ty::Dynamic(ref data, ..) => {
+                        Some(closure(self, ty, data.principal().unwrap_or_else(|| {
+                            span_bug!(self.span, "calling trait method on empty object?")
+                        })))
+                    },
                     _ => None,
                 }
             )
@@ -306,8 +299,8 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
         &mut self,
         pick: &probe::Pick<'tcx>,
         seg: &hir::PathSegment,
-        parent_substs: &Substs<'tcx>,
-    ) -> &'tcx Substs<'tcx> {
+        parent_substs: SubstsRef<'tcx>,
+    ) -> SubstsRef<'tcx> {
         // Determine the values for the generic parameters of the method.
         // If they were not explicitly supplied, just construct fresh
         // variables.
@@ -348,6 +341,9 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
                     (GenericParamDefKind::Type { .. }, GenericArg::Type(ty)) => {
                         self.to_ty(ty).into()
                     }
+                    (GenericParamDefKind::Const, GenericArg::Const(ct)) => {
+                        self.to_const(&ct.value, self.tcx.type_of(param.def_id)).into()
+                    }
                     _ => unreachable!(),
                 }
             },
@@ -375,7 +371,7 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
     // until we unify the `Self` type.
     fn instantiate_method_sig(&mut self,
                               pick: &probe::Pick<'tcx>,
-                              all_substs: &'tcx Substs<'tcx>)
+                              all_substs: SubstsRef<'tcx>)
                               -> (ty::FnSig<'tcx>, ty::InstantiatedPredicates<'tcx>) {
         debug!("instantiate_method_sig(pick={:?}, all_substs={:?})",
                pick,
@@ -395,7 +391,7 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
         // Instantiate late-bound regions and substitute the trait
         // parameters into the method type to get the actual method type.
         //
-        // NB: Instantiate late-bound regions first so that
+        // N.B., instantiate late-bound regions first so that
         // `instantiate_type_scheme` can normalize associated types that
         // may reference those regions.
         let method_sig = self.replace_bound_vars_with_fresh_vars(&sig);
@@ -410,7 +406,7 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
 
     fn add_obligations(&mut self,
                        fty: Ty<'tcx>,
-                       all_substs: &Substs<'tcx>,
+                       all_substs: SubstsRef<'tcx>,
                        method_predicates: &ty::InstantiatedPredicates<'tcx>) {
         debug!("add_obligations: fty={:?} all_substs={:?} method_predicates={:?}",
                fty,
@@ -604,7 +600,7 @@ impl<'a, 'gcx, 'tcx> ConfirmContext<'a, 'gcx, 'tcx> {
             })
     }
 
-    fn enforce_illegal_method_limitations(&self, pick: &probe::Pick) {
+    fn enforce_illegal_method_limitations(&self, pick: &probe::Pick<'_>) {
         // Disallow calls to the method `drop` defined in the `Drop` trait.
         match pick.item.container {
             ty::TraitContainer(trait_def_id) => {

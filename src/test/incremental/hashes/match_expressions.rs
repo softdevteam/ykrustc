@@ -1,14 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-
 // This test case tests the incremental compilation hash (ICH) implementation
 // for match expressions.
 
@@ -37,7 +26,7 @@ pub fn add_arm(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_arm(x: u32) -> u32 {
     match x {
@@ -62,7 +51,7 @@ pub fn change_order_of_arms(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized")]
+    except="HirBody,MirBuilt,MirOptimized")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_order_of_arms(x: u32) -> u32 {
     match x {
@@ -86,7 +75,7 @@ pub fn add_guard_clause(x: u32, y: bool) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_guard_clause(x: u32, y: bool) -> u32 {
     match x {
@@ -110,7 +99,7 @@ pub fn change_guard_clause(x: u32, y: bool) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_guard_clause(x: u32, y: bool) -> u32 {
     match x {
@@ -134,7 +123,7 @@ pub fn add_at_binding(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_at_binding(x: u32) -> u32 {
     match x {
@@ -158,7 +147,7 @@ pub fn change_name_of_at_binding(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized")]
+    except="HirBody,MirBuilt,MirOptimized")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_name_of_at_binding(x: u32) -> u32 {
     match x {
@@ -181,7 +170,7 @@ pub fn change_simple_name_to_pattern(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_simple_name_to_pattern(x: u32) -> u32 {
     match (x, x & 1) {
@@ -204,7 +193,7 @@ pub fn change_name_in_pattern(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized")]
+    except="HirBody,MirBuilt,MirOptimized")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_name_in_pattern(x: u32) -> u32 {
     match (x, x & 1) {
@@ -227,7 +216,7 @@ pub fn change_mutability_of_binding_in_pattern(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_mutability_of_binding_in_pattern(x: u32) -> u32 {
     match (x, x & 1) {
@@ -249,7 +238,7 @@ pub fn add_ref_to_binding_in_pattern(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_ref_to_binding_in_pattern(x: u32) -> u32 {
     match (x, x & 1) {
@@ -271,7 +260,7 @@ pub fn add_amp_to_binding_in_pattern(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_amp_to_binding_in_pattern(x: u32) -> u32 {
     match (&x, x & 1) {
@@ -294,7 +283,7 @@ pub fn change_rhs_of_arm(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized")]
+    except="HirBody,MirBuilt,MirOptimized")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_rhs_of_arm(x: u32) -> u32 {
     match x {
@@ -318,7 +307,7 @@ pub fn add_alternative_to_arm(x: u32) -> u32 {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,MirValidated,MirOptimized,TypeckTables")]
+    except="HirBody,MirBuilt,MirOptimized,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_alternative_to_arm(x: u32) -> u32 {
     match x {

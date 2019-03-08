@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of Rust panics via process aborts
 //!
 //! When compared to the implementation via unwinding, this crate is *much*
@@ -15,12 +5,12 @@
 
 #![no_std]
 #![unstable(feature = "panic_abort", issue = "32837")]
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
 #![panic_runtime]
+
 #![allow(unused_features)]
+#![deny(rust_2018_idioms)]
 
 #![feature(core_intrinsics)]
 #![feature(libc)]
@@ -56,7 +46,6 @@ pub unsafe extern fn __rust_start_panic(_payload: usize) -> u32 {
 
     #[cfg(any(unix, target_os = "cloudabi"))]
     unsafe fn abort() -> ! {
-        extern crate libc;
         libc::abort();
     }
 
@@ -65,6 +54,13 @@ pub unsafe extern fn __rust_start_panic(_payload: usize) -> u32 {
               all(target_arch = "wasm32", not(target_os = "emscripten"))))]
     unsafe fn abort() -> ! {
         core::intrinsics::abort();
+    }
+
+    #[cfg(all(target_vendor="fortanix", target_env="sgx"))]
+    unsafe fn abort() -> ! {
+        // call std::sys::abort_internal
+        extern "C" { pub fn __rust_abort() -> !; }
+        __rust_abort();
     }
 }
 

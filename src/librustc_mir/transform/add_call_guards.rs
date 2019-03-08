@@ -1,17 +1,7 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::TyCtxt;
 use rustc::mir::*;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 
 #[derive(PartialEq)]
 pub enum AddCallGuards {
@@ -43,14 +33,14 @@ pub use self::AddCallGuards::*;
 impl MirPass for AddCallGuards {
     fn run_pass<'a, 'tcx>(&self,
                           _tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource,
+                          _src: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         self.add_call_guards(mir);
     }
 }
 
 impl AddCallGuards {
-    pub fn add_call_guards(&self, mir: &mut Mir) {
+    pub fn add_call_guards(&self, mir: &mut Mir<'_>) {
         let pred_count: IndexVec<_, _> =
             mir.predecessors().iter().map(|ps| ps.len()).collect();
 

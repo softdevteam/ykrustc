@@ -1,20 +1,10 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir::def_id::DefId;
 use rustc::mir::*;
 use rustc::ty::TyCtxt;
 
-use transform::{MirPass, MirSource};
-use util::patch::MirPatch;
-use util;
+use crate::transform::{MirPass, MirSource};
+use crate::util::patch::MirPatch;
+use crate::util;
 
 // This pass moves values being dropped that are within a packed
 // struct to a separate local before dropping them, to ensure that
@@ -52,11 +42,11 @@ pub struct AddMovesForPackedDrops;
 impl MirPass for AddMovesForPackedDrops {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          src: MirSource,
+                          src: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>)
     {
         debug!("add_moves_for_packed_drops({:?} @ {:?})", src, mir.span);
-        add_moves_for_packed_drops(tcx, mir, src.def_id);
+        add_moves_for_packed_drops(tcx, mir, src.def_id());
     }
 }
 
@@ -131,10 +121,10 @@ fn add_move_for_packed_drop<'a, 'tcx>(
 
     patch.add_statement(
         loc, StatementKind::StorageLive(temp));
-    patch.add_assign(loc, Place::Local(temp),
+    patch.add_assign(loc, Place::Base(PlaceBase::Local(temp)),
                      Rvalue::Use(Operand::Move(location.clone())));
     patch.patch_terminator(loc.block, TerminatorKind::Drop {
-        location: Place::Local(temp),
+        location: Place::Base(PlaceBase::Local(temp)),
         target: storage_dead_block,
         unwind
     });

@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::Wrapping;
 
 use ops::*;
@@ -439,7 +429,8 @@ assert_eq!(n.trailing_zeros(), 3);
             /// wrapping the truncated bits to the end of the resulting
             /// integer.
             ///
-            /// Please note this isn't the same operation as `>>`!
+            /// Please note this isn't the same operation as the `>>` shifting
+            /// operator!
             ///
             /// # Examples
             ///
@@ -464,7 +455,8 @@ assert_eq!(n.trailing_zeros(), 3);
             /// wrapping the truncated bits to the beginning of the resulting
             /// integer.
             ///
-            /// Please note this isn't the same operation as `<<`!
+            /// Please note this isn't the same operation as the `<<` shifting
+            /// operator!
             ///
             /// # Examples
             ///
@@ -865,7 +857,7 @@ assert!(!Wrapping(10", stringify!($t), ").is_power_of_two());
             doc_comment! {
                 concat!("Returns the smallest power of two greater than or equal to `self`.
 
-When return value overflows (i.e. `self > (1 << (N-1))` for type
+When return value overflows (i.e., `self > (1 << (N-1))` for type
 `uN`), overflows to `2^N = 0`.
 
 # Examples

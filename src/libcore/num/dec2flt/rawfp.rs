@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Bit fiddling on positive IEEE 754 floats. Negative numbers aren't and needn't be handled.
 //! Normal floating point numbers have a canonical representation as (frac, exp) such that the
 //! value is 2<sup>exp</sup> * (1 + sum(frac[N-i] / 2<sup>i</sup>)) where N is the number of bits.
@@ -69,10 +59,10 @@ pub trait RawFloat
     /// Type used by `to_bits` and `from_bits`.
     type Bits: Add<Output = Self::Bits> + From<u8> + TryFrom<u64>;
 
-    /// Raw transmutation to integer.
+    /// Performs a raw transmutation to an integer.
     fn to_bits(self) -> Self::Bits;
 
-    /// Raw transmutation from integer.
+    /// Performs a raw transmutation from an integer.
     fn from_bits(v: Self::Bits) -> Self;
 
     /// Returns the category that this number falls into.
@@ -81,14 +71,14 @@ pub trait RawFloat
     /// Returns the mantissa, exponent and sign as integers.
     fn integer_decode(self) -> (u64, i16, i8);
 
-    /// Decode the float.
+    /// Decodes the float.
     fn unpack(self) -> Unpacked;
 
-    /// Cast from a small integer that can be represented exactly.  Panic if the integer can't be
+    /// Casts from a small integer that can be represented exactly. Panic if the integer can't be
     /// represented, the other code in this module makes sure to never let that happen.
     fn from_int(x: u64) -> Self;
 
-    /// Get the value 10<sup>e</sup> from a pre-computed table.
+    /// Gets the value 10<sup>e</sup> from a pre-computed table.
     /// Panics for `e >= CEIL_LOG5_OF_MAX_SIG`.
     fn short_fast_pow10(e: usize) -> Self;
 
@@ -250,7 +240,7 @@ impl RawFloat for f64 {
     fn from_bits(v: Self::Bits) -> Self { Self::from_bits(v) }
 }
 
-/// Convert an Fp to the closest machine float type.
+/// Converts an `Fp` to the closest machine float type.
 /// Does not handle subnormal results.
 pub fn fp_to_float<T: RawFloat>(x: Fp) -> T {
     let x = x.normalize();
@@ -329,7 +319,7 @@ pub fn big_to_fp(f: &Big) -> Fp {
     }
 }
 
-/// Find the largest floating point number strictly smaller than the argument.
+/// Finds the largest floating point number strictly smaller than the argument.
 /// Does not handle subnormals, zero, or exponent underflow.
 pub fn prev_float<T: RawFloat>(x: T) -> T {
     match x.classify() {
@@ -349,7 +339,7 @@ pub fn prev_float<T: RawFloat>(x: T) -> T {
 }
 
 // Find the smallest floating point number strictly larger than the argument.
-// This operation is saturating, i.e. next_float(inf) == inf.
+// This operation is saturating, i.e., next_float(inf) == inf.
 // Unlike most code in this module, this function does handle zero, subnormals, and infinities.
 // However, like all other code here, it does not deal with NaN and negative numbers.
 pub fn next_float<T: RawFloat>(x: T) -> T {

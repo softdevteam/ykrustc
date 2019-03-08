@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::result::Result::{Ok, Err};
 
 #[test]
@@ -792,6 +782,7 @@ mod slice_index {
     //  to be used in `should_panic`)
     #[test]
     #[should_panic(expected = "out of range")]
+    #[cfg(not(miri))] // Miri does not support panics
     fn assert_range_eq_can_fail_by_panic() {
         assert_range_eq!([0, 1, 2], 0..5, [0, 1, 2]);
     }
@@ -801,6 +792,7 @@ mod slice_index {
     //  to be used in `should_panic`)
     #[test]
     #[should_panic(expected = "==")]
+    #[cfg(not(miri))] // Miri does not support panics
     fn assert_range_eq_can_fail_by_inequality() {
         assert_range_eq!([0, 1, 2], 0..2, [0, 1, 2]);
     }
@@ -850,6 +842,7 @@ mod slice_index {
 
                 #[test]
                 #[should_panic(expected = $expect_msg)]
+                #[cfg(not(miri))] // Miri does not support panics
                 fn index_fail() {
                     let v = $data;
                     let v: &[_] = &v;
@@ -858,6 +851,7 @@ mod slice_index {
 
                 #[test]
                 #[should_panic(expected = $expect_msg)]
+                #[cfg(not(miri))] // Miri does not support panics
                 fn index_mut_fail() {
                     let mut v = $data;
                     let v: &mut [_] = &mut v;
@@ -1021,14 +1015,15 @@ fn test_rotate_right() {
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(miri))] // Miri does not support entropy
 fn sort_unstable() {
     use core::cmp::Ordering::{Equal, Greater, Less};
     use core::slice::heapsort;
-    use rand::{FromEntropy, Rng, XorShiftRng};
+    use rand::{FromEntropy, Rng, rngs::SmallRng, seq::SliceRandom};
 
     let mut v = [0; 600];
     let mut tmp = [0; 600];
-    let mut rng = XorShiftRng::from_entropy();
+    let mut rng = SmallRng::from_entropy();
 
     for len in (2..25).chain(500..510) {
         let v = &mut v[0..len];
@@ -1073,7 +1068,7 @@ fn sort_unstable() {
     for i in 0..v.len() {
         v[i] = i as i32;
     }
-    v.sort_unstable_by(|_, _| *rng.choose(&[Less, Equal, Greater]).unwrap());
+    v.sort_unstable_by(|_, _| *[Less, Equal, Greater].choose(&mut rng).unwrap());
     v.sort_unstable();
     for i in 0..v.len() {
         assert_eq!(v[i], i as i32);
@@ -1176,6 +1171,7 @@ pub mod memchr {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri cannot compute actual alignment of an allocation
 fn test_align_to_simple() {
     let bytes = [1u8, 2, 3, 4, 5, 6, 7];
     let (prefix, aligned, suffix) = unsafe { bytes.align_to::<u16>() };
@@ -1199,6 +1195,7 @@ fn test_align_to_zst() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri cannot compute actual alignment of an allocation
 fn test_align_to_non_trivial() {
     #[repr(align(8))] struct U64(u64, u64);
     #[repr(align(8))] struct U64U64U32(u64, u64, u32);
@@ -1307,6 +1304,7 @@ fn test_copy_within() {
 
 #[test]
 #[should_panic(expected = "src is out of bounds")]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_copy_within_panics_src_too_long() {
     let mut bytes = *b"Hello, World!";
     // The length is only 13, so 14 is out of bounds.
@@ -1315,6 +1313,7 @@ fn test_copy_within_panics_src_too_long() {
 
 #[test]
 #[should_panic(expected = "dest is out of bounds")]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_copy_within_panics_dest_too_long() {
     let mut bytes = *b"Hello, World!";
     // The length is only 13, so a slice of length 4 starting at index 10 is out of bounds.
@@ -1322,8 +1321,24 @@ fn test_copy_within_panics_dest_too_long() {
 }
 #[test]
 #[should_panic(expected = "src end is before src start")]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_copy_within_panics_src_inverted() {
     let mut bytes = *b"Hello, World!";
     // 2 is greater than 1, so this range is invalid.
     bytes.copy_within(2..1, 0);
+}
+
+#[test]
+fn test_is_sorted() {
+    let empty: [i32; 0] = [];
+
+    assert!([1, 2, 2, 9].is_sorted());
+    assert!(![1, 3, 2].is_sorted());
+    assert!([0].is_sorted());
+    assert!(empty.is_sorted());
+    assert!(![0.0, 1.0, std::f32::NAN].is_sorted());
+    assert!([-2, -1, 0, 3].is_sorted());
+    assert!(![-2i32, -1, 0, 3].is_sorted_by_key(|n| n.abs()));
+    assert!(!["c", "bb", "aaa"].is_sorted());
+    assert!(["c", "bb", "aaa"].is_sorted_by_key(|s| s.len()));
 }

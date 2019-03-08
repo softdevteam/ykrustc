@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of panics via stack unwinding
 //!
 //! This crate is an implementation of panics in Rust using "most native" stack
@@ -24,10 +14,10 @@
 
 #![no_std]
 #![unstable(feature = "panic_unwind", issue = "32837")]
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
+
+#![deny(rust_2018_idioms)]
 
 #![feature(allocator_api)]
 #![feature(alloc)]
@@ -43,11 +33,6 @@
 
 #![panic_runtime]
 #![feature(panic_runtime)]
-
-extern crate alloc;
-extern crate libc;
-#[cfg(not(any(target_env = "msvc", all(windows, target_arch = "x86_64", target_env = "gnu"))))]
-extern crate unwind;
 
 use alloc::boxed::Box;
 use core::intrinsics;
@@ -99,7 +84,7 @@ pub unsafe extern "C" fn __rust_maybe_catch_panic(f: fn(*mut u8),
                                                   vtable_ptr: *mut usize)
                                                   -> u32 {
     let mut payload = imp::payload();
-    if intrinsics::try(f, data, &mut payload as *mut _ as *mut _) == 0 {
+    if intrinsics::r#try(f, data, &mut payload as *mut _ as *mut _) == 0 {
         0
     } else {
         let obj = mem::transmute::<_, raw::TraitObject>(imp::cleanup(payload));

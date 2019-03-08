@@ -1,16 +1,6 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use deriving::path_std;
-use deriving::generic::*;
-use deriving::generic::ty::*;
+use crate::deriving::path_std;
+use crate::deriving::generic::*;
+use crate::deriving::generic::ty::*;
 
 use rustc_data_structures::thin_vec::ThinVec;
 
@@ -21,7 +11,7 @@ use syntax::ext::build::AstBuilder;
 use syntax::ptr::P;
 use syntax_pos::{DUMMY_SP, Span};
 
-pub fn expand_deriving_debug(cx: &mut ExtCtxt,
+pub fn expand_deriving_debug(cx: &mut ExtCtxt<'_>,
                              span: Span,
                              mitem: &MetaItem,
                              item: &Annotatable,
@@ -57,7 +47,7 @@ pub fn expand_deriving_debug(cx: &mut ExtCtxt,
 }
 
 /// We use the debug builders to do the heavy lifting here
-fn show_substructure(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<Expr> {
+fn show_substructure(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>) -> P<Expr> {
     // build fmt.debug_struct(<name>).field(<fieldname>, &<fieldval>)....build()
     // or fmt.debug_tuple(<name>).field(&<fieldval>)....build()
     // based on the "shape".
@@ -134,7 +124,7 @@ fn show_substructure(cx: &mut ExtCtxt, span: Span, substr: &Substructure) -> P<E
     cx.expr_block(block)
 }
 
-fn stmt_let_undescore(cx: &mut ExtCtxt, sp: Span, expr: P<ast::Expr>) -> ast::Stmt {
+fn stmt_let_undescore(cx: &mut ExtCtxt<'_>, sp: Span, expr: P<ast::Expr>) -> ast::Stmt {
     let local = P(ast::Local {
         pat: cx.pat_wild(sp),
         ty: None,

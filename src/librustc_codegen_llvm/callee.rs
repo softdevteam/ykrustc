@@ -1,24 +1,14 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Handles codegen of callees as well as other call-related
-//! things.  Callees are a superset of normal rust values and sometimes
-//! have different representations.  In particular, top-level fn items
+//! things. Callees are a superset of normal rust values and sometimes
+//! have different representations. In particular, top-level fn items
 //! and methods are represented as just a fn ptr and not a full
 //! closure.
 
-use attributes;
-use llvm;
-use monomorphize::Instance;
-use context::CodegenCx;
-use value::Value;
+use crate::attributes;
+use crate::llvm;
+use crate::monomorphize::Instance;
+use crate::context::CodegenCx;
+use crate::value::Value;
 use rustc_codegen_ssa::traits::*;
 
 use rustc::ty::TypeFoldable;
@@ -81,7 +71,7 @@ pub fn get_fn(
         // other weird situations. Annoying.
         if cx.val_ty(llfn) != llptrty {
             debug!("get_fn: casting {:?} to {:?}", llfn, llptrty);
-            cx.static_ptrcast(llfn, llptrty)
+            cx.const_ptrcast(llfn, llptrty)
         } else {
             debug!("get_fn: not casting pointer!");
             llfn
@@ -94,7 +84,7 @@ pub fn get_fn(
         if instance.def.is_inline(tcx) {
             attributes::inline(cx, llfn, attributes::InlineAttr::Hint);
         }
-        attributes::from_fn_attrs(cx, llfn, Some(instance.def.def_id()));
+        attributes::from_fn_attrs(cx, llfn, Some(instance.def.def_id()), sig);
 
         let instance_def_id = instance.def_id();
 
@@ -123,7 +113,7 @@ pub fn get_fn(
         unsafe {
             llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::ExternalLinkage);
 
-            let is_generic = instance.substs.types().next().is_some();
+            let is_generic = instance.substs.non_erasable_generics().next().is_some();
 
             if is_generic {
                 // This is a monomorphization. Its expected visibility depends

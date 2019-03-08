@@ -1,35 +1,25 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Redox-specific extensions to primitives in the `std::process` module.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use io;
-use os::unix::io::{FromRawFd, RawFd, AsRawFd, IntoRawFd};
-use process;
-use sys;
-use sys_common::{AsInnerMut, AsInner, FromInner, IntoInner};
+use crate::io;
+use crate::os::unix::io::{FromRawFd, RawFd, AsRawFd, IntoRawFd};
+use crate::process;
+use crate::sys;
+use crate::sys_common::{AsInnerMut, AsInner, FromInner, IntoInner};
 
 /// Redox-specific extensions to the [`process::Command`] builder,
 ///
 /// [`process::Command`]: ../../../../std/process/struct.Command.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait CommandExt {
-    /// Sets the child process's user id. This translates to a
+    /// Sets the child process's user ID. This translates to a
     /// `setuid` call in the child process. Failure in the `setuid`
     /// call will cause the spawn to fail.
     #[stable(feature = "rust1", since = "1.0.0")]
     fn uid(&mut self, id: u32) -> &mut process::Command;
 
-    /// Similar to `uid`, but sets the group id of the child process. This has
+    /// Similar to `uid`, but sets the group ID of the child process. This has
     /// the same semantics as the `uid` field.
     #[stable(feature = "rust1", since = "1.0.0")]
     fn gid(&mut self, id: u32) -> &mut process::Command;
@@ -46,7 +36,7 @@ pub trait CommandExt {
     /// will be called and the spawn operation will immediately return with a
     /// failure.
     ///
-    /// # Notes
+    /// # Notes and Safety
     ///
     /// This closure will be run in the context of the child process after a
     /// `fork`. This primarily means that any modifications made to memory on
@@ -55,12 +45,32 @@ pub trait CommandExt {
     /// like `malloc` or acquiring a mutex are not guaranteed to work (due to
     /// other threads perhaps still running when the `fork` was run).
     ///
+    /// This also means that all resources such as file descriptors and
+    /// memory-mapped regions got duplicated. It is your responsibility to make
+    /// sure that the closure does not violate library invariants by making
+    /// invalid use of these duplicates.
+    ///
     /// When this closure is run, aspects such as the stdio file descriptors and
     /// working directory have successfully been changed, so output to these
     /// locations may not appear where intended.
-    #[stable(feature = "process_exec", since = "1.15.0")]
-    fn before_exec<F>(&mut self, f: F) -> &mut process::Command
+    #[stable(feature = "process_pre_exec", since = "1.34.0")]
+    unsafe fn pre_exec<F>(&mut self, f: F) -> &mut process::Command
         where F: FnMut() -> io::Result<()> + Send + Sync + 'static;
+
+    /// Schedules a closure to be run just before the `exec` function is
+    /// invoked.
+    ///
+    /// This method is stable and usable, but it should be unsafe. To fix
+    /// that, it got deprecated in favor of the unsafe [`pre_exec`].
+    ///
+    /// [`pre_exec`]: #tymethod.pre_exec
+    #[stable(feature = "process_exec", since = "1.15.0")]
+    #[rustc_deprecated(since = "1.37.0", reason = "should be unsafe, use `pre_exec` instead")]
+    fn before_exec<F>(&mut self, f: F) -> &mut process::Command
+        where F: FnMut() -> io::Result<()> + Send + Sync + 'static
+    {
+        unsafe { self.pre_exec(f) }
+    }
 
     /// Performs all the required setup by this `Command`, followed by calling
     /// the `execvp` syscall.
@@ -97,10 +107,10 @@ impl CommandExt for process::Command {
         self
     }
 
-    fn before_exec<F>(&mut self, f: F) -> &mut process::Command
+    unsafe fn pre_exec<F>(&mut self, f: F) -> &mut process::Command
         where F: FnMut() -> io::Result<()> + Send + Sync + 'static
     {
-        self.as_inner_mut().before_exec(Box::new(f));
+        self.as_inner_mut().pre_exec(Box::new(f));
         self
     }
 

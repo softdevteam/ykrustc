@@ -1,18 +1,7 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-
 use rustc::ty::{self, TyCtxt};
 use rustc::mir::*;
 
-/// Return `true` if this place is allowed to be less aligned
+/// Returns `true` if this place is allowed to be less aligned
 /// than its containing struct (because it is within a packed
 /// struct).
 pub fn is_disaligned<'a, 'tcx, L>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
@@ -30,7 +19,7 @@ pub fn is_disaligned<'a, 'tcx, L>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
     let ty = place.ty(local_decls, tcx).to_ty(tcx);
     match tcx.layout_raw(param_env.and(ty)) {
-        Ok(layout) if layout.align.abi() == 1 => {
+        Ok(layout) if layout.align.abi.bytes() == 1 => {
             // if the alignment is 1, the type can't be further
             // disaligned.
             debug!("is_disaligned({:?}) - align = 1", place);

@@ -1,16 +1,6 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! A nice interface for working with the infcx.  The basic idea is to
+//! A nice interface for working with the infcx. The basic idea is to
 //! do `infcx.at(cause, param_env)`, which sets the "cause" of the
-//! operation as well as the surrounding parameter environment.  Then
+//! operation as well as the surrounding parameter environment. Then
 //! you can do something like `.sub(a, b)` or `.eq(a, b)` to create a
 //! subtype or equality relationship respectively. The first argument
 //! is always the "expected" output from the POV of diagnostics.
@@ -37,7 +27,7 @@
 
 use super::*;
 
-use ty::relate::{Relate, TypeRelation};
+use crate::ty::relate::{Relate, TypeRelation};
 
 pub struct At<'a, 'gcx: 'tcx, 'tcx: 'a> {
     pub infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
@@ -52,6 +42,7 @@ pub struct Trace<'a, 'gcx: 'tcx, 'tcx: 'a> {
 }
 
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
+    #[inline]
     pub fn at(&'a self,
               cause: &'a ObligationCause<'tcx>,
               param_env: ty::ParamEnv<'tcx>)
@@ -87,7 +78,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// Make `a <: b` where `a` may or may not be expected
+    /// Makes `a <: b`, where `a` may or may not be expected.
     pub fn sub_exp<T>(self,
                       a_is_expected: bool,
                       a: T,
@@ -98,7 +89,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         self.trace_exp(a_is_expected, a, b).sub(&a, &b)
     }
 
-    /// Make `actual <: expected`. For example, if type-checking a
+    /// Makes `actual <: expected`. For example, if type-checking a
     /// call like `foo(x)`, where `foo: fn(i32)`, you might have
     /// `sup(i32, x)`, since the "expected" type is the type that
     /// appears in the signature.
@@ -111,7 +102,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         self.sub_exp(false, actual, expected)
     }
 
-    /// Make `expected <: actual`
+    /// Makes `expected <: actual`.
     pub fn sub<T>(self,
                   expected: T,
                   actual: T)
@@ -121,7 +112,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         self.sub_exp(true, expected, actual)
     }
 
-    /// Make `expected <: actual`
+    /// Makes `expected <: actual`.
     pub fn eq_exp<T>(self,
                      a_is_expected: bool,
                      a: T,
@@ -132,7 +123,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         self.trace_exp(a_is_expected, a, b).eq(&a, &b)
     }
 
-    /// Make `expected <: actual`
+    /// Makes `expected <: actual`.
     pub fn eq<T>(self,
                  expected: T,
                  actual: T)
@@ -164,7 +155,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// Compute the least-upper-bound, or mutual supertype, of two
+    /// Computes the least-upper-bound, or mutual supertype, of two
     /// values. The order of the arguments doesn't matter, but since
     /// this can result in an error (e.g., if asked to compute LUB of
     /// u32 and i32), it is meaningful to call one of them the
@@ -178,7 +169,7 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
         self.trace(expected, actual).lub(&expected, &actual)
     }
 
-    /// Compute the greatest-lower-bound, or mutual subtype, of two
+    /// Computes the greatest-lower-bound, or mutual subtype, of two
     /// values. As with `lub` order doesn't matter, except for error
     /// cases.
     pub fn glb<T>(self,
@@ -219,9 +210,9 @@ impl<'a, 'gcx, 'tcx> At<'a, 'gcx, 'tcx> {
 }
 
 impl<'a, 'gcx, 'tcx> Trace<'a, 'gcx, 'tcx> {
-    /// Make `a <: b` where `a` may or may not be expected (if
+    /// Makes `a <: b` where `a` may or may not be expected (if
     /// `a_is_expected` is true, then `a` is expected).
-    /// Make `expected <: actual`
+    /// Makes `expected <: actual`.
     pub fn sub<T>(self,
                   a: &T,
                   b: &T)
@@ -238,7 +229,7 @@ impl<'a, 'gcx, 'tcx> Trace<'a, 'gcx, 'tcx> {
         })
     }
 
-    /// Make `a == b`; the expectation is set by the call to
+    /// Makes `a == b`; the expectation is set by the call to
     /// `trace()`.
     pub fn eq<T>(self,
                  a: &T,

@@ -1,12 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 #![allow(non_camel_case_types, non_snake_case)]
 
 use rustc::ty::{self, Ty, TyCtxt};
@@ -14,11 +5,11 @@ use syntax_pos::{DUMMY_SP, Span};
 
 use rustc::hir::def_id::DefId;
 use rustc::middle::lang_items::LangItem;
-use base;
-use traits::*;
+use crate::base;
+use crate::traits::*;
 
 use rustc::hir;
-use traits::BuilderMethods;
+use crate::traits::BuilderMethods;
 
 pub fn type_needs_drop<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> bool {
     ty.needs_drop(tcx, ty::ParamEnv::reveal_all())
@@ -132,7 +123,7 @@ pub enum TypeKind {
 mod temp_stable_hash_impls {
     use rustc_data_structures::stable_hasher::{StableHasherResult, StableHasher,
                                                HashStable};
-    use ModuleCodegen;
+    use crate::ModuleCodegen;
 
     impl<HCX, M> HashStable<HCX> for ModuleCodegen<M> {
         fn hash_stable<W: StableHasherResult>(&self,
@@ -143,7 +134,7 @@ mod temp_stable_hash_impls {
     }
 }
 
-pub fn langcall(tcx: TyCtxt,
+pub fn langcall(tcx: TyCtxt<'_, '_, '_>,
                 span: Option<Span>,
                 msg: &str,
                 li: LangItem)
@@ -158,7 +149,7 @@ pub fn langcall(tcx: TyCtxt,
 }
 
 // To avoid UB from LLVM, these two functions mask RHS with an
-// appropriate mask unconditionally (i.e. the fallback behavior for
+// appropriate mask unconditionally (i.e., the fallback behavior for
 // all shifts). For 32- and 64-bit types, this matches the semantics
 // of Java. (See related discussion on #1877 and #10183.)
 
@@ -194,7 +185,7 @@ fn shift_mask_rhs<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     rhs: Bx::Value
 ) -> Bx::Value {
-    let rhs_llty = bx.cx().val_ty(rhs);
+    let rhs_llty = bx.val_ty(rhs);
     let shift_val = shift_mask_val(bx, rhs_llty, rhs_llty, false);
     bx.and(rhs, shift_val)
 }
@@ -205,25 +196,25 @@ pub fn shift_mask_val<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     mask_llty: Bx::Type,
     invert: bool
 ) -> Bx::Value {
-    let kind = bx.cx().type_kind(llty);
+    let kind = bx.type_kind(llty);
     match kind {
         TypeKind::Integer => {
             // i8/u8 can shift by at most 7, i16/u16 by at most 15, etc.
-            let val = bx.cx().int_width(llty) - 1;
+            let val = bx.int_width(llty) - 1;
             if invert {
-                bx.cx().const_int(mask_llty, !val as i64)
+                bx.const_int(mask_llty, !val as i64)
             } else {
-                bx.cx().const_uint(mask_llty, val)
+                bx.const_uint(mask_llty, val)
             }
         },
         TypeKind::Vector => {
             let mask = shift_mask_val(
                 bx,
-                bx.cx().element_type(llty),
-                bx.cx().element_type(mask_llty),
+                bx.element_type(llty),
+                bx.element_type(mask_llty),
                 invert
             );
-            bx.vector_splat(bx.cx().vector_length(mask_llty), mask)
+            bx.vector_splat(bx.vector_length(mask_llty), mask)
         },
         _ => bug!("shift_mask_val: expected Integer or Vector, found {:?}", kind),
     }

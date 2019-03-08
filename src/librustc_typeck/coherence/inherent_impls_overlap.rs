@@ -1,26 +1,16 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use namespace::Namespace;
+use crate::namespace::Namespace;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use rustc::hir;
 use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use rustc::traits::{self, IntercrateMode};
 use rustc::ty::TyCtxt;
 
-use lint;
+use crate::lint;
 
 pub fn crate_inherent_impls_overlap_check<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                                     crate_num: CrateNum) {
     assert_eq!(crate_num, LOCAL_CRATE);
-    let krate = tcx.hir.krate();
+    let krate = tcx.hir().krate();
     krate.visit_all_item_likes(&mut InherentOverlapChecker { tcx });
 }
 
@@ -30,7 +20,7 @@ struct InherentOverlapChecker<'a, 'tcx: 'a> {
 
 impl<'a, 'tcx> InherentOverlapChecker<'a, 'tcx> {
     fn check_for_common_items_in_impls(&self, impl1: DefId, impl2: DefId,
-                                       overlap: traits::OverlapResult,
+                                       overlap: traits::OverlapResult<'_>,
                                        used_to_be_allowed: bool) {
 
         let name_and_namespace = |def_id| {
@@ -46,11 +36,11 @@ impl<'a, 'tcx> InherentOverlapChecker<'a, 'tcx> {
 
             for &item2 in &impl_items2[..] {
                 if (name, namespace) == name_and_namespace(item2) {
-                    let node_id = self.tcx.hir.as_local_node_id(impl1);
-                    let mut err = if used_to_be_allowed && node_id.is_some() {
-                        self.tcx.struct_span_lint_node(
+                    let hir_id = self.tcx.hir().as_local_hir_id(impl1);
+                    let mut err = if used_to_be_allowed && hir_id.is_some() {
+                        self.tcx.struct_span_lint_hir(
                             lint::builtin::INCOHERENT_FUNDAMENTAL_IMPLS,
-                            node_id.unwrap(),
+                            hir_id.unwrap(),
                             self.tcx.span_of_impl(item1).unwrap(),
                             &format!("duplicate definitions with name `{}` (E0592)", name)
                         )
@@ -69,6 +59,10 @@ impl<'a, 'tcx> InherentOverlapChecker<'a, 'tcx> {
 
                     for cause in &overlap.intercrate_ambiguity_causes {
                         cause.add_intercrate_ambiguity_hint(&mut err);
+                    }
+
+                    if overlap.involves_placeholder {
+                        traits::add_placeholder_note(&mut err);
                     }
 
                     err.emit();
@@ -126,7 +120,7 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for InherentOverlapChecker<'a, 'tcx> {
             hir::ItemKind::Struct(..) |
             hir::ItemKind::Trait(..) |
             hir::ItemKind::Union(..) => {
-                let type_def_id = self.tcx.hir.local_def_id(item.id);
+                let type_def_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
                 self.check_for_overlapping_inherent_impls(type_def_id);
             }
             _ => {}

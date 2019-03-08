@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::iter::*;
 use test::{Bencher, black_box};
 
@@ -195,13 +185,13 @@ bench_sums! {
 bench_sums! {
     bench_filter_sum,
     bench_filter_ref_sum,
-    (0i64..1000000).filter(|x| x % 2 == 0)
+    (0i64..1000000).filter(|x| x % 3 == 0)
 }
 
 bench_sums! {
     bench_filter_chain_sum,
     bench_filter_chain_ref_sum,
-    (0i64..1000000).chain(0..1000000).filter(|x| x % 2 == 0)
+    (0i64..1000000).chain(0..1000000).filter(|x| x % 3 == 0)
 }
 
 bench_sums! {
@@ -282,6 +272,12 @@ bench_sums! {
     (0i64..1000000).chain(1000000..).take_while(|&x| x < 1111111)
 }
 
+bench_sums! {
+    bench_cycle_take_sum,
+    bench_cycle_take_ref_sum,
+    (0i64..10000).cycle().take(1000000)
+}
+
 // Checks whether Skip<Zip<A,B>> is as fast as Zip<Skip<A>, Skip<B>>, from
 // https://users.rust-lang.org/t/performance-difference-between-iterator-zip-and-skip-order/15743
 #[bench]
@@ -309,4 +305,32 @@ fn bench_skip_then_zip(b: &mut Bencher) {
             .sum::<u64>();
         assert_eq!(s, 2009900);
     });
+}
+
+#[bench]
+fn bench_filter_count(b: &mut Bencher) {
+    b.iter(|| {
+        (0i64..1000000).map(black_box).filter(|x| x % 3 == 0).count()
+    })
+}
+
+#[bench]
+fn bench_filter_ref_count(b: &mut Bencher) {
+    b.iter(|| {
+        (0i64..1000000).map(black_box).by_ref().filter(|x| x % 3 == 0).count()
+    })
+}
+
+#[bench]
+fn bench_filter_chain_count(b: &mut Bencher) {
+    b.iter(|| {
+        (0i64..1000000).chain(0..1000000).map(black_box).filter(|x| x % 3 == 0).count()
+    })
+}
+
+#[bench]
+fn bench_filter_chain_ref_count(b: &mut Bencher) {
+    b.iter(|| {
+        (0i64..1000000).chain(0..1000000).map(black_box).by_ref().filter(|x| x % 3 == 0).count()
+    })
 }

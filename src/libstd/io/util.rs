@@ -1,18 +1,8 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(missing_copy_implementations)]
 
-use fmt;
-use io::{self, Read, Initializer, Write, ErrorKind, BufRead};
-use mem;
+use crate::fmt;
+use crate::io::{self, Read, Initializer, Write, ErrorKind, BufRead, IoVec, IoVecMut};
+use crate::mem;
 
 /// Copies the entire contents of a reader into a writer.
 ///
@@ -163,6 +153,15 @@ impl Read for Repeat {
     }
 
     #[inline]
+    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+        let mut nwritten = 0;
+        for buf in bufs {
+            nwritten += self.read(buf)?;
+        }
+        Ok(nwritten)
+    }
+
+    #[inline]
     unsafe fn initializer(&self) -> Initializer {
         Initializer::nop()
     }
@@ -205,6 +204,13 @@ pub fn sink() -> Sink { Sink { _priv: () } }
 impl Write for Sink {
     #[inline]
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> { Ok(buf.len()) }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+        let total_len = bufs.iter().map(|b| b.len()).sum();
+        Ok(total_len)
+    }
+
     #[inline]
     fn flush(&mut self) -> io::Result<()> { Ok(()) }
 }
@@ -218,8 +224,8 @@ impl fmt::Debug for Sink {
 
 #[cfg(test)]
 mod tests {
-    use io::prelude::*;
-    use io::{copy, sink, empty, repeat};
+    use crate::io::prelude::*;
+    use crate::io::{copy, sink, empty, repeat};
 
     #[test]
     fn copy_copies() {

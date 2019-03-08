@@ -1,17 +1,7 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use unicode_width::UnicodeWidthChar;
 use super::*;
 
-/// Find all newlines, multi-byte characters, and non-narrow characters in a
+/// Finds all newlines, multi-byte characters, and non-narrow characters in a
 /// SourceFile.
 ///
 /// This function will use an SSE2 enhanced implementation if hardware support
@@ -46,9 +36,8 @@ pub fn analyze_source_file(
     (lines, multi_byte_chars, non_narrow_chars)
 }
 
-cfg_if! {
-    if #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"),
-                 not(stage0)))] {
+cfg_if::cfg_if! {
+    if #[cfg(all(any(target_arch = "x86", target_arch = "x86_64")))] {
         fn analyze_source_file_dispatch(src: &str,
                                     source_file_start_pos: BytePos,
                                     lines: &mut Vec<BytePos>,
@@ -73,7 +62,7 @@ cfg_if! {
             }
         }
 
-        /// Check 16 byte chunks of text at a time. If the chunk contains
+        /// Checks 16 byte chunks of text at a time. If the chunk contains
         /// something other than printable ASCII characters and newlines, the
         /// function falls back to the generic implementation. Otherwise it uses
         /// SSE2 intrinsics to quickly find all newlines.

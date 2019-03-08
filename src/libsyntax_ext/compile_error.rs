@@ -1,26 +1,15 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // The compiler code necessary to support the compile_error! extension.
 
-use syntax::ext::base::*;
-use syntax::ext::base;
+use syntax::ext::base::{self, *};
 use syntax_pos::Span;
 use syntax::tokenstream;
 
-pub fn expand_compile_error<'cx>(cx: &'cx mut ExtCtxt,
+pub fn expand_compile_error<'cx>(cx: &'cx mut ExtCtxt<'_>,
                               sp: Span,
                               tts: &[tokenstream::TokenTree])
                               -> Box<dyn base::MacResult + 'cx> {
     let var = match get_single_str_from_tts(cx, sp, tts, "compile_error!") {
-        None => return DummyResult::expr(sp),
+        None => return DummyResult::any(sp),
         Some(v) => v,
     };
 

@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Used by plugin crates to tell `rustc` about the plugins they provide.
 
 use rustc::lint::{EarlyLintPassObject, LateLintPassObject, LintId, Lint};
@@ -60,8 +50,6 @@ pub struct Registry<'a> {
 
     #[doc(hidden)]
     pub attributes: Vec<(String, AttributeType)>,
-
-    whitelisted_custom_derives: Vec<ast::Name>,
 }
 
 impl<'a> Registry<'a> {
@@ -77,11 +65,10 @@ impl<'a> Registry<'a> {
             lint_groups: FxHashMap::default(),
             llvm_passes: vec![],
             attributes: vec![],
-            whitelisted_custom_derives: Vec::new(),
         }
     }
 
-    /// Get the plugin's arguments, if any.
+    /// Gets the plugin's arguments, if any.
     ///
     /// These are specified inside the `plugin` crate attribute as
     ///
@@ -123,24 +110,11 @@ impl<'a> Registry<'a> {
                     edition,
                 }
             }
-            IdentTT(ext, _, allow_internal_unstable) => {
-                IdentTT(ext, Some(self.krate_span), allow_internal_unstable)
+            IdentTT { expander, span: _, allow_internal_unstable } => {
+                IdentTT { expander, span: Some(self.krate_span), allow_internal_unstable }
             }
             _ => extension,
         }));
-    }
-
-    /// This can be used in place of `register_syntax_extension` to register legacy custom derives
-    /// (i.e. attribute syntax extensions whose name begins with `derive_`). Legacy custom
-    /// derives defined by this function do not trigger deprecation warnings when used.
-    pub fn register_custom_derive(&mut self, name: ast::Name, extension: SyntaxExtension) {
-        assert!(name.as_str().starts_with("derive_"));
-        self.whitelisted_custom_derives.push(name);
-        self.register_syntax_extension(name, extension);
-    }
-
-    pub fn take_whitelisted_custom_derives(&mut self) -> Vec<ast::Name> {
-        ::std::mem::replace(&mut self.whitelisted_custom_derives, Vec::new())
     }
 
     /// Register a macro of the usual kind.
@@ -152,7 +126,7 @@ impl<'a> Registry<'a> {
         self.register_syntax_extension(Symbol::intern(name), NormalTT {
             expander: Box::new(expander),
             def_info: None,
-            allow_internal_unstable: false,
+            allow_internal_unstable: None,
             allow_internal_unsafe: false,
             local_inner_macros: false,
             unstable_feature: None,

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // This module contains some shared code for encoding and decoding various
 // things from the `ty` module, and in particular implements support for
 // "shorthands" which allow to have pointers back into the already encoded
@@ -16,15 +6,15 @@
 // The functionality in here is shared between persisting to crate metadata and
 // persisting to incr. comp. caches.
 
-use hir::def_id::{DefId, CrateNum};
-use infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
+use crate::hir::def_id::{DefId, CrateNum};
+use crate::infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_serialize::{Decodable, Decoder, Encoder, Encodable, opaque};
+use crate::rustc_serialize::{Decodable, Decoder, Encoder, Encodable, opaque};
 use std::hash::Hash;
 use std::intrinsics;
-use ty::{self, Ty, TyCtxt};
-use ty::subst::Substs;
-use mir::interpret::Allocation;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::subst::SubstsRef;
+use crate::mir::interpret::Allocation;
 
 /// The shorthand encoding uses an enum's variant index `usize`
 /// and is offset by this value so it never matches a real variant.
@@ -92,7 +82,7 @@ pub fn encode_with_shorthand<E, T, M>(encoder: &mut E,
     let leb128_bits = len * 7;
 
     // Check that the shorthand is a not longer than the
-    // full encoding itself, i.e. it's an obvious win.
+    // full encoding itself, i.e., it's an obvious win.
     if leb128_bits >= 64 || (shorthand as u64) < (1 << leb128_bits) {
         cache(encoder).insert(value.clone(), shorthand);
     }
@@ -195,7 +185,7 @@ pub fn decode_predicates<'a, 'tcx, D>(decoder: &mut D)
 }
 
 #[inline]
-pub fn decode_substs<'a, 'tcx, D>(decoder: &mut D) -> Result<&'tcx Substs<'tcx>, D::Error>
+pub fn decode_substs<'a, 'tcx, D>(decoder: &mut D) -> Result<SubstsRef<'tcx>, D::Error>
     where D: TyDecoder<'a, 'tcx>,
           'tcx: 'a,
 {
@@ -257,12 +247,12 @@ pub fn decode_canonical_var_infos<'a, 'tcx, D>(decoder: &mut D)
 }
 
 #[inline]
-pub fn decode_const<'a, 'tcx, D>(decoder: &mut D)
-                                 -> Result<&'tcx ty::Const<'tcx>, D::Error>
+pub fn decode_lazy_const<'a, 'tcx, D>(decoder: &mut D)
+                                 -> Result<&'tcx ty::LazyConst<'tcx>, D::Error>
     where D: TyDecoder<'a, 'tcx>,
           'tcx: 'a,
 {
-    Ok(decoder.tcx().mk_const(Decodable::decode(decoder)?))
+    Ok(decoder.tcx().mk_lazy_const(Decodable::decode(decoder)?))
 }
 
 #[inline]
@@ -291,9 +281,9 @@ macro_rules! implement_ty_decoder {
             use $crate::infer::canonical::CanonicalVarInfos;
             use $crate::ty;
             use $crate::ty::codec::*;
-            use $crate::ty::subst::Substs;
+            use $crate::ty::subst::SubstsRef;
             use $crate::hir::def_id::{CrateNum};
-            use rustc_serialize::{Decoder, SpecializedDecoder};
+            use crate::rustc_serialize::{Decoder, SpecializedDecoder};
             use std::borrow::Cow;
 
             impl<$($typaram ),*> Decoder for $DecoderName<$($typaram),*> {
@@ -354,9 +344,9 @@ macro_rules! implement_ty_decoder {
                 }
             }
 
-            impl<$($typaram),*> SpecializedDecoder<&'tcx Substs<'tcx>>
+            impl<$($typaram),*> SpecializedDecoder<SubstsRef<'tcx>>
             for $DecoderName<$($typaram),*> {
-                fn specialized_decode(&mut self) -> Result<&'tcx Substs<'tcx>, Self::Error> {
+                fn specialized_decode(&mut self) -> Result<SubstsRef<'tcx>, Self::Error> {
                     decode_substs(self)
                 }
             }
@@ -399,10 +389,10 @@ macro_rules! implement_ty_decoder {
                 }
             }
 
-            impl<$($typaram),*> SpecializedDecoder<&'tcx $crate::ty::Const<'tcx>>
+            impl<$($typaram),*> SpecializedDecoder<&'tcx $crate::ty::LazyConst<'tcx>>
             for $DecoderName<$($typaram),*> {
-                fn specialized_decode(&mut self) -> Result<&'tcx ty::Const<'tcx>, Self::Error> {
-                    decode_const(self)
+                fn specialized_decode(&mut self) -> Result<&'tcx ty::LazyConst<'tcx>, Self::Error> {
+                    decode_lazy_const(self)
                 }
             }
 

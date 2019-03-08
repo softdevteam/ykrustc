@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
@@ -21,20 +11,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use cache::{Cache, Interned, INTERNER};
-use check;
-use compile;
-use dist;
-use doc;
-use flags::Subcommand;
-use install;
-use native;
-use test;
-use tool;
-use util::{add_lib_path, exe, libdir};
-use {Build, DocTests, Mode, GitRepo};
+use crate::cache::{Cache, Interned, INTERNER};
+use crate::check;
+use crate::compile;
+use crate::dist;
+use crate::doc;
+use crate::flags::Subcommand;
+use crate::install;
+use crate::native;
+use crate::test;
+use crate::tool;
+use crate::util::{self, add_lib_path, exe, libdir};
+use crate::{Build, DocTests, Mode, GitRepo};
 
-pub use Compiler;
+pub use crate::Compiler;
 
 use petgraph::graph::NodeIndex;
 use petgraph::Graph;
@@ -70,23 +60,23 @@ pub trait Step: 'static + Clone + Debug + PartialEq + Eq + Hash {
     /// Run this rule for all hosts without cross compiling.
     const ONLY_HOSTS: bool = false;
 
-    /// Primary function to execute this rule. Can call `builder.ensure(...)`
+    /// Primary function to execute this rule. Can call `builder.ensure()`
     /// with other steps to run those.
-    fn run(self, builder: &Builder) -> Self::Output;
+    fn run(self, builder: &Builder<'_>) -> Self::Output;
 
     /// When bootstrap is passed a set of paths, this controls whether this rule
     /// will execute. However, it does not get called in a "default" context
-    /// when we are not passed any paths; in that case, make_run is called
+    /// when we are not passed any paths; in that case, `make_run` is called
     /// directly.
-    fn should_run(run: ShouldRun) -> ShouldRun;
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_>;
 
-    /// Build up a "root" rule, either as a default rule or from a path passed
+    /// Builds up a "root" rule, either as a default rule or from a path passed
     /// to us.
     ///
     /// When path is `None`, we are executing in a context where no paths were
     /// passed. When `./x.py build` is run, for example, this rule could get
     /// called if it is in the correct list below with a path of `None`.
-    fn make_run(_run: RunConfig) {
+    fn make_run(_run: RunConfig<'_>) {
         // It is reasonable to not have an implementation of make_run for rules
         // who do not want to get called from the root context. This means that
         // they are likely dependencies (e.g., sysroot creation) or similar, and
@@ -105,8 +95,8 @@ pub struct RunConfig<'a> {
 struct StepDescription {
     default: bool,
     only_hosts: bool,
-    should_run: fn(ShouldRun) -> ShouldRun,
-    make_run: fn(RunConfig),
+    should_run: fn(ShouldRun<'_>) -> ShouldRun<'_>,
+    make_run: fn(RunConfig<'_>),
     name: &'static str,
 }
 
@@ -134,7 +124,7 @@ impl PathSet {
         }
     }
 
-    fn path(&self, builder: &Builder) -> PathBuf {
+    fn path(&self, builder: &Builder<'_>) -> PathBuf {
         match self {
             PathSet::Set(set) => set
                 .iter()
@@ -157,7 +147,7 @@ impl StepDescription {
         }
     }
 
-    fn maybe_run(&self, builder: &Builder, pathset: &PathSet) {
+    fn maybe_run(&self, builder: &Builder<'_>, pathset: &PathSet) {
         if builder.config.exclude.iter().any(|e| pathset.has(e)) {
             eprintln!("Skipping {:?} because it is excluded", pathset);
             return;
@@ -193,7 +183,7 @@ impl StepDescription {
         }
     }
 
-    fn run(v: &[StepDescription], builder: &Builder, paths: &[PathBuf]) {
+    fn run(v: &[StepDescription], builder: &Builder<'_>, paths: &[PathBuf]) {
         let should_runs = v
             .iter()
             .map(|desc| (desc.should_run)(ShouldRun::new(builder)))
@@ -255,7 +245,7 @@ pub struct ShouldRun<'a> {
 }
 
 impl<'a> ShouldRun<'a> {
-    fn new(builder: &'a Builder) -> ShouldRun<'a> {
+    fn new(builder: &'a Builder<'_>) -> ShouldRun<'a> {
         ShouldRun {
             builder,
             paths: BTreeSet::new(),
@@ -336,7 +326,7 @@ pub enum Kind {
 impl<'a> Builder<'a> {
     fn get_step_descriptions(kind: Kind) -> Vec<StepDescription> {
         macro_rules! describe {
-            ($($rule:ty),+ $(,)*) => {{
+            ($($rule:ty),+ $(,)?) => {{
                 vec![$(StepDescription::from::<$rule>()),+]
             }};
         }
@@ -388,16 +378,11 @@ impl<'a> Builder<'a> {
                 test::Debuginfo,
                 test::UiFullDeps,
                 test::RunPassFullDeps,
-                test::RunFailFullDeps,
-                test::CompileFailFullDeps,
-                test::IncrementalFullDeps,
                 test::Rustdoc,
                 test::Pretty,
                 test::RunPassPretty,
                 test::RunFailPretty,
                 test::RunPassValgrindPretty,
-                test::RunPassFullDepsPretty,
-                test::RunFailFullDepsPretty,
                 test::Crate,
                 test::CrateLibrustc,
                 test::CrateRustdoc,
@@ -415,9 +400,11 @@ impl<'a> Builder<'a> {
                 test::TheBook,
                 test::UnstableBook,
                 test::RustcBook,
+                test::EmbeddedBook,
                 test::Rustfmt,
                 test::Miri,
                 test::Clippy,
+                test::CompiletestTest,
                 test::RustdocJS,
                 test::RustdocTheme,
                 // Run bootstrap close to the end as it's unlikely to fail
@@ -443,7 +430,9 @@ impl<'a> Builder<'a> {
                 doc::RustdocBook,
                 doc::RustByExample,
                 doc::RustcBook,
-                doc::CargoBook
+                doc::CargoBook,
+                doc::EmbeddedBook,
+                doc::EditionGuide,
             ),
             Kind::Dist => describe!(
                 dist::Docs,
@@ -459,6 +448,7 @@ impl<'a> Builder<'a> {
                 dist::Rls,
                 dist::Rustfmt,
                 dist::Clippy,
+                dist::Miri,
                 dist::LlvmTools,
                 dist::Lldb,
                 dist::Extended,
@@ -471,6 +461,7 @@ impl<'a> Builder<'a> {
                 install::Rls,
                 install::Rustfmt,
                 install::Clippy,
+                install::Miri,
                 install::Analysis,
                 install::Src,
                 install::Rustc
@@ -520,7 +511,7 @@ impl<'a> Builder<'a> {
         Some(help)
     }
 
-    pub fn new(build: &Build) -> Builder {
+    pub fn new(build: &Build) -> Builder<'_> {
         let (kind, paths) = match build.config.cmd {
             Subcommand::Build { ref paths } => (Kind::Build, &paths[..]),
             Subcommand::Check { ref paths } => (Kind::Check, &paths[..]),
@@ -600,11 +591,11 @@ impl<'a> Builder<'a> {
         impl Step for Libdir {
             type Output = Interned<PathBuf>;
 
-            fn should_run(run: ShouldRun) -> ShouldRun {
+            fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
                 run.never()
             }
 
-            fn run(self, builder: &Builder) -> Interned<PathBuf> {
+            fn run(self, builder: &Builder<'_>) -> Interned<PathBuf> {
                 let compiler = self.compiler;
                 let config = &builder.build.config;
                 let lib = if compiler.stage >= 1 && config.libdir_relative().is_some() {
@@ -657,7 +648,7 @@ impl<'a> Builder<'a> {
         add_lib_path(vec![self.rustc_libdir(compiler)], cmd);
     }
 
-    /// Get a path to the compiler specified.
+    /// Gets a path to the compiler specified.
     pub fn rustc(&self, compiler: Compiler) -> PathBuf {
         if compiler.is_snapshot(self) {
             self.initial_rustc.clone()
@@ -666,6 +657,15 @@ impl<'a> Builder<'a> {
                 .join("bin")
                 .join(exe("rustc", &compiler.host))
         }
+    }
+
+    /// Gets the paths to all of the compiler's codegen backends.
+    fn codegen_backends(&self, compiler: Compiler) -> impl Iterator<Item = PathBuf> {
+        fs::read_dir(self.sysroot_codegen_backends(compiler))
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
     }
 
     pub fn rustdoc(&self, host: Interned<String>) -> PathBuf {
@@ -677,14 +677,18 @@ impl<'a> Builder<'a> {
         let compiler = self.compiler(self.top_stage, host);
         cmd.env("RUSTC_STAGE", compiler.stage.to_string())
             .env("RUSTC_SYSROOT", self.sysroot(compiler))
-            .env(
-                "RUSTDOC_LIBDIR",
-                self.sysroot_libdir(compiler, self.config.build),
-            )
+            // Note that this is *not* the sysroot_libdir because rustdoc must be linked
+            // equivalently to rustc.
+            .env("RUSTDOC_LIBDIR", self.rustc_libdir(compiler))
             .env("CFG_RELEASE_CHANNEL", &self.config.channel)
             .env("RUSTDOC_REAL", self.rustdoc(host))
             .env("RUSTDOC_CRATE_VERSION", self.rust_version())
             .env("RUSTC_BOOTSTRAP", "1");
+
+        // Remove make-related flags that can cause jobserver problems.
+        cmd.env_remove("MAKEFLAGS");
+        cmd.env_remove("MFLAGS");
+
         if let Some(linker) = self.linker(host) {
             cmd.env("RUSTC_TARGET_LINKER", linker);
         }
@@ -753,6 +757,9 @@ impl<'a> Builder<'a> {
             match mode {
                 Mode::Std => {
                     self.clear_if_dirty(&my_out, &self.rustc(compiler));
+                    for backend in self.codegen_backends(compiler) {
+                        self.clear_if_dirty(&my_out, &backend);
+                    }
                 },
                 Mode::Test => {
                     self.clear_if_dirty(&my_out, &libstd_stamp);
@@ -785,6 +792,13 @@ impl<'a> Builder<'a> {
             .env("CARGO_TARGET_DIR", out_dir)
             .arg(cmd);
 
+        // See comment in librustc_llvm/build.rs for why this is necessary, largely llvm-config
+        // needs to not accidentally link to libLLVM in stage0/lib.
+        cargo.env("REAL_LIBRARY_PATH_VAR", &util::dylib_path_var());
+        if let Some(e) = env::var_os(util::dylib_path_var()) {
+            cargo.env("REAL_LIBRARY_PATH", e);
+        }
+
         if cmd != "install" {
             cargo.arg("--target")
                  .arg(target);
@@ -793,9 +807,20 @@ impl<'a> Builder<'a> {
         }
 
         // Set a flag for `check` so that certain build scripts can do less work
-        // (e.g. not building/requiring LLVM).
+        // (e.g., not building/requiring LLVM).
         if cmd == "check" {
             cargo.env("RUST_CHECK", "1");
+        }
+
+        match mode {
+            Mode::Std | Mode::Test | Mode::ToolBootstrap | Mode::ToolStd | Mode::ToolTest=> {},
+            Mode::Rustc | Mode::Codegen | Mode::ToolRustc => {
+                // Build proc macros both for the host and the target
+                if target != compiler.host && cmd != "check" {
+                    cargo.arg("-Zdual-proc-macros");
+                    cargo.env("RUST_DUAL_PROC_MACROS", "1");
+                }
+            },
         }
 
         cargo.arg("-j").arg(self.jobs().to_string());
@@ -859,7 +884,7 @@ impl<'a> Builder<'a> {
         } else {
             &maybe_sysroot
         };
-        let libdir = sysroot.join(libdir(&compiler.host));
+        let libdir = self.rustc_libdir(compiler);
 
         // Customize the compiler we're running. Specify the compiler to cargo
         // as our shim and then pass it some various options used to configure
@@ -901,7 +926,7 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_ERROR_FORMAT", error_format);
         }
         if cmd != "build" && cmd != "check" && cmd != "rustc" && want_rustdoc {
-            cargo.env("RUSTDOC_LIBDIR", self.sysroot_libdir(compiler, self.config.build));
+            cargo.env("RUSTDOC_LIBDIR", self.rustc_libdir(compiler));
         }
 
         if mode.is_tool() {
@@ -923,12 +948,12 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_FORCE_UNSTABLE", "1");
 
             // Currently the compiler depends on crates from crates.io, and
-            // then other crates can depend on the compiler (e.g. proc-macro
+            // then other crates can depend on the compiler (e.g., proc-macro
             // crates). Let's say, for example that rustc itself depends on the
             // bitflags crate. If an external crate then depends on the
             // bitflags crate as well, we need to make sure they don't
             // conflict, even if they pick the same version of bitflags. We'll
-            // want to make sure that e.g. a plugin and rustc each get their
+            // want to make sure that e.g., a plugin and rustc each get their
             // own copy of bitflags.
 
             // Cargo ensures that this works in general through the -C metadata
@@ -985,6 +1010,9 @@ impl<'a> Builder<'a> {
 
         if self.config.incremental {
             cargo.env("CARGO_INCREMENTAL", "1");
+        } else {
+            // Don't rely on any default setting for incr. comp. in Cargo
+            cargo.env("CARGO_INCREMENTAL", "0");
         }
 
         if let Some(ref on_fail) = self.config.on_fail {
@@ -1001,8 +1029,7 @@ impl<'a> Builder<'a> {
 
         cargo.env("RUSTC_VERBOSE", self.verbosity.to_string());
 
-        // in std, we want to avoid denying warnings for stage 0 as that makes cfg's painful.
-        if self.config.deny_warnings && !(mode == Mode::Std && stage == 0) {
+        if self.config.deny_warnings {
             cargo.env("RUSTC_DENY_WARNINGS", "1");
         }
 
@@ -1035,29 +1062,24 @@ impl<'a> Builder<'a> {
                 }
             };
             let cc = ccacheify(&self.cc(target));
-            cargo.env(format!("CC_{}", target), &cc).env("CC", &cc);
+            cargo.env(format!("CC_{}", target), &cc);
 
             let cflags = self.cflags(target, GitRepo::Rustc).join(" ");
             cargo
-                .env(format!("CFLAGS_{}", target), cflags.clone())
-                .env("CFLAGS", cflags.clone());
+                .env(format!("CFLAGS_{}", target), cflags.clone());
 
             if let Some(ar) = self.ar(target) {
                 let ranlib = format!("{} s", ar.display());
                 cargo
                     .env(format!("AR_{}", target), ar)
-                    .env("AR", ar)
-                    .env(format!("RANLIB_{}", target), ranlib.clone())
-                    .env("RANLIB", ranlib);
+                    .env(format!("RANLIB_{}", target), ranlib);
             }
 
             if let Ok(cxx) = self.cxx(target) {
                 let cxx = ccacheify(&cxx);
                 cargo
                     .env(format!("CXX_{}", target), &cxx)
-                    .env("CXX", &cxx)
-                    .env(format!("CXXFLAGS_{}", target), cflags.clone())
-                    .env("CXXFLAGS", cflags);
+                    .env(format!("CXXFLAGS_{}", target), cflags);
             }
         }
 
@@ -1247,7 +1269,7 @@ impl<'a> Builder<'a> {
 #[cfg(test)]
 mod __test {
     use super::*;
-    use config::Config;
+    use crate::config::Config;
     use std::thread;
 
     fn configure(host: &[&str], target: &[&str]) -> Config {

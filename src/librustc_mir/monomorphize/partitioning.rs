@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Partitioning Codegen Units for Incremental Compilation
 //! ======================================================
 //!
@@ -51,7 +41,7 @@
 //!
 //! - There are two codegen units for every source-level module:
 //! - One for "stable", that is non-generic, code
-//! - One for more "volatile" code, i.e. monomorphized instances of functions
+//! - One for more "volatile" code, i.e., monomorphized instances of functions
 //!   defined in that module
 //!
 //! In order to see why this heuristic makes sense, let's take a look at when a
@@ -121,14 +111,14 @@ use rustc::util::common::time;
 use rustc::util::nodemap::{DefIdSet, FxHashMap, FxHashSet};
 use rustc::mir::mono::MonoItem;
 
-use monomorphize::collector::InliningMap;
-use monomorphize::collector::{self, MonoItemCollectionMode};
-use monomorphize::item::{MonoItemExt, InstantiationMode};
+use crate::monomorphize::collector::InliningMap;
+use crate::monomorphize::collector::{self, MonoItemCollectionMode};
+use crate::monomorphize::item::{MonoItemExt, InstantiationMode};
 
 pub use rustc::mir::mono::CodegenUnit;
 
 pub enum PartitioningStrategy {
-    /// Generate one codegen unit per source-level module.
+    /// Generates one codegen unit per source-level module.
     PerModule,
 
     /// Partition the whole crate into a fixed number of codegen units.
@@ -156,7 +146,7 @@ pub trait CodegenUnitExt<'tcx> {
         WorkProductId::from_cgu_name(&self.name().as_str())
     }
 
-    fn work_product(&self, tcx: TyCtxt) -> WorkProduct {
+    fn work_product(&self, tcx: TyCtxt<'_, '_, '_>) -> WorkProduct {
         let work_product_id = self.work_product_id();
         tcx.dep_graph
            .previous_work_product(&work_product_id)
@@ -184,7 +174,7 @@ pub trait CodegenUnitExt<'tcx> {
                         // the codegen tests and can even make item order
                         // unstable.
                         InstanceDef::Item(def_id) => {
-                            tcx.hir.as_local_node_id(def_id)
+                            tcx.hir().as_local_node_id(def_id)
                         }
                         InstanceDef::VtableShim(..) |
                         InstanceDef::Intrinsic(..) |
@@ -198,7 +188,7 @@ pub trait CodegenUnitExt<'tcx> {
                     }
                 }
                 MonoItem::Static(def_id) => {
-                    tcx.hir.as_local_node_id(def_id)
+                    tcx.hir().as_local_node_id(def_id)
                 }
                 MonoItem::GlobalAsm(node_id) => {
                     Some(node_id)
@@ -223,7 +213,7 @@ impl<'tcx> CodegenUnitExt<'tcx> for CodegenUnit<'tcx> {
 }
 
 // Anything we can't find a proper codegen unit for goes into this.
-fn fallback_cgu_name(name_builder: &mut CodegenUnitNameBuilder) -> InternedString {
+fn fallback_cgu_name(name_builder: &mut CodegenUnitNameBuilder<'_, '_, '_>) -> InternedString {
     name_builder.build_cgu_name(LOCAL_CRATE, &["fallback"], Some("cgu"))
 }
 
@@ -415,7 +405,7 @@ fn mono_item_visibility(
             };
         }
         MonoItem::GlobalAsm(node_id) => {
-            let def_id = tcx.hir.local_def_id(*node_id);
+            let def_id = tcx.hir().local_def_id(*node_id);
             return if tcx.is_reachable_non_generic(def_id) {
                 *can_be_internalized = false;
                 default_visibility(tcx, def_id, false)
@@ -458,7 +448,7 @@ fn mono_item_visibility(
         return Visibility::Hidden
     }
 
-    let is_generic = instance.substs.types().next().is_some();
+    let is_generic = instance.substs.non_erasable_generics().next().is_some();
 
     // Upstream `DefId` instances get different handling than local ones
     if !def_id.is_local() {
@@ -546,7 +536,7 @@ fn mono_item_visibility(
     }
 }
 
-fn default_visibility(tcx: TyCtxt, id: DefId, is_generic: bool) -> Visibility {
+fn default_visibility(tcx: TyCtxt<'_, '_, '_>, id: DefId, is_generic: bool) -> Visibility {
     if !tcx.sess.target.target.options.default_hidden_visibility {
         return Visibility::Default
     }
@@ -585,7 +575,7 @@ fn merge_codegen_units<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
     // smallest into each other) we're sure to start off with a deterministic
     // order (sorted by name). This'll mean that if two cgus have the same size
     // the stable sort below will keep everything nice and deterministic.
-    codegen_units.sort_by_key(|cgu| cgu.name().clone());
+    codegen_units.sort_by_key(|cgu| *cgu.name());
 
     // Merge the two smallest codegen units until the target size is reached.
     while codegen_units.len() > target_cgu_count {
@@ -799,14 +789,14 @@ fn characteristic_def_id_of_mono_item<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             Some(def_id)
         }
         MonoItem::Static(def_id) => Some(def_id),
-        MonoItem::GlobalAsm(node_id) => Some(tcx.hir.local_def_id(node_id)),
+        MonoItem::GlobalAsm(node_id) => Some(tcx.hir().local_def_id(node_id)),
     }
 }
 
 type CguNameCache = FxHashMap<(DefId, bool), InternedString>;
 
-fn compute_codegen_unit_name(tcx: TyCtxt,
-                             name_builder: &mut CodegenUnitNameBuilder,
+fn compute_codegen_unit_name(tcx: TyCtxt<'_, '_, '_>,
+                             name_builder: &mut CodegenUnitNameBuilder<'_, '_, '_>,
                              def_id: DefId,
                              volatile: bool,
                              cache: &mut CguNameCache)
@@ -865,7 +855,7 @@ fn compute_codegen_unit_name(tcx: TyCtxt,
     }).clone()
 }
 
-fn numbered_codegen_unit_name(name_builder: &mut CodegenUnitNameBuilder,
+fn numbered_codegen_unit_name(name_builder: &mut CodegenUnitNameBuilder<'_, '_, '_>,
                               index: usize)
                               -> InternedString {
     name_builder.build_cgu_name_no_mangle(LOCAL_CRATE, &["cgu"], Some(index))
@@ -889,7 +879,7 @@ fn debug_dump<'a, 'b, 'tcx, I>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                                    .unwrap_or("<no hash>");
 
                 debug!(" - {} [{:?}] [{}]",
-                       mono_item.to_string(tcx),
+                       mono_item.to_string(tcx, true),
                        linkage,
                        symbol_hash);
             }
@@ -939,7 +929,7 @@ fn collect_and_partition_mono_items<'a, 'tcx>(
 
     tcx.sess.abort_if_errors();
 
-    ::monomorphize::assert_symbols_are_distinct(tcx, items.iter());
+    crate::monomorphize::assert_symbols_are_distinct(tcx, items.iter());
 
     let strategy = if tcx.sess.opts.incremental.is_some() {
         PartitioningStrategy::PerModule
@@ -981,11 +971,11 @@ fn collect_and_partition_mono_items<'a, 'tcx>(
         let mut item_keys: Vec<_> = items
             .iter()
             .map(|i| {
-                let mut output = i.to_string(tcx);
+                let mut output = i.to_string(tcx, false);
                 output.push_str(" @@");
                 let mut empty = Vec::new();
                 let cgus = item_to_cgus.get_mut(i).unwrap_or(&mut empty);
-                cgus.as_mut_slice().sort_by_key(|&(ref name, _)| name.clone());
+                cgus.sort_by_key(|(name, _)| *name);
                 cgus.dedup();
                 for &(ref cgu_name, (linkage, _)) in cgus.iter() {
                     output.push_str(" ");
@@ -1023,7 +1013,7 @@ fn collect_and_partition_mono_items<'a, 'tcx>(
     (Arc::new(mono_items), Arc::new(codegen_units))
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     providers.collect_and_partition_mono_items =
         collect_and_partition_mono_items;
 

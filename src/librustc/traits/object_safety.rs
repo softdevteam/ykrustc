@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! "Object safety" refers to the ability for a trait to be converted
 //! to an object. In general, traits may only be converted to an
 //! object if all of their methods meet certain criteria. In particular,
@@ -16,15 +6,16 @@
 //!   - have a suitable receiver from which we can extract a vtable and coerce to a "thin" version
 //!     that doesn't contain the vtable;
 //!   - not reference the erased type `Self` except for in this receiver;
-//!   - not have generic type parameters
+//!   - not have generic type parameters.
 
 use super::elaborate_predicates;
 
-use hir::def_id::DefId;
-use lint;
-use traits::{self, Obligation, ObligationCause};
-use ty::{self, Ty, TyCtxt, TypeFoldable, Predicate, ToPredicate};
-use ty::subst::{Subst, Substs};
+use crate::hir;
+use crate::hir::def_id::DefId;
+use crate::lint;
+use crate::traits::{self, Obligation, ObligationCause};
+use crate::ty::{self, Ty, TyCtxt, TypeFoldable, Predicate, ToPredicate};
+use crate::ty::subst::{Subst, InternalSubsts};
 use std::borrow::Cow;
 use std::iter::{self};
 use syntax::ast::{self, Name};
@@ -32,17 +23,17 @@ use syntax_pos::Span;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObjectSafetyViolation {
-    /// Self : Sized declared on the trait
+    /// `Self: Sized` declared on the trait.
     SizedSelf,
 
     /// Supertrait reference references `Self` an in illegal location
-    /// (e.g. `trait Foo : Bar<Self>`)
+    /// (e.g., `trait Foo : Bar<Self>`).
     SupertraitSelf,
 
-    /// Method has something illegal
+    /// Method has something illegal.
     Method(ast::Name, MethodViolationCode),
 
-    /// Associated const
+    /// Associated const.
     AssociatedConst(ast::Name),
 }
 
@@ -81,7 +72,7 @@ pub enum MethodViolationCode {
     /// e.g., `fn foo(&self, x: Self)` or `fn foo(&self) -> Self`
     ReferencesSelf,
 
-    /// e.g. `fn foo(&self) where Self: Clone`
+    /// e.g., `fn foo(&self) where Self: Clone`
     WhereClauseReferencesSelf(Span),
 
     /// e.g., `fn foo<A>()`
@@ -94,7 +85,7 @@ pub enum MethodViolationCode {
 impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
 
     /// Returns the object safety violations that affect
-    /// astconv - currently, Self in supertraits. This is needed
+    /// astconv -- currently, `Self` in supertraits. This is needed
     /// because `object_safety_violations` can't be used during
     /// type collection.
     pub fn astconv_object_safety_violations(self, trait_def_id: DefId)
@@ -139,7 +130,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
                     // It's also hard to get a use site span, so we use the method definition span.
                     self.lint_node_note(
                         lint::builtin::WHERE_CLAUSES_OBJECT_SAFETY,
-                        ast::CRATE_NODE_ID,
+                        hir::CRATE_HIR_ID,
                         *span,
                         &format!("the trait `{}` cannot be made into an object",
                                  self.item_path_str(trait_def_id)),
@@ -190,7 +181,26 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
                         // In the case of a trait predicate, we can skip the "self" type.
                         data.skip_binder().input_types().skip(1).any(|t| t.has_self_ty())
                     }
-                    ty::Predicate::Projection(..) |
+                    ty::Predicate::Projection(ref data) => {
+                        // And similarly for projections. This should be redundant with
+                        // the previous check because any projection should have a
+                        // matching `Trait` predicate with the same inputs, but we do
+                        // the check to be safe.
+                        //
+                        // Note that we *do* allow projection *outputs* to contain
+                        // `self` (i.e., `trait Foo: Bar<Output=Self::Result> { type Result; }`),
+                        // we just require the user to specify *both* outputs
+                        // in the object type (i.e., `dyn Foo<Output=(), Result=()>`).
+                        //
+                        // This is ALT2 in issue #56288, see that for discussion of the
+                        // possible alternatives.
+                        data.skip_binder()
+                            .projection_ty
+                            .trait_ref(self)
+                            .input_types()
+                            .skip(1)
+                            .any(|t| t.has_self_ty())
+                    }
                     ty::Predicate::WellFormed(..) |
                     ty::Predicate::ObjectSafe(..) |
                     ty::Predicate::TypeOutlives(..) |
@@ -243,6 +253,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
                                           method: &ty::AssociatedItem)
                                           -> Option<MethodViolationCode>
     {
+        debug!("object_safety_violation_for_method({:?}, {:?})", trait_def_id, method);
         // Any method that has a `Self : Sized` requisite is otherwise
         // exempt from the regulations.
         if self.generics_require_sized_self(method.def_id) {
@@ -261,6 +272,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
                                  method: &ty::AssociatedItem)
                                  -> bool
     {
+        debug!("is_vtable_safe_method({:?}, {:?})", trait_def_id, method);
         // Any method that has a `Self : Sized` requisite can't be called.
         if self.generics_require_sized_self(method.def_id) {
             return false;
@@ -298,7 +310,8 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
         }
 
         // We can't monomorphize things like `fn foo<A>(...)`.
-        if self.generics_of(method.def_id).own_counts().types != 0 {
+        let own_counts = self.generics_of(method.def_id).own_counts();
+        if own_counts.types + own_counts.consts != 0 {
             return Some(MethodViolationCode::Generic);
         }
 
@@ -330,7 +343,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
             } else {
                 // sanity check to make sure the receiver actually has the layout of a pointer
 
-                use ty::layout::Abi;
+                use crate::ty::layout::Abi;
 
                 let param_env = self.param_env(method.def_id);
 
@@ -343,31 +356,44 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
                     }
                 };
 
-                // e.g. Rc<()>
+                // e.g., Rc<()>
                 let unit_receiver_ty = self.receiver_for_self_ty(
                     receiver_ty, self.mk_unit(), method.def_id
                 );
 
                 match abi_of_ty(unit_receiver_ty) {
                     &Abi::Scalar(..) => (),
-                    abi => bug!("Receiver when Self = () should have a Scalar ABI, found {:?}", abi)
+                    abi => {
+                        self.sess.delay_span_bug(
+                            self.def_span(method.def_id),
+                            &format!(
+                                "Receiver when Self = () should have a Scalar ABI, found {:?}",
+                                abi
+                            ),
+                        );
+                    }
                 }
 
                 let trait_object_ty = self.object_ty_for_trait(
                     trait_def_id, self.mk_region(ty::ReStatic)
                 );
 
-                // e.g. Rc<dyn Trait>
+                // e.g., Rc<dyn Trait>
                 let trait_object_receiver = self.receiver_for_self_ty(
                     receiver_ty, trait_object_ty, method.def_id
                 );
 
                 match abi_of_ty(trait_object_receiver) {
                     &Abi::ScalarPair(..) => (),
-                    abi => bug!(
-                        "Receiver when Self = {} should have a ScalarPair ABI, found {:?}",
-                        trait_object_ty, abi
-                    )
+                    abi => {
+                        self.sess.delay_span_bug(
+                            self.def_span(method.def_id),
+                            &format!(
+                                "Receiver when Self = {} should have a ScalarPair ABI, found {:?}",
+                                trait_object_ty, abi
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -375,12 +401,13 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
         None
     }
 
-    /// performs a type substitution to produce the version of receiver_ty when `Self = self_ty`
-    /// e.g. for receiver_ty = `Rc<Self>` and self_ty = `Foo`, returns `Rc<Foo>`
+    /// Performs a type substitution to produce the version of receiver_ty when `Self = self_ty`
+    /// e.g., for receiver_ty = `Rc<Self>` and self_ty = `Foo`, returns `Rc<Foo>`.
     fn receiver_for_self_ty(
         self, receiver_ty: Ty<'tcx>, self_ty: Ty<'tcx>, method_def_id: DefId
     ) -> Ty<'tcx> {
-        let substs = Substs::for_item(self, method_def_id, |param, _| {
+        debug!("receiver_for_self_ty({:?}, {:?}, {:?})", receiver_ty, self_ty, method_def_id);
+        let substs = InternalSubsts::for_item(self, method_def_id, |param, _| {
             if param.index == 0 {
                 self_ty.into()
             } else {
@@ -388,12 +415,15 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
             }
         });
 
-        receiver_ty.subst(self, substs)
+        let result = receiver_ty.subst(self, substs);
+        debug!("receiver_for_self_ty({:?}, {:?}, {:?}) = {:?}",
+               receiver_ty, self_ty, method_def_id, result);
+        result
     }
 
-    /// creates the object type for the current trait. For example,
+    /// Creates the object type for the current trait. For example,
     /// if the current trait is `Deref`, then this will be
-    /// `dyn Deref<Target=Self::Target> + 'static`
+    /// `dyn Deref<Target = Self::Target> + 'static`.
     fn object_ty_for_trait(self, trait_def_id: DefId, lifetime: ty::Region<'tcx>) -> Ty<'tcx> {
         debug!("object_ty_for_trait: trait_def_id={:?}", trait_def_id);
 
@@ -404,18 +434,26 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
         );
 
         let mut associated_types = traits::supertraits(self, ty::Binder::dummy(trait_ref))
-            .flat_map(|trait_ref| self.associated_items(trait_ref.def_id()))
-            .filter(|item| item.kind == ty::AssociatedKind::Type)
+            .flat_map(|super_trait_ref| {
+                self.associated_items(super_trait_ref.def_id())
+                    .map(move |item| (super_trait_ref, item))
+            })
+            .filter(|(_, item)| item.kind == ty::AssociatedKind::Type)
             .collect::<Vec<_>>();
 
         // existential predicates need to be in a specific order
-        associated_types.sort_by_key(|item| self.def_path_hash(item.def_id));
+        associated_types.sort_by_cached_key(|(_, item)| self.def_path_hash(item.def_id));
 
-        let projection_predicates = associated_types.into_iter().map(|item| {
+        let projection_predicates = associated_types.into_iter().map(|(super_trait_ref, item)| {
+            // We *can* get bound lifetimes here in cases like
+            // `trait MyTrait: for<'s> OtherTrait<&'s T, Output=bool>`.
+            //
+            // binder moved to (*)...
+            let super_trait_ref = super_trait_ref.skip_binder();
             ty::ExistentialPredicate::Projection(ty::ExistentialProjection {
-                ty: self.mk_projection(item.def_id, trait_ref.substs),
+                ty: self.mk_projection(item.def_id, super_trait_ref.substs),
                 item_def_id: item.def_id,
-                substs: trait_ref.substs,
+                substs: super_trait_ref.substs,
             })
         });
 
@@ -424,7 +462,8 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
         );
 
         let object_ty = self.mk_dynamic(
-            ty::Binder::dummy(existential_predicates),
+            // (*) ... binder re-introduced here
+            ty::Binder::bind(existential_predicates),
             lifetime,
         );
 
@@ -433,25 +472,27 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
         object_ty
     }
 
-    /// checks the method's receiver (the `self` argument) can be dispatched on when `Self` is a
+    /// Checks the method's receiver (the `self` argument) can be dispatched on when `Self` is a
     /// trait object. We require that `DispatchableFromDyn` be implemented for the receiver type
     /// in the following way:
-    /// - let `Receiver` be the type of the `self` argument, i.e `Self`, `&Self`, `Rc<Self>`
+    /// - let `Receiver` be the type of the `self` argument, i.e `Self`, `&Self`, `Rc<Self>`,
     /// - require the following bound:
     ///
-    ///        Receiver[Self => T]: DispatchFromDyn<Receiver[Self => dyn Trait]>
+    ///   ```
+    ///   Receiver[Self => T]: DispatchFromDyn<Receiver[Self => dyn Trait]>
+    ///   ```
     ///
-    ///    where `Foo[X => Y]` means "the same type as `Foo`, but with `X` replaced with `Y`"
+    ///   where `Foo[X => Y]` means "the same type as `Foo`, but with `X` replaced with `Y`"
     ///   (substitution notation).
     ///
-    /// some examples of receiver types and their required obligation
-    /// - `&'a mut self` requires `&'a mut Self: DispatchFromDyn<&'a mut dyn Trait>`
-    /// - `self: Rc<Self>` requires `Rc<Self>: DispatchFromDyn<Rc<dyn Trait>>`
-    /// - `self: Pin<Box<Self>>` requires `Pin<Box<Self>>: DispatchFromDyn<Pin<Box<dyn Trait>>>`
+    /// Some examples of receiver types and their required obligation:
+    /// - `&'a mut self` requires `&'a mut Self: DispatchFromDyn<&'a mut dyn Trait>`,
+    /// - `self: Rc<Self>` requires `Rc<Self>: DispatchFromDyn<Rc<dyn Trait>>`,
+    /// - `self: Pin<Box<Self>>` requires `Pin<Box<Self>>: DispatchFromDyn<Pin<Box<dyn Trait>>>`.
     ///
     /// The only case where the receiver is not dispatchable, but is still a valid receiver
     /// type (just not object-safe), is when there is more than one level of pointer indirection.
-    /// e.g. `self: &&Self`, `self: &Rc<Self>`, `self: Box<Box<Self>>`. In these cases, there
+    /// E.g., `self: &&Self`, `self: &Rc<Self>`, `self: Box<Box<Self>>`. In these cases, there
     /// is no way, or at least no inexpensive way, to coerce the receiver from the version where
     /// `Self = dyn Trait` to the version where `Self = T`, where `T` is the unknown erased type
     /// contained by the trait object, because the object that needs to be coerced is behind
@@ -519,13 +560,17 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
 
             // U: Trait<Arg1, ..., ArgN>
             let trait_predicate = {
-                let substs = Substs::for_item(self, method.container.assert_trait(), |param, _| {
-                    if param.index == 0 {
-                        unsized_self_ty.into()
-                    } else {
-                        self.mk_param_from_def(param)
-                    }
-                });
+                let substs = InternalSubsts::for_item(
+                    self,
+                    method.container.assert_trait(),
+                    |param, _| {
+                        if param.index == 0 {
+                            unsized_self_ty.into()
+                        } else {
+                            self.mk_param_from_def(param)
+                        }
+                    },
+                );
 
                 ty::TraitRef {
                     def_id: unsize_did,
@@ -559,7 +604,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
 
         self.infer_ctxt().enter(|ref infcx| {
             // the receiver is dispatchable iff the obligation holds
-            infcx.predicate_must_hold(&obligation)
+            infcx.predicate_must_hold_modulo_regions(&obligation)
         })
     }
 

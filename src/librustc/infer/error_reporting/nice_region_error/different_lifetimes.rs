@@ -1,19 +1,9 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Error Reporting for Anonymous Region Lifetime Errors
 //! where both the regions are anonymous.
 
-use infer::error_reporting::nice_region_error::NiceRegionError;
-use infer::error_reporting::nice_region_error::util::AnonymousArgInfo;
-use util::common::ErrorReported;
+use crate::infer::error_reporting::nice_region_error::NiceRegionError;
+use crate::infer::error_reporting::nice_region_error::util::AnonymousArgInfo;
+use crate::util::common::ErrorReported;
 
 impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     /// Print the error message for lifetime errors when both the concerned regions are anonymous.
@@ -49,16 +39,16 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     ///     x.push(y);
     ///     ^ ...but data from `y` flows into `x` here
     /// }
-    /// ````
+    /// ```
     ///
     /// It will later be extended to trait objects.
     pub(super) fn try_report_anon_anon_conflict(&self) -> Option<ErrorReported> {
         let (span, sub, sup) = self.get_regions();
 
         // Determine whether the sub and sup consist of both anonymous (elided) regions.
-        let anon_reg_sup = self.tcx.is_suitable_region(sup)?;
+        let anon_reg_sup = self.tcx().is_suitable_region(sup)?;
 
-        let anon_reg_sub = self.tcx.is_suitable_region(sub)?;
+        let anon_reg_sub = self.tcx().is_suitable_region(sub)?;
         let scope_def_id_sup = anon_reg_sup.def_id;
         let bregion_sup = anon_reg_sup.boundregion;
         let scope_def_id_sub = anon_reg_sub.def_id;
@@ -111,7 +101,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
 
         let (span_1, span_2, main_label, span_label) = match (sup_is_ret_type, sub_is_ret_type) {
             (None, None) => {
-                let (main_label_1, span_label_1) = if ty_sup.id == ty_sub.id {
+                let (main_label_1, span_label_1) = if ty_sup.hir_id == ty_sub.hir_id {
                     (
                         "this type is declared with multiple lifetimes...".to_owned(),
                         "...but data with one lifetime flows into the other here".to_owned()
@@ -148,7 +138,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
         };
 
 
-        struct_span_err!(self.tcx.sess, span, E0623, "lifetime mismatch")
+        struct_span_err!(self.tcx().sess, span, E0623, "lifetime mismatch")
             .span_label(span_1, main_label)
             .span_label(span_2, String::new())
             .span_label(span, span_label)

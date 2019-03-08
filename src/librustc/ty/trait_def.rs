@@ -1,21 +1,11 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir;
-use hir::def_id::DefId;
-use hir::map::DefPathHash;
-use ich::{self, StableHashingContext};
-use traits::specialization_graph;
-use ty::fast_reject;
-use ty::fold::TypeFoldable;
-use ty::{Ty, TyCtxt};
+use crate::hir;
+use crate::hir::def_id::DefId;
+use crate::hir::map::DefPathHash;
+use crate::ich::{self, StableHashingContext};
+use crate::traits::specialization_graph;
+use crate::ty::fast_reject;
+use crate::ty::fold::TypeFoldable;
+use crate::ty::{Ty, TyCtxt};
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
@@ -49,7 +39,7 @@ pub struct TraitDef {
 #[derive(Default)]
 pub struct TraitImpls {
     blanket_impls: Vec<DefId>,
-    /// Impls indexed by their simplified self-type, for fast lookup.
+    /// Impls indexed by their simplified self type, for fast lookup.
     non_blanket_impls: FxHashMap<fast_reject::SimplifiedType, Vec<DefId>>,
 }
 
@@ -94,7 +84,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 
     /// Iterate over every impl that could possibly match the
-    /// self-type `self_ty`.
+    /// self type `self_ty`.
     pub fn for_each_relevant_impl<F: FnMut(DefId)>(self,
                                                    def_id: DefId,
                                                    self_ty: Ty<'tcx>,
@@ -144,7 +134,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// Return a vector containing all impls
+    /// Returns a vector containing all impls
     pub fn all_impls(self, def_id: DefId) -> Vec<DefId> {
         let impls = self.trait_impls_of(def_id);
 
@@ -189,8 +179,8 @@ pub(super) fn trait_impls_of_provider<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             }
         }
 
-        for &node_id in tcx.hir.trait_impls(trait_id) {
-            add_impl(tcx.hir.local_def_id(node_id));
+        for &node_id in tcx.hir().trait_impls(trait_id) {
+            add_impl(tcx.hir().local_def_id(node_id));
         }
     }
 

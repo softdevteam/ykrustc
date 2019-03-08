@@ -1,25 +1,15 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of `make clean` in rustbuild.
 //!
 //! Responsible for cleaning out a build directory of all old and stale
 //! artifacts to prepare for a fresh build. Currently doesn't remove the
 //! `build/cache` directory (download cache) or the `build/$target/llvm`
-//! directory unless the --all flag is present.
+//! directory unless the `--all` flag is present.
 
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::Path;
 
-use Build;
+use crate::Build;
 
 pub fn clean(build: &Build, all: bool) {
     rm_rf("tmp".as_ref());

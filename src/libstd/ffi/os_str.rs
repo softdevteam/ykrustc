@@ -1,23 +1,13 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::borrow::{Borrow, Cow};
+use crate::fmt;
+use crate::ops;
+use crate::cmp;
+use crate::hash::{Hash, Hasher};
+use crate::rc::Rc;
+use crate::sync::Arc;
 
-use borrow::{Borrow, Cow};
-use fmt;
-use ops;
-use cmp;
-use hash::{Hash, Hasher};
-use rc::Rc;
-use sync::Arc;
-
-use sys::os_str::{Buf, Slice};
-use sys_common::{AsInner, IntoInner, FromInner};
+use crate::sys::os_str::{Buf, Slice};
+use crate::sys_common::{AsInner, IntoInner, FromInner};
 
 /// A type that can represent owned, mutable platform-native strings, but is
 /// cheaply inter-convertible with Rust strings.
@@ -34,13 +24,20 @@ use sys_common::{AsInner, IntoInner, FromInner};
 ///
 /// `OsString` and [`OsStr`] bridge this gap by simultaneously representing Rust
 /// and platform-native string values, and in particular allowing a Rust string
-/// to be converted into an "OS" string with no cost if possible.  A consequence
+/// to be converted into an "OS" string with no cost if possible. A consequence
 /// of this is that `OsString` instances are *not* `NUL` terminated; in order
-/// to pass to e.g. Unix system call, you should create a [`CStr`].
+/// to pass to e.g., Unix system call, you should create a [`CStr`].
 ///
 /// `OsString` is to [`&OsStr`] as [`String`] is to [`&str`]: the former
 /// in each pair are owned strings; the latter are borrowed
 /// references.
+///
+/// Note, `OsString` and `OsStr` internally do not necessarily hold strings in
+/// the form native to the platform; While on Unix, strings are stored as a
+/// sequence of 8-bit values, on Windows, where strings are 16-bit value based
+/// as just discussed, strings are also actually stored as a sequence of 8-bit
+/// values, encoded in a less-strict variant of UTF-8. This is useful to
+/// understand when handling capacity and length values.
 ///
 /// # Creating an `OsString`
 ///
@@ -262,7 +259,7 @@ impl OsString {
     /// already sufficient.
     ///
     /// Note that the allocator may give the collection more space than it
-    /// requests. Therefore capacity can not be relied upon to be precisely
+    /// requests. Therefore, capacity can not be relied upon to be precisely
     /// minimal. Prefer reserve if future insertions are expected.
     ///
     /// # Examples
@@ -324,7 +321,7 @@ impl OsString {
     /// assert!(s.capacity() >= 3);
     /// ```
     #[inline]
-    #[unstable(feature = "shrink_to", reason = "new API", issue="0")]
+    #[unstable(feature = "shrink_to", reason = "new API", issue="56431")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         self.inner.shrink_to(min_capacity)
     }
@@ -529,17 +526,42 @@ impl OsStr {
     ///
     /// # Examples
     ///
-    /// Calling `to_string_lossy` on an `OsStr` with valid unicode:
+    /// Calling `to_string_lossy` on an `OsStr` with invalid unicode:
     ///
     /// ```
-    /// use std::ffi::OsStr;
+    /// // Note, due to differences in how Unix and Windows represent strings,
+    /// // we are forced to complicate this example, setting up example `OsStr`s
+    /// // with different source data and via different platform extensions.
+    /// // Understand that in reality you could end up with such example invalid
+    /// // sequences simply through collecting user command line arguments, for
+    /// // example.
     ///
-    /// let os_str = OsStr::new("foo");
-    /// assert_eq!(os_str.to_string_lossy(), "foo");
+    /// #[cfg(any(unix, target_os = "redox"))] {
+    ///     use std::ffi::OsStr;
+    ///     use std::os::unix::ffi::OsStrExt;
+    ///
+    ///     // Here, the values 0x66 and 0x6f correspond to 'f' and 'o'
+    ///     // respectively. The value 0x80 is a lone continuation byte, invalid
+    ///     // in a UTF-8 sequence.
+    ///     let source = [0x66, 0x6f, 0x80, 0x6f];
+    ///     let os_str = OsStr::from_bytes(&source[..]);
+    ///
+    ///     assert_eq!(os_str.to_string_lossy(), "fo�o");
+    /// }
+    /// #[cfg(windows)] {
+    ///     use std::ffi::OsString;
+    ///     use std::os::windows::prelude::*;
+    ///
+    ///     // Here the values 0x0066 and 0x006f correspond to 'f' and 'o'
+    ///     // respectively. The value 0xD800 is a lone surrogate half, invalid
+    ///     // in a UTF-16 sequence.
+    ///     let source = [0x0066, 0x006f, 0xD800, 0x006f];
+    ///     let os_string = OsString::from_wide(&source[..]);
+    ///     let os_str = os_string.as_os_str();
+    ///
+    ///     assert_eq!(os_str.to_string_lossy(), "fo�o");
+    /// }
     /// ```
-    ///
-    /// Had `os_str` contained invalid unicode, the `to_string_lossy` call might
-    /// have returned `"fo�"`.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn to_string_lossy(&self) -> Cow<str> {
         self.inner.to_string_lossy()
@@ -583,14 +605,19 @@ impl OsStr {
 
     /// Returns the length of this `OsStr`.
     ///
-    /// Note that this does **not** return the number of bytes in this string
-    /// as, for example, OS strings on Windows are encoded as a list of [`u16`]
-    /// rather than a list of bytes. This number is simply useful for passing to
-    /// other methods like [`OsString::with_capacity`] to avoid reallocations.
+    /// Note that this does **not** return the number of bytes in the string in
+    /// OS string form.
     ///
-    /// See `OsStr` introduction for more information about encoding.
+    /// The length returned is that of the underlying storage used by `OsStr`;
+    /// As discussed in the [`OsString`] introduction, [`OsString`] and `OsStr`
+    /// store strings in a form best suited for cheap inter-conversion between
+    /// native-platform and Rust string forms, which may differ significantly
+    /// from both of them, including in storage size and encoding.
     ///
-    /// [`u16`]: ../primitive.u16.html
+    /// This number is simply useful for passing to other methods, like
+    /// [`OsString::with_capacity`] to avoid reallocations.
+    ///
+    /// [`OsString`]: struct.OsString.html
     /// [`OsString::with_capacity`]: struct.OsString.html#method.with_capacity
     ///
     /// # Examples
@@ -751,10 +778,10 @@ impl Default for Box<OsStr> {
 }
 
 #[stable(feature = "osstring_default", since = "1.9.0")]
-impl<'a> Default for &'a OsStr {
+impl Default for &OsStr {
     /// Creates an empty `OsStr`.
     #[inline]
-    fn default() -> &'a OsStr {
+    fn default() -> Self {
         OsStr::new("")
     }
 }
@@ -941,10 +968,10 @@ impl AsInner<Slice> for OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sys_common::{AsInner, IntoInner};
+    use crate::sys_common::{AsInner, IntoInner};
 
-    use rc::Rc;
-    use sync::Arc;
+    use crate::rc::Rc;
+    use crate::sync::Arc;
 
     #[test]
     fn test_os_string_with_capacity() {

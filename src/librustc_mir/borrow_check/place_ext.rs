@@ -1,22 +1,12 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir;
 use rustc::mir::ProjectionElem;
-use rustc::mir::{Local, Mir, Place, Mutability};
+use rustc::mir::{Local, Mir, Place, PlaceBase, Mutability};
 use rustc::ty::{self, TyCtxt};
-use borrow_check::borrow_set::LocalsStateAtExit;
+use crate::borrow_check::borrow_set::LocalsStateAtExit;
 
 /// Extension methods for the `Place` type.
 crate trait PlaceExt<'tcx> {
-    /// Returns true if we can safely ignore borrows of this place.
+    /// Returns `true` if we can safely ignore borrows of this place.
     /// This is true whenever there is no action that the user can do
     /// to the place `self` that would invalidate the borrow. This is true
     /// for borrows of raw pointer dereferents as well as shared references.
@@ -40,7 +30,7 @@ impl<'tcx> PlaceExt<'tcx> for Place<'tcx> {
         locals_state_at_exit: &LocalsStateAtExit,
     ) -> bool {
         match self {
-            Place::Promoted(_) => false,
+            Place::Base(PlaceBase::Promoted(_)) => false,
 
             // If a local variable is immutable, then we only need to track borrows to guard
             // against two kinds of errors:
@@ -50,7 +40,7 @@ impl<'tcx> PlaceExt<'tcx> for Place<'tcx> {
             //
             // In particular, the variable cannot be mutated -- the "access checks" will fail --
             // so we don't have to worry about mutation while borrowed.
-            Place::Local(index) => {
+            Place::Base(PlaceBase::Local(index)) => {
                 match locals_state_at_exit {
                     LocalsStateAtExit::AllAreInvalidated => false,
                     LocalsStateAtExit::SomeAreInvalidated { has_storage_dead_or_moved } => {
@@ -61,7 +51,7 @@ impl<'tcx> PlaceExt<'tcx> for Place<'tcx> {
                     }
                 }
             }
-            Place::Static(static_) => {
+            Place::Base(PlaceBase::Static(static_)) => {
                 tcx.is_static(static_.def_id) == Some(hir::Mutability::MutMutable)
             }
             Place::Projection(proj) => match proj.elem {
@@ -98,9 +88,9 @@ impl<'tcx> PlaceExt<'tcx> for Place<'tcx> {
         loop {
             match p {
                 Place::Projection(pi) => p = &pi.base,
-                Place::Promoted(_) |
-                Place::Static(_) => return None,
-                Place::Local(l) => return Some(*l),
+                Place::Base(PlaceBase::Promoted(_)) |
+                Place::Base(PlaceBase::Static(_)) => return None,
+                Place::Base(PlaceBase::Local(l)) => return Some(*l),
             }
         }
     }

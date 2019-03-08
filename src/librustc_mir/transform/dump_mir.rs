@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This pass just dumps MIR at a specified point.
 
 use std::borrow::Cow;
@@ -18,8 +8,8 @@ use std::io;
 use rustc::mir::Mir;
 use rustc::session::config::{OutputFilenames, OutputType};
 use rustc::ty::TyCtxt;
-use transform::{MirPass, MirSource};
-use util as mir_util;
+use crate::transform::{MirPass, MirSource};
+use crate::util as mir_util;
 
 pub struct Marker(pub &'static str);
 
@@ -30,7 +20,7 @@ impl MirPass for Marker {
 
     fn run_pass<'a, 'tcx>(&self,
                           _tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _source: MirSource,
+                          _source: MirSource<'tcx>,
                           _mir: &mut Mir<'tcx>)
     {
     }
@@ -41,7 +31,7 @@ pub struct Disambiguator {
 }
 
 impl fmt::Display for Disambiguator {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let title = if self.is_after { "after" } else { "before" };
         write!(formatter, "{}", title)
     }
@@ -51,7 +41,7 @@ impl fmt::Display for Disambiguator {
 pub fn on_mir_pass<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                              pass_num: &dyn fmt::Display,
                              pass_name: &str,
-                             source: MirSource,
+                             source: MirSource<'tcx>,
                              mir: &Mir<'tcx>,
                              is_after: bool) {
     if mir_util::dump_enabled(tcx, pass_name, source) {

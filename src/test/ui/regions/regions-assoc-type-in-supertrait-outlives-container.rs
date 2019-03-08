@@ -1,17 +1,10 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Test that we are imposing the requirement that every associated
 // type of a bound that appears in the where clause on a struct must
 // outlive the location in which the type appears, even when the
 // associted type is in a supertype. Issue #22246.
+
+// revisions: ast mir
+//[mir]compile-flags: -Z borrowck=mir
 
 #![allow(dead_code)]
 
@@ -50,7 +43,8 @@ fn with_assoc<'a,'b>() {
     // FIXME (#54943) NLL doesn't enforce WF condition in unreachable code if
     // `_x` is changed to `_`
     let _x: &'a WithAssoc<TheType<'b>> = loop { };
-    //~^ ERROR reference has a longer lifetime
+    //[ast]~^ ERROR reference has a longer lifetime
+    //[mir]~^^ ERROR lifetime may not live long enough
 }
 
 fn main() {

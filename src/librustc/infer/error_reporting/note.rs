@@ -1,17 +1,7 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use infer::{self, InferCtxt, SubregionOrigin};
-use middle::region;
-use ty::{self, Region};
-use ty::error::TypeError;
+use crate::infer::{self, InferCtxt, SubregionOrigin};
+use crate::middle::region;
+use crate::ty::{self, Region};
+use crate::ty::error::TypeError;
 use errors::DiagnosticBuilder;
 
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
@@ -41,8 +31,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                               "...so that reference does not outlive borrowed content");
             }
             infer::ReborrowUpvar(span, ref upvar_id) => {
-                let var_node_id = self.tcx.hir.hir_to_node_id(upvar_id.var_path.hir_id);
-                let var_name = self.tcx.hir.name(var_node_id);
+                let var_name = self.tcx.hir().name_by_hir_id(upvar_id.var_path.hir_id);
                 err.span_note(span,
                               &format!("...so that closure can access `{}`", var_name));
             }
@@ -61,7 +50,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 err.span_note(span,
                               &format!("...so that captured variable `{}` does not outlive the \
                                         enclosing closure",
-                                       self.tcx.hir.name(id)));
+                                       self.tcx.hir().name(id)));
             }
             infer::IndexSlice(span) => {
                 err.span_note(span, "...so that slice is not indexed outside the lifetime");
@@ -174,8 +163,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 err
             }
             infer::ReborrowUpvar(span, ref upvar_id) => {
-                let var_node_id = self.tcx.hir.hir_to_node_id(upvar_id.var_path.hir_id);
-                let var_name = self.tcx.hir.name(var_node_id);
+                let var_name = self.tcx.hir().name_by_hir_id(upvar_id.var_path.hir_id);
                 let mut err = struct_span_err!(self.tcx.sess,
                                                span,
                                                E0313,
@@ -232,7 +220,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                                E0474,
                                                "captured variable `{}` does not outlive the \
                                                 enclosing closure",
-                                               self.tcx.hir.name(id));
+                                               self.tcx.hir().name(id));
                 self.tcx.note_and_explain_region(region_scope_tree, &mut err,
                     "captured variable is valid for ", sup, "");
                 self.tcx.note_and_explain_region(region_scope_tree, &mut err,
@@ -449,6 +437,26 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                                                   impl_item_def_id,
                                                   trait_item_def_id,
                                                   &format!("`{}: {}`", sup, sub))
+            }
+        }
+    }
+
+    pub(super) fn report_placeholder_failure(
+        &self,
+        region_scope_tree: &region::ScopeTree,
+        placeholder_origin: SubregionOrigin<'tcx>,
+        sub: Region<'tcx>,
+        sup: Region<'tcx>,
+    ) -> DiagnosticBuilder<'tcx> {
+        // I can't think how to do better than this right now. -nikomatsakis
+        match placeholder_origin {
+            infer::Subtype(trace) => {
+                let terr = TypeError::RegionsPlaceholderMismatch;
+                self.report_and_explain_type_error(trace, &terr)
+            }
+
+            _ => {
+                self.report_concrete_failure(region_scope_tree, placeholder_origin, sub, sup)
             }
         }
     }

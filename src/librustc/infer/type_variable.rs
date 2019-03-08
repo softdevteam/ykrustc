@@ -1,16 +1,6 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use syntax::symbol::InternedString;
 use syntax_pos::Span;
-use ty::{self, Ty};
+use crate::ty::{self, Ty};
 
 use std::cmp;
 use std::marker::PhantomData;
@@ -72,7 +62,7 @@ pub type TypeVariableMap = FxHashMap<ty::TyVid, TypeVariableOrigin>;
 
 struct TypeVariableData {
     origin: TypeVariableOrigin,
-    diverging: bool
+    diverging: bool,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -175,7 +165,7 @@ impl<'tcx> TypeVariableTable<'tcx> {
     /// Creates a new type variable.
     ///
     /// - `diverging`: indicates if this is a "diverging" type
-    ///   variable, e.g.  one created as the type of a `return`
+    ///   variable, e.g.,  one created as the type of a `return`
     ///   expression. The code in this module doesn't care if a
     ///   variable is diverging, but the main Rust type-checker will
     ///   sometimes "unify" such variables with the `!` or `()` types.
@@ -198,7 +188,13 @@ impl<'tcx> TypeVariableTable<'tcx> {
         });
         assert_eq!(eq_key.vid.index, index as u32);
 
-        debug!("new_var(index={:?}, diverging={:?}, origin={:?}", eq_key.vid, diverging, origin);
+        debug!(
+            "new_var(index={:?}, universe={:?}, diverging={:?}, origin={:?}",
+            eq_key.vid,
+            universe,
+            diverging,
+            origin,
+        );
 
         eq_key.vid
     }
@@ -228,7 +224,7 @@ impl<'tcx> TypeVariableTable<'tcx> {
         self.sub_relations.find(vid)
     }
 
-    /// True if `a` and `b` have same "sub-root" (i.e., exists some
+    /// Returns `true` if `a` and `b` have same "sub-root" (i.e., exists some
     /// type X such that `forall i in {a, b}. (i <: X || X <: i)`.
     pub fn sub_unified(&mut self, a: ty::TyVid, b: ty::TyVid) -> bool {
         self.sub_root_var(a) == self.sub_root_var(b)
@@ -255,9 +251,9 @@ impl<'tcx> TypeVariableTable<'tcx> {
         }
     }
 
-    /// Creates a snapshot of the type variable state.  This snapshot
+    /// Creates a snapshot of the type variable state. This snapshot
     /// must later be committed (`commit()`) or rolled back
-    /// (`rollback_to()`).  Nested snapshots are permitted, but must
+    /// (`rollback_to()`). Nested snapshots are permitted, but must
     /// be processed in a stack-like fashion.
     pub fn snapshot(&mut self) -> Snapshot<'tcx> {
         Snapshot {
@@ -316,7 +312,7 @@ impl<'tcx> TypeVariableTable<'tcx> {
             .collect()
     }
 
-    /// Find the set of type variables that existed *before* `s`
+    /// Finds the set of type variables that existed *before* `s`
     /// but which have only been unified since `s` started, and
     /// return the types with which they were unified. So if we had
     /// a type variable `V0`, then we started the snapshot, then we

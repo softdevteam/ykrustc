@@ -1,14 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use borrowck::BorrowckCtxt;
+use crate::borrowck::BorrowckCtxt;
 use rustc::middle::mem_categorization as mc;
 use rustc::middle::mem_categorization::Categorization;
 use rustc::middle::mem_categorization::NoteClosureEnv;
@@ -18,7 +8,8 @@ use rustc_mir::util::borrowck_errors::{BorrowckErrors, Origin};
 use syntax::ast;
 use syntax_pos;
 use errors::{DiagnosticBuilder, Applicability};
-use borrowck::gather_loans::gather_moves::PatternSource;
+use crate::borrowck::gather_loans::gather_moves::PatternSource;
+use log::debug;
 
 pub struct MoveErrorCollector<'tcx> {
     errors: Vec<MoveError<'tcx>>
@@ -80,7 +71,7 @@ fn report_move_errors<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>, errors: &[MoveErr
                 let initializer =
                     e.init.as_ref().expect("should have an initializer to get an error");
                 if let Ok(snippet) = bccx.tcx.sess.source_map().span_to_snippet(initializer.span) {
-                    err.span_suggestion_with_applicability(
+                    err.span_suggestion(
                         initializer.span,
                         "consider using a reference instead",
                         format!("&{}", snippet),
@@ -97,8 +88,7 @@ fn report_move_errors<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>, errors: &[MoveErr
             }
         }
         if let NoteClosureEnv(upvar_id) = error.move_from.note {
-            let var_node_id = bccx.tcx.hir.hir_to_node_id(upvar_id.var_path.hir_id);
-            err.span_label(bccx.tcx.hir.span(var_node_id),
+            err.span_label(bccx.tcx.hir().span_by_hir_id(upvar_id.var_path.hir_id),
                            "captured outer variable");
         }
         err.emit();
@@ -177,10 +167,10 @@ fn report_cannot_move_out_of<'a, 'tcx>(bccx: &'a BorrowckCtxt<'a, 'tcx>,
     }
 }
 
-fn note_move_destination(mut err: DiagnosticBuilder,
+fn note_move_destination(mut err: DiagnosticBuilder<'_>,
                          move_to_span: syntax_pos::Span,
                          pat_name: ast::Name,
-                         is_first_note: bool) -> DiagnosticBuilder {
+                         is_first_note: bool) -> DiagnosticBuilder<'_> {
     if is_first_note {
         err.span_label(
             move_to_span,

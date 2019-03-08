@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Platform-specific types, as defined by C.
 //!
 //! Code that interacts via FFI will almost certainly be using the
@@ -27,6 +17,10 @@
           all(target_os = "android", any(target_arch = "aarch64",
                                          target_arch = "arm")),
           all(target_os = "l4re", target_arch = "x86_64"),
+          all(target_os = "freebsd", any(target_arch = "aarch64",
+                                         target_arch = "arm",
+                                         target_arch = "powerpc",
+                                         target_arch = "powerpc64")),
           all(target_os = "netbsd", any(target_arch = "aarch64",
                                         target_arch = "arm",
                                         target_arch = "powerpc")),
@@ -42,6 +36,10 @@
               all(target_os = "android", any(target_arch = "aarch64",
                                              target_arch = "arm")),
               all(target_os = "l4re", target_arch = "x86_64"),
+              all(target_os = "freebsd", any(target_arch = "aarch64",
+                                             target_arch = "arm",
+                                             target_arch = "powerpc",
+                                             target_arch = "powerpc64")),
               all(target_os = "netbsd", any(target_arch = "aarch64",
                                             target_arch = "arm",
                                             target_arch = "powerpc")),
@@ -88,9 +86,8 @@ pub use core::ffi::c_void;
 #[cfg(test)]
 #[allow(unused_imports)]
 mod tests {
-    use any::TypeId;
-    use libc;
-    use mem;
+    use crate::any::TypeId;
+    use crate::mem;
 
     macro_rules! ok {
         ($($t:ident)*) => {$(
@@ -101,7 +98,7 @@ mod tests {
 
     #[test]
     fn same() {
-        use os::raw;
+        use crate::os::raw;
         ok!(c_char c_schar c_uchar c_short c_ushort c_int c_uint c_long c_ulong
             c_longlong c_ulonglong c_float c_double);
     }

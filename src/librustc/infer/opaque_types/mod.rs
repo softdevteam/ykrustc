@@ -1,26 +1,16 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir::def_id::DefId;
-use hir;
-use hir::Node;
-use infer::{self, InferCtxt, InferOk, TypeVariableOrigin};
-use infer::outlives::free_region_map::FreeRegionRelations;
+use crate::hir::def_id::DefId;
+use crate::hir;
+use crate::hir::Node;
+use crate::infer::{self, InferCtxt, InferOk, TypeVariableOrigin};
+use crate::infer::outlives::free_region_map::FreeRegionRelations;
 use rustc_data_structures::fx::FxHashMap;
 use syntax::ast;
-use traits::{self, PredicateObligation};
-use ty::{self, Ty, TyCtxt, GenericParamDefKind};
-use ty::fold::{BottomUpFolder, TypeFoldable, TypeFolder};
-use ty::outlives::Component;
-use ty::subst::{Kind, Substs, UnpackedKind};
-use util::nodemap::DefIdMap;
+use crate::traits::{self, PredicateObligation};
+use crate::ty::{self, Ty, TyCtxt, GenericParamDefKind};
+use crate::ty::fold::{BottomUpFolder, TypeFoldable, TypeFolder};
+use crate::ty::outlives::Component;
+use crate::ty::subst::{Kind, InternalSubsts, SubstsRef, UnpackedKind};
+use crate::util::nodemap::DefIdMap;
 
 pub type OpaqueTypeMap<'tcx> = DefIdMap<OpaqueTypeDecl<'tcx>>;
 
@@ -29,18 +19,18 @@ pub type OpaqueTypeMap<'tcx> = DefIdMap<OpaqueTypeDecl<'tcx>>;
 /// appear in the return type).
 #[derive(Copy, Clone, Debug)]
 pub struct OpaqueTypeDecl<'tcx> {
-    /// The substitutions that we apply to the abstract that that this
+    /// The substitutions that we apply to the abstract that this
     /// `impl Trait` desugars to. e.g., if:
     ///
     ///     fn foo<'a, 'b, T>() -> impl Trait<'a>
     ///
     /// winds up desugared to:
     ///
-    ///     abstract type Foo<'x, T>: Trait<'x>
+    ///     abstract type Foo<'x, X>: Trait<'x>
     ///     fn foo<'a, 'b, T>() -> Foo<'a, T>
     ///
     /// then `substs` would be `['a, T]`.
-    pub substs: &'tcx Substs<'tcx>,
+    pub substs: SubstsRef<'tcx>,
 
     /// The type variable that represents the value of the abstract type
     /// that we require. In other words, after we compile this function,
@@ -56,7 +46,7 @@ pub struct OpaqueTypeDecl<'tcx> {
     /// lifetime parameter on `foo`.)
     pub concrete_ty: Ty<'tcx>,
 
-    /// True if the `impl Trait` bounds include region bounds.
+    /// Returns `true` if the `impl Trait` bounds include region bounds.
     /// For example, this would be true for:
     ///
     ///     fn foo<'a, 'b, 'c>() -> impl Trait<'c> + 'a + 'b
@@ -81,7 +71,7 @@ pub struct OpaqueTypeDecl<'tcx> {
 }
 
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
-    /// Replace all opaque types in `value` with fresh inference variables
+    /// Replaces all opaque types in `value` with fresh inference variables
     /// and creates appropriate obligations. For example, given the input:
     ///
     ///     impl Iterator<Item = impl Debug>
@@ -98,7 +88,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     ///
     /// # Parameters
     ///
-    /// - `parent_def_id` -- the def-id of the function in which the opaque type
+    /// - `parent_def_id` -- the `DefId` of the function in which the opaque type
     ///   is defined
     /// - `body_id` -- the body-id with which the resulting obligations should
     ///   be associated
@@ -108,7 +98,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     pub fn instantiate_opaque_types<T: TypeFoldable<'tcx>>(
         &self,
         parent_def_id: DefId,
-        body_id: ast::NodeId,
+        body_id: hir::HirId,
         param_env: ty::ParamEnv<'tcx>,
         value: &T,
     ) -> InferOk<'tcx, (T, OpaqueTypeMap<'tcx>)> {
@@ -142,7 +132,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     ///
     /// # The Problem
     ///
-    /// Let's work through an example to explain how it works.  Assume
+    /// Let's work through an example to explain how it works. Assume
     /// the current function is as follows:
     ///
     /// ```text
@@ -174,7 +164,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     /// replace each of the references (`Foo1<'a>`, `Foo2<'b>`) with
     /// fresh inference variables C1 and C2. We wish to use the values
     /// of these variables to infer the underlying types of `Foo1` and
-    /// `Foo2`.  That is, this gives rise to higher-order (pattern) unification
+    /// `Foo2`. That is, this gives rise to higher-order (pattern) unification
     /// constraints like:
     ///
     /// ```text
@@ -209,7 +199,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     ///
     /// Ordinarily, the subtyping rules would ensure that these are
     /// sufficiently large. But since `impl Bar<'a>` isn't a specific
-    /// type per se, we don't get such constraints by default.  This
+    /// type per se, we don't get such constraints by default. This
     /// is where this function comes into play. It adds extra
     /// constraints to ensure that all the regions which appear in the
     /// inferred type are regions that could validly appear.
@@ -391,10 +381,15 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         substs,
                         item_def_id: _,
                     }) => {
-                        for r in substs.regions() {
-                            bound_region(r);
+                        for k in substs {
+                            match k.unpack() {
+                                UnpackedKind::Lifetime(lt) => bound_region(lt),
+                                UnpackedKind::Type(ty) => types.push(ty),
+                                UnpackedKind::Const(_) => {
+                                    // Const parameters don't impose constraints.
+                                }
+                            }
                         }
-                        types.extend(substs.types());
                     }
 
                     Component::EscapingProjection(more_components) => {
@@ -447,7 +442,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         // lifetimes with 'static and remapping only those used in the
         // `impl Trait` return type, resulting in the parameters
         // shifting.
-        let id_substs = Substs::identity_for_item(gcx, def_id);
+        let id_substs = InternalSubsts::identity_for_item(gcx, def_id);
         let map: FxHashMap<Kind<'tcx>, Kind<'gcx>> = opaque_defn
             .substs
             .iter()
@@ -642,7 +637,7 @@ impl<'cx, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for ReverseMapper<'cx, 'gcx, 'tcx> 
 struct Instantiator<'a, 'gcx: 'tcx, 'tcx: 'a> {
     infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
     parent_def_id: DefId,
-    body_id: ast::NodeId,
+    body_id: hir::HirId,
     param_env: ty::ParamEnv<'tcx>,
     opaque_types: OpaqueTypeMap<'tcx>,
     obligations: Vec<PredicateObligation<'tcx>>,
@@ -691,13 +686,13 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
                     //     let x = || foo(); // returns the Opaque assoc with `foo`
                     // }
                     // ```
-                    if let Some(opaque_node_id) = tcx.hir.as_local_node_id(def_id) {
+                    if let Some(opaque_node_id) = tcx.hir().as_local_node_id(def_id) {
                         let parent_def_id = self.parent_def_id;
                         let def_scope_default = || {
-                            let opaque_parent_node_id = tcx.hir.get_parent(opaque_node_id);
-                            parent_def_id == tcx.hir.local_def_id(opaque_parent_node_id)
+                            let opaque_parent_node_id = tcx.hir().get_parent(opaque_node_id);
+                            parent_def_id == tcx.hir().local_def_id(opaque_parent_node_id)
                         };
-                        let in_definition_scope = match tcx.hir.find(opaque_node_id) {
+                        let in_definition_scope = match tcx.hir().find(opaque_node_id) {
                             Some(Node::Item(item)) => match item.node {
                                 // impl trait
                                 hir::ItemKind::Existential(hir::ExistTy {
@@ -725,7 +720,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
                             },
                             _ => bug!(
                                 "expected (impl) item, found {}",
-                                tcx.hir.node_to_string(opaque_node_id),
+                                tcx.hir().node_to_string(opaque_node_id),
                             ),
                         };
                         if in_definition_scope {
@@ -750,7 +745,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
         &mut self,
         ty: Ty<'tcx>,
         def_id: DefId,
-        substs: &'tcx Substs<'tcx>,
+        substs: SubstsRef<'tcx>,
     ) -> Ty<'tcx> {
         let infcx = self.infcx;
         let tcx = infcx.tcx;
@@ -761,7 +756,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
         );
 
         // Use the same type variable if the exact same Opaque appears more
-        // than once in the return type (e.g. if it's passed to a type alias).
+        // than once in the return type (e.g., if it's passed to a type alias).
         if let Some(opaque_defn) = self.opaque_types.get(&def_id) {
             return opaque_defn.concrete_ty;
         }
@@ -783,7 +778,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
         );
 
         // make sure that we are in fact defining the *entire* type
-        // e.g. `existential type Foo<T: Bound>: Bar;` needs to be
+        // e.g., `existential type Foo<T: Bound>: Bar;` needs to be
         // defined by a function like `fn foo<T: Bound>() -> Foo<T>`.
         debug!(
             "instantiate_opaque_types: param_env: {:#?}",
@@ -823,7 +818,7 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
     }
 }
 
-/// Whether `opaque_node_id` is a sibling or a child of a sibling of `def_id`
+/// Returns `true` if `opaque_node_id` is a sibling or a child of a sibling of `def_id`.
 ///
 /// ```rust
 /// pub mod foo {
@@ -837,27 +832,26 @@ impl<'a, 'gcx, 'tcx> Instantiator<'a, 'gcx, 'tcx> {
 /// }
 /// ```
 ///
-/// Here, `def_id` will be the `DefId` of the existential type `Baz`.
-/// `opaque_node_id` is the `NodeId` of the reference to Baz --
-///  so either the return type of f1 or f2.
-/// We will return true if the reference is within the same module as the existential type
-/// So true for f1, false for f2.
+/// Here, `def_id` is the `DefId` of the existential type `Baz` and `opaque_node_id` is the
+/// `NodeId` of the reference to `Baz` (i.e., the return type of both `f1` and `f2`).
+/// We return `true` if the reference is within the same module as the existential type
+/// (i.e., `true` for `f1`, `false` for `f2`).
 pub fn may_define_existential_type(
     tcx: TyCtxt<'_, '_, '_>,
     def_id: DefId,
     opaque_node_id: ast::NodeId,
 ) -> bool {
     let mut node_id = tcx
-        .hir
+        .hir()
         .as_local_node_id(def_id)
         .unwrap();
     // named existential types can be defined by any siblings or
     // children of siblings
-    let mod_id = tcx.hir.get_parent(opaque_node_id);
+    let mod_id = tcx.hir().get_parent(opaque_node_id);
     // so we walk up the node tree until we hit the root or the parent
     // of the opaque type
     while node_id != mod_id && node_id != ast::CRATE_NODE_ID {
-        node_id = tcx.hir.get_parent(node_id);
+        node_id = tcx.hir().get_parent(node_id);
     }
     // syntactically we are allowed to define the concrete type
     node_id == mod_id

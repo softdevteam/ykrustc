@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! C-compiler probing and detection.
 //!
 //! This module will fill out the `cc` and `cxx` maps of `Build` by looking for
@@ -37,11 +27,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use build_helper::output;
-use cc;
 
-use {Build, GitRepo};
-use config::Target;
-use cache::Interned;
+use crate::{Build, GitRepo};
+use crate::config::Target;
+use crate::cache::Interned;
 
 // The `cc` crate doesn't provide a way to obtain a path to the detected archiver,
 // so use some simplified logic here. First we respect the environment variable `AR`, then
@@ -143,7 +132,10 @@ fn set_compiler(cfg: &mut cc::Build,
         // compiler already takes into account the triple in question.
         t if t.contains("android") => {
             if let Some(ndk) = config.and_then(|c| c.ndk.as_ref()) {
-                let target = target.replace("armv7", "arm");
+                let target = target.replace("armv7neon", "arm")
+                                   .replace("armv7", "arm")
+                                   .replace("thumbv7neon", "arm")
+                                   .replace("thumbv7", "arm");
                 let compiler = format!("{}-{}", target, compiler.clang());
                 cfg.compiler(ndk.join("bin").join(compiler));
             }
@@ -164,7 +156,7 @@ fn set_compiler(cfg: &mut cc::Build,
                 None => return,
             };
             match output[i + 3..].chars().next().unwrap() {
-                '0' ... '6' => {}
+                '0' ..= '6' => {}
                 _ => return,
             }
             let alternative = format!("e{}", gnu_compiler);

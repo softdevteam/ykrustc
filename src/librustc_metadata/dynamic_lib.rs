@@ -1,13 +1,3 @@
-// Copyright 2013-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Dynamic library facilities.
 //!
 //! A simple wrapper over the platform's dynamic library facilities
@@ -42,7 +32,7 @@ impl DynamicLibrary {
         }
     }
 
-    /// Load a dynamic library into the global namespace (RTLD_GLOBAL on Unix)
+    /// Loads a dynamic library into the global namespace (RTLD_GLOBAL on Unix)
     /// and do it now (don't use RTLD_LAZY on Unix).
     pub fn open_global_now(filename: &Path) -> Result<DynamicLibrary, String> {
         let maybe_library = dl::open_global_now(filename.as_os_str());
@@ -86,7 +76,6 @@ impl DynamicLibrary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use libc;
     use std::mem;
 
     #[test]
@@ -137,7 +126,6 @@ mod tests {
 
 #[cfg(unix)]
 mod dl {
-    use libc;
     use std::ffi::{CStr, OsStr, CString};
     use std::os::unix::prelude::*;
     use std::ptr;

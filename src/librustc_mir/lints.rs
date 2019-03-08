@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_data_structures::bit_set::BitSet;
 use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::FnKind;
@@ -15,20 +5,20 @@ use rustc::hir::map::blocks::FnLikeNode;
 use rustc::lint::builtin::UNCONDITIONAL_RECURSION;
 use rustc::mir::{self, Mir, TerminatorKind};
 use rustc::ty::{AssociatedItem, AssociatedItemContainer, Instance, TyCtxt, TyKind};
-use rustc::ty::subst::Substs;
+use rustc::ty::subst::InternalSubsts;
 
 pub fn check(tcx: TyCtxt<'a, 'tcx, 'tcx>,
              mir: &Mir<'tcx>,
              def_id: DefId) {
-    let node_id = tcx.hir.as_local_node_id(def_id).unwrap();
+    let node_id = tcx.hir().as_local_node_id(def_id).unwrap();
 
-    if let Some(fn_like_node) = FnLikeNode::from_node(tcx.hir.get(node_id)) {
+    if let Some(fn_like_node) = FnLikeNode::from_node(tcx.hir().get(node_id)) {
         check_fn_for_unconditional_recursion(tcx, fn_like_node.kind(), mir, def_id);
     }
 }
 
 fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                        fn_kind: FnKind,
+                                        fn_kind: FnKind<'_>,
                                         mir: &Mir<'tcx>,
                                         def_id: DefId) {
     if let FnKind::Closure(_) = fn_kind {
@@ -39,11 +29,11 @@ fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     //FIXME(#54444) rewrite this lint to use the dataflow framework
 
     // Walk through this function (say `f`) looking to see if
-    // every possible path references itself, i.e. the function is
+    // every possible path references itself, i.e., the function is
     // called recursively unconditionally. This is done by trying
     // to find a path from the entry node to the exit node that
     // *doesn't* call `f` by traversing from the entry while
-    // pretending that calls of `f` are sinks (i.e. ignoring any
+    // pretending that calls of `f` are sinks (i.e., ignoring any
     // exit edges from them).
     //
     // NB. this has an edge case with non-returning statements,
@@ -62,7 +52,7 @@ fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // considers this to be an error for two reasons, (a) it is
     // easier to implement, and (b) it seems rare to actually want
     // to have behaviour like the above, rather than
-    // e.g. accidentally recursing after an assert.
+    // e.g., accidentally recursing after an assert.
 
     let basic_blocks = mir.basic_blocks();
     let mut reachable_without_self_call_queue = vec![mir::START_BLOCK];
@@ -79,7 +69,7 @@ fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             }) => tcx.generics_of(trait_def_id).count(),
             _ => 0
         };
-    let caller_substs = &Substs::identity_for_item(tcx, def_id)[..trait_substs_count];
+    let caller_substs = &InternalSubsts::identity_for_item(tcx, def_id)[..trait_substs_count];
 
     while let Some(bb) = reachable_without_self_call_queue.pop() {
         if visited.contains(bb) {
@@ -135,16 +125,16 @@ fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     }
 
     // Check the number of self calls because a function that
-    // doesn't return (e.g. calls a `-> !` function or `loop { /*
+    // doesn't return (e.g., calls a `-> !` function or `loop { /*
     // no break */ }`) shouldn't be linted unless it actually
     // recurs.
     if !reached_exit_without_self_call && !self_call_locations.is_empty() {
-        let node_id = tcx.hir.as_local_node_id(def_id).unwrap();
-        let sp = tcx.sess.source_map().def_span(tcx.hir.span(node_id));
-        let mut db = tcx.struct_span_lint_node(UNCONDITIONAL_RECURSION,
-                                                node_id,
-                                                sp,
-                                                "function cannot return without recursing");
+        let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
+        let sp = tcx.sess.source_map().def_span(tcx.hir().span_by_hir_id(hir_id));
+        let mut db = tcx.struct_span_lint_hir(UNCONDITIONAL_RECURSION,
+                                              hir_id,
+                                              sp,
+                                              "function cannot return without recursing");
         db.span_label(sp, "cannot return without recursing");
         // offer some help to the programmer.
         for location in &self_call_locations {

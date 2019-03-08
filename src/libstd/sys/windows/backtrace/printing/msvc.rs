@@ -1,22 +1,13 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::ffi::CStr;
+use crate::io;
+use crate::mem;
+use crate::sys::backtrace::BacktraceContext;
+use crate::sys::backtrace::StackWalkVariant;
+use crate::sys::c;
+use crate::sys::dynamic_lib::DynamicLibrary;
+use crate::sys_common::backtrace::Frame;
 
-use ffi::CStr;
-use io;
 use libc::{c_char, c_ulong};
-use mem;
-use sys::backtrace::BacktraceContext;
-use sys::backtrace::StackWalkVariant;
-use sys::c;
-use sys::dynamic_lib::DynamicLibrary;
-use sys_common::backtrace::Frame;
 
 // Structs holding printing functions and loaders for them
 // Two versions depending on whether dbghelp.dll has StackWalkEx or not
@@ -200,7 +191,7 @@ where
 {
     unsafe {
         let mut line: c::IMAGEHLP_LINE64 = mem::zeroed();
-        line.SizeOfStruct = ::mem::size_of::<c::IMAGEHLP_LINE64>() as u32;
+        line.SizeOfStruct = mem::size_of::<c::IMAGEHLP_LINE64>() as u32;
 
         let ret = line_getter(
             context.handle,

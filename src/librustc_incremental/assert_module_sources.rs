@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This pass is only used for UNIT TESTS related to incremental
 //! compilation. It tests whether a particular `.o` file will be re-used
 //! from a previous compilation or whether it must be regenerated.
@@ -40,9 +30,9 @@ use syntax::ast;
 use rustc::ich::{ATTR_PARTITION_REUSED, ATTR_PARTITION_CODEGENED,
                  ATTR_EXPECTED_CGU_REUSE};
 
-const MODULE: &'static str = "module";
-const CFG: &'static str = "cfg";
-const KIND: &'static str = "kind";
+const MODULE: &str = "module";
+const CFG: &str = "cfg";
+const KIND: &str = "kind";
 
 pub fn assert_module_sources<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     tcx.dep_graph.with_ignore(|| {
@@ -62,7 +52,7 @@ pub fn assert_module_sources<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
             available_cgus
         };
 
-        for attr in &tcx.hir.krate().attrs {
+        for attr in &tcx.hir().krate().attrs {
             ams.check_attr(attr);
         }
     })

@@ -1,28 +1,19 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::collections::BTreeMap;
 use std::env;
 
-use ast;
-use ast::{Ident, Name};
-use source_map;
-use syntax_pos::Span;
-use ext::base::{ExtCtxt, MacEager, MacResult};
-use ext::build::AstBuilder;
-use parse::token;
-use ptr::P;
-use symbol::{keywords, Symbol};
-use tokenstream::{TokenTree};
+use crate::ast::{self, Ident, Name};
+use crate::source_map;
+use crate::ext::base::{ExtCtxt, MacEager, MacResult};
+use crate::ext::build::AstBuilder;
+use crate::parse::token;
+use crate::ptr::P;
+use crate::symbol::{keywords, Symbol};
+use crate::tokenstream::{TokenTree};
 
-use diagnostics::metadata::output_metadata;
+use smallvec::smallvec;
+use syntax_pos::Span;
+
+use crate::diagnostics::metadata::output_metadata;
 
 pub use errors::*;
 
@@ -38,7 +29,7 @@ pub struct ErrorInfo {
 /// Mapping from error codes to metadata.
 pub type ErrorMap = BTreeMap<Name, ErrorInfo>;
 
-pub fn expand_diagnostic_used<'cx>(ecx: &'cx mut ExtCtxt,
+pub fn expand_diagnostic_used<'cx>(ecx: &'cx mut ExtCtxt<'_>,
                                    span: Span,
                                    token_tree: &[TokenTree])
                                    -> Box<dyn MacResult+'cx> {
@@ -71,7 +62,7 @@ pub fn expand_diagnostic_used<'cx>(ecx: &'cx mut ExtCtxt,
     MacEager::expr(ecx.expr_tuple(span, Vec::new()))
 }
 
-pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
+pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt<'_>,
                                        span: Span,
                                        token_tree: &[TokenTree])
                                        -> Box<dyn MacResult+'cx> {
@@ -127,21 +118,24 @@ pub fn expand_register_diagnostic<'cx>(ecx: &'cx mut ExtCtxt,
             ));
         }
     });
-    let sym = Ident::with_empty_ctxt(Symbol::gensym(&format!(
-        "__register_diagnostic_{}", code
-    )));
+
+    let span = span.apply_mark(ecx.current_expansion.mark);
+
+    let sym = Ident::new(Symbol::gensym(&format!("__register_diagnostic_{}", code)), span);
+
     MacEager::items(smallvec![
         ecx.item_mod(
             span,
             span,
             sym,
-            Vec::new(),
-            Vec::new()
+            vec![],
+            vec![],
         )
     ])
 }
 
-pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt,
+#[allow(deprecated)]
+pub fn expand_build_diagnostic_array<'cx>(ecx: &'cx mut ExtCtxt<'_>,
                                           span: Span,
                                           token_tree: &[TokenTree])
                                           -> Box<dyn MacResult+'cx> {

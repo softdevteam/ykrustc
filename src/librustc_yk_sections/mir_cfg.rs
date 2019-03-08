@@ -15,7 +15,7 @@ use rustc::ty::TyCtxt;
 
 use rustc::hir::def_id::DefId;
 use rustc::mir::{Mir, TerminatorKind, Operand, Constant, BasicBlock};
-use rustc::ty::{TyS, TyKind, Const};
+use rustc::ty::{TyS, TyKind, Const, LazyConst};
 use rustc::util::nodemap::DefIdSet;
 use std::path::PathBuf;
 use std::fs::File;
@@ -140,11 +140,11 @@ fn process_mir(fh: &mut File, tcx: &TyCtxt, def_id: &DefId, mir: &Mir) {
             },
             TerminatorKind::Call{ref func, cleanup: opt_cleanup_bb, ..} => {
                 if let Operand::Constant(box Constant {
-                    literal: Const {
+                    literal: LazyConst::Evaluated(Const {
                         ty: &TyS {
                             sty: TyKind::FnDef(target_def_id, _substs), ..
                         }, ..
-                    }, ..
+                    }), ..
                 }, ..) = func {
                     // A statically known call target.
                     if opt_cleanup_bb.is_some() {

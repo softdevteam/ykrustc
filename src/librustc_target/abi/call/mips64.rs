@@ -1,17 +1,7 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::abi::call::{ArgAttribute, ArgType, CastTarget, FnType, PassMode, Reg, RegKind, Uniform};
+use crate::abi::{self, HasDataLayout, LayoutOf, Size, TyLayout, TyLayoutMethods};
 
-use abi::call::{ArgAttribute, ArgType, CastTarget, FnType, PassMode, Reg, RegKind, Uniform};
-use abi::{self, HasDataLayout, LayoutOf, Size, TyLayout, TyLayoutMethods};
-
-fn extend_integer_width_mips<Ty>(arg: &mut ArgType<Ty>, bits: u64) {
+fn extend_integer_width_mips<Ty>(arg: &mut ArgType<'_, Ty>, bits: u64) {
     // Always sign extend u32 values on 64-bit mips
     if let abi::Abi::Scalar(ref scalar) = arg.layout.abi {
         if let abi::Int(i, signed) = scalar.value {
@@ -118,9 +108,9 @@ fn classify_arg_ty<'a, Ty, C>(cx: &C, arg: &mut ArgType<'a, Ty>)
                 // We only care about aligned doubles
                 if let abi::Abi::Scalar(ref scalar) = field.abi {
                     if let abi::Float(abi::FloatTy::F64) = scalar.value {
-                        if offset.is_abi_aligned(dl.f64_align) {
+                        if offset.is_aligned(dl.f64_align.abi) {
                             // Insert enough integers to cover [last_offset, offset)
-                            assert!(last_offset.is_abi_aligned(dl.f64_align));
+                            assert!(last_offset.is_aligned(dl.f64_align.abi));
                             for _ in 0..((offset - last_offset).bits() / 64)
                                 .min((prefix.len() - prefix_index) as u64) {
 

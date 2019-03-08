@@ -1,15 +1,5 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_lint;
-use rustc_driver::{self, driver, target_features, abort_on_err};
+use rustc_driver::{driver, abort_on_err};
 use rustc::session::{self, config};
 use rustc::hir::def_id::{DefId, DefIndex, DefIndexAddressSpace, CrateNum, LOCAL_CRATE};
 use rustc::hir::def::Def;
@@ -21,6 +11,7 @@ use rustc::hir::map as hir_map;
 use rustc::lint::{self, LintPass};
 use rustc::session::config::ErrorOutputType;
 use rustc::util::nodemap::{FxHashMap, FxHashSet};
+use rustc_interface::util;
 use rustc_resolve as resolve;
 use rustc_metadata::creader::CrateLoader;
 use rustc_metadata::cstore::CStore;
@@ -33,7 +24,7 @@ use syntax::json::JsonEmitter;
 use syntax::ptr::P;
 use syntax::symbol::keywords;
 use syntax_pos::DUMMY_SP;
-use errors;
+use errors::{self, FatalError};
 use errors::emitter::{Emitter, EmitterWriter};
 use parking_lot::ReentrantMutex;
 
@@ -43,27 +34,25 @@ use rustc_data_structures::sync::{self, Lrc};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use visit_ast::RustdocVisitor;
-use config::{Options as RustdocOptions, RenderOptions};
-use clean;
-use clean::{get_path_for_type, Clean, MAX_DEF_ID, AttributesExt};
-use html::render::RenderInfo;
-use passes;
+use crate::visit_ast::RustdocVisitor;
+use crate::config::{Options as RustdocOptions, RenderOptions};
+use crate::clean;
+use crate::clean::{get_path_for_type, Clean, MAX_DEF_ID, AttributesExt};
+use crate::html::render::RenderInfo;
+
+use crate::passes;
 
 pub use rustc::session::config::{Input, Options, CodegenOptions};
-pub use rustc::session::search_paths::SearchPaths;
+pub use rustc::session::search_paths::SearchPath;
 
 pub type ExternalPaths = FxHashMap<DefId, (Vec<String>, clean::TypeKind)>;
 
-pub struct DocContext<'a, 'tcx: 'a, 'rcx: 'a, 'cstore: 'rcx> {
+pub struct DocContext<'a, 'tcx: 'a, 'rcx: 'a> {
     pub tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    pub resolver: &'a RefCell<resolve::Resolver<'rcx, 'cstore>>,
+    pub resolver: &'a RefCell<resolve::Resolver<'rcx>>,
     /// The stack of module NodeIds up till this point
     pub crate_name: Option<String>,
     pub cstore: Rc<CStore>,
-    // Note that external items for which `doc(hidden)` applies to are shown as
-    // non-reachable while local items aren't. This is because we're reusing
-    // the access levels from crateanalysis.
     /// Later on moved into `html::render::CACHE_KEY`
     pub renderinfo: RefCell<RenderInfo>,
     /// Later on moved through `clean::Crate` into `html::render::CACHE_KEY`
@@ -76,8 +65,10 @@ pub struct DocContext<'a, 'tcx: 'a, 'rcx: 'a, 'cstore: 'rcx> {
 
     /// Table type parameter definition -> substituted type
     pub ty_substs: RefCell<FxHashMap<Def, clean::Type>>,
-    /// Table node id of lifetime parameter definition -> substituted lifetime
+    /// Table `NodeId` of lifetime parameter definition -> substituted lifetime
     pub lt_substs: RefCell<FxHashMap<DefId, clean::Lifetime>>,
+    /// Table node id of const parameter definition -> substituted const
+    pub ct_substs: RefCell<FxHashMap<Def, clean::Constant>>,
     /// Table DefId of `impl Trait` in argument position -> bounds
     pub impl_trait_bounds: RefCell<FxHashMap<DefId, Vec<clean::GenericBound>>>,
     pub send_trait: Option<DefId>,
@@ -88,7 +79,7 @@ pub struct DocContext<'a, 'tcx: 'a, 'rcx: 'a, 'cstore: 'rcx> {
     pub all_traits: Vec<DefId>,
 }
 
-impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
+impl<'a, 'tcx, 'rcx> DocContext<'a, 'tcx, 'rcx> {
     pub fn sess(&self) -> &session::Session {
         &self.tcx.sess
     }
@@ -98,14 +89,18 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
     pub fn enter_alias<F, R>(&self,
                              ty_substs: FxHashMap<Def, clean::Type>,
                              lt_substs: FxHashMap<DefId, clean::Lifetime>,
+                             ct_substs: FxHashMap<Def, clean::Constant>,
                              f: F) -> R
     where F: FnOnce() -> R {
-        let (old_tys, old_lts) =
-            (mem::replace(&mut *self.ty_substs.borrow_mut(), ty_substs),
-             mem::replace(&mut *self.lt_substs.borrow_mut(), lt_substs));
+        let (old_tys, old_lts, old_cts) = (
+            mem::replace(&mut *self.ty_substs.borrow_mut(), ty_substs),
+            mem::replace(&mut *self.lt_substs.borrow_mut(), lt_substs),
+            mem::replace(&mut *self.ct_substs.borrow_mut(), ct_substs),
+        );
         let r = f();
         *self.ty_substs.borrow_mut() = old_tys;
         *self.lt_substs.borrow_mut() = old_lts;
+        *self.ct_substs.borrow_mut() = old_cts;
         r
     }
 
@@ -121,7 +116,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
         let start_def_id = {
             let next_id = if crate_num == LOCAL_CRATE {
                 self.tcx
-                    .hir
+                    .hir()
                     .definitions()
                     .def_path_table()
                     .next_id(DefIndexAddressSpace::Low)
@@ -168,7 +163,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
         if self.all_fake_def_ids.borrow().contains(&def_id) {
             None
         } else {
-            self.tcx.hir.as_local_node_id(def_id)
+            self.tcx.hir().as_local_node_id(def_id)
         }
     }
 
@@ -187,6 +182,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
             real_name.unwrap_or(last.ident),
             None,
             None,
+            None,
             self.generics_to_path_params(generics.clone()),
             false,
         ));
@@ -198,7 +194,6 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
         };
 
         hir::Ty {
-            id: ast::DUMMY_NODE_ID,
             node: hir::TyKind::Path(hir::QPath::Resolved(None, P(new_path))),
             span: DUMMY_SP,
             hir_id: hir::DUMMY_HIR_ID,
@@ -218,13 +213,16 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
                     };
 
                     args.push(hir::GenericArg::Lifetime(hir::Lifetime {
-                        id: ast::DUMMY_NODE_ID,
+                        hir_id: hir::DUMMY_HIR_ID,
                         span: DUMMY_SP,
                         name: hir::LifetimeName::Param(name),
                     }));
                 }
-                ty::GenericParamDefKind::Type {..} => {
+                ty::GenericParamDefKind::Type { .. } => {
                     args.push(hir::GenericArg::Type(self.ty_param_to_ty(param.clone())));
+                }
+                ty::GenericParamDefKind::Const { .. } => {
+                    unimplemented!() // FIXME(const_generics)
                 }
             }
         }
@@ -239,7 +237,6 @@ impl<'a, 'tcx, 'rcx, 'cstore> DocContext<'a, 'tcx, 'rcx, 'cstore> {
     pub fn ty_param_to_ty(&self, param: ty::GenericParamDef) -> hir::Ty {
         debug!("ty_param_to_ty({:?}) {:?}", param, param.def_id);
         hir::Ty {
-            id: ast::DUMMY_NODE_ID,
             node: hir::TyKind::Path(hir::QPath::Resolved(
                 None,
                 P(hir::Path {
@@ -351,13 +348,15 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
     let warnings_lint_name = lint::builtin::WARNINGS.name;
     let missing_docs = rustc_lint::builtin::MISSING_DOCS.name;
     let missing_doc_example = rustc_lint::builtin::MISSING_DOC_CODE_EXAMPLES.name;
+    let private_doc_tests = rustc_lint::builtin::PRIVATE_DOC_TESTS.name;
 
     // In addition to those specific lints, we also need to whitelist those given through
     // command line, otherwise they'll get ignored and we don't want that.
     let mut whitelisted_lints = vec![warnings_lint_name.to_owned(),
                                      intra_link_resolution_failure_name.to_owned(),
                                      missing_docs.to_owned(),
-                                     missing_doc_example.to_owned()];
+                                     missing_doc_example.to_owned(),
+                                     private_doc_tests.to_owned()];
 
     whitelisted_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
 
@@ -407,7 +406,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                                              debugging_options.ui_testing);
 
         let mut sess = session::build_session_(
-            sessopts, cpath, diagnostic_handler, source_map,
+            sessopts, cpath, diagnostic_handler, source_map, Default::default(),
         );
 
         lint::builtin::HardwiredLints.get_lints()
@@ -427,17 +426,23 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                                                                       lint::Allow);
                                      });
 
-        let codegen_backend = rustc_driver::get_codegen_backend(&sess);
+        let codegen_backend = util::get_codegen_backend(&sess);
         let cstore = Rc::new(CStore::new(codegen_backend.metadata_loader()));
         rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
         let mut cfg = config::build_configuration(&sess, config::parse_cfgspecs(cfgs));
-        target_features::add_configuration(&mut cfg, &sess, &*codegen_backend);
+        util::add_configuration(&mut cfg, &sess, &*codegen_backend);
         sess.parse_sess.config = cfg;
 
         let control = &driver::CompileController::basic();
 
-        let krate = panictry!(driver::phase_1_parse_input(control, &sess, &input));
+        let krate = match driver::phase_1_parse_input(control, &sess, &input) {
+            Ok(krate) => krate,
+            Err(mut e) => {
+                e.emit();
+                FatalError.raise();
+            }
+        };
 
         let name = match crate_name {
             Some(ref crate_name) => crate_name.clone(),
@@ -453,7 +458,6 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                                                         None,
                                                         &name,
                                                         None,
-                                                        resolve::MakeGlobMap::No,
                                                         &resolver_arenas,
                                                         &mut crate_loader,
                                                         |_| Ok(()));
@@ -471,49 +475,44 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
             freevars: resolver.freevars.clone(),
             export_map: resolver.export_map.clone(),
             trait_map: resolver.trait_map.clone(),
+            glob_map: resolver.glob_map.clone(),
             maybe_unused_trait_imports: resolver.maybe_unused_trait_imports.clone(),
             maybe_unused_extern_crates: resolver.maybe_unused_extern_crates.clone(),
             extern_prelude: resolver.extern_prelude.iter().map(|(ident, entry)| {
                 (ident.name, entry.introduced_by_item)
             }).collect(),
         };
-        let analysis = ty::CrateAnalysis {
-            access_levels: Lrc::new(AccessLevels::default()),
-            name: name.to_string(),
-            glob_map: if resolver.make_glob_map { Some(resolver.glob_map.clone()) } else { None },
-        };
 
-        let arenas = AllArenas::new();
+        let mut arenas = AllArenas::new();
         let hir_map = hir_map::map_crate(&sess, &*cstore, &mut hir_forest, &defs);
-        let output_filenames = driver::build_output_filenames(&input,
+        let output_filenames = util::build_output_filenames(&input,
                                                             &None,
                                                             &None,
                                                             &[],
                                                             &sess);
 
         let resolver = RefCell::new(resolver);
-        abort_on_err(driver::phase_3_run_analysis_passes(&*codegen_backend,
-                                                        control,
-                                                        &sess,
-                                                        &*cstore,
-                                                        hir_map,
-                                                        analysis,
-                                                        resolutions,
-                                                        &arenas,
-                                                        &name,
-                                                        &output_filenames,
-                                                        |tcx, analysis, _, result| {
+        driver::phase_3_run_analysis_passes(&*codegen_backend,
+                                            control,
+                                            &sess,
+                                            &*cstore,
+                                            hir_map,
+                                            resolutions,
+                                            &mut arenas,
+                                            &name,
+                                            &output_filenames,
+                                            |tcx, _, result| {
             if result.is_err() {
                 sess.fatal("Compilation failed, aborting rustdoc");
             }
 
-            let ty::CrateAnalysis { access_levels, .. } = analysis;
+            let access_levels = tcx.privacy_access_levels(LOCAL_CRATE);
 
             // Convert from a NodeId set to a DefId set since we don't always have easy access
             // to the map from defid -> nodeid
             let access_levels = AccessLevels {
                 map: access_levels.map.iter()
-                                    .map(|(&k, &v)| (tcx.hir.local_def_id(k), v))
+                                    .map(|(&k, &v)| (tcx.hir().local_def_id(k), v))
                                     .collect()
             };
 
@@ -536,6 +535,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                 renderinfo: RefCell::new(renderinfo),
                 ty_substs: Default::default(),
                 lt_substs: Default::default(),
+                ct_substs: Default::default(),
                 impl_trait_bounds: Default::default(),
                 send_trait: send_trait,
                 fake_def_ids: Default::default(),
@@ -543,11 +543,11 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                 generated_synthetics: Default::default(),
                 all_traits: tcx.all_traits(LOCAL_CRATE).to_vec(),
             };
-            debug!("crate: {:?}", tcx.hir.krate());
+            debug!("crate: {:?}", tcx.hir().krate());
 
             let mut krate = {
                 let mut v = RustdocVisitor::new(&ctxt);
-                v.visit(tcx.hir.krate());
+                v.visit(tcx.hir().krate());
                 v.clean(&ctxt)
             };
 
@@ -607,16 +607,18 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                 passes::defaults(default_passes).iter().map(|p| p.to_string()).collect();
             passes.extend(manual_passes);
 
+            info!("Executing passes");
+
             for pass in &passes {
-                // the "unknown pass" error will be reported when late passes are run
-                if let Some(pass) = passes::find_pass(pass).and_then(|p| p.early_fn()) {
-                    krate = pass(krate, &ctxt);
+                match passes::find_pass(pass).map(|p| p.pass) {
+                    Some(pass) => krate = pass(krate, &ctxt),
+                    None => error!("unknown pass {}, skipping", *pass),
                 }
             }
 
             ctxt.sess().abort_if_errors();
 
             (krate, ctxt.renderinfo.into_inner(), render_options, passes)
-        }), &sess)
+        })
     })
 }

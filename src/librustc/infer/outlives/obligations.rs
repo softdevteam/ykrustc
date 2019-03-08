@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Code that handles "type-outlives" constraints like `T: 'a`. This
 //! is based on the `push_outlives_components` function defined on the tcx,
 //! but it adds a bit of heuristics on top, in particular to deal with
@@ -65,18 +55,19 @@
 //! fn foo<U, F: for<'a> FnMut(&'a U)>(_f: F) {}
 //! ```
 //!
-//! the type of the closure's first argument would be `&'a ?U`.  We
+//! the type of the closure's first argument would be `&'a ?U`. We
 //! might later infer `?U` to something like `&'b u32`, which would
 //! imply that `'b: 'a`.
 
-use infer::outlives::env::RegionBoundPairs;
-use infer::outlives::verify::VerifyBoundCx;
-use infer::{self, GenericKind, InferCtxt, RegionObligation, SubregionOrigin, VerifyBound};
+use crate::infer::outlives::env::RegionBoundPairs;
+use crate::infer::outlives::verify::VerifyBoundCx;
+use crate::infer::{self, GenericKind, InferCtxt, RegionObligation, SubregionOrigin, VerifyBound};
 use rustc_data_structures::fx::FxHashMap;
-use syntax::ast;
-use traits::ObligationCause;
-use ty::outlives::Component;
-use ty::{self, Region, Ty, TyCtxt, TypeFoldable};
+use crate::hir;
+use crate::traits::ObligationCause;
+use crate::ty::outlives::Component;
+use crate::ty::{self, Region, Ty, TyCtxt, TypeFoldable};
+use crate::ty::subst::UnpackedKind;
 
 impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     /// Registers that the given region obligation must be resolved
@@ -86,7 +77,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     /// information).
     pub fn register_region_obligation(
         &self,
-        body_id: ast::NodeId,
+        body_id: hir::HirId,
         obligation: RegionObligation<'tcx>,
     ) {
         debug!(
@@ -120,7 +111,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     }
 
     /// Trait queries just want to pass back type obligations "as is"
-    pub fn take_registered_region_obligations(&self) -> Vec<(ast::NodeId, RegionObligation<'tcx>)> {
+    pub fn take_registered_region_obligations(&self) -> Vec<(hir::HirId, RegionObligation<'tcx>)> {
         ::std::mem::replace(&mut *self.region_obligations.borrow_mut(), vec![])
     }
 
@@ -159,7 +150,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     /// processed.
     pub fn process_registered_region_obligations(
         &self,
-        region_bound_pairs_map: &FxHashMap<ast::NodeId, RegionBoundPairs<'tcx>>,
+        region_bound_pairs_map: &FxHashMap<hir::HirId, RegionBoundPairs<'tcx>>,
         implicit_region_bound: Option<ty::Region<'tcx>>,
         param_env: ty::ParamEnv<'tcx>,
     ) {
@@ -408,7 +399,7 @@ where
 
         // Remove outlives bounds that we get from the environment but
         // which are also deducable from the trait. This arises (cc
-        // #55756) in cases where you have e.g. `<T as Foo<'a>>::Item:
+        // #55756) in cases where you have e.g., `<T as Foo<'a>>::Item:
         // 'a` in the environment but `trait Foo<'b> { type Item: 'b
         // }` in the trait definition.
         approx_env_bounds.retain(|bound| {
@@ -440,13 +431,18 @@ where
         if approx_env_bounds.is_empty() && trait_bounds.is_empty() && needs_infer {
             debug!("projection_must_outlive: no declared bounds");
 
-            for component_ty in projection_ty.substs.types() {
-                self.type_must_outlive(origin.clone(), component_ty, region);
-            }
-
-            for r in projection_ty.substs.regions() {
-                self.delegate
-                    .push_sub_region_constraint(origin.clone(), region, r);
+            for k in projection_ty.substs {
+                match k.unpack() {
+                    UnpackedKind::Lifetime(lt) => {
+                        self.delegate.push_sub_region_constraint(origin.clone(), region, lt);
+                    }
+                    UnpackedKind::Type(ty) => {
+                        self.type_must_outlive(origin.clone(), ty, region);
+                    }
+                    UnpackedKind::Const(_) => {
+                        // Const parameters don't impose constraints.
+                    }
+                }
             }
 
             return;

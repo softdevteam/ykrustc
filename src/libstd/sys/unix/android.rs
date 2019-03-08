@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Android ABI-compatibility module
 //!
 //! The ABI of Android has changed quite a bit over time, and libstd attempts to
@@ -15,7 +5,7 @@
 //! always work with the most recent version of Android, but we also want to
 //! work with older versions of Android for whenever projects need to.
 //!
-//! Our current minimum supported Android version is `android-9`, e.g. Android
+//! Our current minimum supported Android version is `android-9`, e.g., Android
 //! with API level 9. We then in theory want to work on that and all future
 //! versions of Android!
 //!
@@ -31,7 +21,7 @@
 use libc::{c_int, c_void, sighandler_t, size_t, ssize_t};
 use libc::{ftruncate, pread, pwrite};
 
-use io;
+use crate::io;
 use super::{cvt, cvt_r};
 
 // The `log2` and `log2f` functions apparently appeared in android-18, or at
@@ -59,12 +49,12 @@ use super::{cvt, cvt_r};
 
 #[cfg(not(test))]
 pub fn log2f32(f: f32) -> f32 {
-    f.ln() * ::f32::consts::LOG2_E
+    f.ln() * crate::f32::consts::LOG2_E
 }
 
 #[cfg(not(test))]
 pub fn log2f64(f: f64) -> f64 {
-    f.ln() * ::f64::consts::LOG2_E
+    f.ln() * crate::f64::consts::LOG2_E
 }
 
 // Back in the day [1] the `signal` function was just an inline wrapper
@@ -127,7 +117,7 @@ pub fn ftruncate64(fd: c_int, size: u64) -> io::Result<()> {
 pub unsafe fn cvt_pread64(fd: c_int, buf: *mut c_void, count: size_t, offset: i64)
     -> io::Result<ssize_t>
 {
-    use convert::TryInto;
+    use crate::convert::TryInto;
     weak!(fn pread64(c_int, *mut c_void, size_t, i64) -> ssize_t);
     pread64.get().map(|f| cvt(f(fd, buf, count, offset))).unwrap_or_else(|| {
         if let Ok(o) = offset.try_into() {
@@ -143,7 +133,7 @@ pub unsafe fn cvt_pread64(fd: c_int, buf: *mut c_void, count: size_t, offset: i6
 pub unsafe fn cvt_pwrite64(fd: c_int, buf: *const c_void, count: size_t, offset: i64)
     -> io::Result<ssize_t>
 {
-    use convert::TryInto;
+    use crate::convert::TryInto;
     weak!(fn pwrite64(c_int, *const c_void, size_t, i64) -> ssize_t);
     pwrite64.get().map(|f| cvt(f(fd, buf, count, offset))).unwrap_or_else(|| {
         if let Ok(o) = offset.try_into() {

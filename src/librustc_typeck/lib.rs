@@ -1,33 +1,23 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /*!
 
-typeck.rs, an introduction
+# typeck
 
 The type checker is responsible for:
 
-1. Determining the type of each expression
-2. Resolving methods and traits
-3. Guaranteeing that most type rules are met ("most?", you say, "why most?"
+1. Determining the type of each expression.
+2. Resolving methods and traits.
+3. Guaranteeing that most type rules are met. ("Most?", you say, "why most?"
    Well, dear reader, read on)
 
-The main entry point is `check_crate()`.  Type checking operates in
+The main entry point is `check_crate()`. Type checking operates in
 several major phases:
 
 1. The collect phase first passes over all items and determines their
    type, without examining their "innards".
 
-2. Variance inference then runs to compute the variance of each parameter
+2. Variance inference then runs to compute the variance of each parameter.
 
-3. Coherence checks for overlapping or orphaned impls
+3. Coherence checks for overlapping or orphaned impls.
 
 4. Finally, the check phase then checks function bodies and so forth.
    Within the check phase, we check each function body one at a time
@@ -41,12 +31,12 @@ The type checker is defined into various submodules which are documented
 independently:
 
 - astconv: converts the AST representation of types
-  into the `ty` representation
+  into the `ty` representation.
 
 - collect: computes the types of each top-level item and enters them into
-  the `tcx.types` table for later use
+  the `tcx.types` table for later use.
 
-- coherence: enforces coherence rules, builds some tables
+- coherence: enforces coherence rules, builds some tables.
 
 - variance: variance inference
 
@@ -59,15 +49,13 @@ independently:
   all subtyping and assignment constraints are met.  In essence, the check
   module specifies the constraints, and the infer module solves them.
 
-# Note
+## Note
 
 This API is completely unstable and subject to change.
 
 */
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-      html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![allow(non_camel_case_types)]
 
@@ -76,50 +64,22 @@ This API is completely unstable and subject to change.
 #![feature(crate_visibility_modifier)]
 #![feature(exhaustive_patterns)]
 #![feature(nll)]
-#![feature(quote)]
 #![feature(refcell_replace_swap)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(slice_patterns)]
-#![feature(slice_sort_by_cached_key)]
 #![feature(never_type)]
 
 #![recursion_limit="256"]
 
+#![deny(rust_2018_idioms)]
+#![allow(explicit_outlives_requirements)]
+
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
-extern crate syntax_pos;
 
-extern crate arena;
 #[macro_use] extern crate rustc;
-extern crate rustc_platform_intrinsics as intrinsics;
-extern crate rustc_data_structures;
-extern crate rustc_errors as errors;
-extern crate rustc_target;
-extern crate smallvec;
 
-use rustc::hir;
-use rustc::lint;
-use rustc::middle;
-use rustc::session;
-use rustc::util;
-
-use hir::Node;
-use rustc::infer::InferOk;
-use rustc::ty::subst::Substs;
-use rustc::ty::{self, Ty, TyCtxt};
-use rustc::ty::query::Providers;
-use rustc::traits::{ObligationCause, ObligationCauseCode, TraitEngine, TraitEngineExt};
-use rustc::util::profiling::ProfileCategory;
-use session::{CompileIncomplete, config};
-use util::common::time;
-
-use syntax::ast;
-use rustc_target::spec::abi::Abi;
-use syntax_pos::Span;
-
-use std::iter;
-
-// NB: This module needs to be declared first so diagnostics are
+// N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
 mod diagnostics;
 
@@ -135,19 +95,55 @@ mod namespace;
 mod outlives;
 mod variance;
 
+use rustc_target::spec::abi::Abi;
+use rustc::hir::{self, Node};
+use rustc::hir::def_id::{DefId, LOCAL_CRATE};
+use rustc::infer::InferOk;
+use rustc::lint;
+use rustc::middle;
+use rustc::session;
+use rustc::util::common::ErrorReported;
+use rustc::session::config::{EntryFnType, nightly_options};
+use rustc::traits::{ObligationCause, ObligationCauseCode, TraitEngine, TraitEngineExt};
+use rustc::ty::subst::SubstsRef;
+use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::query::Providers;
+use rustc::util;
+use rustc::util::profiling::ProfileCategory;
+use syntax_pos::Span;
+use util::common::time;
+
+use std::iter;
+
 pub struct TypeAndSubsts<'tcx> {
-    substs: &'tcx Substs<'tcx>,
+    substs: SubstsRef<'tcx>,
     ty: Ty<'tcx>,
 }
 
-fn require_c_abi_if_variadic(tcx: TyCtxt,
-                             decl: &hir::FnDecl,
-                             abi: Abi,
-                             span: Span) {
-    if decl.variadic && !(abi == Abi::C || abi == Abi::Cdecl) {
+fn check_type_alias_enum_variants_enabled<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
+                                                          span: Span) {
+    if !tcx.features().type_alias_enum_variants {
+        let mut err = tcx.sess.struct_span_err(
+            span,
+            "enum variants on type aliases are experimental"
+        );
+        if nightly_options::is_nightly_build() {
+            help!(&mut err,
+                "add `#![feature(type_alias_enum_variants)]` to the \
+                crate attributes to enable");
+        }
+        err.emit();
+    }
+}
+
+fn require_c_abi_if_c_variadic(tcx: TyCtxt<'_, '_, '_>,
+                               decl: &hir::FnDecl,
+                               abi: Abi,
+                               span: Span) {
+    if decl.c_variadic && !(abi == Abi::C || abi == Abi::Cdecl) {
         let mut err = struct_span_err!(tcx.sess, span, E0045,
-            "variadic function must have C or cdecl calling convention");
-        err.span_label(span, "variadics require C or cdecl calling convention").emit();
+            "C-variadic function must have C or cdecl calling convention");
+        err.span_label(span, "C-variadics require C or cdecl calling convention").emit();
     }
 }
 
@@ -179,14 +175,13 @@ fn require_same_types<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     })
 }
 
-fn check_main_fn_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                              main_id: ast::NodeId,
-                              main_span: Span) {
-    let main_def_id = tcx.hir.local_def_id(main_id);
+fn check_main_fn_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, main_def_id: DefId) {
+    let main_id = tcx.hir().as_local_hir_id(main_def_id).unwrap();
+    let main_span = tcx.def_span(main_def_id);
     let main_t = tcx.type_of(main_def_id);
     match main_t.sty {
         ty::FnDef(..) => {
-            if let Some(Node::Item(it)) = tcx.hir.find(main_id) {
+            if let Some(Node::Item(it)) = tcx.hir().find_by_hir_id(main_id) {
                 if let hir::ItemKind::Fn(.., ref generics, _) = it.node {
                     let mut error = false;
                     if !generics.params.is_empty() {
@@ -245,14 +240,13 @@ fn check_main_fn_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     }
 }
 
-fn check_start_fn_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                               start_id: ast::NodeId,
-                               start_span: Span) {
-    let start_def_id = tcx.hir.local_def_id(start_id);
+fn check_start_fn_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, start_def_id: DefId) {
+    let start_id = tcx.hir().as_local_hir_id(start_def_id).unwrap();
+    let start_span = tcx.def_span(start_def_id);
     let start_t = tcx.type_of(start_def_id);
     match start_t.sty {
         ty::FnDef(..) => {
-            if let Some(Node::Item(it)) = tcx.hir.find(start_id) {
+            if let Some(Node::Item(it)) = tcx.hir().find_by_hir_id(start_id) {
                 if let hir::ItemKind::Fn(.., ref generics, _) = it.node {
                     let mut error = false;
                     if !generics.params.is_empty() {
@@ -304,24 +298,24 @@ fn check_start_fn_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
 fn check_for_entry_fn<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    if let Some((id, sp, entry_type)) = *tcx.sess.entry_fn.borrow() {
-        match entry_type {
-            config::EntryFnType::Main => check_main_fn_ty(tcx, id, sp),
-            config::EntryFnType::Start => check_start_fn_ty(tcx, id, sp),
-        }
+    match tcx.entry_fn(LOCAL_CRATE) {
+        Some((def_id, EntryFnType::Main)) => check_main_fn_ty(tcx, def_id),
+        Some((def_id, EntryFnType::Start)) => check_start_fn_ty(tcx, def_id),
+        _ => {}
     }
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     collect::provide(providers);
     coherence::provide(providers);
     check::provide(providers);
     variance::provide(providers);
     outlives::provide(providers);
+    impl_wf_check::provide(providers);
 }
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>)
-                             -> Result<(), CompileIncomplete>
+                             -> Result<(), ErrorReported>
 {
     tcx.sess.profiler(|p| p.start_activity(ProfileCategory::TypeChecking));
 
@@ -330,13 +324,14 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>)
     tcx.sess.track_errors(|| {
         time(tcx.sess, "type collecting", ||
              collect::collect_item_types(tcx));
-
     })?;
 
-    tcx.sess.track_errors(|| {
-        time(tcx.sess, "outlives testing", ||
-            outlives::test::test_inferred_outlives(tcx));
-    })?;
+    if tcx.features().rustc_attrs {
+        tcx.sess.track_errors(|| {
+            time(tcx.sess, "outlives testing", ||
+                outlives::test::test_inferred_outlives(tcx));
+        })?;
+    }
 
     tcx.sess.track_errors(|| {
         time(tcx.sess, "impl wf inference", ||
@@ -348,10 +343,12 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>)
           coherence::check_coherence(tcx));
     })?;
 
-    tcx.sess.track_errors(|| {
-        time(tcx.sess, "variance testing", ||
-             variance::test::test_variance(tcx));
-    })?;
+    if tcx.features().rustc_attrs {
+        tcx.sess.track_errors(|| {
+            time(tcx.sess, "variance testing", ||
+                variance::test::test_variance(tcx));
+        })?;
+    }
 
     time(tcx.sess, "wf checking", || check::check_wf_new(tcx))?;
 
@@ -364,7 +361,11 @@ pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>)
 
     tcx.sess.profiler(|p| p.end_activity(ProfileCategory::TypeChecking));
 
-    tcx.sess.compile_status()
+    if tcx.sess.err_count() == 0 {
+        Ok(())
+    } else {
+        Err(ErrorReported)
+    }
 }
 
 /// A quasi-deprecated helper used in rustdoc and save-analysis to get
@@ -373,8 +374,8 @@ pub fn hir_ty_to_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, hir_ty: &hir::Ty) -> 
     // In case there are any projections etc, find the "environment"
     // def-id that will be used to determine the traits/predicates in
     // scope.  This is derived from the enclosing item-like thing.
-    let env_node_id = tcx.hir.get_parent(hir_ty.id);
-    let env_def_id = tcx.hir.local_def_id(env_node_id);
+    let env_node_id = tcx.hir().get_parent_item(hir_ty.hir_id);
+    let env_def_id = tcx.hir().local_def_id_from_hir_id(env_node_id);
     let item_cx = self::collect::ItemCtxt::new(tcx, env_def_id);
 
     astconv::AstConv::ast_ty_to_ty(&item_cx, hir_ty)
@@ -385,11 +386,11 @@ pub fn hir_trait_to_predicates<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, hir_trait:
     // In case there are any projections etc, find the "environment"
     // def-id that will be used to determine the traits/predicates in
     // scope.  This is derived from the enclosing item-like thing.
-    let env_node_id = tcx.hir.get_parent(hir_trait.ref_id);
-    let env_def_id = tcx.hir.local_def_id(env_node_id);
+    let env_hir_id = tcx.hir().get_parent_item(hir_trait.hir_ref_id);
+    let env_def_id = tcx.hir().local_def_id_from_hir_id(env_hir_id);
     let item_cx = self::collect::ItemCtxt::new(tcx, env_def_id);
     let mut projections = Vec::new();
-    let principal = astconv::AstConv::instantiate_poly_trait_ref_inner(
+    let (principal, _) = astconv::AstConv::instantiate_poly_trait_ref_inner(
         &item_cx, hir_trait, tcx.types.err, &mut projections, true
     );
 

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // run-pass
 #[repr(packed)]
 struct Packed<T: Copy>(T);
@@ -34,12 +24,12 @@ fn main() {
 
     // In #46769, `Option<(Packed<&()>, bool)>` was found to have
     // pointer alignment, without actually being aligned in size.
-    // E.g. on 64-bit platforms, it had alignment `8` but size `9`.
+    // e.g., on 64-bit platforms, it had alignment `8` but size `9`.
     type PackedRefAndBool<'a> = (Packed<&'a ()>, bool);
     sanity_check_size::<Option<PackedRefAndBool>>(Some((Packed(&()), true)));
 
     // Make sure we don't pay for the enum optimization in size,
-    // e.g. we shouldn't need extra padding after the packed data.
+    // e.g., we shouldn't need extra padding after the packed data.
     assert_eq!(std::mem::align_of::<Option<PackedRefAndBool>>(), 1);
     assert_eq!(std::mem::size_of::<Option<PackedRefAndBool>>(),
                std::mem::size_of::<PackedRefAndBool>());

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A mostly lock-free multi-producer, single consumer queue.
 //!
 //! This module contains an implementation of a concurrent MPSC queue. This
@@ -25,8 +15,9 @@ pub use self::PopResult::*;
 
 use core::ptr;
 use core::cell::UnsafeCell;
-use boxed::Box;
-use sync::atomic::{AtomicPtr, Ordering};
+
+use crate::boxed::Box;
+use crate::sync::atomic::{AtomicPtr, Ordering};
 
 /// A result of the `pop` function.
 pub enum PopResult<T> {
@@ -130,10 +121,10 @@ impl<T> Drop for Queue<T> {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests {
-    use sync::mpsc::channel;
     use super::{Queue, Data, Empty, Inconsistent};
-    use sync::Arc;
-    use thread;
+    use crate::sync::mpsc::channel;
+    use crate::sync::Arc;
+    use crate::thread;
 
     #[test]
     fn test_full() {

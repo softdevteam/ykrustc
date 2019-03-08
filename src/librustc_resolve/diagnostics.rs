@@ -1,14 +1,6 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
+
+use syntax::{register_diagnostic, register_diagnostics, register_long_diagnostics};
 
 // Error messages for EXXXX errors.  Each message should start and end with a
 // new line, and be wrapped to 80 characters.  In vim you can `:set tw=80` and
@@ -202,7 +194,7 @@ use foo::core;  // error: an extern crate named `core` has already
 fn main() {}
 ```
 
-To fix issue issue, you have to rename at least one of the two imports.
+To fix this issue, you have to rename at least one of the two imports.
 Example:
 
 ```
@@ -295,9 +287,8 @@ that has been imported into the current module.
 Erroneous code example:
 
 ```compile_fail,E0259
-# #![feature(libc)]
 extern crate core;
-extern crate libc as core;
+extern crate std as core;
 
 fn main() {}
 ```
@@ -308,9 +299,8 @@ external crate imported into the current module.
 Correct example:
 
 ```
-# #![feature(libc)]
 extern crate core;
-extern crate libc as other_name;
+extern crate std as other_name;
 
 fn main() {}
 ```
@@ -424,8 +414,8 @@ https://doc.rust-lang.org/reference.html#use-declarations
 "##,
 
 E0401: r##"
-Inner items do not inherit type parameters from the functions they are embedded
-in.
+Inner items do not inherit type or const parameters from the functions
+they are embedded in.
 
 Erroneous code example:
 

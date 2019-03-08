@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::borrow::Cow;
 use std::collections::CollectionAllocErr::*;
 use std::mem::size_of;
@@ -31,7 +21,7 @@ impl<'a> IntoCow<'a, str> for &'a str {
 
 #[test]
 fn test_from_str() {
-    let owned: Option<::std::string::String> = "string".parse().ok();
+    let owned: Option<std::string::String> = "string".parse().ok();
     assert_eq!(owned.as_ref().map(|s| &**s), Some("string"));
 }
 
@@ -132,7 +122,7 @@ fn test_from_utf16() {
         let s_as_utf16 = s.encode_utf16().collect::<Vec<u16>>();
         let u_as_string = String::from_utf16(&u).unwrap();
 
-        assert!(::core::char::decode_utf16(u.iter().cloned()).all(|r| r.is_ok()));
+        assert!(core::char::decode_utf16(u.iter().cloned()).all(|r| r.is_ok()));
         assert_eq!(s_as_utf16, u);
 
         assert_eq!(u_as_string, s);
@@ -241,6 +231,7 @@ fn test_split_off_empty() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_split_off_past_end() {
     let orig = "Hello, world!";
     let mut split = String::from(orig);
@@ -249,6 +240,7 @@ fn test_split_off_past_end() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_split_off_mid_char() {
     let mut orig = String::from("山");
     orig.split_off(1);
@@ -297,6 +289,7 @@ fn test_str_truncate_invalid_len() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_str_truncate_split_codepoint() {
     let mut s = String::from("\u{FC}"); // ü
     s.truncate(1);
@@ -331,6 +324,7 @@ fn remove() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn remove_bad() {
     "ศ".to_string().remove(1);
 }
@@ -366,11 +360,13 @@ fn insert() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn insert_bad1() {
     "".to_string().insert(1, 't');
 }
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn insert_bad2() {
     "ệ".to_string().insert(1, 't');
 }
@@ -451,6 +447,7 @@ fn test_replace_range() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_replace_range_char_boundary() {
     let mut s = "Hello, 世界!".to_owned();
     s.replace_range(..8, "");
@@ -467,6 +464,7 @@ fn test_replace_range_inclusive_range() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_replace_range_out_of_bounds() {
     let mut s = String::from("12345");
     s.replace_range(5..6, "789");
@@ -474,6 +472,7 @@ fn test_replace_range_out_of_bounds() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_replace_range_inclusive_out_of_bounds() {
     let mut s = String::from("12345");
     s.replace_range(5..=5, "789");
@@ -533,6 +532,7 @@ fn test_reserve_exact() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri does not support signalling OOM
 fn test_try_reserve() {
 
     // These are the interesting cases:
@@ -610,6 +610,7 @@ fn test_try_reserve() {
 }
 
 #[test]
+#[cfg(not(miri))] // Miri does not support signalling OOM
 fn test_try_reserve_exact() {
 
     // This is exactly the same as test_try_reserve with the method changed.

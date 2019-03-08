@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! [Flexible target specification.](https://github.com/rust-lang/rfcs/pull/131)
 //!
 //! Rust targets a wide variety of usecases, and in the interest of flexibility,
@@ -50,7 +40,7 @@ use std::default::Default;
 use std::{fmt, io};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use spec::abi::{Abi, lookup as lookup_abi};
+use crate::spec::abi::{Abi, lookup as lookup_abi};
 
 pub mod abi;
 mod android_base;
@@ -68,6 +58,7 @@ mod linux_musl_base;
 mod openbsd_base;
 mod netbsd_base;
 mod solaris_base;
+mod uefi_base;
 mod windows_base;
 mod windows_msvc_base;
 mod thumb_base;
@@ -84,6 +75,7 @@ pub enum LinkerFlavor {
     Ld,
     Msvc,
     Lld(LldFlavor),
+    PtxLinker,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
@@ -152,6 +144,7 @@ flavor_mappings! {
     ((LinkerFlavor::Gcc), "gcc"),
     ((LinkerFlavor::Ld), "ld"),
     ((LinkerFlavor::Msvc), "msvc"),
+    ((LinkerFlavor::PtxLinker), "ptx-linker"),
     ((LinkerFlavor::Lld(LldFlavor::Wasm)), "wasm-ld"),
     ((LinkerFlavor::Lld(LldFlavor::Ld64)), "ld64.lld"),
     ((LinkerFlavor::Lld(LldFlavor::Ld)), "ld.lld"),
@@ -226,6 +219,51 @@ impl ToJson for RelroLevel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
+pub enum MergeFunctions {
+    Disabled,
+    Trampolines,
+    Aliases
+}
+
+impl MergeFunctions {
+    pub fn desc(&self) -> &str {
+        match *self {
+            MergeFunctions::Disabled => "disabled",
+            MergeFunctions::Trampolines => "trampolines",
+            MergeFunctions::Aliases => "aliases",
+        }
+    }
+}
+
+impl FromStr for MergeFunctions {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<MergeFunctions, ()> {
+        match s {
+            "disabled" => Ok(MergeFunctions::Disabled),
+            "trampolines" => Ok(MergeFunctions::Trampolines),
+            "aliases" => Ok(MergeFunctions::Aliases),
+            _ => Err(()),
+        }
+    }
+}
+
+impl ToJson for MergeFunctions {
+    fn to_json(&self) -> Json {
+        match *self {
+            MergeFunctions::Disabled => "disabled".to_json(),
+            MergeFunctions::Trampolines => "trampolines".to_json(),
+            MergeFunctions::Aliases => "aliases".to_json(),
+        }
+    }
+}
+
+pub enum LoadTargetError {
+    BuiltinTargetNotFound(String),
+    Other(String),
+}
+
 pub type LinkArgs = BTreeMap<LinkerFlavor, Vec<String>>;
 pub type TargetResult = Result<Target, String>;
 
@@ -234,32 +272,35 @@ macro_rules! supported_targets {
         $(mod $module;)*
 
         /// List of supported targets
-        const TARGETS: &'static [&'static str] = &[$($triple),*];
+        const TARGETS: &[&str] = &[$($triple),*];
 
-        fn load_specific(target: &str) -> TargetResult {
+        fn load_specific(target: &str) -> Result<Target, LoadTargetError> {
             match target {
                 $(
                     $triple => {
-                        let mut t = $module::target()?;
+                        let mut t = $module::target()
+                            .map_err(LoadTargetError::Other)?;
                         t.options.is_builtin = true;
 
                         // round-trip through the JSON parser to ensure at
                         // run-time that the parser works correctly
-                        t = Target::from_json(t.to_json())?;
+                        t = Target::from_json(t.to_json())
+                            .map_err(LoadTargetError::Other)?;
                         debug!("Got builtin target: {:?}", t);
                         Ok(t)
                     },
                 )+
-                _ => Err(format!("Unable to find target: {}", target))
+                    _ => Err(LoadTargetError::BuiltinTargetNotFound(
+                        format!("Unable to find target: {}", target)))
             }
         }
 
-        pub fn get_targets() -> Box<dyn Iterator<Item=String>> {
-            Box::new(TARGETS.iter().filter_map(|t| -> Option<String> {
+        pub fn get_targets() -> impl Iterator<Item = String> {
+            TARGETS.iter().filter_map(|t| -> Option<String> {
                 load_specific(t)
                     .and(Ok(t.to_string()))
                     .ok()
-            }))
+            })
         }
 
         #[cfg(test)]
@@ -313,6 +354,7 @@ supported_targets! {
     ("armv5te-unknown-linux-gnueabi", armv5te_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-musleabi", armv5te_unknown_linux_musleabi),
     ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
+    ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
     ("armv7-unknown-linux-musleabihf", armv7_unknown_linux_musleabihf),
     ("aarch64-unknown-linux-gnu", aarch64_unknown_linux_gnu),
 
@@ -330,10 +372,12 @@ supported_targets! {
     ("x86_64-linux-android", x86_64_linux_android),
     ("arm-linux-androideabi", arm_linux_androideabi),
     ("armv7-linux-androideabi", armv7_linux_androideabi),
+    ("thumbv7neon-linux-androideabi", thumbv7neon_linux_androideabi),
     ("aarch64-linux-android", aarch64_linux_android),
 
     ("aarch64-unknown-freebsd", aarch64_unknown_freebsd),
     ("i686-unknown-freebsd", i686_unknown_freebsd),
+    ("powerpc64-unknown-freebsd", powerpc64_unknown_freebsd),
     ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
 
     ("i686-unknown-dragonfly", i686_unknown_dragonfly),
@@ -399,6 +443,9 @@ supported_targets! {
     ("thumbv7m-none-eabi", thumbv7m_none_eabi),
     ("thumbv7em-none-eabi", thumbv7em_none_eabi),
     ("thumbv7em-none-eabihf", thumbv7em_none_eabihf),
+    ("thumbv8m.base-none-eabi", thumbv8m_base_none_eabi),
+    ("thumbv8m.main-none-eabi", thumbv8m_main_none_eabi),
+    ("thumbv8m.main-none-eabihf", thumbv8m_main_none_eabihf),
 
     ("msp430-none-elf", msp430_none_elf),
 
@@ -412,8 +459,16 @@ supported_targets! {
 
     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
     ("riscv32imac-unknown-none-elf", riscv32imac_unknown_none_elf),
+    ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
+    ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
 
     ("aarch64-unknown-none", aarch64_unknown_none),
+
+    ("x86_64-fortanix-unknown-sgx", x86_64_fortanix_unknown_sgx),
+
+    ("x86_64-unknown-uefi", x86_64_unknown_uefi),
+
+    ("nvptx64-nvidia-cuda", nvptx64_nvidia_cuda),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -480,7 +535,7 @@ pub struct TargetOptions {
     pub pre_link_objects_exe_crt: Vec<String>, // ... when linking an executable with a bundled crt
     pub pre_link_objects_dll: Vec<String>, // ... when linking a dylib
     /// Linker arguments that are unconditionally passed after any
-    /// user-defined but before post_link_objects.  Standard platform
+    /// user-defined but before post_link_objects. Standard platform
     /// libraries that should be always be linked to, usually go here.
     pub late_link_args: LinkArgs,
     /// Objects to link after all others, always found within the
@@ -558,6 +613,8 @@ pub struct TargetOptions {
     /// Emscripten toolchain.
     /// Defaults to false.
     pub is_like_emscripten: bool,
+    /// Whether the target toolchain is like Fuchsia's.
+    pub is_like_fuchsia: bool,
     /// Whether the linker support GNU-like arguments such as -O. Defaults to false.
     pub linker_is_gnu: bool,
     /// The MinGW toolchain has a known issue that prevents it from correctly
@@ -594,11 +651,11 @@ pub struct TargetOptions {
     pub allow_asm: bool,
     /// Whether the target uses a custom unwind resumption routine.
     /// By default LLVM lowers `resume` instructions into calls to `_Unwind_Resume`
-    /// defined in libgcc.  If this option is enabled, the target must provide
+    /// defined in libgcc. If this option is enabled, the target must provide
     /// `eh_unwind_resume` lang item.
     pub custom_unwind_resume: bool,
 
-    /// Flag indicating whether ELF TLS (e.g. #[thread_local]) is available for
+    /// Flag indicating whether ELF TLS (e.g., #[thread_local]) is available for
     /// this target.
     pub has_elf_tls: bool,
     // This is mainly for easy compatibility with emscripten.
@@ -658,7 +715,7 @@ pub struct TargetOptions {
     /// for this target unconditionally.
     pub no_builtins: bool,
 
-    /// Whether to lower 128-bit operations to compiler_builtins calls.  Use if
+    /// Whether to lower 128-bit operations to compiler_builtins calls. Use if
     /// your backend only supports 64-bit and smaller math.
     pub i128_lowering: bool,
 
@@ -685,10 +742,22 @@ pub struct TargetOptions {
     /// target features. This is `true` by default, and `false` for targets like
     /// wasm32 where the whole program either has simd or not.
     pub simd_types_indirect: bool,
+
+    /// If set, have the linker export exactly these symbols, instead of using
+    /// the usual logic to figure this out from the crate itself.
+    pub override_export_symbols: Option<Vec<String>>,
+
+    /// Determines how or whether the MergeFunctions LLVM pass should run for
+    /// this target. Either "disabled", "trampolines", or "aliases".
+    /// The MergeFunctions pass is generally useful, but some targets may need
+    /// to opt out. The default is "aliases".
+    ///
+    /// Workaround for: https://github.com/rust-lang/rust/issues/57356
+    pub merge_functions: MergeFunctions
 }
 
 impl Default for TargetOptions {
-    /// Create a set of "sane defaults" for any target. This is still
+    /// Creates a set of "sane defaults" for any target. This is still
     /// incomplete, and if used for compilation, will certainly not work.
     fn default() -> TargetOptions {
         TargetOptions {
@@ -723,6 +792,7 @@ impl Default for TargetOptions {
             is_like_android: false,
             is_like_emscripten: false,
             is_like_msvc: false,
+            is_like_fuchsia: false,
             linker_is_gnu: false,
             allows_weak_linkage: true,
             has_rpath: false,
@@ -765,6 +835,8 @@ impl Default for TargetOptions {
             emit_debug_gdb_scripts: true,
             requires_uwtable: false,
             simd_types_indirect: true,
+            override_export_symbols: None,
+            merge_functions: MergeFunctions::Aliases,
         }
     }
 }
@@ -810,7 +882,7 @@ impl Target {
         abi.generic() || !self.options.abi_blacklist.contains(&abi)
     }
 
-    /// Load a target descriptor from a JSON object.
+    /// Loads a target descriptor from a JSON object.
     pub fn from_json(obj: Json) -> TargetResult {
         // While ugly, this code must remain this way to retain
         // compatibility with existing JSON fields and the internal
@@ -867,6 +939,19 @@ impl Target {
                     .map(|o| o.as_u64()
                          .map(|s| base.options.$key_name = Some(s)));
             } );
+            ($key_name:ident, MergeFunctions) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                    match s.parse::<MergeFunctions>() {
+                        Ok(mergefunc) => base.options.$key_name = mergefunc,
+                        _ => return Some(Err(format!("'{}' is not a valid value for \
+                                                      merge-functions. Use 'disabled', \
+                                                      'trampolines', or 'aliases'.",
+                                                      s))),
+                    }
+                    Some(Ok(()))
+                })).unwrap_or(Ok(()))
+            } );
             ($key_name:ident, PanicStrategy) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
                 obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
@@ -897,6 +982,14 @@ impl Target {
                 obj.find(&name[..]).map(|o| o.as_array()
                     .map(|v| base.options.$key_name = v.iter()
                         .map(|a| a.as_string().unwrap().to_string()).collect()
+                        )
+                    );
+            } );
+            ($key_name:ident, opt_list) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).map(|o| o.as_array()
+                    .map(|v| base.options.$key_name = Some(v.iter()
+                        .map(|a| a.as_string().unwrap().to_string()).collect())
                         )
                     );
             } );
@@ -977,7 +1070,7 @@ impl Target {
 
         key!(is_builtin, bool);
         key!(linker, optional);
-        try!(key!(lld_flavor, LldFlavor));
+        key!(lld_flavor, LldFlavor)?;
         key!(pre_link_args, link_args);
         key!(pre_link_args_crt, link_args);
         key!(pre_link_objects_exe, list);
@@ -1013,13 +1106,14 @@ impl Target {
         key!(is_like_msvc, bool);
         key!(is_like_emscripten, bool);
         key!(is_like_android, bool);
+        key!(is_like_fuchsia, bool);
         key!(linker_is_gnu, bool);
         key!(allows_weak_linkage, bool);
         key!(has_rpath, bool);
         key!(no_default_libraries, bool);
         key!(position_independent_executables, bool);
         key!(needs_plt, bool);
-        try!(key!(relro_level, RelroLevel));
+        key!(relro_level, RelroLevel)?;
         key!(archive_format);
         key!(allow_asm, bool);
         key!(custom_unwind_resume, bool);
@@ -1029,7 +1123,7 @@ impl Target {
         key!(max_atomic_width, Option<u64>);
         key!(min_atomic_width, Option<u64>);
         key!(atomic_cas, bool);
-        try!(key!(panic_strategy, PanicStrategy));
+        key!(panic_strategy, PanicStrategy)?;
         key!(crt_static_allows_dylibs, bool);
         key!(crt_static_default, bool);
         key!(crt_static_respected, bool);
@@ -1046,6 +1140,8 @@ impl Target {
         key!(emit_debug_gdb_scripts, bool);
         key!(requires_uwtable, bool);
         key!(simd_types_indirect, bool);
+        key!(override_export_symbols, opt_list);
+        key!(merge_functions, MergeFunctions)?;
 
         if let Some(array) = obj.find("abi-blacklist").and_then(Json::as_array) {
             for name in array.iter().filter_map(|abi| abi.as_string()) {
@@ -1088,8 +1184,10 @@ impl Target {
         match *target_triple {
             TargetTriple::TargetTriple(ref target_triple) => {
                 // check if triple is in list of supported targets
-                if let Ok(t) = load_specific(target_triple) {
-                    return Ok(t)
+                match load_specific(target_triple) {
+                    Ok(t) => return Ok(t),
+                    Err(LoadTargetError::BuiltinTargetNotFound(_)) => (),
+                    Err(LoadTargetError::Other(e)) => return Err(e),
                 }
 
                 // search for a file named `target_triple`.json in RUST_TARGET_PATH
@@ -1222,6 +1320,7 @@ impl ToJson for Target {
         target_option_val!(is_like_msvc);
         target_option_val!(is_like_emscripten);
         target_option_val!(is_like_android);
+        target_option_val!(is_like_fuchsia);
         target_option_val!(linker_is_gnu);
         target_option_val!(allows_weak_linkage);
         target_option_val!(has_rpath);
@@ -1255,6 +1354,8 @@ impl ToJson for Target {
         target_option_val!(emit_debug_gdb_scripts);
         target_option_val!(requires_uwtable);
         target_option_val!(simd_types_indirect);
+        target_option_val!(override_export_symbols);
+        target_option_val!(merge_functions);
 
         if default.abi_blacklist != self.options.abi_blacklist {
             d.insert("abi-blacklist".to_string(), self.options.abi_blacklist.iter()
@@ -1319,7 +1420,7 @@ impl TargetTriple {
 }
 
 impl fmt::Display for TargetTriple {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.debug_triple())
     }
 }

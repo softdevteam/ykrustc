@@ -1,37 +1,28 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![unstable(feature = "process_internals", issue = "0")]
 
-use collections::BTreeMap;
-use env::split_paths;
-use env;
-use ffi::{OsString, OsStr};
-use fmt;
-use fs;
-use io::{self, Error, ErrorKind};
+use crate::collections::BTreeMap;
+use crate::env::split_paths;
+use crate::env;
+use crate::ffi::{OsString, OsStr};
+use crate::fmt;
+use crate::fs;
+use crate::io::{self, Error, ErrorKind};
+use crate::mem;
+use crate::os::windows::ffi::OsStrExt;
+use crate::path::Path;
+use crate::ptr;
+use crate::sys::mutex::Mutex;
+use crate::sys::c;
+use crate::sys::fs::{OpenOptions, File};
+use crate::sys::handle::Handle;
+use crate::sys::pipe::{self, AnonPipe};
+use crate::sys::stdio;
+use crate::sys::cvt;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::sys_common::process::{CommandEnv, EnvKey};
+use crate::borrow::Borrow;
+
 use libc::{c_void, EXIT_SUCCESS, EXIT_FAILURE};
-use mem;
-use os::windows::ffi::OsStrExt;
-use path::Path;
-use ptr;
-use sys::mutex::Mutex;
-use sys::c;
-use sys::fs::{OpenOptions, File};
-use sys::handle::Handle;
-use sys::pipe::{self, AnonPipe};
-use sys::stdio;
-use sys::cvt;
-use sys_common::{AsInner, FromInner, IntoInner};
-use sys_common::process::{CommandEnv, EnvKey};
-use borrow::Borrow;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -262,9 +253,9 @@ impl Stdio {
             // should still be unavailable so propagate the
             // INVALID_HANDLE_VALUE.
             Stdio::Inherit => {
-                match stdio::get(stdio_id) {
+                match stdio::get_handle(stdio_id) {
                     Ok(io) => {
-                        let io = Handle::new(io.handle());
+                        let io = Handle::new(io);
                         let ret = io.duplicate(0, true,
                                                c::DUPLICATE_SAME_ACCESS);
                         io.into_raw();
@@ -403,7 +394,16 @@ impl From<c::DWORD> for ExitStatus {
 
 impl fmt::Display for ExitStatus {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "exit code: {}", self.0)
+        // Windows exit codes with the high bit set typically mean some form of
+        // unhandled exception or warning. In this scenario printing the exit
+        // code in decimal doesn't always make sense because it's a very large
+        // and somewhat gibberish number. The hex code is a bit more
+        // recognizable and easier to search for, so print that.
+        if self.0 & 0x80000000 != 0 {
+            write!(f, "exit code: {:#x}", self.0)
+        } else {
+            write!(f, "exit code: {}", self.0)
+        }
     }
 }
 
@@ -487,7 +487,7 @@ fn make_command_line(prog: &OsStr, args: &[OsString]) -> io::Result<Vec<u16>> {
             } else {
                 if x == '"' as u16 {
                     // Add n+1 backslashes to total 2n+1 before internal '"'.
-                    cmd.extend((0..(backslashes + 1)).map(|_| '\\' as u16));
+                    cmd.extend((0..=backslashes).map(|_| '\\' as u16));
                 }
                 backslashes = 0;
             }
@@ -538,7 +538,7 @@ fn make_dirp(d: Option<&OsString>) -> io::Result<(*const u16, Vec<u16>)> {
 
 #[cfg(test)]
 mod tests {
-    use ffi::{OsStr, OsString};
+    use crate::ffi::{OsStr, OsString};
     use super::make_command_line;
 
     #[test]

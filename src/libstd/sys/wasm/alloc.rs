@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This is an implementation of a global allocator on the wasm32 platform when
 //! emscripten is not in use. In that situation there's no actual runtime for us
 //! to lean on for allocation, so instead we provide our own!
@@ -26,9 +16,7 @@
 //! The crate itself provides a global allocator which on wasm has no
 //! synchronization as there are no threads!
 
-extern crate dlmalloc;
-
-use alloc::{GlobalAlloc, Layout, System};
+use crate::alloc::{GlobalAlloc, Layout, System};
 
 static mut DLMALLOC: dlmalloc::Dlmalloc = dlmalloc::DLMALLOC_INIT;
 
@@ -61,8 +49,8 @@ unsafe impl GlobalAlloc for System {
 
 #[cfg(target_feature = "atomics")]
 mod lock {
-    use arch::wasm32;
-    use sync::atomic::{AtomicI32, Ordering::SeqCst};
+    use crate::arch::wasm32;
+    use crate::sync::atomic::{AtomicI32, Ordering::SeqCst};
 
     static LOCKED: AtomicI32 = AtomicI32::new(0);
 
@@ -74,7 +62,7 @@ mod lock {
                 return DropLock
             }
             unsafe {
-                let r = wasm32::atomic::wait_i32(
+                let r = wasm32::i32_atomic_wait(
                     &LOCKED as *const AtomicI32 as *mut i32,
                     1,  // expected value
                     -1, // timeout
@@ -89,7 +77,7 @@ mod lock {
             let r = LOCKED.swap(0, SeqCst);
             debug_assert_eq!(r, 1);
             unsafe {
-                wasm32::atomic::wake(
+                wasm32::atomic_notify(
                     &LOCKED as *const AtomicI32 as *mut i32,
                     1, // only one thread
                 );

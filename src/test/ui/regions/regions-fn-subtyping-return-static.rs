@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // In this fn, the type `F` is a function that takes a reference to a
 // struct and returns another reference with the same lifetime.
 //
@@ -18,6 +8,7 @@
 
 #![allow(dead_code)]
 #![allow(unused_variables)]
+#![allow(non_snake_case)]
 
 struct S;
 
@@ -47,8 +38,7 @@ fn baz(x: &S) -> &S {
 fn supply_F() {
     want_F(foo);
 
-    // FIXME(#33684) -- this should be a subtype, but current alg. rejects it incorrectly
-    want_F(bar); //~ ERROR E0308
+    want_F(bar); //~ ERROR mismatched types
 
     want_F(baz);
 }

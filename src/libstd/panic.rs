@@ -1,32 +1,22 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Panic support in the standard library.
 
 #![stable(feature = "std_panic", since = "1.9.0")]
 
-use any::Any;
-use cell::UnsafeCell;
-use fmt;
-use future::Future;
-use pin::Pin;
-use ops::{Deref, DerefMut};
-use panicking;
-use ptr::{Unique, NonNull};
-use rc::Rc;
-use sync::{Arc, Mutex, RwLock, atomic};
-use task::{LocalWaker, Poll};
-use thread::Result;
+use crate::any::Any;
+use crate::cell::UnsafeCell;
+use crate::fmt;
+use crate::future::Future;
+use crate::pin::Pin;
+use crate::ops::{Deref, DerefMut};
+use crate::panicking;
+use crate::ptr::{Unique, NonNull};
+use crate::rc::Rc;
+use crate::sync::{Arc, Mutex, RwLock, atomic};
+use crate::task::{Waker, Poll};
+use crate::thread::Result;
 
 #[stable(feature = "panic_hooks", since = "1.10.0")]
-pub use panicking::{take_hook, set_hook};
+pub use crate::panicking::{take_hook, set_hook};
 
 #[stable(feature = "panic_hooks", since = "1.10.0")]
 pub use core::panic::{PanicInfo, Location};
@@ -80,7 +70,7 @@ pub use core::panic::{PanicInfo, Location};
 /// Simply put, a type `T` implements `UnwindSafe` if it cannot easily allow
 /// witnessing a broken invariant through the use of `catch_unwind` (catching a
 /// panic). This trait is an auto trait, so it is automatically implemented for
-/// many types, and it is also structurally composed (e.g. a struct is unwind
+/// many types, and it is also structurally composed (e.g., a struct is unwind
 /// safe if all of its components are unwind safe).
 ///
 /// Note, however, that this is not an unsafe trait, so there is not a succinct
@@ -209,9 +199,9 @@ pub struct AssertUnwindSafe<T>(
 // * Our custom AssertUnwindSafe wrapper is indeed unwind safe
 
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-impl<'a, T: ?Sized> !UnwindSafe for &'a mut T {}
+impl<T: ?Sized> !UnwindSafe for &mut T {}
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-impl<'a, T: RefUnwindSafe + ?Sized> UnwindSafe for &'a T {}
+impl<T: RefUnwindSafe + ?Sized> UnwindSafe for &T {}
 #[stable(feature = "catch_unwind", since = "1.9.0")]
 impl<T: RefUnwindSafe + ?Sized> UnwindSafe for *const T {}
 #[stable(feature = "catch_unwind", since = "1.9.0")]
@@ -264,7 +254,7 @@ impl RefUnwindSafe for atomic::AtomicI32 {}
 #[cfg(target_has_atomic = "64")]
 #[unstable(feature = "integer_atomics", issue = "32976")]
 impl RefUnwindSafe for atomic::AtomicI64 {}
-#[cfg(all(not(stage0), target_has_atomic = "128"))]
+#[cfg(target_has_atomic = "128")]
 #[unstable(feature = "integer_atomics", issue = "32976")]
 impl RefUnwindSafe for atomic::AtomicI128 {}
 
@@ -283,7 +273,7 @@ impl RefUnwindSafe for atomic::AtomicU32 {}
 #[cfg(target_has_atomic = "64")]
 #[unstable(feature = "integer_atomics", issue = "32976")]
 impl RefUnwindSafe for atomic::AtomicU64 {}
-#[cfg(all(not(stage0), target_has_atomic = "128"))]
+#[cfg(target_has_atomic = "128")]
 #[unstable(feature = "integer_atomics", issue = "32976")]
 impl RefUnwindSafe for atomic::AtomicU128 {}
 
@@ -330,12 +320,12 @@ impl<T: fmt::Debug> fmt::Debug for AssertUnwindSafe<T> {
 }
 
 #[unstable(feature = "futures_api", issue = "50547")]
-impl<'a, F: Future> Future for AssertUnwindSafe<F> {
+impl<F: Future> Future for AssertUnwindSafe<F> {
     type Output = F::Output;
 
-    fn poll(self: Pin<&mut Self>, lw: &LocalWaker) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
         let pinned_field = unsafe { Pin::map_unchecked_mut(self, |x| &mut x.0) };
-        F::poll(pinned_field, lw)
+        F::poll(pinned_field, waker)
     }
 }
 
@@ -395,7 +385,7 @@ impl<'a, F: Future> Future for AssertUnwindSafe<F> {
 #[stable(feature = "catch_unwind", since = "1.9.0")]
 pub fn catch_unwind<F: FnOnce() -> R + UnwindSafe, R>(f: F) -> Result<R> {
     unsafe {
-        panicking::try(f)
+        panicking::r#try(f)
     }
 }
 

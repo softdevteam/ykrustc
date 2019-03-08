@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hir::Node;
 use rustc::hir;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
@@ -22,7 +12,7 @@ mod implicit_infer;
 pub mod test;
 mod utils;
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     *providers = Providers {
         inferred_outlives_of,
         inferred_outlives_crate,
@@ -35,11 +25,11 @@ fn inferred_outlives_of<'a, 'tcx>(
     item_def_id: DefId,
 ) -> Lrc<Vec<ty::Predicate<'tcx>>> {
     let id = tcx
-        .hir
+        .hir()
         .as_local_node_id(item_def_id)
         .expect("expected local def-id");
 
-    match tcx.hir.get(id) {
+    match tcx.hir().get(id) {
         Node::Item(item) => match item.node {
             hir::ItemKind::Struct(..) | hir::ItemKind::Enum(..) | hir::ItemKind::Union(..) => {
                 let crate_map = tcx.inferred_outlives_crate(LOCAL_CRATE);
@@ -108,14 +98,22 @@ fn inferred_outlives_crate<'tcx>(
         .map(|(&def_id, set)| {
             let vec: Vec<ty::Predicate<'tcx>> = set
                 .iter()
-                .map(
+                .filter_map(
                     |ty::OutlivesPredicate(kind1, region2)| match kind1.unpack() {
-                        UnpackedKind::Type(ty1) => ty::Predicate::TypeOutlives(ty::Binder::bind(
-                            ty::OutlivesPredicate(ty1, region2),
-                        )),
-                        UnpackedKind::Lifetime(region1) => ty::Predicate::RegionOutlives(
-                            ty::Binder::bind(ty::OutlivesPredicate(region1, region2)),
-                        ),
+                        UnpackedKind::Type(ty1) => {
+                            Some(ty::Predicate::TypeOutlives(ty::Binder::bind(
+                                ty::OutlivesPredicate(ty1, region2)
+                            )))
+                        }
+                        UnpackedKind::Lifetime(region1) => {
+                            Some(ty::Predicate::RegionOutlives(
+                                ty::Binder::bind(ty::OutlivesPredicate(region1, region2))
+                            ))
+                        }
+                        UnpackedKind::Const(_) => {
+                            // Generic consts don't impose any constraints.
+                            None
+                        }
                     },
                 ).collect();
             (def_id, Lrc::new(vec))

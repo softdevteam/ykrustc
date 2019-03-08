@@ -16,26 +16,26 @@ use super::{
 // that's just more convenient to work with (avoids repeating all the `Machine` bounds).
 pub trait Value<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>: Copy
 {
-    /// Get this value's layout.
+    /// Gets this value's layout.
     fn layout(&self) -> TyLayout<'tcx>;
 
-    /// Make this into an `OpTy`.
+    /// Makes this into an `OpTy`.
     fn to_op(
         self,
         ecx: &EvalContext<'a, 'mir, 'tcx, M>,
     ) -> EvalResult<'tcx, OpTy<'tcx, M::PointerTag>>;
 
-    /// Create this from an `MPlaceTy`.
-    fn from_mem_place(MPlaceTy<'tcx, M::PointerTag>) -> Self;
+    /// Creates this from an `MPlaceTy`.
+    fn from_mem_place(mplace: MPlaceTy<'tcx, M::PointerTag>) -> Self;
 
-    /// Project to the given enum variant.
+    /// Projects to the given enum variant.
     fn project_downcast(
         self,
         ecx: &EvalContext<'a, 'mir, 'tcx, M>,
         variant: VariantIdx,
     ) -> EvalResult<'tcx, Self>;
 
-    /// Project to the n-th field.
+    /// Projects to the n-th field.
     fn project_field(
         self,
         ecx: &EvalContext<'a, 'mir, 'tcx, M>,
@@ -125,29 +125,29 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> Value<'a, 'mir, 'tcx, M>
 }
 
 macro_rules! make_value_visitor {
-    ($visitor_trait_name:ident, $($mutability:ident)*) => {
+    ($visitor_trait_name:ident, $($mutability:ident)?) => {
         // How to traverse a value and what to do when we are at the leaves.
         pub trait $visitor_trait_name<'a, 'mir, 'tcx: 'mir+'a, M: Machine<'a, 'mir, 'tcx>>: Sized {
             type V: Value<'a, 'mir, 'tcx, M>;
 
             /// The visitor must have an `EvalContext` in it.
-            fn ecx(&$($mutability)* self)
-                -> &$($mutability)* EvalContext<'a, 'mir, 'tcx, M>;
+            fn ecx(&$($mutability)? self)
+                -> &$($mutability)? EvalContext<'a, 'mir, 'tcx, M>;
 
             // Recursive actions, ready to be overloaded.
-            /// Visit the given value, dispatching as appropriate to more specialized visitors.
+            /// Visits the given value, dispatching as appropriate to more specialized visitors.
             #[inline(always)]
             fn visit_value(&mut self, v: Self::V) -> EvalResult<'tcx>
             {
                 self.walk_value(v)
             }
-            /// Visit the given value as a union.  No automatic recursion can happen here.
+            /// Visits the given value as a union. No automatic recursion can happen here.
             #[inline(always)]
             fn visit_union(&mut self, _v: Self::V) -> EvalResult<'tcx>
             {
                 Ok(())
             }
-            /// Visit this vale as an aggregate, you are even getting an iterator yielding
+            /// Visits this vale as an aggregate, you are even getting an iterator yielding
             /// all the fields (still in an `EvalResult`, you have to do error handling yourself).
             /// Recurses into the fields.
             #[inline(always)]
@@ -158,7 +158,9 @@ macro_rules! make_value_visitor {
             ) -> EvalResult<'tcx> {
                 self.walk_aggregate(v, fields)
             }
-            /// Called each time we recurse down to a field, passing in old and new value.
+
+            /// Called each time we recurse down to a field of a "product-like" aggregate
+            /// (structs, tuples, arrays and the like, but not enums), passing in old and new value.
             /// This gives the visitor the chance to track the stack of nested fields that
             /// we are descending through.
             #[inline(always)]
@@ -171,6 +173,19 @@ macro_rules! make_value_visitor {
                 self.visit_value(new_val)
             }
 
+            /// Called for recursing into the field of a generator. These are not known to be
+            /// initialized, so we treat them like unions.
+            #[inline(always)]
+            fn visit_generator_field(
+                &mut self,
+                _old_val: Self::V,
+                _field: usize,
+                new_val: Self::V,
+            ) -> EvalResult<'tcx> {
+                self.visit_union(new_val)
+            }
+
+            /// Called when recursing into an enum variant.
             #[inline(always)]
             fn visit_variant(
                 &mut self,
@@ -200,8 +215,8 @@ macro_rules! make_value_visitor {
             fn visit_scalar(&mut self, _v: Self::V, _layout: &layout::Scalar) -> EvalResult<'tcx>
             { Ok(()) }
 
-            /// Called whenever we reach a value of primitive type.  There can be no recursion
-            /// below such a value.  This is the leaf function.
+            /// Called whenever we reach a value of primitive type. There can be no recursion
+            /// below such a value. This is the leaf function.
             /// We do *not* provide an `ImmTy` here because some implementations might want
             /// to write to the place this primitive lives in.
             #[inline(always)]
@@ -257,7 +272,7 @@ macro_rules! make_value_visitor {
                 // is very relevant for `NonNull` and similar structs: We need to visit them
                 // at their scalar layout *before* descending into their fields.
                 // FIXME: We could avoid some redundant checks here. For newtypes wrapping
-                // scalars, we do the same check on every "level" (e.g. first we check
+                // scalars, we do the same check on every "level" (e.g., first we check
                 // MyNewtype and then the scalar in there).
                 match v.layout().abi {
                     layout::Abi::Uninhabited => {
@@ -291,17 +306,33 @@ macro_rules! make_value_visitor {
                         // use that as an unambiguous signal for detecting primitives.  Make sure
                         // we did not miss any primitive.
                         debug_assert!(fields > 0);
-                        self.visit_union(v)?;
+                        self.visit_union(v)
                     },
                     layout::FieldPlacement::Arbitrary { ref offsets, .. } => {
-                        // FIXME: We collect in a vec because otherwise there are lifetime errors:
-                        // Projecting to a field needs (mutable!) access to `ecx`.
-                        let fields: Vec<EvalResult<'tcx, Self::V>> =
-                            (0..offsets.len()).map(|i| {
-                                v.project_field(self.ecx(), i as u64)
-                            })
-                            .collect();
-                        self.visit_aggregate(v, fields.into_iter())?;
+                        // Special handling needed for generators: All but the first field
+                        // (which is the state) are actually implicitly `MaybeUninit`, i.e.,
+                        // they may or may not be initialized, so we cannot visit them.
+                        match v.layout().ty.sty {
+                            ty::Generator(..) => {
+                                let field = v.project_field(self.ecx(), 0)?;
+                                self.visit_aggregate(v, std::iter::once(Ok(field)))?;
+                                for i in 1..offsets.len() {
+                                    let field = v.project_field(self.ecx(), i as u64)?;
+                                    self.visit_generator_field(v, i, field)?;
+                                }
+                                Ok(())
+                            }
+                            _ => {
+                                // FIXME: We collect in a vec because otherwise there are lifetime
+                                // errors: Projecting to a field needs access to `ecx`.
+                                let fields: Vec<EvalResult<'tcx, Self::V>> =
+                                    (0..offsets.len()).map(|i| {
+                                        v.project_field(self.ecx(), i as u64)
+                                    })
+                                    .collect();
+                                self.visit_aggregate(v, fields.into_iter())
+                            }
+                        }
                     },
                     layout::FieldPlacement::Array { .. } => {
                         // Let's get an mplace first.
@@ -317,10 +348,9 @@ macro_rules! make_value_visitor {
                             .map(|f| f.and_then(|f| {
                                 Ok(Value::from_mem_place(f))
                             }));
-                        self.visit_aggregate(v, iter)?;
+                        self.visit_aggregate(v, iter)
                     }
                 }
-                Ok(())
             }
         }
     }

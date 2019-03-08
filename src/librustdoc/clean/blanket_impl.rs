@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir;
 use rustc::traits;
 use rustc::ty::ToPredicate;
@@ -15,18 +5,18 @@ use rustc::ty::subst::Subst;
 use rustc::infer::InferOk;
 use syntax_pos::DUMMY_SP;
 
-use core::DocAccessLevels;
+use crate::core::DocAccessLevels;
 
 use super::*;
 
 use self::def_ctor::{get_def_from_def_id, get_def_from_node_id};
 
-pub struct BlanketImplFinder<'a, 'tcx: 'a, 'rcx: 'a, 'cstore: 'rcx> {
-    pub cx: &'a core::DocContext<'a, 'tcx, 'rcx, 'cstore>,
+pub struct BlanketImplFinder<'a, 'tcx: 'a, 'rcx: 'a> {
+    pub cx: &'a core::DocContext<'a, 'tcx, 'rcx>,
 }
 
-impl<'a, 'tcx, 'rcx, 'cstore> BlanketImplFinder <'a, 'tcx, 'rcx, 'cstore> {
-    pub fn new(cx: &'a core::DocContext<'a, 'tcx, 'rcx, 'cstore>) -> Self {
+impl<'a, 'tcx, 'rcx> BlanketImplFinder <'a, 'tcx, 'rcx> {
+    pub fn new(cx: &'a core::DocContext<'a, 'tcx, 'rcx>) -> Self {
         BlanketImplFinder { cx }
     }
 
@@ -38,7 +28,7 @@ impl<'a, 'tcx, 'rcx, 'cstore> BlanketImplFinder <'a, 'tcx, 'rcx, 'cstore> {
 
     pub fn get_with_node_id(&self, id: ast::NodeId, name: String) -> Vec<Item> {
         get_def_from_node_id(&self.cx, id, name, &|def_ctor, name| {
-            let did = self.cx.tcx.hir.local_def_id(id);
+            let did = self.cx.tcx.hir().local_def_id(id);
             self.get_blanket_impls(did, &def_ctor, Some(name))
         })
     }
@@ -133,7 +123,6 @@ impl<'a, 'tcx, 'rcx, 'cstore> BlanketImplFinder <'a, 'tcx, 'rcx, 'cstore> {
                             path: get_path_for_type(infcx.tcx,
                                                     trait_def_id,
                                                     hir::def::Def::Trait),
-                            ref_id: ast::DUMMY_NODE_ID,
                             hir_ref_id: hir::DUMMY_HIR_ID,
                         };
                         let provided_trait_methods =

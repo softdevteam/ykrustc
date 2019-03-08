@@ -1,24 +1,14 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use infer::canonical::{
+use crate::infer::canonical::{
     Canonical, Canonicalized, CanonicalizedQueryResponse, OriginalQueryValues,
     QueryRegionConstraint, QueryResponse,
 };
-use infer::{InferCtxt, InferOk};
+use crate::infer::{InferCtxt, InferOk};
 use std::fmt;
 use std::rc::Rc;
-use traits::query::Fallible;
-use traits::ObligationCause;
-use ty::fold::TypeFoldable;
-use ty::{Lift, ParamEnvAnd, TyCtxt};
+use crate::traits::query::Fallible;
+use crate::traits::ObligationCause;
+use crate::ty::fold::TypeFoldable;
+use crate::ty::{Lift, ParamEnvAnd, TyCtxt};
 
 pub mod ascribe_user_type;
 pub mod custom;
@@ -53,7 +43,7 @@ pub trait TypeOp<'gcx, 'tcx>: Sized + fmt::Debug {
 /// first canonicalize the key and then invoke the query on the tcx,
 /// which produces the resulting query region constraints.
 ///
-/// [c]: https://rust-lang-nursery.github.io/rustc-guide/traits/canonicalization.html
+/// [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 pub trait QueryTypeOp<'gcx: 'tcx, 'tcx>:
     fmt::Debug + Sized + TypeFoldable<'tcx> + Lift<'gcx>
 {

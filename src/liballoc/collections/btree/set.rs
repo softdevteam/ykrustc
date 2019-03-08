@@ -1,25 +1,14 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // This is pretty much entirely stolen from TreeSet, since BTreeMap has an identical interface
 // to TreeMap
 
+use core::borrow::Borrow;
 use core::cmp::Ordering::{self, Less, Greater, Equal};
 use core::cmp::{min, max};
-use core::fmt::Debug;
-use core::fmt;
+use core::fmt::{self, Debug};
 use core::iter::{Peekable, FromIterator, FusedIterator};
 use core::ops::{BitOr, BitAnd, BitXor, Sub, RangeBounds};
 
-use borrow::Borrow;
-use collections::btree_map::{self, BTreeMap, Keys};
+use crate::collections::btree_map::{self, BTreeMap, Keys};
 use super::Recover;
 
 // FIXME(conventions): implement bounded iterators
@@ -86,8 +75,8 @@ pub struct Iter<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for Iter<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Iter")
          .field(&self.iter.clone())
          .finish()
@@ -134,8 +123,8 @@ pub struct Difference<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for Difference<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for Difference<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Difference")
          .field(&self.a)
          .field(&self.b)
@@ -157,8 +146,8 @@ pub struct SymmetricDifference<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for SymmetricDifference<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for SymmetricDifference<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("SymmetricDifference")
          .field(&self.a)
          .field(&self.b)
@@ -180,8 +169,8 @@ pub struct Intersection<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for Intersection<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for Intersection<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Intersection")
          .field(&self.a)
          .field(&self.b)
@@ -203,8 +192,8 @@ pub struct Union<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for Union<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for Union<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Union")
          .field(&self.a)
          .field(&self.b)
@@ -251,14 +240,14 @@ impl<T: Ord> BTreeSet<T> {
     /// assert_eq!(Some(&5), set.range(4..).next());
     /// ```
     #[stable(feature = "btree_range", since = "1.17.0")]
-    pub fn range<K: ?Sized, R>(&self, range: R) -> Range<T>
+    pub fn range<K: ?Sized, R>(&self, range: R) -> Range<'_, T>
         where K: Ord, T: Borrow<K>, R: RangeBounds<K>
     {
         Range { iter: self.map.range(range) }
     }
 
     /// Visits the values representing the difference,
-    /// i.e. the values that are in `self` but not in `other`,
+    /// i.e., the values that are in `self` but not in `other`,
     /// in ascending order.
     ///
     /// # Examples
@@ -286,7 +275,7 @@ impl<T: Ord> BTreeSet<T> {
     }
 
     /// Visits the values representing the symmetric difference,
-    /// i.e. the values that are in `self` or in `other` but not in both,
+    /// i.e., the values that are in `self` or in `other` but not in both,
     /// in ascending order.
     ///
     /// # Examples
@@ -316,7 +305,7 @@ impl<T: Ord> BTreeSet<T> {
     }
 
     /// Visits the values representing the intersection,
-    /// i.e. the values that are both in `self` and `other`,
+    /// i.e., the values that are both in `self` and `other`,
     /// in ascending order.
     ///
     /// # Examples
@@ -344,7 +333,7 @@ impl<T: Ord> BTreeSet<T> {
     }
 
     /// Visits the values representing the union,
-    /// i.e. all the values in `self` or `other`, without duplicates,
+    /// i.e., all the values in `self` or `other`, without duplicates,
     /// in ascending order.
     ///
     /// # Examples
@@ -455,7 +444,7 @@ impl<T: Ord> BTreeSet<T> {
     }
 
     /// Returns `true` if the set is a subset of another,
-    /// i.e. `other` contains at least all the values in `self`.
+    /// i.e., `other` contains at least all the values in `self`.
     ///
     /// # Examples
     ///
@@ -498,7 +487,7 @@ impl<T: Ord> BTreeSet<T> {
     }
 
     /// Returns `true` if the set is a superset of another,
-    /// i.e. `self` contains at least all the values in `other`.
+    /// i.e., `self` contains at least all the values in `other`.
     ///
     /// # Examples
     ///
@@ -567,7 +556,7 @@ impl<T: Ord> BTreeSet<T> {
         Recover::replace(&mut self.map, value)
     }
 
-    /// Removes a value from the set. Returns `true` if the value was
+    /// Removes a value from the set. Returns whether the value was
     /// present in the set.
     ///
     /// The value may be any borrowed form of the set's value type,
@@ -713,7 +702,7 @@ impl<T> BTreeSet<T> {
     /// assert_eq!(set_iter.next(), None);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter(&self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         Iter { iter: self.map.keys() }
     }
 
@@ -819,7 +808,7 @@ impl<T: Ord> Default for BTreeSet<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, 'b, T: Ord + Clone> Sub<&'b BTreeSet<T>> for &'a BTreeSet<T> {
+impl<T: Ord + Clone> Sub<&BTreeSet<T>> for &BTreeSet<T> {
     type Output = BTreeSet<T>;
 
     /// Returns the difference of `self` and `rhs` as a new `BTreeSet<T>`.
@@ -842,7 +831,7 @@ impl<'a, 'b, T: Ord + Clone> Sub<&'b BTreeSet<T>> for &'a BTreeSet<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, 'b, T: Ord + Clone> BitXor<&'b BTreeSet<T>> for &'a BTreeSet<T> {
+impl<T: Ord + Clone> BitXor<&BTreeSet<T>> for &BTreeSet<T> {
     type Output = BTreeSet<T>;
 
     /// Returns the symmetric difference of `self` and `rhs` as a new `BTreeSet<T>`.
@@ -865,7 +854,7 @@ impl<'a, 'b, T: Ord + Clone> BitXor<&'b BTreeSet<T>> for &'a BTreeSet<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, 'b, T: Ord + Clone> BitAnd<&'b BTreeSet<T>> for &'a BTreeSet<T> {
+impl<T: Ord + Clone> BitAnd<&BTreeSet<T>> for &BTreeSet<T> {
     type Output = BTreeSet<T>;
 
     /// Returns the intersection of `self` and `rhs` as a new `BTreeSet<T>`.
@@ -888,7 +877,7 @@ impl<'a, 'b, T: Ord + Clone> BitAnd<&'b BTreeSet<T>> for &'a BTreeSet<T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, 'b, T: Ord + Clone> BitOr<&'b BTreeSet<T>> for &'a BTreeSet<T> {
+impl<T: Ord + Clone> BitOr<&BTreeSet<T>> for &BTreeSet<T> {
     type Output = BTreeSet<T>;
 
     /// Returns the union of `self` and `rhs` as a new `BTreeSet<T>`.
@@ -912,14 +901,14 @@ impl<'a, 'b, T: Ord + Clone> BitOr<&'b BTreeSet<T>> for &'a BTreeSet<T> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Debug> Debug for BTreeSet<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_set().entries(self.iter()).finish()
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> Clone for Iter<'a, T> {
-    fn clone(&self) -> Iter<'a, T> {
+impl<T> Clone for Iter<'_, T> {
+    fn clone(&self) -> Self {
         Iter { iter: self.iter.clone() }
     }
 }
@@ -941,12 +930,12 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
     }
 }
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+impl<T> ExactSizeIterator for Iter<'_, T> {
     fn len(&self) -> usize { self.iter.len() }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T> FusedIterator for Iter<'a, T> {}
+impl<T> FusedIterator for Iter<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Iterator for IntoIter<T> {
@@ -974,8 +963,8 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 impl<T> FusedIterator for IntoIter<T> {}
 
 #[stable(feature = "btree_range", since = "1.17.0")]
-impl<'a, T> Clone for Range<'a, T> {
-    fn clone(&self) -> Range<'a, T> {
+impl<T> Clone for Range<'_, T> {
+    fn clone(&self) -> Self {
         Range { iter: self.iter.clone() }
     }
 }
@@ -997,9 +986,9 @@ impl<'a, T> DoubleEndedIterator for Range<'a, T> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T> FusedIterator for Range<'a, T> {}
+impl<T> FusedIterator for Range<'_, T> {}
 
-/// Compare `x` and `y`, but return `short` if x is None and `long` if y is None
+/// Compares `x` and `y`, but return `short` if x is None and `long` if y is None
 fn cmp_opt<T: Ord>(x: Option<&T>, y: Option<&T>, short: Ordering, long: Ordering) -> Ordering {
     match (x, y) {
         (None, _) => short,
@@ -1009,8 +998,8 @@ fn cmp_opt<T: Ord>(x: Option<&T>, y: Option<&T>, short: Ordering, long: Ordering
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> Clone for Difference<'a, T> {
-    fn clone(&self) -> Difference<'a, T> {
+impl<T> Clone for Difference<'_, T> {
+    fn clone(&self) -> Self {
         Difference {
             a: self.a.clone(),
             b: self.b.clone(),
@@ -1044,11 +1033,11 @@ impl<'a, T: Ord> Iterator for Difference<'a, T> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T: Ord> FusedIterator for Difference<'a, T> {}
+impl<T: Ord> FusedIterator for Difference<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> Clone for SymmetricDifference<'a, T> {
-    fn clone(&self) -> SymmetricDifference<'a, T> {
+impl<T> Clone for SymmetricDifference<'_, T> {
+    fn clone(&self) -> Self {
         SymmetricDifference {
             a: self.a.clone(),
             b: self.b.clone(),
@@ -1078,11 +1067,11 @@ impl<'a, T: Ord> Iterator for SymmetricDifference<'a, T> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T: Ord> FusedIterator for SymmetricDifference<'a, T> {}
+impl<T: Ord> FusedIterator for SymmetricDifference<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> Clone for Intersection<'a, T> {
-    fn clone(&self) -> Intersection<'a, T> {
+impl<T> Clone for Intersection<'_, T> {
+    fn clone(&self) -> Self {
         Intersection {
             a: self.a.clone(),
             b: self.b.clone(),
@@ -1116,11 +1105,11 @@ impl<'a, T: Ord> Iterator for Intersection<'a, T> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T: Ord> FusedIterator for Intersection<'a, T> {}
+impl<T: Ord> FusedIterator for Intersection<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> Clone for Union<'a, T> {
-    fn clone(&self) -> Union<'a, T> {
+impl<T> Clone for Union<'_, T> {
+    fn clone(&self) -> Self {
         Union {
             a: self.a.clone(),
             b: self.b.clone(),
@@ -1150,4 +1139,4 @@ impl<'a, T: Ord> Iterator for Union<'a, T> {
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T: Ord> FusedIterator for Union<'a, T> {}
+impl<T: Ord> FusedIterator for Union<'_, T> {}

@@ -1,20 +1,10 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use hir::def_id::DefId;
-use util::nodemap::{NodeMap, DefIdMap};
+use crate::hir::def_id::DefId;
+use crate::util::nodemap::{NodeMap, DefIdMap};
 use syntax::ast;
 use syntax::ext::base::MacroKind;
 use syntax_pos::Span;
-use hir;
-use ty;
+use crate::hir;
+use crate::ty;
 
 use self::Namespace::*;
 
@@ -46,7 +36,7 @@ pub enum NonMacroAttrKind {
 pub enum Def {
     // Type namespace
     Mod(DefId),
-    Struct(DefId), // DefId refers to NodeId of the struct itself
+    Struct(DefId), // `DefId` refers to `NodeId` of the struct itself
     Union(DefId),
     Enum(DefId),
     Variant(DefId),
@@ -63,27 +53,28 @@ pub enum Def {
     PrimTy(hir::PrimTy),
     TyParam(DefId),
     SelfTy(Option<DefId> /* trait */, Option<DefId> /* impl */),
-    ToolMod, // e.g. `rustfmt` in `#[rustfmt::skip]`
+    ToolMod, // e.g., `rustfmt` in `#[rustfmt::skip]`
 
     // Value namespace
     Fn(DefId),
     Const(DefId),
+    ConstParam(DefId),
     Static(DefId, bool /* is_mutbl */),
-    StructCtor(DefId, CtorKind), // DefId refers to NodeId of the struct's constructor
-    VariantCtor(DefId, CtorKind), // DefId refers to the enum variant
-    SelfCtor(DefId /* impl */),  // DefId refers to the impl
+    StructCtor(DefId, CtorKind), // `DefId` refers to `NodeId` of the struct's constructor
+    VariantCtor(DefId, CtorKind), // `DefId` refers to the enum variant
+    SelfCtor(DefId /* impl */),  // `DefId` refers to the impl
     Method(DefId),
     AssociatedConst(DefId),
 
     Local(ast::NodeId),
-    Upvar(ast::NodeId,  // node id of closed over local
-          usize,        // index in the freevars list of the closure
+    Upvar(ast::NodeId,  // `NodeId` of closed over local
+          usize,        // index in the `freevars` list of the closure
           ast::NodeId), // expr node that creates the closure
     Label(ast::NodeId),
 
     // Macro namespace
     Macro(DefId, MacroKind),
-    NonMacroAttr(NonMacroAttrKind), // e.g. `#[inline]` or `#[rustfmt::skip]`
+    NonMacroAttr(NonMacroAttrKind), // e.g., `#[inline]` or `#[rustfmt::skip]`
 
     // Both namespaces
     Err,
@@ -170,6 +161,7 @@ impl<T> PerNS<T> {
 
 impl<T> ::std::ops::Index<Namespace> for PerNS<T> {
     type Output = T;
+
     fn index(&self, ns: Namespace) -> &T {
         match ns {
             ValueNS => &self.value_ns,
@@ -190,7 +182,7 @@ impl<T> ::std::ops::IndexMut<Namespace> for PerNS<T> {
 }
 
 impl<T> PerNS<Option<T>> {
-    /// Returns whether all the items in this collection are `None`.
+    /// Returns `true` if all the items in this collection are `None`.
     pub fn is_empty(&self) -> bool {
         self.type_ns.is_none() && self.value_ns.is_none() && self.macro_ns.is_none()
     }
@@ -238,6 +230,7 @@ impl CtorKind {
             ast::VariantData::Struct(..) => CtorKind::Fictive,
         }
     }
+
     pub fn from_hir(vdata: &hir::VariantData) -> CtorKind {
         match *vdata {
             hir::VariantData::Tuple(..) => CtorKind::Fn,
@@ -248,7 +241,7 @@ impl CtorKind {
 }
 
 impl NonMacroAttrKind {
-    fn descr(self) -> &'static str {
+    pub fn descr(self) -> &'static str {
         match self {
             NonMacroAttrKind::Builtin => "built-in attribute",
             NonMacroAttrKind::Tool => "tool attribute",
@@ -260,18 +253,21 @@ impl NonMacroAttrKind {
 }
 
 impl Def {
+    /// Return the `DefId` of this `Def` if it has an id, else panic.
     pub fn def_id(&self) -> DefId {
         self.opt_def_id().unwrap_or_else(|| {
             bug!("attempted .def_id() on invalid def: {:?}", self)
         })
     }
 
+    /// Return `Some(..)` with the `DefId` of this `Def` if it has a id, else `None`.
     pub fn opt_def_id(&self) -> Option<DefId> {
         match *self {
             Def::Fn(id) | Def::Mod(id) | Def::Static(id, _) |
             Def::Variant(id) | Def::VariantCtor(id, ..) | Def::Enum(id) |
             Def::TyAlias(id) | Def::TraitAlias(id) |
-            Def::AssociatedTy(id) | Def::TyParam(id) | Def::Struct(id) | Def::StructCtor(id, ..) |
+            Def::AssociatedTy(id) | Def::TyParam(id) | Def::ConstParam(id) | Def::Struct(id) |
+            Def::StructCtor(id, ..) |
             Def::Union(id) | Def::Trait(id) | Def::Method(id) | Def::Const(id) |
             Def::AssociatedConst(id) | Def::Macro(id, ..) |
             Def::Existential(id) | Def::AssociatedExistential(id) | Def::ForeignTy(id) => {
@@ -292,7 +288,15 @@ impl Def {
         }
     }
 
-    /// A human readable kind name
+    /// Return the `DefId` of this `Def` if it represents a module.
+    pub fn mod_def_id(&self) -> Option<DefId> {
+        match *self {
+            Def::Mod(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// A human readable name for the def kind ("function", "module", etc.).
     pub fn kind_name(&self) -> &'static str {
         match *self {
             Def::Fn(..) => "function",
@@ -320,6 +324,7 @@ impl Def {
             Def::Const(..) => "constant",
             Def::AssociatedConst(..) => "associated constant",
             Def::TyParam(..) => "type parameter",
+            Def::ConstParam(..) => "const parameter",
             Def::PrimTy(..) => "builtin type",
             Def::Local(..) => "local variable",
             Def::Upvar(..) => "closure capture",
@@ -332,6 +337,7 @@ impl Def {
         }
     }
 
+    /// An English article for the def.
     pub fn article(&self) -> &'static str {
         match *self {
             Def::AssociatedTy(..) | Def::AssociatedConst(..) | Def::AssociatedExistential(..) |

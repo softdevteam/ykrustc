@@ -1,22 +1,12 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use fs;
-use os::windows::raw;
-use net;
-use sys_common::{self, AsInner, FromInner, IntoInner};
-use sys;
-use io;
-use sys::c;
+use crate::fs;
+use crate::os::windows::raw;
+use crate::net;
+use crate::sys_common::{self, AsInner, FromInner, IntoInner};
+use crate::sys;
+use crate::sys::c;
+use crate::io;
 
 /// Raw HANDLEs.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -26,7 +16,7 @@ pub type RawHandle = raw::HANDLE;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub type RawSocket = raw::SOCKET;
 
-/// Extract raw handles.
+/// Extracts raw handles.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait AsRawHandle {
     /// Extracts the raw handle, without taking any ownership.
@@ -108,7 +98,7 @@ impl IntoRawHandle for fs::File {
     }
 }
 
-/// Extract raw sockets.
+/// Extracts raw sockets.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait AsRawSocket {
     /// Extracts the underlying raw socket from this object.
@@ -116,7 +106,7 @@ pub trait AsRawSocket {
     fn as_raw_socket(&self) -> RawSocket;
 }
 
-/// Create I/O objects from raw sockets.
+/// Creates I/O objects from raw sockets.
 #[stable(feature = "from_raw_os", since = "1.1.0")]
 pub trait FromRawSocket {
     /// Creates a new I/O object from the given raw socket.

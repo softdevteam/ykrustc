@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Standard library macros
 //!
 //! This modules contains a set of macros which are exported from the standard
@@ -18,11 +8,11 @@
 ///
 /// This allows a program to terminate immediately and provide feedback
 /// to the caller of the program. `panic!` should be used when a program reaches
-/// an unrecoverable problem.
+/// an unrecoverable state.
 ///
 /// This macro is the perfect way to assert conditions in example code and in
-/// tests.  `panic!` is closely tied with the `unwrap` method of both [`Option`]
-/// and [`Result`][runwrap] enums.  Both implementations call `panic!` when they are set
+/// tests. `panic!` is closely tied with the `unwrap` method of both [`Option`]
+/// and [`Result`][runwrap] enums. Both implementations call `panic!` when they are set
 /// to None or Err variants.
 ///
 /// This macro is used to inject panic into a Rust thread, causing the thread to
@@ -31,8 +21,8 @@
 /// is transmitted.
 ///
 /// [`Result`] enum is often a better solution for recovering from errors than
-/// using the `panic!` macro.  This macro should be used to avoid proceeding using
-/// incorrect values, such as from external sources.  Detailed information about
+/// using the `panic!` macro. This macro should be used to avoid proceeding using
+/// incorrect values, such as from external sources. Detailed information about
 /// error handling is found in the [book].
 ///
 /// The multi-argument form of this macro panics with a string and has the
@@ -45,7 +35,7 @@
 /// [`Result`]: ../std/result/enum.Result.html
 /// [`format!`]: ../std/macro.format.html
 /// [`compile_error!`]: ../std/macro.compile_error.html
-/// [book]: ../book/second-edition/ch09-01-unrecoverable-errors-with-panic.html
+/// [book]: ../book/ch09-00-error-handling.html
 ///
 /// # Current implementation
 ///
@@ -63,7 +53,7 @@
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(__rust_unstable_column, libstd_sys_internals)]
 macro_rules! panic {
     () => ({
         panic!("explicit panic")
@@ -89,7 +79,7 @@ macro_rules! panic {
 /// necessary to use [`io::stdout().flush()`][flush] to ensure the output is emitted
 /// immediately.
 ///
-/// Use `print!` only for the primary output of your program.  Use
+/// Use `print!` only for the primary output of your program. Use
 /// [`eprint!`] instead to print error and progress messages.
 ///
 /// [`println!`]: ../std/macro.println.html
@@ -121,7 +111,7 @@ macro_rules! panic {
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals)]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::io::_print(format_args!($($arg)*)));
 }
@@ -134,7 +124,7 @@ macro_rules! print {
 /// Use the [`format!`] syntax to write data to the standard output.
 /// See [`std::fmt`] for more information.
 ///
-/// Use `println!` only for the primary output of your program.  Use
+/// Use `println!` only for the primary output of your program. Use
 /// [`eprintln!`] instead to print error and progress messages.
 ///
 /// [`format!`]: ../std/macro.format.html
@@ -153,7 +143,7 @@ macro_rules! print {
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals, format_args_nl)]
 macro_rules! println {
     () => (print!("\n"));
     ($($arg:tt)*) => ({
@@ -164,10 +154,10 @@ macro_rules! println {
 /// Macro for printing to the standard error.
 ///
 /// Equivalent to the [`print!`] macro, except that output goes to
-/// [`io::stderr`] instead of `io::stdout`.  See [`print!`] for
+/// [`io::stderr`] instead of `io::stdout`. See [`print!`] for
 /// example usage.
 ///
-/// Use `eprint!` only for error and progress messages.  Use `print!`
+/// Use `eprint!` only for error and progress messages. Use `print!`
 /// instead for the primary output of your program.
 ///
 /// [`io::stderr`]: ../std/io/struct.Stderr.html
@@ -184,7 +174,7 @@ macro_rules! println {
 /// ```
 #[macro_export]
 #[stable(feature = "eprint", since = "1.19.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals)]
 macro_rules! eprint {
     ($($arg:tt)*) => ($crate::io::_eprint(format_args!($($arg)*)));
 }
@@ -192,10 +182,10 @@ macro_rules! eprint {
 /// Macro for printing to the standard error, with a newline.
 ///
 /// Equivalent to the [`println!`] macro, except that output goes to
-/// [`io::stderr`] instead of `io::stdout`.  See [`println!`] for
+/// [`io::stderr`] instead of `io::stdout`. See [`println!`] for
 /// example usage.
 ///
-/// Use `eprintln!` only for error and progress messages.  Use `println!`
+/// Use `eprintln!` only for error and progress messages. Use `println!`
 /// instead for the primary output of your program.
 ///
 /// [`io::stderr`]: ../std/io/struct.Stderr.html
@@ -212,7 +202,7 @@ macro_rules! eprint {
 /// ```
 #[macro_export]
 #[stable(feature = "eprint", since = "1.19.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals, format_args_nl)]
 macro_rules! eprintln {
     () => (eprint!("\n"));
     ($($arg:tt)*) => ({
@@ -224,11 +214,9 @@ macro_rules! eprintln {
 /// the value of a given expression. An example:
 ///
 /// ```rust
-/// #![feature(dbg_macro)]
-///
 /// let a = 2;
 /// let b = dbg!(a * 2) + 1;
-/// //      ^-- prints: [src/main.rs:4] a * 2 = 4
+/// //      ^-- prints: [src/main.rs:2] a * 2 = 4
 /// assert_eq!(b, 5);
 /// ```
 ///
@@ -262,8 +250,6 @@ macro_rules! eprintln {
 /// With a method call:
 ///
 /// ```rust
-/// #![feature(dbg_macro)]
-///
 /// fn foo(n: usize) {
 ///     if let Some(_) = dbg!(n.checked_sub(4)) {
 ///         // ...
@@ -282,8 +268,6 @@ macro_rules! eprintln {
 /// Naive factorial implementation:
 ///
 /// ```rust
-/// #![feature(dbg_macro)]
-///
 /// fn factorial(n: u32) -> u32 {
 ///     if dbg!(n <= 1) {
 ///         dbg!(1)
@@ -312,8 +296,6 @@ macro_rules! eprintln {
 /// The `dbg!(..)` macro moves the input:
 ///
 /// ```compile_fail
-/// #![feature(dbg_macro)]
-///
 /// /// A wrapper around `usize` which importantly is not Copyable.
 /// #[derive(Debug)]
 /// struct NoCopy(usize);
@@ -325,7 +307,7 @@ macro_rules! eprintln {
 ///
 /// [stderr]: https://en.wikipedia.org/wiki/Standard_streams#Standard_error_(stderr)
 #[macro_export]
-#[unstable(feature = "dbg_macro", issue = "54306")]
+#[stable(feature = "dbg_macro", since = "1.32.0")]
 macro_rules! dbg {
     ($val:expr) => {
         // Use of `match` here is intentional because it affects the lifetimes
@@ -340,11 +322,12 @@ macro_rules! dbg {
     }
 }
 
+/// A macro to await on an async call.
 #[macro_export]
 #[unstable(feature = "await_macro", issue = "50547")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(gen_future, generators)]
 #[allow_internal_unsafe]
-macro_rules! await {
+macro_rules! r#await {
     ($e:expr) => { {
         let mut pinned = $e;
         loop {
@@ -479,16 +462,16 @@ mod builtin {
     /// The core macro for formatted string creation & output.
     ///
     /// This macro functions by taking a formatting string literal containing
-    /// `{}` for each additional argument passed.  `format_args!` prepares the
+    /// `{}` for each additional argument passed. `format_args!` prepares the
     /// additional parameters to ensure the output can be interpreted as a string
-    /// and canonicalizes the arguments into a single type.  Any value that implements
+    /// and canonicalizes the arguments into a single type. Any value that implements
     /// the [`Display`] trait can be passed to `format_args!`, as can any
     /// [`Debug`] implementation be passed to a `{:?}` within the formatting string.
     ///
     /// This macro produces a value of type [`fmt::Arguments`]. This value can be
     /// passed to the macros within [`std::fmt`] for performing useful redirection.
     /// All other formatting macros ([`format!`], [`write!`], [`println!`], etc) are
-    /// proxied through this one.  `format_args!`, unlike its derived macros, avoids
+    /// proxied through this one. `format_args!`, unlike its derived macros, avoids
     /// heap allocations.
     ///
     /// You can use the [`fmt::Arguments`] value that `format_args!` returns
@@ -571,7 +554,7 @@ mod builtin {
     /// If the named environment variable is present at compile time, this will
     /// expand into an expression of type `Option<&'static str>` whose value is
     /// `Some` of the value of the environment variable. If the environment
-    /// variable is not present, then this will expand to `None`.  See
+    /// variable is not present, then this will expand to `None`. See
     /// [`Option<T>`][option] for more information on this type.
     ///
     /// A compile time error is never emitted when using this macro regardless
@@ -839,8 +822,8 @@ mod builtin {
     /// boolean expression evaluation of configuration flags. This frequently
     /// leads to less duplicated code.
     ///
-    /// The syntax given to this macro is the same syntax as [the `cfg`
-    /// attribute](../book/first-edition/conditional-compilation.html).
+    /// The syntax given to this macro is the same syntax as the `cfg`
+    /// attribute.
     ///
     /// # Examples
     ///
@@ -915,18 +898,17 @@ mod builtin {
     /// Unsafe code relies on `assert!` to enforce run-time invariants that, if
     /// violated could lead to unsafety.
     ///
-    /// Other use-cases of `assert!` include [testing] and enforcing run-time
+    /// Other use-cases of `assert!` include testing and enforcing run-time
     /// invariants in safe code (whose violation cannot result in unsafety).
     ///
     /// # Custom Messages
     ///
     /// This macro has a second form, where a custom panic message can
-    /// be provided with or without arguments for formatting.  See [`std::fmt`]
+    /// be provided with or without arguments for formatting. See [`std::fmt`]
     /// for syntax for this form.
     ///
     /// [`panic!`]: macro.panic.html
     /// [`debug_assert!`]: macro.debug_assert.html
-    /// [testing]: ../book/second-edition/ch11-01-writing-tests.html#checking-results-with-the-assert-macro
     /// [`std::fmt`]: ../std/fmt/index.html
     ///
     /// # Examples

@@ -1,28 +1,13 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::ast::{self, Ident, Generics, Expr, BlockCheckMode, UnOp, PatKind};
+use crate::attr;
+use crate::source_map::{dummy_spanned, respan, Spanned};
+use crate::ext::base::ExtCtxt;
+use crate::ptr::P;
+use crate::symbol::{Symbol, keywords};
+use crate::ThinVec;
 
 use rustc_target::spec::abi::Abi;
-use ast::{self, Ident, Generics, Expr, BlockCheckMode, UnOp, PatKind};
-use attr;
 use syntax_pos::{Pos, Span, DUMMY_SP};
-use source_map::{dummy_spanned, respan, Spanned};
-use ext::base::ExtCtxt;
-use ptr::P;
-use symbol::{Symbol, keywords};
-use ThinVec;
-
-// Transitional re-exports so qquote can find the paths it is looking for
-mod syntax {
-    pub use ext;
-    pub use parse;
-}
 
 pub trait AstBuilder {
     // paths
@@ -47,12 +32,14 @@ pub trait AstBuilder {
                 bindings: Vec<ast::TypeBinding>)
                 -> (ast::QSelf, ast::Path);
 
-    // types
+    // types and consts
     fn ty_mt(&self, ty: P<ast::Ty>, mutbl: ast::Mutability) -> ast::MutTy;
 
     fn ty(&self, span: Span, ty: ast::TyKind) -> P<ast::Ty>;
     fn ty_path(&self, path: ast::Path) -> P<ast::Ty>;
     fn ty_ident(&self, span: Span, idents: ast::Ident) -> P<ast::Ty>;
+    fn anon_const(&self, span: Span, expr: ast::ExprKind) -> ast::AnonConst;
+    fn const_ident(&self, span: Span, idents: ast::Ident) -> ast::AnonConst;
 
     fn ty_rptr(&self, span: Span,
                ty: P<ast::Ty>,
@@ -318,9 +305,13 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
                 args: Vec<ast::GenericArg>,
                 bindings: Vec<ast::TypeBinding> )
                 -> ast::Path {
+        assert!(!idents.is_empty());
+        let add_root = global && !idents[0].is_path_segment_keyword();
+        let mut segments = Vec::with_capacity(idents.len() + add_root as usize);
+        if add_root {
+            segments.push(ast::PathSegment::path_root(span));
+        }
         let last_ident = idents.pop().unwrap();
-        let mut segments: Vec<ast::PathSegment> = vec![];
-
         segments.extend(idents.into_iter().map(|ident| {
             ast::PathSegment::from_ident(ident.with_span_pos(span))
         }));
@@ -334,13 +325,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
             id: ast::DUMMY_NODE_ID,
             args,
         });
-        let mut path = ast::Path { span, segments };
-        if global {
-            if let Some(seg) = path.make_root() {
-                path.segments.insert(0, seg);
-            }
-        }
-        path
+        ast::Path { span, segments }
     }
 
     /// Constructs a qualified path.
@@ -356,7 +341,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
 
     /// Constructs a qualified path.
     ///
-    /// Constructs a path like `<self_type as trait_path>::ident<'a, T, A=Bar>`.
+    /// Constructs a path like `<self_type as trait_path>::ident<'a, T, A = Bar>`.
     fn qpath_all(&self,
                  self_type: P<ast::Ty>,
                  trait_path: ast::Path,
@@ -403,6 +388,22 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     fn ty_ident(&self, span: Span, ident: ast::Ident)
         -> P<ast::Ty> {
         self.ty_path(self.path_ident(span, ident))
+    }
+
+    fn anon_const(&self, span: Span, expr: ast::ExprKind) -> ast::AnonConst {
+        ast::AnonConst {
+            id: ast::DUMMY_NODE_ID,
+            value: P(ast::Expr {
+                id: ast::DUMMY_NODE_ID,
+                node: expr,
+                span,
+                attrs: ThinVec::new(),
+            })
+        }
+    }
+
+    fn const_ident(&self, span: Span, ident: ast::Ident) -> ast::AnonConst {
+        self.anon_const(span, ast::ExprKind::Path(None, self.path_ident(span, ident)))
     }
 
     fn ty_rptr(&self,
@@ -599,7 +600,6 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
            id: ast::DUMMY_NODE_ID,
            rules: BlockCheckMode::Default,
            span,
-           recovered: false,
         })
     }
 
@@ -625,7 +625,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         self.expr_path(self.path_ident(span, id))
     }
     fn expr_self(&self, span: Span) -> P<ast::Expr> {
-        self.expr_ident(span, keywords::SelfValue.ident())
+        self.expr_ident(span, keywords::SelfLower.ident())
     }
 
     fn expr_binary(&self, sp: Span, op: ast::BinOpKind,
@@ -985,7 +985,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
         P(ast::FnDecl {
             inputs,
             output,
-            variadic: false
+            c_variadic: false
         })
     }
 
@@ -1017,7 +1017,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
                   ast::ItemKind::Fn(self.fn_decl(inputs, ast::FunctionRetTy::Ty(output)),
                               ast::FnHeader {
                                   unsafety: ast::Unsafety::Normal,
-                                  asyncness: ast::IsAsync::NotAsync,
+                                  asyncness: dummy_spanned(ast::IsAsync::NotAsync),
                                   constness: dummy_spanned(ast::Constness::NotConst),
                                   abi: Abi::Rust,
                               },

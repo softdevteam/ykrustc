@@ -1,17 +1,13 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-// ignore-stage1
+// force-host
+// no-prefer-dynamic
 
 #![crate_type="proc-macro"]
 #![crate_name="some_macros"]
+
+// @has some_macros/index.html
+// @has - '//a/[@href="attr.some_proc_attr.html"]' 'some_proc_attr'
+
+//! include a link to [some_proc_attr] to make sure it works.
 
 extern crate proc_macro;
 
@@ -59,4 +55,17 @@ pub fn some_proc_attr(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_derive(SomeDerive)]
 pub fn some_derive(_item: TokenStream) -> TokenStream {
     TokenStream::new()
+}
+
+// @has some_macros/foo/index.html
+pub mod foo {
+    // @has - '//code' 'pub use some_proc_macro;'
+    // @has - '//a/@href' '../../some_macros/macro.some_proc_macro.html'
+    pub use some_proc_macro;
+    // @has - '//code' 'pub use some_proc_attr;'
+    // @has - '//a/@href' '../../some_macros/attr.some_proc_attr.html'
+    pub use some_proc_attr;
+    // @has - '//code' 'pub use some_derive;'
+    // @has - '//a/@href' '../../some_macros/derive.SomeDerive.html'
+    pub use some_derive;
 }

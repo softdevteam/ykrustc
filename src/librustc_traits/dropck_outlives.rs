@@ -1,26 +1,16 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::hir::def_id::DefId;
 use rustc::infer::canonical::{Canonical, QueryResponse};
 use rustc::traits::query::dropck_outlives::{DropckOutlivesResult, DtorckConstraint};
 use rustc::traits::query::{CanonicalTyGoal, NoSolution};
-use rustc::traits::{FulfillmentContext, Normalized, ObligationCause, TraitEngineExt};
+use rustc::traits::{TraitEngine, Normalized, ObligationCause, TraitEngineExt};
 use rustc::ty::query::Providers;
-use rustc::ty::subst::{Subst, Substs};
+use rustc::ty::subst::{Subst, InternalSubsts};
 use rustc::ty::{self, ParamEnvAnd, Ty, TyCtxt};
 use rustc::util::nodemap::FxHashSet;
 use rustc_data_structures::sync::Lrc;
 use syntax::source_map::{Span, DUMMY_SP};
 
-crate fn provide(p: &mut Providers) {
+crate fn provide(p: &mut Providers<'_>) {
     *p = Providers {
         dropck_outlives,
         adt_dtorck_constraint,
@@ -88,7 +78,7 @@ fn dropck_outlives<'tcx>(
             // Set used to detect infinite recursion.
             let mut ty_set = FxHashSet::default();
 
-            let fulfill_cx = &mut FulfillmentContext::new();
+            let mut fulfill_cx = TraitEngine::new(infcx.tcx);
 
             let cause = ObligationCause::dummy();
             while let Some((ty, depth)) = ty_stack.pop() {
@@ -146,12 +136,16 @@ fn dropck_outlives<'tcx>(
 
             debug!("dropck_outlives: result = {:#?}", result);
 
-            infcx.make_canonicalized_query_response(canonical_inference_vars, result, fulfill_cx)
+            infcx.make_canonicalized_query_response(
+                canonical_inference_vars,
+                result,
+                &mut *fulfill_cx
+            )
         },
     )
 }
 
-/// Return a set of constraints that needs to be satisfied in
+/// Returns a set of constraints that needs to be satisfied in
 /// order for `ty` to be valid for destruction.
 fn dtorck_constraint_for_ty<'a, 'gcx, 'tcx>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
@@ -274,7 +268,7 @@ fn dtorck_constraint_for_ty<'a, 'gcx, 'tcx>(
 
         ty::UnnormalizedProjection(..) => bug!("only used with chalk-engine"),
 
-        ty::Bound(..) | ty::Infer(..) | ty::Error => {
+        ty::Placeholder(..) | ty::Bound(..) | ty::Infer(..) | ty::Error => {
             // By the time this code runs, all type variables ought to
             // be fully resolved.
             Err(NoSolution)
@@ -297,7 +291,7 @@ crate fn adt_dtorck_constraint<'a, 'tcx>(
     if def.is_phantom_data() {
         // The first generic parameter here is guaranteed to be a type because it's
         // `PhantomData`.
-        let substs = Substs::identity_for_item(tcx, def_id);
+        let substs = InternalSubsts::identity_for_item(tcx, def_id);
         assert_eq!(substs.len(), 1);
         let result = DtorckConstraint {
             outlives: vec![],
@@ -311,7 +305,7 @@ crate fn adt_dtorck_constraint<'a, 'tcx>(
     let mut result = def.all_fields()
         .map(|field| tcx.type_of(field.did))
         .map(|fty| dtorck_constraint_for_ty(tcx, span, fty, 0, fty))
-        .collect::<Result<DtorckConstraint, NoSolution>>()?;
+        .collect::<Result<DtorckConstraint<'_>, NoSolution>>()?;
     result.outlives.extend(tcx.destructor_constraints(def));
     dedup_dtorck_constraint(&mut result);
 

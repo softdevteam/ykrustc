@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Various data structures used by the Rust compiler. The intention
 //! is that code in here should be not be *specific* to rustc, so that
 //! it can be easily unit tested and so forth.
@@ -16,9 +6,7 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "https://www.rust-lang.org/favicon.ico",
-      html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![feature(in_band_lifetimes)]
 #![feature(unboxed_closures)]
@@ -28,34 +16,56 @@
 #![feature(optin_builtin_traits)]
 #![feature(nll)]
 #![feature(allow_internal_unstable)]
-#![feature(vec_resize_with)]
+#![feature(hash_raw_entry)]
+#![feature(stmt_expr_attributes)]
+#![feature(core_intrinsics)]
+#![feature(integer_atomics)]
 
 #![cfg_attr(unix, feature(libc))]
 #![cfg_attr(test, feature(test))]
 
-extern crate core;
-extern crate ena;
+#![deny(rust_2018_idioms)]
+
 #[macro_use]
 extern crate log;
+#[allow(unused_extern_crates)]
 extern crate serialize as rustc_serialize; // used by deriving
 #[cfg(unix)]
 extern crate libc;
-extern crate parking_lot;
 #[macro_use]
 extern crate cfg_if;
-extern crate stable_deref_trait;
-extern crate rustc_rayon as rayon;
-extern crate rustc_rayon_core as rayon_core;
-extern crate rustc_hash;
-extern crate serialize;
-extern crate graphviz;
-extern crate smallvec;
 
 // See librustc_cratesio_shim/Cargo.toml for a comment explaining this.
 #[allow(unused_extern_crates)]
 extern crate rustc_cratesio_shim;
 
 pub use rustc_serialize::hex::ToHex;
+
+#[inline(never)]
+#[cold]
+pub fn cold_path<F: FnOnce() -> R, R>(f: F) -> R {
+      f()
+}
+
+#[macro_export]
+macro_rules! likely {
+      ($e:expr) => {
+            #[allow(unused_unsafe)]
+            {
+                  unsafe { std::intrinsics::likely($e) }
+            }
+      }
+}
+
+#[macro_export]
+macro_rules! unlikely {
+    ($e:expr) => {
+            #[allow(unused_unsafe)]
+            {
+                  unsafe { std::intrinsics::unlikely($e) }
+            }
+      }
+}
 
 pub mod macros;
 pub mod svh;
@@ -66,6 +76,8 @@ pub mod flock;
 pub mod fx;
 pub mod graph;
 pub mod indexed_vec;
+pub mod interner;
+pub mod jobserver;
 pub mod obligation_forest;
 pub mod owning_ref;
 pub mod ptr_key;
@@ -79,7 +91,6 @@ pub mod sync;
 pub mod tiny_list;
 pub mod thin_vec;
 pub mod transitive_relation;
-pub mod tuple_slice;
 pub use ena::unify;
 pub mod vec_linked_list;
 pub mod work_queue;
@@ -90,12 +101,14 @@ pub struct OnDrop<F: Fn()>(pub F);
 impl<F: Fn()> OnDrop<F> {
       /// Forgets the function which prevents it from running.
       /// Ensure that the function owns no memory, otherwise it will be leaked.
+      #[inline]
       pub fn disable(self) {
             std::mem::forget(self);
       }
 }
 
 impl<F: Fn()> Drop for OnDrop<F> {
+      #[inline]
       fn drop(&mut self) {
             (self.0)();
       }

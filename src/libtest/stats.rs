@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(missing_docs)]
 #![allow(deprecated)] // Float
 
@@ -224,7 +214,7 @@ impl Stats for [f64] {
                 let x = *s - mean;
                 v = v + x * x;
             }
-            // NB: this is _supposed to be_ len-1, not len. If you
+            // N.B., this is _supposed to be_ len-1, not len. If you
             // change it back to len, you will be calculating a
             // population variance, not a sample variance.
             let denom = (self.len() - 1) as f64;
@@ -329,8 +319,8 @@ pub fn winsorize(samples: &mut [f64], pct: f64) {
 
 #[cfg(test)]
 mod tests {
-    use stats::Stats;
-    use stats::Summary;
+    use crate::stats::Stats;
+    use crate::stats::Summary;
     use std::f64;
     use std::io::prelude::*;
     use std::io;
@@ -909,7 +899,7 @@ mod tests {
 mod bench {
     extern crate test;
     use self::test::Bencher;
-    use stats::Stats;
+    use crate::stats::Stats;
 
     #[bench]
     pub fn sum_three_items(b: &mut Bencher) {

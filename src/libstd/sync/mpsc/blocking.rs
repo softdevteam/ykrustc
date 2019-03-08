@@ -1,20 +1,10 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Generic support for building blocking abstractions.
 
-use thread::{self, Thread};
-use sync::atomic::{AtomicBool, Ordering};
-use sync::Arc;
-use mem;
-use time::Instant;
+use crate::thread::{self, Thread};
+use crate::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::Arc;
+use crate::mem;
+use crate::time::Instant;
 
 struct Inner {
     thread: Thread,
@@ -60,14 +50,14 @@ impl SignalToken {
         wake
     }
 
-    /// Convert to an unsafe usize value. Useful for storing in a pipe's state
+    /// Converts to an unsafe usize value. Useful for storing in a pipe's state
     /// flag.
     #[inline]
     pub unsafe fn cast_to_usize(self) -> usize {
         mem::transmute(self.inner)
     }
 
-    /// Convert from an unsafe usize value. Useful for retrieving a pipe's state
+    /// Converts from an unsafe usize value. Useful for retrieving a pipe's state
     /// flag.
     #[inline]
     pub unsafe fn cast_from_usize(signal_ptr: usize) -> SignalToken {
@@ -82,7 +72,7 @@ impl WaitToken {
         }
     }
 
-    /// Returns true if we wake up normally, false otherwise.
+    /// Returns `true` if we wake up normally.
     pub fn wait_max_until(self, end: Instant) -> bool {
         while !self.inner.woken.load(Ordering::SeqCst) {
             let now = Instant::now();

@@ -1,18 +1,7 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use check::FnCtxt;
+use crate::check::FnCtxt;
 use rustc::infer::InferOk;
-use rustc::traits::ObligationCause;
+use rustc::traits::{ObligationCause, ObligationCauseCode};
 
-use syntax::ast;
 use syntax::util::parser::PREC_POSTFIX;
 use syntax_pos::Span;
 use rustc::hir;
@@ -76,6 +65,25 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
+    pub fn demand_eqtype_pat(
+        &self,
+        cause_span: Span,
+        expected: Ty<'tcx>,
+        actual: Ty<'tcx>,
+        match_expr_span: Option<Span>,
+    ) {
+        let cause = if let Some(span) = match_expr_span {
+            self.cause(
+                cause_span,
+                ObligationCauseCode::MatchExpressionArmPattern { span, ty: expected },
+            )
+        } else {
+            self.misc(cause_span)
+        };
+        self.demand_eqtype_with_origin(&cause, expected, actual).map(|mut err| err.emit());
+    }
+
+
     pub fn demand_coerce(&self,
                          expr: &hir::Expr,
                          checked_ty: Ty<'tcx>,
@@ -91,7 +99,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
     // Checks that the type of `expr` can be coerced to `expected`.
     //
-    // NB: This code relies on `self.diverges` to be accurate. In
+    // N.B., this code relies on `self.diverges` to be accurate. In
     // particular, assignments to `!` will be permitted if the
     // diverges flag is currently "always".
     pub fn demand_coerce_diag(&self,
@@ -123,7 +131,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         let sole_field_ty = sole_field.ty(self.tcx, substs);
                         if self.can_coerce(expr_ty, sole_field_ty) {
                             let variant_path = self.tcx.item_path_str(variant.did);
-                            Some(variant_path.trim_left_matches("std::prelude::v1::").to_string())
+                            // FIXME #56861: DRYer prelude filtering
+                            Some(variant_path.trim_start_matches("std::prelude::v1::").to_string())
                         } else {
                             None
                         }
@@ -133,7 +142,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     let expr_text = print::to_string(print::NO_ANN, |s| s.print_expr(expr));
                     let suggestions = compatible_variants
                         .map(|v| format!("{}({})", v, expr_text));
-                    err.span_suggestions_with_applicability(
+                    err.span_suggestions(
                         expr.span,
                         "try using a variant of the expected type",
                         suggestions,
@@ -154,7 +163,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                                      probe::Mode::MethodCall,
                                                      expected,
                                                      checked_ty,
-                                                     ast::DUMMY_NODE_ID);
+                                                     hir::DUMMY_HIR_ID);
         methods.retain(|m| {
             self.has_no_input_arg(m) &&
                 self.tcx.get_attrs(m.def_id).iter()
@@ -200,21 +209,24 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     /// ```
     /// opt.map(|arg| { takes_ref(arg) });
     /// ```
-    fn can_use_as_ref(&self, expr: &hir::Expr) -> Option<(Span, &'static str, String)> {
+    fn can_use_as_ref(
+        &self,
+        expr: &hir::Expr,
+    ) -> Option<(Span, &'static str, String)> {
         if let hir::ExprKind::Path(hir::QPath::Resolved(_, ref path)) = expr.node {
             if let hir::def::Def::Local(id) = path.def {
-                let parent = self.tcx.hir.get_parent_node(id);
+                let parent = self.tcx.hir().get_parent_node(id);
                 if let Some(Node::Expr(hir::Expr {
-                    id,
+                    hir_id,
                     node: hir::ExprKind::Closure(_, decl, ..),
                     ..
-                })) = self.tcx.hir.find(parent) {
-                    let parent = self.tcx.hir.get_parent_node(*id);
+                })) = self.tcx.hir().find(parent) {
+                    let parent = self.tcx.hir().get_parent_node_by_hir_id(*hir_id);
                     if let (Some(Node::Expr(hir::Expr {
                         node: hir::ExprKind::MethodCall(path, span, expr),
                         ..
-                    })), 1) = (self.tcx.hir.find(parent), decl.inputs.len()) {
-                        let self_ty = self.tables.borrow().node_id_to_type(expr[0].hir_id);
+                    })), 1) = (self.tcx.hir().find_by_hir_id(parent), decl.inputs.len()) {
+                        let self_ty = self.tables.borrow().node_type(expr[0].hir_id);
                         let self_ty = format!("{:?}", self_ty);
                         let name = path.ident.as_str();
                         let is_as_ref_able = (
@@ -223,10 +235,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             self_ty.starts_with("std::option::Option") ||
                             self_ty.starts_with("std::result::Result")
                         ) && (name == "map" || name == "and_then");
-                        if is_as_ref_able {
-                            return Some((span.shrink_to_lo(),
-                                         "consider using `as_ref` instead",
-                                         "as_ref().".into()));
+                        match (is_as_ref_able, self.sess().source_map().span_to_snippet(*span)) {
+                            (true, Ok(src)) => {
+                                return Some((*span, "consider using `as_ref` instead",
+                                             format!("as_ref().{}", src)));
+                            },
+                            _ => ()
                         }
                     }
                 }
@@ -344,7 +358,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 // we may want to suggest adding a `*`, or removing
                 // a `&`.
                 //
-                // (But, also check check the `expn_info()` to see if this is
+                // (But, also check the `expn_info()` to see if this is
                 // a macro; if so, it's hard to extract the text and make a good
                 // suggestion, so don't bother.)
                 if self.infcx.can_sub(self.param_env, checked, &expected).is_ok() &&
@@ -362,9 +376,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
                         // Maybe add `*`? Only if `T: Copy`.
                         _ => {
-                            if !self.infcx.type_moves_by_default(self.param_env,
-                                                                checked,
-                                                                sp) {
+                            if self.infcx.type_is_copy_modulo_regions(self.param_env,
+                                                                      checked,
+                                                                      sp) {
                                 // do not suggest if the span comes from a macro (#52783)
                                 if let (Ok(code),
                                         true) = (cm.span_to_snippet(sp), sp == expr.span) {
@@ -420,7 +434,11 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
         match expr.node {
             // All built-in range literals but `..=` and `..` desugar to Structs
-            ExprKind::Struct(QPath::Resolved(None, ref path), _, _) |
+            ExprKind::Struct(ref qpath, _, _) => {
+                if let QPath::Resolved(None, ref path) = **qpath {
+                    return is_range_path(&path) && span_is_range_literal(&expr.span);
+                }
+            }
             // `..` desugars to its struct path
             ExprKind::Path(QPath::Resolved(None, ref path)) => {
                 return is_range_path(&path) && span_is_range_literal(&expr.span);
@@ -444,14 +462,15 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         false
     }
 
-    pub fn check_for_cast(&self,
-                      err: &mut DiagnosticBuilder<'tcx>,
-                      expr: &hir::Expr,
-                      checked_ty: Ty<'tcx>,
-                      expected_ty: Ty<'tcx>)
-                      -> bool {
-        let parent_id = self.tcx.hir.get_parent_node(expr.id);
-        if let Some(parent) = self.tcx.hir.find(parent_id) {
+    pub fn check_for_cast(
+        &self,
+        err: &mut DiagnosticBuilder<'tcx>,
+        expr: &hir::Expr,
+        checked_ty: Ty<'tcx>,
+        expected_ty: Ty<'tcx>,
+    ) -> bool {
+        let parent_id = self.tcx.hir().get_parent_node_by_hir_id(expr.hir_id);
+        if let Some(parent) = self.tcx.hir().find_by_hir_id(parent_id) {
             // Shouldn't suggest `.into()` on `const`s.
             if let Node::Item(Item { node: ItemKind::Const(_, _), .. }) = parent {
                 // FIXME(estebank): modify once we decide to suggest `as` casts
@@ -477,17 +496,40 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         // For now, don't suggest casting with `as`.
         let can_cast = false;
 
+        let mut prefix = String::new();
+        if let Some(hir::Node::Expr(hir::Expr {
+            node: hir::ExprKind::Struct(_, fields, _),
+            ..
+        })) = self.tcx.hir().find_by_hir_id(self.tcx.hir().get_parent_node_by_hir_id(expr.hir_id)) {
+            // `expr` is a literal field for a struct, only suggest if appropriate
+            for field in fields {
+                if field.expr.hir_id == expr.hir_id && field.is_shorthand {
+                    // This is a field literal
+                    prefix = format!("{}: ", field.ident);
+                    break;
+                }
+            }
+            if &prefix == "" {
+                // Likely a field was meant, but this field wasn't found. Do not suggest anything.
+                return false;
+            }
+        }
+
         let needs_paren = expr.precedence().order() < (PREC_POSTFIX as i8);
 
         if let Ok(src) = self.tcx.sess.source_map().span_to_snippet(expr.span) {
             let msg = format!("you can cast an `{}` to `{}`", checked_ty, expected_ty);
-            let cast_suggestion = format!("{}{}{} as {}",
-                                          if needs_paren { "(" } else { "" },
-                                          src,
-                                          if needs_paren { ")" } else { "" },
-                                          expected_ty);
+            let cast_suggestion = format!(
+                "{}{}{}{} as {}",
+                prefix,
+                if needs_paren { "(" } else { "" },
+                src,
+                if needs_paren { ")" } else { "" },
+                expected_ty,
+            );
             let into_suggestion = format!(
-                "{}{}{}.into()",
+                "{}{}{}{}.into()",
+                prefix,
                 if needs_paren { "(" } else { "" },
                 src,
                 if needs_paren { ")" } else { "" },
@@ -501,7 +543,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             };
 
             let into_sugg = into_suggestion.clone();
-            let suggest_to_change_suffix_or_into = |err: &mut DiagnosticBuilder,
+            let suggest_to_change_suffix_or_into = |err: &mut DiagnosticBuilder<'_>,
                                                     note: Option<&str>| {
                 let suggest_msg = if literal_is_ty_suffixed(expr) {
                     format!(
@@ -519,12 +561,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 let suffix_suggestion = format!(
                     "{}{}{}{}",
                     if needs_paren { "(" } else { "" },
-                    src.trim_right_matches(&checked_ty.to_string()),
+                    src.trim_end_matches(&checked_ty.to_string()),
                     expected_ty,
                     if needs_paren { ")" } else { "" },
                 );
 
-                err.span_suggestion_with_applicability(
+                err.span_suggestion(
                     expr.span,
                     &suggest_msg,
                     if literal_is_ty_suffixed(expr) {
@@ -541,7 +583,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     match (found.bit_width(), exp.bit_width()) {
                         (Some(found), Some(exp)) if found > exp => {
                             if can_cast {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_truncate),
                                     cast_suggestion,
@@ -551,7 +593,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         }
                         (None, _) | (_, None) => {
                             if can_cast {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, depending_on_isize),
                                     cast_suggestion,
@@ -572,7 +614,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     match (found.bit_width(), exp.bit_width()) {
                         (Some(found), Some(exp)) if found > exp => {
                             if can_cast {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_truncate),
                                     cast_suggestion,
@@ -582,7 +624,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         }
                         (None, _) | (_, None) => {
                             if can_cast {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, depending_on_usize),
                                     cast_suggestion,
@@ -603,7 +645,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     if can_cast {
                         match (found.bit_width(), exp.bit_width()) {
                             (Some(found), Some(exp)) if found > exp - 1 => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_truncate),
                                     cast_suggestion,
@@ -611,7 +653,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             (None, None) => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_truncate),
                                     cast_suggestion,
@@ -619,7 +661,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             (None, _) => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, depending_on_isize),
                                     cast_suggestion,
@@ -627,7 +669,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             (_, None) => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, depending_on_usize),
                                     cast_suggestion,
@@ -635,7 +677,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             _ => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_zero_extend),
                                     cast_suggestion,
@@ -650,7 +692,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     if can_cast {
                         match (found.bit_width(), exp.bit_width()) {
                             (Some(found), Some(exp)) if found - 1 > exp => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_truncate),
                                     cast_suggestion,
@@ -658,7 +700,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             (None, None) => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_sign_extend),
                                     cast_suggestion,
@@ -666,7 +708,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             (None, _) => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, depending_on_usize),
                                     cast_suggestion,
@@ -674,7 +716,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             (_, None) => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, depending_on_isize),
                                     cast_suggestion,
@@ -682,7 +724,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                             _ => {
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     expr.span,
                                     &format!("{}, which {}", msg, will_sign_extend),
                                     cast_suggestion,
@@ -700,7 +742,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                            None,
                        );
                     } else if can_cast {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             expr.span,
                             &format!("{}, producing the closest possible value", msg),
                             cast_suggestion,
@@ -711,7 +753,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 }
                 (&ty::Uint(_), &ty::Float(_)) | (&ty::Int(_), &ty::Float(_)) => {
                     if can_cast {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             expr.span,
                             &format!("{}, rounding the float towards zero", msg),
                             cast_suggestion,
@@ -726,7 +768,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 (&ty::Float(ref exp), &ty::Uint(ref found)) => {
                     // if `found` is `None` (meaning found is `usize`), don't suggest `.into()`
                     if exp.bit_width() > found.bit_width().unwrap_or(256) {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             expr.span,
                             &format!("{}, producing the floating point representation of the \
                                       integer",
@@ -735,7 +777,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             Applicability::MachineApplicable
                         );
                     } else if can_cast {
-                        err.span_suggestion_with_applicability(expr.span,
+                        err.span_suggestion(
+                            expr.span,
                             &format!("{}, producing the floating point representation of the \
                                       integer, rounded if necessary",
                                      msg),
@@ -748,7 +791,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 (&ty::Float(ref exp), &ty::Int(ref found)) => {
                     // if `found` is `None` (meaning found is `isize`), don't suggest `.into()`
                     if exp.bit_width() > found.bit_width().unwrap_or(256) {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             expr.span,
                             &format!("{}, producing the floating point representation of the \
                                       integer",
@@ -757,7 +800,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             Applicability::MachineApplicable
                         );
                     } else if can_cast {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             expr.span,
                             &format!("{}, producing the floating point representation of the \
                                       integer, rounded if necessary",

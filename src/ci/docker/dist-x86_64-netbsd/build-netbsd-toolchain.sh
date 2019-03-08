@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
-
 # ignore-tidy-linelength
 
 set -ex
@@ -38,15 +28,15 @@ mkdir -p /x-tools/x86_64-unknown-netbsd/sysroot
 URL=https://s3-us-west-1.amazonaws.com/rust-lang-ci2/rust-ci-mirror
 
 # Originally from ftp://ftp.netbsd.org/pub/NetBSD/NetBSD-$BSD/source/sets/*.tgz
-curl $URL/2017-03-17-netbsd-src.tgz | tar xzf -
-curl $URL/2017-03-17-netbsd-gnusrc.tgz | tar xzf -
-curl $URL/2017-03-17-netbsd-sharesrc.tgz | tar xzf -
-curl $URL/2017-03-17-netbsd-syssrc.tgz | tar xzf -
+curl $URL/2018-03-01-netbsd-src.tgz | tar xzf -
+curl $URL/2018-03-01-netbsd-gnusrc.tgz | tar xzf -
+curl $URL/2018-03-01-netbsd-sharesrc.tgz | tar xzf -
+curl $URL/2018-03-01-netbsd-syssrc.tgz | tar xzf -
 
 # Originally from ftp://ftp.netbsd.org/pub/NetBSD/NetBSD-$BSD/amd64/binary/sets/*.tgz
-curl $URL/2017-03-17-netbsd-base.tgz | \
+curl $URL/2018-03-01-netbsd-base.tgz | \
   tar xzf - -C /x-tools/x86_64-unknown-netbsd/sysroot ./usr/include ./usr/lib ./lib
-curl $URL/2017-03-17-netbsd-comp.tgz | \
+curl $URL/2018-03-01-netbsd-comp.tgz | \
   tar xzf - -C /x-tools/x86_64-unknown-netbsd/sysroot ./usr/include ./usr/lib
 
 cd usr/src

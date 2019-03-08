@@ -2,6 +2,7 @@
 authors = ["The Rust Project Developers"]
 name = "rustc_codegen_llvm"
 version = "0.0.0"
+edition = "2018"
 
 [lib]
 name = "rustc_codegen_llvm"
@@ -10,10 +11,9 @@ crate-type = ["dylib"]
 test = false
 
 [dependencies]
-cc = "1.0.1"
+cc = "1.0.1" # Used to locate MSVC
 num_cpus = "1.0"
 rustc-demangle = "0.1.4"
-rustc_codegen_ssa = { path = "../librustc_codegen_ssa" }
 rustc_llvm = { path = "../librustc_llvm" }
 rustc_yk_sections = { path = "../librustc_yk_sections" }
 memmap = "0.6"

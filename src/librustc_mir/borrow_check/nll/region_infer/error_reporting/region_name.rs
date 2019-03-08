@@ -1,26 +1,16 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::fmt::{self, Display};
-use borrow_check::nll::region_infer::RegionInferenceContext;
-use borrow_check::nll::universal_regions::DefiningTy;
-use borrow_check::nll::ToRegionVid;
+use crate::borrow_check::nll::region_infer::RegionInferenceContext;
+use crate::borrow_check::nll::universal_regions::DefiningTy;
+use crate::borrow_check::nll::ToRegionVid;
 use rustc::hir;
 use rustc::hir::def_id::DefId;
 use rustc::infer::InferCtxt;
 use rustc::mir::Mir;
-use rustc::ty::subst::{Substs, UnpackedKind};
+use rustc::ty::subst::{SubstsRef, UnpackedKind};
 use rustc::ty::{self, RegionKind, RegionVid, Ty, TyCtxt};
-use rustc::util::ppaux::with_highlight_region_for_regionvid;
+use rustc::util::ppaux::RegionHighlightMode;
 use rustc_errors::DiagnosticBuilder;
-use syntax::ast::{Name, DUMMY_NODE_ID};
+use syntax::ast::Name;
 use syntax::symbol::keywords;
 use syntax_pos::Span;
 use syntax_pos::symbol::InternedString;
@@ -119,7 +109,7 @@ impl RegionName {
 }
 
 impl Display for RegionName {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)
     }
 }
@@ -157,7 +147,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         mir_def_id: DefId,
         fr: RegionVid,
         counter: &mut usize,
-    ) -> RegionName {
+    ) -> Option<RegionName> {
         debug!("give_region_a_name(fr={:?}, counter={})", fr, counter);
 
         assert!(self.universal_regions.is_universal_region(fr));
@@ -177,14 +167,13 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 self.give_name_if_anonymous_region_appears_in_output(
                     infcx, mir, mir_def_id, fr, counter,
                 )
-            })
-            .unwrap_or_else(|| span_bug!(mir.span, "can't make a name for free region {:?}", fr));
+            });
 
         debug!("give_region_a_name: gave name {:?}", value);
         value
     }
 
-    /// Check for the case where `fr` maps to something that the
+    /// Checks for the case where `fr` maps to something that the
     /// *user* has a name for. In that case, we'll be able to map
     /// `fr` to a `Region<'tcx>`, and that region will be one of
     /// named variants.
@@ -226,12 +215,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 },
 
                 ty::BoundRegion::BrEnv => {
-                    let mir_node_id = tcx.hir.as_local_node_id(mir_def_id).expect("non-local mir");
+                    let mir_node_id = tcx.hir()
+                                         .as_local_node_id(mir_def_id)
+                                         .expect("non-local mir");
                     let def_ty = self.universal_regions.defining_ty;
 
                     if let DefiningTy::Closure(def_id, substs) = def_ty {
                         let args_span = if let hir::ExprKind::Closure(_, _, _, span, _) =
-                            tcx.hir.expect_expr(mir_node_id).node
+                            tcx.hir().expect_expr(mir_node_id).node
                         {
                             span
                         } else {
@@ -281,7 +272,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         }
     }
 
-    /// Get a span of a named region to provide context for error messages that
+    /// Gets a span of a named region to provide context for error messages that
     /// mention that span, for example:
     ///
     /// ```
@@ -302,10 +293,10 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         name: &InternedString,
     ) -> Span {
         let scope = error_region.free_region_binding_scope(tcx);
-        let node = tcx.hir.as_local_node_id(scope).unwrap_or(DUMMY_NODE_ID);
+        let node = tcx.hir().as_local_hir_id(scope).unwrap_or(hir::DUMMY_HIR_ID);
 
-        let span = tcx.sess.source_map().def_span(tcx.hir.span(node));
-        if let Some(param) = tcx.hir
+        let span = tcx.sess.source_map().def_span(tcx.hir().span_by_hir_id(node));
+        if let Some(param) = tcx.hir()
             .get_generics(scope)
             .and_then(|generics| generics.get_named(name))
         {
@@ -315,7 +306,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         }
     }
 
-    /// Find an argument that contains `fr` and label it with a fully
+    /// Finds an argument that contains `fr` and label it with a fully
     /// elaborated type, returning something like `'1`. Result looks
     /// like:
     ///
@@ -361,8 +352,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         argument_index: usize,
         counter: &mut usize,
     ) -> Option<RegionName> {
-        let mir_node_id = infcx.tcx.hir.as_local_node_id(mir_def_id)?;
-        let fn_decl = infcx.tcx.hir.fn_decl(mir_node_id)?;
+        let mir_node_id = infcx.tcx.hir().as_local_node_id(mir_def_id)?;
+        let fn_decl = infcx.tcx.hir().fn_decl(mir_node_id)?;
         let argument_hir_ty: &hir::Ty = &fn_decl.inputs[argument_index];
         match argument_hir_ty.node {
             // This indicates a variable with no type annotation, like
@@ -405,7 +396,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         argument_ty: Ty<'tcx>,
         counter: &mut usize,
     ) -> Option<RegionName> {
-        let type_name = with_highlight_region_for_regionvid(needle_fr, *counter, || {
+        let type_name = RegionHighlightMode::highlighting_region_vid(needle_fr, *counter, || {
             infcx.extract_type_name(&argument_ty)
         });
 
@@ -437,7 +428,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// to. For example, we might produce an annotation like this:
     ///
     /// ```
-    ///  | fn a<T>(items: &[T]) -> Box<dyn Iterator<Item=&T>> {
+    ///  | fn a<T>(items: &[T]) -> Box<dyn Iterator<Item = &T>> {
     ///  |                - let's call the lifetime of this reference `'1`
     /// ```
     ///
@@ -446,7 +437,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// `argument_hir_ty`, a `hir::Ty` (the syntax of the type
     /// annotation). We are descending through the types stepwise,
     /// looking in to find the region `needle_fr` in the internal
-    /// type.  Once we find that, we can use the span of the `hir::Ty`
+    /// type. Once we find that, we can use the span of the `hir::Ty`
     /// to add the highlight.
     ///
     /// This is a somewhat imperfect process, so long the way we also
@@ -550,7 +541,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// types+hir to search through).
     fn match_adt_and_segment<'hir>(
         &self,
-        substs: &'tcx Substs<'tcx>,
+        substs: SubstsRef<'tcx>,
         needle_fr: RegionVid,
         last_segment: &'hir hir::PathSegment,
         counter: &mut usize,
@@ -596,7 +587,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// `search_stack` the types+hir to search through.
     fn try_match_adt_and_generic_args<'hir>(
         &self,
-        substs: &'tcx Substs<'tcx>,
+        substs: SubstsRef<'tcx>,
         needle_fr: RegionVid,
         args: &'hir hir::GenericArgs,
         search_stack: &mut Vec<(Ty<'tcx>, &'hir hir::Ty)>,
@@ -613,7 +604,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                     search_stack.push((ty, hir_ty));
                 }
 
-                (UnpackedKind::Lifetime(_), _) | (UnpackedKind::Type(_), _) => {
+                (UnpackedKind::Const(_ct), hir::GenericArg::Const(_hir_ct)) => {
+                    // Lifetimes cannot be found in consts, so we don't need
+                    // to search anything here.
+                }
+
+                (UnpackedKind::Lifetime(_), _)
+                | (UnpackedKind::Type(_), _)
+                | (UnpackedKind::Const(_), _) => {
                     // I *think* that HIR lowering should ensure this
                     // doesn't happen, even in erroneous
                     // programs. Else we should use delay-span-bug.
@@ -630,7 +628,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         None
     }
 
-    /// Find a closure upvar that contains `fr` and label it with a
+    /// Finds a closure upvar that contains `fr` and label it with a
     /// fully elaborated type, returning something like `'1`. Result
     /// looks like:
     ///
@@ -656,7 +654,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         })
     }
 
-    /// Check for arguments appearing in the (closure) return type. It
+    /// Checks for arguments appearing in the (closure) return type. It
     /// must be a closure since, in a free fn, such an argument would
     /// have to either also appear in an argument (if using elision)
     /// or be early bound (named, not in argument).
@@ -682,17 +680,21 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             return None;
         }
 
-        let type_name = with_highlight_region_for_regionvid(
-            fr, *counter, || infcx.extract_type_name(&return_ty));
+        let type_name = RegionHighlightMode::highlighting_region_vid(
+            fr, *counter, || infcx.extract_type_name(&return_ty),
+        );
 
-        let mir_node_id = tcx.hir.as_local_node_id(mir_def_id).expect("non-local mir");
+        let mir_node_id = tcx.hir().as_local_node_id(mir_def_id).expect("non-local mir");
 
-        let (return_span, mir_description) = match tcx.hir.get(mir_node_id) {
+        let (return_span, mir_description) = match tcx.hir().get(mir_node_id) {
             hir::Node::Expr(hir::Expr {
-                node: hir::ExprKind::Closure(_, _, _, span, gen_move),
+                node: hir::ExprKind::Closure(_, return_ty, _, span, gen_move),
                 ..
             }) => (
-                tcx.sess.source_map().end_point(*span),
+                match return_ty.output {
+                    hir::FunctionRetTy::DefaultReturn(_) => tcx.sess.source_map().end_point(*span),
+                    hir::FunctionRetTy::Return(_) => return_ty.output.span(),
+                },
                 if gen_move.is_some() {
                     " of generator"
                 } else {
@@ -719,7 +721,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         })
     }
 
-    /// Create a synthetic region named `'1`, incrementing the
+    /// Creates a synthetic region named `'1`, incrementing the
     /// counter.
     fn synthesize_region_name(&self, counter: &mut usize) -> InternedString {
         let c = *counter;

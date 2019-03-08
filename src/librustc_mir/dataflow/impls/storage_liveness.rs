@@ -1,17 +1,7 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 pub use super::*;
 
 use rustc::mir::*;
-use dataflow::BitDenotation;
+use crate::dataflow::BitDenotation;
 
 #[derive(Copy, Clone)]
 pub struct MaybeStorageLive<'a, 'tcx: 'a> {
@@ -29,7 +19,7 @@ impl<'a, 'tcx: 'a> MaybeStorageLive<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> BitDenotation for MaybeStorageLive<'a, 'tcx> {
+impl<'a, 'tcx> BitDenotation<'tcx> for MaybeStorageLive<'a, 'tcx> {
     type Idx = Local;
     fn name() -> &'static str { "maybe_storage_live" }
     fn bits_per_block(&self) -> usize {
@@ -41,7 +31,7 @@ impl<'a, 'tcx> BitDenotation for MaybeStorageLive<'a, 'tcx> {
     }
 
     fn statement_effect(&self,
-                        sets: &mut BlockSets<Local>,
+                        sets: &mut BlockSets<'_, Local>,
                         loc: Location) {
         let stmt = &self.mir[loc.block].statements[loc.statement_index];
 
@@ -53,16 +43,18 @@ impl<'a, 'tcx> BitDenotation for MaybeStorageLive<'a, 'tcx> {
     }
 
     fn terminator_effect(&self,
-                         _sets: &mut BlockSets<Local>,
+                         _sets: &mut BlockSets<'_, Local>,
                          _loc: Location) {
         // Terminators have no effect
     }
 
-    fn propagate_call_return(&self,
-                             _in_out: &mut BitSet<Local>,
-                             _call_bb: mir::BasicBlock,
-                             _dest_bb: mir::BasicBlock,
-                             _dest_place: &mir::Place) {
+    fn propagate_call_return(
+        &self,
+        _in_out: &mut BitSet<Local>,
+        _call_bb: mir::BasicBlock,
+        _dest_bb: mir::BasicBlock,
+        _dest_place: &mir::Place<'tcx>,
+    ) {
         // Nothing to do when a call returns successfully
     }
 }

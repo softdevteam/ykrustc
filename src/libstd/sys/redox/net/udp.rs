@@ -1,23 +1,13 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use cell::UnsafeCell;
-use cmp;
-use io::{self, Error, ErrorKind, Result};
-use mem;
-use net::{SocketAddr, Ipv4Addr, Ipv6Addr};
-use path::Path;
-use sys::fs::{File, OpenOptions};
-use sys::syscall::TimeSpec;
-use sys_common::{AsInner, FromInner, IntoInner};
-use time::Duration;
+use crate::cell::UnsafeCell;
+use crate::cmp;
+use crate::io::{self, Error, ErrorKind, Result};
+use crate::mem;
+use crate::net::{SocketAddr, Ipv4Addr, Ipv6Addr};
+use crate::path::Path;
+use crate::sys::fs::{File, OpenOptions};
+use crate::sys::syscall::TimeSpec;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::time::Duration;
 
 use super::{path_to_peer_addr, path_to_local_addr};
 
@@ -25,8 +15,8 @@ use super::{path_to_peer_addr, path_to_local_addr};
 pub struct UdpSocket(File, UnsafeCell<Option<SocketAddr>>);
 
 impl UdpSocket {
-    pub fn bind(addr: &SocketAddr) -> Result<UdpSocket> {
-        let path = format!("udp:/{}", addr);
+    pub fn bind(addr: Result<&SocketAddr>) -> Result<UdpSocket> {
+        let path = format!("udp:/{}", addr?);
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(true);
@@ -37,8 +27,8 @@ impl UdpSocket {
         unsafe { &mut *(self.1.get()) }
     }
 
-    pub fn connect(&self, addr: &SocketAddr) -> Result<()> {
-        unsafe { *self.1.get() = Some(*addr) };
+    pub fn connect(&self, addr: Result<&SocketAddr>) -> Result<()> {
+        unsafe { *self.1.get() = Some(*addr?) };
         Ok(())
     }
 

@@ -1,14 +1,6 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
+
+use syntax::{register_diagnostic, register_diagnostics, register_long_diagnostics};
 
 register_long_diagnostics! {
 E0454: r##"
@@ -45,7 +37,7 @@ extern {}
 ```
 
 See more:
-https://doc.rust-lang.org/book/first-edition/conditional-compilation.html
+https://doc.rust-lang.org/reference/attributes.html#conditional-compilation
 "##,
 
 E0458: r##"

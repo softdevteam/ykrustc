@@ -1,22 +1,12 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Redox-specific extensions to primitives in the `std::fs` module.
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use fs::{self, Permissions, OpenOptions};
-use io;
-use path::Path;
-use sys;
-use sys_common::{FromInner, AsInner, AsInnerMut};
+use crate::fs::{self, Permissions, OpenOptions};
+use crate::io;
+use crate::path::Path;
+use crate::sys;
+use crate::sys_common::{FromInner, AsInner, AsInnerMut};
 
 /// Redox-specific extensions to [`fs::Permissions`].
 ///
@@ -127,7 +117,7 @@ pub trait OpenOptionsExt {
     #[stable(feature = "fs_ext", since = "1.1.0")]
     fn mode(&mut self, mode: u32) -> &mut Self;
 
-    /// Pass custom flags to the `flags` argument of `open`.
+    /// Passes custom flags to the `flags` argument of `open`.
     ///
     /// The bits that define the access mode are masked out with `O_ACCMODE`, to
     /// ensure they do not interfere with the access mode set by Rusts options.
@@ -297,9 +287,9 @@ impl FileTypeExt for fs::FileType {
 /// # Note
 ///
 /// On Windows, you must specify whether a symbolic link points to a file
-/// or directory.  Use `os::windows::fs::symlink_file` to create a
+/// or directory. Use `os::windows::fs::symlink_file` to create a
 /// symbolic link to a file, or `os::windows::fs::symlink_dir` to create a
-/// symbolic link to a directory.  Additionally, the process must have
+/// symbolic link to a directory. Additionally, the process must have
 /// `SeCreateSymbolicLinkPrivilege` in order to be able to create a
 /// symbolic link.
 ///

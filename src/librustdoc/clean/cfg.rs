@@ -1,16 +1,7 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+//! The representation of a `#[doc(cfg(...))]` attribute.
 
-//! Representation of a `#[doc(cfg(...))]` attribute.
-
-// FIXME: Once RFC #1868 is implemented, switch to use those structures instead.
+// FIXME: Once the portability lint RFC is implemented (see tracking issue #41619),
+// switch to use those structures instead.
 
 use std::mem;
 use std::fmt::{self, Write};
@@ -23,7 +14,7 @@ use syntax::feature_gate::Features;
 
 use syntax_pos::Span;
 
-use html::escape::Escape;
+use crate::html::escape::Escape;
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, PartialEq, Eq, Hash)]
 pub enum Cfg {
@@ -31,13 +22,13 @@ pub enum Cfg {
     True,
     /// Denies all configurations.
     False,
-    /// A generic configuration option, e.g. `test` or `target_os = "linux"`.
+    /// A generic configuration option, e.g., `test` or `target_os = "linux"`.
     Cfg(Symbol, Option<Symbol>),
-    /// Negate a configuration requirement, i.e. `not(x)`.
+    /// Negates a configuration requirement, i.e., `not(x)`.
     Not(Box<Cfg>),
-    /// Union of a list of configuration requirements, i.e. `any(...)`.
+    /// Union of a list of configuration requirements, i.e., `any(...)`.
     Any(Vec<Cfg>),
-    /// Intersection of a list of configuration requirements, i.e. `all(...)`.
+    /// Intersection of a list of configuration requirements, i.e., `all(...)`.
     All(Vec<Cfg>),
 }
 
@@ -61,7 +52,7 @@ impl Cfg {
 
     /// Parses a `MetaItem` into a `Cfg`.
     ///
-    /// The `MetaItem` should be the content of the `#[cfg(...)]`, e.g. `unix` or
+    /// The `MetaItem` should be the content of the `#[cfg(...)]`, e.g., `unix` or
     /// `target_os = "redox"`.
     ///
     /// If the content is not properly formatted, it will return an error indicating what and where
@@ -270,7 +261,7 @@ impl ops::BitOr for Cfg {
 struct Html<'a>(&'a Cfg, bool);
 
 fn write_with_opt_paren<T: fmt::Display>(
-    fmt: &mut fmt::Formatter,
+    fmt: &mut fmt::Formatter<'_>,
     has_paren: bool,
     obj: T,
 ) -> fmt::Result {
@@ -286,7 +277,7 @@ fn write_with_opt_paren<T: fmt::Display>(
 
 
 impl<'a> fmt::Display for Html<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self.0 {
             Cfg::Not(ref child) => match **child {
                 Cfg::Any(ref sub_cfgs) => {
@@ -379,6 +370,7 @@ impl<'a> fmt::Display for Html<'a> {
                         "pc" => "PC",
                         "rumprun" => "Rumprun",
                         "sun" => "Sun",
+                        "fortanix" => "Fortanix",
                         _ => ""
                     },
                     ("target_env", Some(env)) => match &*env.as_str() {
@@ -387,6 +379,7 @@ impl<'a> fmt::Display for Html<'a> {
                         "musl" => "musl",
                         "newlib" => "Newlib",
                         "uclibc" => "uClibc",
+                        "sgx" => "SGX",
                         _ => "",
                     },
                     ("target_endian", Some(endian)) => return write!(fmt, "{}-endian", endian),
@@ -438,7 +431,7 @@ mod test {
     }
 
     macro_rules! dummy_meta_item_list {
-        ($name:ident, [$($list:ident),* $(,)*]) => {
+        ($name:ident, [$($list:ident),* $(,)?]) => {
             MetaItem {
                 ident: Path::from_ident(Ident::from_str(stringify!($name))),
                 node: MetaItemKind::List(vec![
@@ -452,7 +445,7 @@ mod test {
             }
         };
 
-        ($name:ident, [$($list:expr),* $(,)*]) => {
+        ($name:ident, [$($list:expr),* $(,)?]) => {
             MetaItem {
                 ident: Path::from_ident(Ident::from_str(stringify!($name))),
                 node: MetaItemKind::List(vec![

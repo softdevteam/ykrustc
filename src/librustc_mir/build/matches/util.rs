@@ -1,16 +1,6 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use build::Builder;
-use build::matches::MatchPair;
-use hair::*;
+use crate::build::Builder;
+use crate::build::matches::MatchPair;
+use crate::hair::*;
 use rustc::mir::*;
 use std::u32;
 use std::convert::TryInto;
@@ -23,7 +13,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         subpatterns.iter()
                    .map(|fieldpat| {
                        let place = place.clone().field(fieldpat.field,
-                                                         fieldpat.pattern.ty);
+                                                       fieldpat.pattern.ty);
                        MatchPair::new(place, &fieldpat.pattern)
                    })
                    .collect()
@@ -82,7 +72,6 @@ impl<'pat, 'tcx> MatchPair<'pat, 'tcx> {
         MatchPair {
             place,
             pattern,
-            slice_len_checked: false,
         }
     }
 }

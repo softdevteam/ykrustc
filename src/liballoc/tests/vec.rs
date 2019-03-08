@@ -1,12 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+#![cfg(not(miri))]
 
 use std::borrow::Cow;
 use std::mem::size_of;
@@ -18,7 +10,7 @@ struct DropCounter<'a> {
     count: &'a mut u32,
 }
 
-impl<'a> Drop for DropCounter<'a> {
+impl Drop for DropCounter<'_> {
     fn drop(&mut self) {
         *self.count += 1;
     }
@@ -77,6 +69,11 @@ fn test_reserve() {
 
     v.reserve(16);
     assert!(v.capacity() >= 33)
+}
+
+#[test]
+fn test_zst_capacity() {
+    assert_eq!(Vec::<()>::new().capacity(), usize::max_value());
 }
 
 #[test]
@@ -371,6 +368,7 @@ fn test_vec_truncate_drop() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_vec_truncate_fail() {
     struct BadElem(i32);
     impl Drop for BadElem {
@@ -394,6 +392,7 @@ fn test_index() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_index_out_of_bounds() {
     let vec = vec![1, 2, 3];
     let _ = vec[3];
@@ -401,6 +400,7 @@ fn test_index_out_of_bounds() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_slice_out_of_bounds_1() {
     let x = vec![1, 2, 3, 4, 5];
     &x[!0..];
@@ -408,6 +408,7 @@ fn test_slice_out_of_bounds_1() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_slice_out_of_bounds_2() {
     let x = vec![1, 2, 3, 4, 5];
     &x[..6];
@@ -415,6 +416,7 @@ fn test_slice_out_of_bounds_2() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_slice_out_of_bounds_3() {
     let x = vec![1, 2, 3, 4, 5];
     &x[!0..4];
@@ -422,6 +424,7 @@ fn test_slice_out_of_bounds_3() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_slice_out_of_bounds_4() {
     let x = vec![1, 2, 3, 4, 5];
     &x[1..6];
@@ -429,6 +432,7 @@ fn test_slice_out_of_bounds_4() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_slice_out_of_bounds_5() {
     let x = vec![1, 2, 3, 4, 5];
     &x[3..2];
@@ -436,6 +440,7 @@ fn test_slice_out_of_bounds_5() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_swap_remove_empty() {
     let mut vec = Vec::<i32>::new();
     vec.swap_remove(0);
@@ -506,6 +511,7 @@ fn test_drain_items_zero_sized() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_drain_out_of_bounds() {
     let mut v = vec![1, 2, 3, 4, 5];
     v.drain(5..6);
@@ -579,6 +585,7 @@ fn test_drain_max_vec_size() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_drain_inclusive_out_of_bounds() {
     let mut v = vec![1, 2, 3, 4, 5];
     v.drain(5..=5);
@@ -608,6 +615,7 @@ fn test_splice_inclusive_range() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_splice_out_of_bounds() {
     let mut v = vec![1, 2, 3, 4, 5];
     let a = [10, 11, 12];
@@ -616,6 +624,7 @@ fn test_splice_out_of_bounds() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_splice_inclusive_out_of_bounds() {
     let mut v = vec![1, 2, 3, 4, 5];
     let a = [10, 11, 12];
@@ -643,7 +652,7 @@ fn test_splice_unbounded() {
 fn test_splice_forget() {
     let mut v = vec![1, 2, 3, 4, 5];
     let a = [10, 11, 12];
-    ::std::mem::forget(v.splice(2..4, a.iter().cloned()));
+    std::mem::forget(v.splice(2..4, a.iter().cloned()));
     assert_eq!(v, &[1, 2]);
 }
 

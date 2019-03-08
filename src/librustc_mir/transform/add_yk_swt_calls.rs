@@ -9,11 +9,11 @@
 
 use rustc::ty::{self, TyCtxt, List};
 use rustc::mir::{Operand, LocalDecl, Place, SourceInfo, BasicBlock, Local, BasicBlockData,
-    TerminatorKind, Terminator, OUTERMOST_SOURCE_SCOPE, Constant, Mir};
+    TerminatorKind, Terminator, OUTERMOST_SOURCE_SCOPE, Constant, Mir, PlaceBase};
 use rustc_data_structures::indexed_vec::Idx;
 use syntax_pos::DUMMY_SP;
 use syntax::attr;
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 use rustc::hir;
 use rustc::hir::def_id::{DefIndex, LOCAL_CRATE};
 use rustc::hir::map::blocks::FnLikeNode;
@@ -45,7 +45,7 @@ pub struct AddYkSWTCalls(pub DefIndex);
 impl MirPass for AddYkSWTCalls {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          src: MirSource,
+                          src: MirSource<'_>,
                           mir: &mut Mir<'tcx>) {
         if is_untraceable(tcx, src) {
             return;
@@ -58,9 +58,10 @@ impl MirPass for AddYkSWTCalls {
         let u32_ty = tcx.types.u32;
         let u64_ty = tcx.types.u64;
 
-        let mut shadow_blks = Vec::new();
-        let mut user_blks = Vec::new(); // Copies of the blocks we started with.
-        let mut new_local_decls = Vec::new();
+        let mut shadow_blks: Vec<BasicBlockData<'_>> = Vec::new();
+        // Copies of the blocks we started with.
+        let mut user_blks: Vec<BasicBlockData<'_>> = Vec::new();
+        let mut new_local_decls: Vec<LocalDecl<'_>> = Vec::new();
 
         let num_orig_local_decls = mir.local_decls.len();
         let local_crate_hash = tcx.crate_hash(LOCAL_CRATE).as_u64();
@@ -73,28 +74,36 @@ impl MirPass for AddYkSWTCalls {
 
             // Prepare to call the recorder function.
             let ret_val = LocalDecl::new_temp(unit_ty, DUMMY_SP);
-            let ret_place = Place::Local(Local::new(num_orig_local_decls + new_local_decls.len()));
+            let ret_place = Place::Base(PlaceBase::Local(
+                    Local::new(num_orig_local_decls + new_local_decls.len())));
             new_local_decls.push(ret_val);
+
+            let crate_hash_const = tcx.mk_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::from_u64(tcx, local_crate_hash)));
 
             let crate_hash_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u64_ty,
                 user_ty: None,
-                literal: ty::Const::from_u64(tcx, local_crate_hash),
+                literal: crate_hash_const,
             });
 
+            let def_idx_const = tcx.mk_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::from_u32(tcx, self.0.as_raw_u32())));
             let def_idx_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u32_ty,
                 user_ty: None,
-                literal: ty::Const::from_u32(tcx, self.0.as_raw_u32()),
+                literal: def_idx_const,
             });
 
+            let bb_const = tcx.mk_lazy_const(
+                ty::LazyConst::Evaluated(ty::Const::from_u32(tcx, bb.index() as u32)));
             let bb_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u32_ty,
                 user_ty: None,
-                literal: ty::Const::from_u32(tcx, bb.index() as u32),
+                literal: bb_const,
             });
 
             let rec_fn_oper = Operand::function_handle(tcx, rec_fn_defid,
@@ -133,7 +142,7 @@ impl MirPass for AddYkSWTCalls {
 
 /// Given a `MirSource`, decides if it is possible for us to trace (and thus whether we should
 /// transform) the MIR. Returns `true` if we cannot trace, otherwise `false`.
-fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
+fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource<'_>) -> bool {
     // Never annotate anything annotated with the `#[no_trace]` attribute. This is used on tests
     // where our pass would interfere and on the trace recorder to prevent infinite
     // recursion.
@@ -141,7 +150,7 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
     // "naked functions" can't be traced because their implementations manually implement
     // binary-level function epilogues and prologues, often using in-line assembler. We can't
     // automatically insert our calls into such code without breaking stuff.
-    for attr in tcx.get_attrs(src.def_id).iter() {
+    for attr in tcx.get_attrs(src.def_id()).iter() {
         if attr.check_name("no_trace") {
             return true;
         }
@@ -151,7 +160,7 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
     }
 
     // Similar to `#[no_trace]`, don't transform anything inside a crate marked `#![no_trace]`.
-    for attr in tcx.hir.krate_attrs() {
+    for attr in tcx.hir().krate_attrs() {
         if attr.check_name("no_trace") {
             return true;
         }
@@ -159,7 +168,7 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
 
     // We can't call the software tracing function if the crate doesn't depend upon libcore because
     // that's where the entry point to the trace recorder function lives.
-    if attr::contains_name(tcx.hir.krate_attrs(), "no_core") {
+    if attr::contains_name(tcx.hir().krate_attrs(), "no_core") {
         return true;
     }
 
@@ -176,9 +185,9 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource) -> bool {
     }
 
     // For the same reason as above, regular const functions can't be transformed.
-    let node_id = tcx.hir.as_local_node_id(src.def_id)
+    let node_id = tcx.hir().as_local_node_id(src.def_id())
         .expect("Failed to get node id");
-    if let Some(fn_like) = FnLikeNode::from_node(tcx.hir.get(node_id)) {
+    if let Some(fn_like) = FnLikeNode::from_node(tcx.hir().get(node_id)) {
         fn_like.constness() == hir::Constness::Const
     } else {
         true

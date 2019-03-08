@@ -13,8 +13,8 @@ arena = { path = "../libarena" }
 graphviz = { path = "../libgraphviz" }
 log = "0.4"
 env_logger = { version = "0.5", default-features = false }
-rustc-rayon = "0.1.1"
-scoped-tls = { version = "0.1.1", features = ["nightly"] }
+rustc-rayon = "0.1.2"
+scoped-tls = "1.0"
 rustc = { path = "../librustc" }
 rustc_allocator = { path = "../librustc_allocator" }
 rustc_target = { path = "../librustc_target" }
@@ -35,13 +35,9 @@ rustc_codegen_utils = { path = "../librustc_codegen_utils" }
 rustc_typeck = { path = "../librustc_typeck" }
 rustc_yk_sections = { path = "../librustc_yk_sections" }
 rustc_yk_link = { path = "../librustc_yk_link" }
+rustc_interface = { path = "../librustc_interface" }
 serialize = { path = "../libserialize" }
 syntax = { path = "../libsyntax" }
-smallvec = { version = "0.6.5", features = ["union"] }
+smallvec = { version = "0.6.7", features = ["union", "may_dangle"] }
 syntax_ext = { path = "../libsyntax_ext" }
 syntax_pos = { path = "../libsyntax_pos" }
-
-[dependencies.jemalloc-sys]
-version = '0.1.8'
-optional = true
-features = ['unprefixed_malloc_on_supported_platforms']

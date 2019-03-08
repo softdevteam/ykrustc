@@ -1,29 +1,29 @@
-error: defining existential type use differs from previous
-  --> $DIR/different_defining_uses_never_type.rs:23:1
+error: concrete type differs from previous defining existential type use
+  --> $DIR/different_defining_uses_never_type.rs:12:1
    |
-LL | / fn bar() -> Foo { //~ ERROR defining existential type use differs from previous
+LL | / fn bar() -> Foo { //~ ERROR concrete type differs from previous
 LL | |     panic!()
 LL | | }
-   | |_^
+   | |_^ expected `&'static str`, got `()`
    |
 note: previous use here
-  --> $DIR/different_defining_uses_never_type.rs:19:1
+  --> $DIR/different_defining_uses_never_type.rs:8:1
    |
 LL | / fn foo() -> Foo {
 LL | |     ""
 LL | | }
    | |_^
 
-error: defining existential type use differs from previous
-  --> $DIR/different_defining_uses_never_type.rs:27:1
+error: concrete type differs from previous defining existential type use
+  --> $DIR/different_defining_uses_never_type.rs:16:1
    |
-LL | / fn boo() -> Foo { //~ ERROR defining existential type use differs from previous
+LL | / fn boo() -> Foo { //~ ERROR concrete type differs from previous
 LL | |     loop {}
 LL | | }
-   | |_^
+   | |_^ expected `&'static str`, got `()`
    |
 note: previous use here
-  --> $DIR/different_defining_uses_never_type.rs:19:1
+  --> $DIR/different_defining_uses_never_type.rs:8:1
    |
 LL | / fn foo() -> Foo {
 LL | |     ""

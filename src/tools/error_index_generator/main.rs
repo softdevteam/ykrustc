@@ -1,25 +1,16 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![feature(rustc_private)]
+
+#![deny(rust_2018_idioms)]
 
 extern crate env_logger;
 extern crate syntax;
-extern crate rustdoc;
 extern crate serialize as rustc_serialize;
 
 use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
-use std::fs::{read_dir, File};
-use std::io::{Read, Write};
+use std::fs::{self, read_dir, File};
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::cell::RefCell;
@@ -203,15 +194,14 @@ impl Formatter for MarkdownFormatter {
     }
 }
 
-/// Load all the metadata files from `metadata_dir` into an in-memory map.
+/// Loads all the metadata files from `metadata_dir` into an in-memory map.
 fn load_all_errors(metadata_dir: &Path) -> Result<ErrorMetadataMap, Box<dyn Error>> {
     let mut all_errors = BTreeMap::new();
 
     for entry in read_dir(metadata_dir)? {
         let path = entry?.path();
 
-        let mut metadata_str = String::new();
-        File::open(&path).and_then(|mut f| f.read_to_string(&mut metadata_str))?;
+        let metadata_str = fs::read_to_string(&path)?;
 
         let some_errors: ErrorMetadataMap = json::decode(&metadata_str)?;
 

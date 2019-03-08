@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! As always, windows has something very different than unix, we mainly want
 //! to avoid having to depend too much on libunwind for windows.
 //!
@@ -24,13 +14,14 @@
 
 #![allow(deprecated)] // dynamic_lib
 
-use io;
+use crate::io;
+use crate::mem;
+use crate::ptr;
+use crate::sys::c;
+use crate::sys::dynamic_lib::DynamicLibrary;
+use crate::sys_common::backtrace::Frame;
+
 use libc::c_void;
-use mem;
-use ptr;
-use sys::c;
-use sys::dynamic_lib::DynamicLibrary;
-use sys_common::backtrace::Frame;
 
 macro_rules! sym {
     ($lib:expr, $e:expr, $t:ident) => (
@@ -113,7 +104,7 @@ fn set_frames<W: StackWalker>(StackWalk: W, frames: &mut [Frame]) -> io::Result<
         frames[i] = Frame {
             symbol_addr: addr,
             exact_position: addr,
-            inline_context: 0,
+            inline_context: frame.get_inline_context(),
         };
 
         i += 1
@@ -219,6 +210,7 @@ trait StackFrame {
     fn new() -> Self;
     fn init(&mut self, ctx: &c::CONTEXT) -> c::DWORD;
     fn get_addr(&self) -> *const u8;
+    fn get_inline_context(&self) -> u32;
 }
 
 impl StackFrame for c::STACKFRAME_EX {
@@ -273,6 +265,10 @@ impl StackFrame for c::STACKFRAME_EX {
     fn get_addr(&self) -> *const u8 {
         (self.AddrPC.Offset - 1) as *const u8
     }
+
+    fn get_inline_context(&self) -> u32 {
+        self.InlineFrameContext
+    }
 }
 
 impl StackFrame for c::STACKFRAME64 {
@@ -326,6 +322,10 @@ impl StackFrame for c::STACKFRAME64 {
 
     fn get_addr(&self) -> *const u8 {
         (self.AddrPC.Offset - 1) as *const u8
+    }
+
+    fn get_inline_context(&self) -> u32 {
+        0
     }
 }
 

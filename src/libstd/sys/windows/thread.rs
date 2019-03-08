@@ -1,23 +1,14 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+use crate::boxed::FnBox;
+use crate::io;
+use crate::ffi::CStr;
+use crate::mem;
+use crate::ptr;
+use crate::sys::c;
+use crate::sys::handle::Handle;
+use crate::sys_common::thread::*;
+use crate::time::Duration;
 
-use boxed::FnBox;
-use io;
-use ffi::CStr;
-use mem;
 use libc::c_void;
-use ptr;
-use sys::c;
-use sys::handle::Handle;
-use sys_common::thread::*;
-use time::Duration;
 
 use super::to_u16s;
 
@@ -28,7 +19,8 @@ pub struct Thread {
 }
 
 impl Thread {
-    pub unsafe fn new<'a>(stack: usize, p: Box<dyn FnBox() + 'a>)
+    // unsafe: see thread::Builder::spawn_unchecked for safety requirements
+    pub unsafe fn new(stack: usize, p: Box<dyn FnBox()>)
                           -> io::Result<Thread> {
         let p = box p;
 
@@ -97,5 +89,4 @@ pub mod guard {
     pub type Guard = !;
     pub unsafe fn current() -> Option<Guard> { None }
     pub unsafe fn init() -> Option<Guard> { None }
-    pub unsafe fn deinit() {}
 }

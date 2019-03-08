@@ -1,22 +1,12 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! See docs in build/expr/mod.rs
 
-use build::expr::category::Category;
-use build::ForGuard::{OutsideGuard, RefWithinGuard};
-use build::{BlockAnd, BlockAndExtension, Builder};
-use hair::*;
+use crate::build::expr::category::Category;
+use crate::build::ForGuard::{OutsideGuard, RefWithinGuard};
+use crate::build::{BlockAnd, BlockAndExtension, Builder};
+use crate::hair::*;
 use rustc::mir::interpret::EvalErrorKind::BoundsCheck;
 use rustc::mir::*;
-use rustc::ty::Variance;
+use rustc::ty::{CanonicalUserTypeAnnotation, Variance};
 
 use rustc_data_structures::indexed_vec::Idx;
 
@@ -108,19 +98,19 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     &lt,
                     Rvalue::BinaryOp(
                         BinOp::Lt,
-                        Operand::Copy(Place::Local(idx)),
+                        Operand::Copy(Place::Base(PlaceBase::Local(idx))),
                         Operand::Copy(len.clone()),
                     ),
                 );
 
                 let msg = BoundsCheck {
                     len: Operand::Move(len),
-                    index: Operand::Copy(Place::Local(idx)),
+                    index: Operand::Copy(Place::Base(PlaceBase::Local(idx))),
                 };
                 let success = this.assert(block, Operand::Move(lt), true, msg, expr_span);
                 success.and(slice.index(idx))
             }
-            ExprKind::SelfRef => block.and(Place::Local(Local::new(1))),
+            ExprKind::SelfRef => block.and(Place::Base(PlaceBase::Local(Local::new(1)))),
             ExprKind::VarRef { id } => {
                 let place = if this.is_bound_var_in_guard(id) && this
                     .hir
@@ -128,21 +118,28 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     .all_pat_vars_are_implicit_refs_within_guards()
                 {
                     let index = this.var_local_id(id, RefWithinGuard);
-                    Place::Local(index).deref()
+                    Place::Base(PlaceBase::Local(index)).deref()
                 } else {
                     let index = this.var_local_id(id, OutsideGuard);
-                    Place::Local(index)
+                    Place::Base(PlaceBase::Local(index))
                 };
                 block.and(place)
             }
-            ExprKind::StaticRef { id } => block.and(Place::Static(Box::new(Static {
+            ExprKind::StaticRef { id } => block.and(Place::Base(PlaceBase::Static(Box::new(Static {
                 def_id: id,
                 ty: expr.ty,
-            }))),
+            })))),
 
             ExprKind::PlaceTypeAscription { source, user_ty } => {
                 let place = unpack!(block = this.as_place(block, source));
                 if let Some(user_ty) = user_ty {
+                    let annotation_index = this.canonical_user_type_annotations.push(
+                        CanonicalUserTypeAnnotation {
+                            span: source_info.span,
+                            user_ty,
+                            inferred_ty: expr.ty,
+                        }
+                    );
                     this.cfg.push(
                         block,
                         Statement {
@@ -150,7 +147,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                             kind: StatementKind::AscribeUserType(
                                 place.clone(),
                                 Variance::Invariant,
-                                box UserTypeProjection { base: user_ty, projs: vec![], },
+                                box UserTypeProjection { base: annotation_index, projs: vec![], },
                             ),
                         },
                     );
@@ -163,19 +160,26 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     block = this.as_temp(block, source.temp_lifetime, source, mutability)
                 );
                 if let Some(user_ty) = user_ty {
+                    let annotation_index = this.canonical_user_type_annotations.push(
+                        CanonicalUserTypeAnnotation {
+                            span: source_info.span,
+                            user_ty,
+                            inferred_ty: expr.ty,
+                        }
+                    );
                     this.cfg.push(
                         block,
                         Statement {
                             source_info,
                             kind: StatementKind::AscribeUserType(
-                                Place::Local(temp.clone()),
+                                Place::Base(PlaceBase::Local(temp.clone())),
                                 Variance::Invariant,
-                                box UserTypeProjection { base: user_ty, projs: vec![], },
+                                box UserTypeProjection { base: annotation_index, projs: vec![], },
                             ),
                         },
                     );
                 }
-                block.and(Place::Local(temp))
+                block.and(Place::Base(PlaceBase::Local(temp)))
             }
 
             ExprKind::Array { .. }
@@ -192,6 +196,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             | ExprKind::ReifyFnPointer { .. }
             | ExprKind::ClosureFnPointer { .. }
             | ExprKind::UnsafeFnPointer { .. }
+            | ExprKind::MutToConstPointer { .. }
             | ExprKind::Unsize { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Borrow { .. }
@@ -215,7 +220,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 });
                 let temp =
                     unpack!(block = this.as_temp(block, expr.temp_lifetime, expr, mutability));
-                block.and(Place::Local(temp))
+                block.and(Place::Base(PlaceBase::Local(temp)))
             }
         }
     }

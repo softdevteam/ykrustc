@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::option::*;
 
 fn op1() -> Result<isize, &'static str> { Ok(666) }
@@ -127,6 +117,7 @@ fn test_unwrap_or_else() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 pub fn test_unwrap_or_else_panic() {
     fn handler(msg: &'static str) -> isize {
         if msg == "I got this." {
@@ -148,6 +139,7 @@ pub fn test_expect_ok() {
 }
 #[test]
 #[should_panic(expected="Got expected error: \"All good\"")]
+#[cfg(not(miri))] // Miri does not support panics
 pub fn test_expect_err() {
     let err: Result<isize, &'static str> = Err("All good");
     err.expect("Got expected error");
@@ -161,6 +153,7 @@ pub fn test_expect_err_err() {
 }
 #[test]
 #[should_panic(expected="Got expected ok: \"All good\"")]
+#[cfg(not(miri))] // Miri does not support panics
 pub fn test_expect_err_ok() {
     let err: Result<&'static str, isize> = Ok("All good");
     err.expect_err("Got expected ok");

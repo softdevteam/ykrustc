@@ -2,6 +2,7 @@
 authors = ["The Rust Project Developers"]
 name = "panic_unwind"
 version = "0.0.0"
+edition = "2018"
 
 [lib]
 path = "lib.rs"
@@ -12,6 +13,6 @@ doc = false
 [dependencies]
 alloc = { path = "../liballoc" }
 core = { path = "../libcore" }
-libc = { path = "../rustc/libc_shim" }
+libc = { version = "0.2", default-features = false }
 unwind = { path = "../libunwind" }
-compiler_builtins = { path = "../rustc/compiler_builtins_shim" }
+compiler_builtins = "0.1.0"

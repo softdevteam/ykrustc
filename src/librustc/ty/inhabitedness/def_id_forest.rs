@@ -1,18 +1,8 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::mem;
 use smallvec::SmallVec;
 use syntax::ast::CRATE_NODE_ID;
-use ty::context::TyCtxt;
-use ty::{DefId, DefIdTree};
+use crate::ty::context::TyCtxt;
+use crate::ty::{DefId, DefIdTree};
 
 /// Represents a forest of DefIds closed under the ancestor relation. That is,
 /// if a DefId representing a module is contained in the forest then all
@@ -32,22 +22,22 @@ pub struct DefIdForest {
 }
 
 impl<'a, 'gcx, 'tcx> DefIdForest {
-    /// Create an empty forest.
+    /// Creates an empty forest.
     pub fn empty() -> DefIdForest {
         DefIdForest {
             root_ids: SmallVec::new(),
         }
     }
 
-    /// Create a forest consisting of a single tree representing the entire
+    /// Creates a forest consisting of a single tree representing the entire
     /// crate.
     #[inline]
     pub fn full(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> DefIdForest {
-        let crate_id = tcx.hir.local_def_id(CRATE_NODE_ID);
+        let crate_id = tcx.hir().local_def_id(CRATE_NODE_ID);
         DefIdForest::from_id(crate_id)
     }
 
-    /// Create a forest containing a DefId and all its descendants.
+    /// Creates a forest containing a DefId and all its descendants.
     pub fn from_id(id: DefId) -> DefIdForest {
         let mut root_ids = SmallVec::new();
         root_ids.push(id);
@@ -56,12 +46,12 @@ impl<'a, 'gcx, 'tcx> DefIdForest {
         }
     }
 
-    /// Test whether the forest is empty.
+    /// Tests whether the forest is empty.
     pub fn is_empty(&self) -> bool {
         self.root_ids.is_empty()
     }
 
-    /// Test whether the forest contains a given DefId.
+    /// Tests whether the forest contains a given DefId.
     pub fn contains(&self,
                     tcx: TyCtxt<'a, 'gcx, 'tcx>,
                     id: DefId) -> bool
@@ -74,10 +64,21 @@ impl<'a, 'gcx, 'tcx> DefIdForest {
                            iter: I) -> DefIdForest
             where I: IntoIterator<Item=DefIdForest>
     {
-        let mut ret = DefIdForest::full(tcx);
+        let mut iter = iter.into_iter();
+        let mut ret = if let Some(first) = iter.next() {
+            first
+        } else {
+            return DefIdForest::full(tcx);
+        };
+
         let mut next_ret = SmallVec::new();
         let mut old_ret: SmallVec<[DefId; 1]> = SmallVec::new();
         for next_forest in iter {
+            // No need to continue if the intersection is already empty.
+            if ret.is_empty() {
+                break;
+            }
+
             for id in ret.root_ids.drain() {
                 if next_forest.contains(tcx, id) {
                     next_ret.push(id);

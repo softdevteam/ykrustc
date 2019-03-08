@@ -1,19 +1,7 @@
-// Copyright 2012-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Hook into libgraphviz for rendering dataflow graphs for MIR.
 
 use syntax::ast::NodeId;
 use rustc::mir::{BasicBlock, Mir};
-
-use dot;
 
 use std::fs;
 use std::io;
@@ -25,19 +13,19 @@ use super::DataflowBuilder;
 use super::DebugFormatted;
 
 pub trait MirWithFlowState<'tcx> {
-    type BD: BitDenotation;
+    type BD: BitDenotation<'tcx>;
     fn node_id(&self) -> NodeId;
     fn mir(&self) -> &Mir<'tcx>;
-    fn flow_state(&self) -> &DataflowState<Self::BD>;
+    fn flow_state(&self) -> &DataflowState<'tcx, Self::BD>;
 }
 
 impl<'a, 'tcx, BD> MirWithFlowState<'tcx> for DataflowBuilder<'a, 'tcx, BD>
-    where BD: BitDenotation
+    where BD: BitDenotation<'tcx>
 {
     type BD = BD;
     fn node_id(&self) -> NodeId { self.node_id }
     fn mir(&self) -> &Mir<'tcx> { self.flow_state.mir() }
-    fn flow_state(&self) -> &DataflowState<Self::BD> { &self.flow_state.flow_state }
+    fn flow_state(&self) -> &DataflowState<'tcx, Self::BD> { &self.flow_state.flow_state }
 }
 
 struct Graph<'a, 'tcx, MWF:'a, P> where
@@ -53,8 +41,8 @@ pub(crate) fn print_borrowck_graph_to<'a, 'tcx, BD, P>(
     path: &Path,
     render_idx: P)
     -> io::Result<()>
-    where BD: BitDenotation,
-          P: Fn(&BD, BD::Idx) -> DebugFormatted
+    where BD: BitDenotation<'tcx>,
+          P: Fn(&BD, BD::Idx) -> DebugFormatted,
 {
     let g = Graph { mbcx, phantom: PhantomData, render_idx };
     let mut v = Vec::new();
@@ -69,29 +57,29 @@ pub type Node = BasicBlock;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Edge { source: BasicBlock, index: usize }
 
-fn outgoing(mir: &Mir, bb: BasicBlock) -> Vec<Edge> {
+fn outgoing(mir: &Mir<'_>, bb: BasicBlock) -> Vec<Edge> {
     (0..mir[bb].terminator().successors().count())
         .map(|index| Edge { source: bb, index: index}).collect()
 }
 
 impl<'a, 'tcx, MWF, P> dot::Labeller<'a> for Graph<'a, 'tcx, MWF, P>
     where MWF: MirWithFlowState<'tcx>,
-          P: Fn(&MWF::BD, <MWF::BD as BitDenotation>::Idx) -> DebugFormatted,
+          P: Fn(&MWF::BD, <MWF::BD as BitDenotation<'tcx>>::Idx) -> DebugFormatted,
 {
     type Node = Node;
     type Edge = Edge;
-    fn graph_id(&self) -> dot::Id {
+    fn graph_id(&self) -> dot::Id<'_> {
         dot::Id::new(format!("graph_for_node_{}",
                              self.mbcx.node_id()))
             .unwrap()
     }
 
-    fn node_id(&self, n: &Node) -> dot::Id {
+    fn node_id(&self, n: &Node) -> dot::Id<'_> {
         dot::Id::new(format!("bb_{}", n.index()))
             .unwrap()
     }
 
-    fn node_label(&self, n: &Node) -> dot::LabelText {
+    fn node_label(&self, n: &Node) -> dot::LabelText<'_> {
         // Node label is something like this:
         // +---------+----------------------------------+------------------+------------------+
         // | ENTRY   | MIR                              | GEN              | KILL             |
@@ -115,7 +103,7 @@ impl<'a, 'tcx, MWF, P> dot::Labeller<'a> for Graph<'a, 'tcx, MWF, P>
     }
 
 
-    fn node_shape(&self, _n: &Node) -> Option<dot::LabelText> {
+    fn node_shape(&self, _n: &Node) -> Option<dot::LabelText<'_>> {
         Some(dot::LabelText::label("none"))
     }
 
@@ -128,17 +116,17 @@ impl<'a, 'tcx, MWF, P> dot::Labeller<'a> for Graph<'a, 'tcx, MWF, P>
 
 impl<'a, 'tcx, MWF, P> Graph<'a, 'tcx, MWF, P>
 where MWF: MirWithFlowState<'tcx>,
-      P: Fn(&MWF::BD, <MWF::BD as BitDenotation>::Idx) -> DebugFormatted,
+      P: Fn(&MWF::BD, <MWF::BD as BitDenotation<'tcx>>::Idx) -> DebugFormatted,
 {
     /// Generate the node label
     fn node_label_internal<W: io::Write>(&self,
                                          n: &Node,
                                          w: &mut W,
                                          block: BasicBlock,
-                                         mir: &Mir) -> io::Result<()> {
+                                         mir: &Mir<'_>) -> io::Result<()> {
         // Header rows
-        const HDRS: [&'static str; 4] = ["ENTRY", "MIR", "BLOCK GENS", "BLOCK KILLS"];
-        const HDR_FMT: &'static str = "bgcolor=\"grey\"";
+        const HDRS: [&str; 4] = ["ENTRY", "MIR", "BLOCK GENS", "BLOCK KILLS"];
+        const HDR_FMT: &str = "bgcolor=\"grey\"";
         write!(w, "<table><tr><td rowspan=\"{}\">", HDRS.len())?;
         write!(w, "{:?}", block.index())?;
         write!(w, "</td></tr><tr>")?;
@@ -155,12 +143,12 @@ where MWF: MirWithFlowState<'tcx>,
         Ok(())
     }
 
-    /// Build the verbose row: full MIR data, and detailed gen/kill/entry sets
+    /// Builds the verbose row: full MIR data, and detailed gen/kill/entry sets.
     fn node_label_verbose_row<W: io::Write>(&self,
                                             n: &Node,
                                             w: &mut W,
                                             block: BasicBlock,
-                                            mir: &Mir)
+                                            mir: &Mir<'_>)
                                             -> io::Result<()> {
         let i = n.index();
 
@@ -205,12 +193,12 @@ where MWF: MirWithFlowState<'tcx>,
         Ok(())
     }
 
-    /// Build the summary row: terminator, gen/kill/entry bit sets
+    /// Builds the summary row: terminator, gen/kill/entry bit sets.
     fn node_label_final_row<W: io::Write>(&self,
                                           n: &Node,
                                           w: &mut W,
                                           block: BasicBlock,
-                                          mir: &Mir)
+                                          mir: &Mir<'_>)
                                           -> io::Result<()> {
         let i = n.index();
 
@@ -251,7 +239,7 @@ impl<'a, 'tcx, MWF, P> dot::GraphWalk<'a> for Graph<'a, 'tcx, MWF, P>
 {
     type Node = Node;
     type Edge = Edge;
-    fn nodes(&self) -> dot::Nodes<Node> {
+    fn nodes(&self) -> dot::Nodes<'_, Node> {
         self.mbcx.mir()
             .basic_blocks()
             .indices()
@@ -259,7 +247,7 @@ impl<'a, 'tcx, MWF, P> dot::GraphWalk<'a> for Graph<'a, 'tcx, MWF, P>
             .into()
     }
 
-    fn edges(&self) -> dot::Edges<Edge> {
+    fn edges(&self) -> dot::Edges<'_, Edge> {
         let mir = self.mbcx.mir();
 
         mir.basic_blocks()

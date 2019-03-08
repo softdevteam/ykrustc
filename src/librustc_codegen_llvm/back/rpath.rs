@@ -1,13 +1,3 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc_data_structures::fx::FxHashSet;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -25,20 +15,18 @@ pub struct RPathConfig<'a> {
     pub get_install_prefix_lib_path: &'a mut dyn FnMut() -> PathBuf,
 }
 
-pub fn get_rpath_flags(config: &mut RPathConfig) -> Vec<String> {
+pub fn get_rpath_flags(config: &mut RPathConfig<'_>) -> Vec<String> {
     // No rpath on windows
     if !config.has_rpath {
         return Vec::new();
     }
-
-    let mut flags = Vec::new();
 
     debug!("preparing the RPATH!");
 
     let libs = config.used_crates.clone();
     let libs = libs.iter().filter_map(|&(_, ref l)| l.option()).collect::<Vec<_>>();
     let rpaths = get_rpaths(config, &libs);
-    flags.extend_from_slice(&rpaths_to_flags(&rpaths));
+    let mut flags = rpaths_to_flags(&rpaths);
 
     // Use DT_RUNPATH instead of DT_RPATH if available
     if config.linker_is_gnu {
@@ -49,7 +37,8 @@ pub fn get_rpath_flags(config: &mut RPathConfig) -> Vec<String> {
 }
 
 fn rpaths_to_flags(rpaths: &[String]) -> Vec<String> {
-    let mut ret = Vec::new();
+    let mut ret = Vec::with_capacity(rpaths.len()); // the minimum needed capacity
+
     for rpath in rpaths {
         if rpath.contains(',') {
             ret.push("-Wl,-rpath".into());
@@ -63,7 +52,7 @@ fn rpaths_to_flags(rpaths: &[String]) -> Vec<String> {
     ret
 }
 
-fn get_rpaths(config: &mut RPathConfig, libs: &[PathBuf]) -> Vec<String> {
+fn get_rpaths(config: &mut RPathConfig<'_>, libs: &[PathBuf]) -> Vec<String> {
     debug!("output: {:?}", config.out_filename.display());
     debug!("libs:");
     for libpath in libs {
@@ -97,12 +86,12 @@ fn get_rpaths(config: &mut RPathConfig, libs: &[PathBuf]) -> Vec<String> {
     rpaths
 }
 
-fn get_rpaths_relative_to_output(config: &mut RPathConfig,
+fn get_rpaths_relative_to_output(config: &mut RPathConfig<'_>,
                                  libs: &[PathBuf]) -> Vec<String> {
     libs.iter().map(|a| get_rpath_relative_to_output(config, a)).collect()
 }
 
-fn get_rpath_relative_to_output(config: &mut RPathConfig, lib: &Path) -> String {
+fn get_rpath_relative_to_output(config: &mut RPathConfig<'_>, lib: &Path) -> String {
     // Mac doesn't appear to support $ORIGIN
     let prefix = if config.is_like_osx {
         "@loader_path"
@@ -112,9 +101,9 @@ fn get_rpath_relative_to_output(config: &mut RPathConfig, lib: &Path) -> String 
 
     let cwd = env::current_dir().unwrap();
     let mut lib = fs::canonicalize(&cwd.join(lib)).unwrap_or_else(|_| cwd.join(lib));
-    lib.pop();
+    lib.pop(); // strip filename
     let mut output = cwd.join(&config.out_filename);
-    output.pop();
+    output.pop(); // strip filename
     let output = fs::canonicalize(&output).unwrap_or(output);
     let relative = path_relative_from(&lib, &output).unwrap_or_else(||
         panic!("couldn't create relative path from {:?} to {:?}", output, lib));
@@ -138,7 +127,7 @@ fn path_relative_from(path: &Path, base: &Path) -> Option<PathBuf> {
     } else {
         let mut ita = path.components();
         let mut itb = base.components();
-        let mut comps: Vec<Component> = vec![];
+        let mut comps: Vec<Component<'_>> = vec![];
         loop {
             match (ita.next(), itb.next()) {
                 (None, None) => break,
@@ -165,7 +154,7 @@ fn path_relative_from(path: &Path, base: &Path) -> Option<PathBuf> {
 }
 
 
-fn get_install_prefix_rpath(config: &mut RPathConfig) -> String {
+fn get_install_prefix_rpath(config: &mut RPathConfig<'_>) -> String {
     let path = (config.get_install_prefix_lib_path)();
     let path = env::current_dir().unwrap().join(&path);
     // FIXME (#9639): This needs to handle non-utf8 paths

@@ -1,20 +1,10 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use abi::call::{ArgType, FnType, Reg};
-use abi::Abi;
+use crate::abi::call::{ArgType, FnType, Reg};
+use crate::abi::Abi;
 
 // Win64 ABI: http://msdn.microsoft.com/en-us/library/zthk2dkh.aspx
 
-pub fn compute_abi_info<Ty>(fty: &mut FnType<Ty>) {
-    let fixup = |a: &mut ArgType<Ty>| {
+pub fn compute_abi_info<Ty>(fty: &mut FnType<'_, Ty>) {
+    let fixup = |a: &mut ArgType<'_, Ty>| {
         match a.layout.abi {
             Abi::Uninhabited => {}
             Abi::ScalarPair(..) |

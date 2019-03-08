@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Verifies all possible restrictions for statics values.
 
 #![allow(warnings)]
@@ -88,6 +78,7 @@ struct MyOwned;
 
 static STATIC11: Box<MyOwned> = box MyOwned;
 //~^ ERROR allocations are not allowed in statics
+//~| ERROR static contains unimplemented expression type
 
 static mut STATIC12: UnsafeStruct = UnsafeStruct;
 
@@ -102,12 +93,16 @@ static mut STATIC14: SafeStruct = SafeStruct {
 
 static STATIC15: &'static [Box<MyOwned>] = &[
     box MyOwned, //~ ERROR allocations are not allowed in statics
+    //~| ERROR contains unimplemented expression
     box MyOwned, //~ ERROR allocations are not allowed in statics
+    //~| ERROR contains unimplemented expression
 ];
 
 static STATIC16: (&'static Box<MyOwned>, &'static Box<MyOwned>) = (
     &box MyOwned, //~ ERROR allocations are not allowed in statics
+    //~| ERROR contains unimplemented expression
     &box MyOwned, //~ ERROR allocations are not allowed in statics
+    //~| ERROR contains unimplemented expression
 );
 
 static mut STATIC17: SafeEnum = SafeEnum::Variant1;
@@ -115,9 +110,11 @@ static mut STATIC17: SafeEnum = SafeEnum::Variant1;
 static STATIC19: Box<isize> =
     box 3;
 //~^ ERROR allocations are not allowed in statics
+    //~| ERROR contains unimplemented expression
 
 pub fn main() {
     let y = { static x: Box<isize> = box 3; x };
     //~^ ERROR allocations are not allowed in statics
-    //~^^ ERROR cannot move out of static item
+    //~| ERROR cannot move out of static item
+    //~| ERROR contains unimplemented expression
 }

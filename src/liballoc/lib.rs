@@ -1,13 +1,3 @@
-// Copyright 2014-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! # The Rust core allocation and collections library
 //!
 //! This library provides smart pointers and collections for managing
@@ -65,16 +55,19 @@
             reason = "this library is unlikely to be stabilized in its current \
                       form or name",
             issue = "27783")]
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(allow(unused_variables), deny(warnings))))]
 #![no_std]
 #![needs_allocator]
-#![deny(missing_debug_implementations)]
 
-#![cfg_attr(not(test), feature(fn_traits))]
+#![deny(rust_2018_idioms)]
+#![allow(explicit_outlives_requirements)]
+
+#![warn(deprecated_in_future)]
+#![warn(intra_doc_link_resolution_failure)]
+#![warn(missing_debug_implementations)]
+
 #![cfg_attr(not(test), feature(generator_trait))]
 #![cfg_attr(test, feature(test))]
 
@@ -92,6 +85,7 @@
 #![feature(dropck_eyepatch)]
 #![feature(exact_size_is_empty)]
 #![feature(fmt_internals)]
+#![feature(fn_traits)]
 #![feature(fundamental)]
 #![feature(futures_api)]
 #![feature(lang_items)]
@@ -100,13 +94,13 @@
 #![feature(nll)]
 #![feature(optin_builtin_traits)]
 #![feature(pattern)]
-#![feature(pin)]
 #![feature(ptr_internals)]
 #![feature(ptr_offset_from)]
 #![feature(rustc_attrs)]
+#![feature(receiver_trait)]
 #![feature(specialization)]
-#![feature(split_ascii_whitespace)]
 #![feature(staged_api)]
+#![feature(std_internals)]
 #![feature(str_internals)]
 #![feature(trusted_len)]
 #![feature(try_reserve)]
@@ -118,8 +112,9 @@
 #![feature(rustc_const_unstable)]
 #![feature(const_vec_new)]
 #![feature(slice_partition_dedup)]
-#![feature(maybe_uninit)]
+#![feature(maybe_uninit, maybe_uninit_slice, maybe_uninit_array)]
 #![feature(alloc_layout_extra)]
+#![feature(try_trait)]
 
 // Allow testing this library
 
@@ -128,8 +123,6 @@
 extern crate std;
 #[cfg(test)]
 extern crate test;
-#[cfg(test)]
-extern crate rand;
 
 // Module with internal macros used by other modules (needs to be included before other modules).
 #[macro_use]
@@ -139,10 +132,6 @@ mod macros;
 
 pub mod alloc;
 
-#[unstable(feature = "futures_api",
-           reason = "futures in libcore are unstable",
-           issue = "50547")]
-pub mod task;
 // Primitive types using the heaps above
 
 // Need to conditionally define the mod from `boxed.rs` to avoid
@@ -171,5 +160,5 @@ pub mod vec;
 
 #[cfg(not(test))]
 mod std {
-    pub use core::ops;      // RangeFull
+    pub use core::ops; // RangeFull
 }

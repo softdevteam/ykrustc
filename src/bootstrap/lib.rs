@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of rustbuild, the Rust build system.
 //!
 //! This module, and its descendants, are the implementation of the Rust build
@@ -38,7 +28,7 @@
 //! However, compiletest itself tries to avoid running tests when the artifacts
 //! that are involved (mainly the compiler) haven't changed.
 //!
-//! When you execute `x.py build`, the steps which are executed are:
+//! When you execute `x.py build`, the steps executed are:
 //!
 //! * First, the python script is run. This will automatically download the
 //!   stage0 rustc and cargo according to `src/stage0.txt`, or use the cached
@@ -79,7 +69,7 @@
 //! ## Copying stage0 {std,test,rustc}
 //!
 //! This copies the build output from Cargo into
-//! `build/$HOST/stage0-sysroot/lib/rustlib/$ARCH/lib`. FIXME: This step's
+//! `build/$HOST/stage0-sysroot/lib/rustlib/$ARCH/lib`. FIXME: this step's
 //! documentation should be expanded -- the information already here may be
 //! incorrect.
 //!
@@ -113,7 +103,7 @@
 //! More documentation can be found in each respective module below, and you can
 //! also check out the `src/bootstrap/README.md` file for more information.
 
-#![deny(bare_trait_objects)]
+#![deny(rust_2018_idioms)]
 #![deny(warnings)]
 #![feature(core_intrinsics)]
 #![feature(drain_filter)]
@@ -124,28 +114,16 @@ extern crate build_helper;
 extern crate serde_derive;
 #[macro_use]
 extern crate lazy_static;
-extern crate serde_json;
-extern crate cmake;
-extern crate filetime;
-extern crate cc;
-extern crate getopts;
-extern crate num_cpus;
-extern crate toml;
-extern crate time;
-extern crate petgraph;
 
 #[cfg(test)]
 #[macro_use]
 extern crate pretty_assertions;
 
-#[cfg(unix)]
-extern crate libc;
-
 use std::cell::{RefCell, Cell};
 use std::collections::{HashSet, HashMap};
 use std::env;
 use std::fs::{self, OpenOptions, File};
-use std::io::{self, Seek, SeekFrom, Write, Read};
+use std::io::{Seek, SeekFrom, Write, Read};
 use std::path::{PathBuf, Path};
 use std::process::{self, Command};
 use std::slice;
@@ -159,7 +137,7 @@ use std::os::windows::fs::symlink_file;
 use build_helper::{run_silent, run_suppressed, try_run_silent, try_run_suppressed, output, mtime};
 use filetime::FileTime;
 
-use util::{exe, libdir, OutputFolder, CiEnv};
+use crate::util::{exe, libdir, OutputFolder, CiEnv};
 
 mod cc_detect;
 mod channel;
@@ -186,9 +164,7 @@ mod job;
 
 #[cfg(all(unix, not(target_os = "haiku")))]
 mod job {
-    use libc;
-
-    pub unsafe fn setup(build: &mut ::Build) {
+    pub unsafe fn setup(build: &mut crate::Build) {
         if build.config.low_priority {
             libc::setpriority(libc::PRIO_PGRP as _, 0, 10);
         }
@@ -197,14 +173,14 @@ mod job {
 
 #[cfg(any(target_os = "haiku", not(any(unix, windows))))]
 mod job {
-    pub unsafe fn setup(_build: &mut ::Build) {
+    pub unsafe fn setup(_build: &mut crate::Build) {
     }
 }
 
-pub use config::Config;
-use flags::Subcommand;
-use cache::{Interned, INTERNER};
-use toolstate::ToolState;
+pub use crate::config::Config;
+use crate::flags::Subcommand;
+use crate::cache::{Interned, INTERNER};
+use crate::toolstate::ToolState;
 
 const LLVM_TOOLS: &[&str] = &[
     "llvm-nm", // used to inspect binaries; it shows symbol names, their sizes and visibility
@@ -263,6 +239,7 @@ pub struct Build {
     cargo_info: channel::GitInfo,
     rls_info: channel::GitInfo,
     clippy_info: channel::GitInfo,
+    miri_info: channel::GitInfo,
     rustfmt_info: channel::GitInfo,
     local_rebuild: bool,
     fail_fast: bool,
@@ -384,6 +361,7 @@ impl Build {
         let cargo_info = channel::GitInfo::new(&config, &src.join("src/tools/cargo"));
         let rls_info = channel::GitInfo::new(&config, &src.join("src/tools/rls"));
         let clippy_info = channel::GitInfo::new(&config, &src.join("src/tools/clippy"));
+        let miri_info = channel::GitInfo::new(&config, &src.join("src/tools/miri"));
         let rustfmt_info = channel::GitInfo::new(&config, &src.join("src/tools/rustfmt"));
 
         let mut build = Build {
@@ -406,6 +384,7 @@ impl Build {
             cargo_info,
             rls_info,
             clippy_info,
+            miri_info,
             rustfmt_info,
             cc: HashMap::new(),
             cxx: HashMap::new(),
@@ -430,7 +409,7 @@ impl Build {
             Command::new(&build.initial_rustc).arg("--version").arg("--verbose"));
         let local_release = local_version_verbose
             .lines().filter(|x| x.starts_with("release:"))
-            .next().unwrap().trim_left_matches("release:").trim();
+            .next().unwrap().trim_start_matches("release:").trim();
         let my_version = channel::CFG_RELEASE_NUM;
         if local_release.split('.').take(2).eq(my_version.split('.').take(2)) {
             build.verbose(&format!("auto-detected local-rebuild {}", local_release));
@@ -511,7 +490,7 @@ impl Build {
         cleared
     }
 
-    /// Get the space-separated set of activated features for the standard
+    /// Gets the space-separated set of activated features for the standard
     /// library.
     fn std_features(&self) -> String {
         let mut features = "panic-unwind".to_string();
@@ -528,7 +507,7 @@ impl Build {
         features
     }
 
-    /// Get the space-separated set of activated features for the compiler.
+    /// Gets the space-separated set of activated features for the compiler.
     fn rustc_features(&self) -> String {
         let mut features = String::new();
         if self.config.jemalloc {
@@ -616,7 +595,7 @@ impl Build {
         self.out.join(&*target).join("crate-docs")
     }
 
-    /// Returns true if no custom `llvm-config` is set for the specified target.
+    /// Returns `true` if no custom `llvm-config` is set for the specified target.
     ///
     /// If no custom `llvm-config` was specified then Rust's llvm will be used.
     fn is_rust_llvm(&self, target: Interned<String>) -> bool {
@@ -777,10 +756,10 @@ impl Build {
     fn cflags(&self, target: Interned<String>, which: GitRepo) -> Vec<String> {
         // Filter out -O and /O (the optimization flags) that we picked up from
         // cc-rs because the build scripts will determine that for themselves.
-        let mut base: Vec<String> = self.cc[&target].args().iter()
+        let mut base = self.cc[&target].args().iter()
                            .map(|s| s.to_string_lossy().into_owned())
                            .filter(|s| !s.starts_with("-O") && !s.starts_with("/O"))
-                           .collect::<Vec<_>>();
+                           .collect::<Vec<String>>();
 
         // If we're compiling on macOS then we add a few unconditional flags
         // indicating that we want libc++ (more filled out than libstdc++) and
@@ -838,6 +817,7 @@ impl Build {
                   !target.contains("msvc") &&
                   !target.contains("emscripten") &&
                   !target.contains("wasm32") &&
+                  !target.contains("nvptx") &&
                   !target.contains("fuchsia") {
             Some(self.cc(target))
         } else {
@@ -863,13 +843,13 @@ impl Build {
             .map(|p| &**p)
     }
 
-    /// Returns true if this is a no-std `target`, if defined
+    /// Returns `true` if this is a no-std `target`, if defined
     fn no_std(&self, target: Interned<String>) -> Option<bool> {
         self.config.target_config.get(&target)
             .map(|t| t.no_std)
     }
 
-    /// Returns whether the target will be tested using the `remote-test-client`
+    /// Returns `true` if the target will be tested using the `remote-test-client`
     /// and `remote-test-server` binaries.
     fn remote_tested(&self, target: Interned<String>) -> bool {
         self.qemu_rootfs(target).is_some() || target.contains("android") ||
@@ -1026,6 +1006,11 @@ impl Build {
         self.package_vers(&self.release_num("clippy"))
     }
 
+    /// Returns the value of `package_vers` above for miri
+    fn miri_package_vers(&self) -> String {
+        self.package_vers(&self.release_num("miri"))
+    }
+
     /// Returns the value of `package_vers` above for rustfmt
     fn rustfmt_package_vers(&self) -> String {
         self.package_vers(&self.release_num("rustfmt"))
@@ -1060,16 +1045,15 @@ impl Build {
         self.rust_info.version(self, channel::CFG_RELEASE_NUM)
     }
 
-    /// Return the full commit hash
+    /// Returns the full commit hash.
     fn rust_sha(&self) -> Option<&str> {
         self.rust_info.sha()
     }
 
     /// Returns the `a.b.c` version that the given package is at.
     fn release_num(&self, package: &str) -> String {
-        let mut toml = String::new();
         let toml_file_name = self.src.join(&format!("src/tools/{}/Cargo.toml", package));
-        t!(t!(File::open(toml_file_name)).read_to_string(&mut toml));
+        let toml = t!(fs::read_to_string(&toml_file_name));
         for line in toml.lines() {
             let prefix = "version = \"";
             let suffix = "\"";
@@ -1081,7 +1065,7 @@ impl Build {
         panic!("failed to find version in {}'s Cargo.toml", package)
     }
 
-    /// Returns whether unstable features should be enabled for the compiler
+    /// Returns `true` if unstable features should be enabled for the compiler
     /// we're building.
     fn unstable_features(&self) -> bool {
         match &self.config.channel[..] {
@@ -1135,32 +1119,32 @@ impl Build {
             let krate = &self.crates[&krate];
             if krate.is_local(self) {
                 ret.push(krate);
-                for dep in &krate.deps {
-                    if visited.insert(dep) && dep != "build_helper" {
-                        list.push(*dep);
-                    }
+            }
+            for dep in &krate.deps {
+                if visited.insert(dep) && dep != "build_helper" {
+                    list.push(*dep);
                 }
             }
         }
         ret
     }
 
-    fn read_stamp_file(&self, stamp: &Path) -> Vec<PathBuf> {
+    fn read_stamp_file(&self, stamp: &Path) -> Vec<(PathBuf, bool)> {
         if self.config.dry_run {
             return Vec::new();
         }
 
         let mut paths = Vec::new();
-        let mut contents = Vec::new();
-        t!(t!(File::open(stamp)).read_to_end(&mut contents));
+        let contents = t!(fs::read(stamp));
         // This is the method we use for extracting paths from the stamp file passed to us. See
         // run_cargo for more information (in compile.rs).
         for part in contents.split(|b| *b == 0) {
             if part.is_empty() {
                 continue
             }
-            let path = PathBuf::from(t!(str::from_utf8(part)));
-            paths.push(path);
+            let host = part[0] as char == 'h';
+            let path = PathBuf::from(t!(str::from_utf8(&part[1..])));
+            paths.push((path, host));
         }
         paths
     }
@@ -1267,9 +1251,15 @@ impl Build {
             if !src.exists() {
                 panic!("Error: File \"{}\" not found!", src.display());
             }
-            let mut s = t!(fs::File::open(&src));
-            let mut d = t!(fs::File::create(&dst));
-            io::copy(&mut s, &mut d).expect("failed to copy");
+            let metadata = t!(src.symlink_metadata());
+            if let Err(e) = fs::copy(&src, &dst) {
+                panic!("failed to copy `{}` to `{}`: {}", src.display(),
+                       dst.display(), e)
+            }
+            t!(fs::set_permissions(&dst, metadata.permissions()));
+            let atime = FileTime::from_last_access_time(&metadata);
+            let mtime = FileTime::from_last_modification_time(&metadata);
+            t!(filetime::set_file_times(&dst, atime, mtime));
         }
         chmod(&dst, perms);
     }
@@ -1324,7 +1314,7 @@ impl<'a> Compiler {
         self
     }
 
-    /// Returns whether this is a snapshot compiler for `build`'s configuration
+    /// Returns `true` if this is a snapshot compiler for `build`'s configuration
     pub fn is_snapshot(&self, build: &Build) -> bool {
         self.stage == 0 && self.host == build.build
     }

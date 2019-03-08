@@ -1,25 +1,15 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-//! See docs in build/expr/mod.rs
+//! See docs in `build/expr/mod.rs`.
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 
-use build::expr::category::{Category, RvalueFunc};
-use build::{BlockAnd, BlockAndExtension, Builder};
-use hair::*;
+use crate::build::expr::category::{Category, RvalueFunc};
+use crate::build::{BlockAnd, BlockAndExtension, Builder};
+use crate::hair::*;
 use rustc::middle::region;
 use rustc::mir::interpret::EvalErrorKind;
 use rustc::mir::*;
-use rustc::ty::{self, Ty, UpvarSubsts};
+use rustc::ty::{self, CanonicalUserTypeAnnotation, Ty, UpvarSubsts};
 use syntax_pos::Span;
 
 impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
@@ -77,7 +67,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 block.and(Rvalue::Repeat(value_operand, count))
             }
             ExprKind::Borrow {
-                region,
                 borrow_kind,
                 arg,
             } => {
@@ -85,7 +74,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     BorrowKind::Shared => unpack!(block = this.as_read_only_place(block, arg)),
                     _ => unpack!(block = this.as_place(block, arg)),
                 };
-                block.and(Rvalue::Ref(region, borrow_kind, arg_place))
+                block.and(Rvalue::Ref(this.hir.tcx().types.re_erased, borrow_kind, arg_place))
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = unpack!(block = this.as_operand(block, scope, lhs));
@@ -138,7 +127,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     this.schedule_drop_storage_and_value(
                         expr_span,
                         scope,
-                        &Place::Local(result),
+                        &Place::Base(PlaceBase::Local(result)),
                         value.ty,
                     );
                 }
@@ -146,15 +135,18 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 // malloc some memory of suitable type (thus far, uninitialized):
                 let box_ = Rvalue::NullaryOp(NullOp::Box, value.ty);
                 this.cfg
-                    .push_assign(block, source_info, &Place::Local(result), box_);
+                    .push_assign(block, source_info, &Place::Base(PlaceBase::Local(result)), box_);
 
                 // initialize the box contents:
-                unpack!(block = this.into(&Place::Local(result).deref(), block, value));
-                block.and(Rvalue::Use(Operand::Move(Place::Local(result))))
+                unpack!(
+                    block = this.into(
+                        &Place::Base(PlaceBase::Local(result)).deref(),
+                        block, value
+                    )
+                );
+                block.and(Rvalue::Use(Operand::Move(Place::Base(PlaceBase::Local(result)))))
             }
             ExprKind::Cast { source } => {
-                let source = this.hir.mirror(source);
-
                 let source = unpack!(block = this.as_operand(block, scope, source));
                 block.and(Rvalue::Cast(CastKind::Misc, source, expr.ty))
             }
@@ -173,6 +165,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::ClosureFnPointer { source } => {
                 let source = unpack!(block = this.as_operand(block, scope, source));
                 block.and(Rvalue::Cast(CastKind::ClosureFnPointer, source, expr.ty))
+            }
+            ExprKind::MutToConstPointer { source } => {
+                let source = unpack!(block = this.as_operand(block, scope, source));
+                block.and(Rvalue::Cast(CastKind::MutToConstPointer, source, expr.ty))
             }
             ExprKind::Unsize { source } => {
                 let source = unpack!(block = this.as_operand(block, scope, source));
@@ -259,11 +255,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                                             BorrowKind::Mut {
                                                 allow_two_phase_borrow: false,
                                             },
-                                        region,
                                         arg,
                                     } => unpack!(
                                         block = this.limit_capture_mutability(
-                                            upvar.span, upvar.ty, scope, block, arg, region,
+                                            upvar.span, upvar.ty, scope, block, arg,
                                         )
                                     ),
                                     _ => unpack!(block = this.as_operand(block, scope, upvar)),
@@ -280,11 +275,13 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                             span: expr_span,
                             ty: this.hir.tcx().types.u32,
                             user_ty: None,
-                            literal: ty::Const::from_bits(
-                                this.hir.tcx(),
-                                0,
-                                ty::ParamEnv::empty().and(this.hir.tcx().types.u32),
-                            ),
+                            literal: this.hir.tcx().mk_lazy_const(ty::LazyConst::Evaluated(
+                                ty::Const::from_bits(
+                                    this.hir.tcx(),
+                                    0,
+                                    ty::ParamEnv::empty().and(this.hir.tcx().types.u32),
+                                ),
+                            )),
                         }));
                         box AggregateKind::Generator(closure_id, substs, movability)
                     }
@@ -341,6 +338,14 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         .collect()
                 };
 
+                let inferred_ty = expr.ty;
+                let user_ty = user_ty.map(|ty| {
+                    this.canonical_user_type_annotations.push(CanonicalUserTypeAnnotation {
+                        span: source_info.span,
+                        user_ty: ty,
+                        inferred_ty,
+                    })
+                });
                 let adt = box AggregateKind::Adt(
                     adt_def,
                     variant_index,
@@ -505,7 +510,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         temp_lifetime: Option<region::Scope>,
         mut block: BasicBlock,
         arg: ExprRef<'tcx>,
-        region: &'tcx ty::RegionKind,
     ) -> BlockAnd<Operand<'tcx>> {
         let this = self;
 
@@ -525,9 +529,9 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         let arg_place = unpack!(block = this.as_place(block, arg));
 
         let mutability = match arg_place {
-            Place::Local(local) => this.local_decls[local].mutability,
+            Place::Base(PlaceBase::Local(local)) => this.local_decls[local].mutability,
             Place::Projection(box Projection {
-                base: Place::Local(local),
+                base: Place::Base(PlaceBase::Local(local)),
                 elem: ProjectionElem::Deref,
             }) => {
                 debug_assert!(
@@ -557,11 +561,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 // Not projected from the implicit `self` in a closure.
                 debug_assert!(
                     match *base {
-                        Place::Local(local) => local == Local::new(1),
+                        Place::Base(PlaceBase::Local(local)) => local == Local::new(1),
                         Place::Projection(box Projection {
                             ref base,
                             elem: ProjectionElem::Deref,
-                        }) => *base == Place::Local(Local::new(1)),
+                        }) => *base == Place::Base(PlaceBase::Local(Local::new(1))),
                         _ => false,
                     },
                     "Unexpected capture place"
@@ -586,8 +590,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         this.cfg.push_assign(
             block,
             source_info,
-            &Place::Local(temp),
-            Rvalue::Ref(region, borrow_kind, arg_place),
+            &Place::Base(PlaceBase::Local(temp)),
+            Rvalue::Ref(this.hir.tcx().types.re_erased, borrow_kind, arg_place),
         );
 
         // In constants, temp_lifetime is None. We should not need to drop
@@ -597,12 +601,12 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             this.schedule_drop_storage_and_value(
                 upvar_span,
                 temp_lifetime,
-                &Place::Local(temp),
+                &Place::Base(PlaceBase::Local(temp)),
                 upvar_ty,
             );
         }
 
-        block.and(Operand::Move(Place::Local(temp)))
+        block.and(Operand::Move(Place::Base(PlaceBase::Local(temp))))
     }
 
     // Helper to get a `-1` value of the appropriate type

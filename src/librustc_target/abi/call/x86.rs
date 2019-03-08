@@ -1,16 +1,6 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use abi::call::{ArgAttribute, FnType, PassMode, Reg, RegKind};
-use abi::{self, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
-use spec::HasTargetSpec;
+use crate::abi::call::{ArgAttribute, FnType, PassMode, Reg, RegKind};
+use crate::abi::{self, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
+use crate::spec::HasTargetSpec;
 
 #[derive(PartialEq)]
 pub enum Flavor {
@@ -98,7 +88,7 @@ pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>, flavor: Fla
 
         for arg in &mut fty.args {
             let attrs = match arg.mode {
-                PassMode::Ignore |
+                PassMode::Ignore(_) |
                 PassMode::Indirect(_, None) => continue,
                 PassMode::Direct(ref mut attrs) => attrs,
                 PassMode::Pair(..) |
@@ -109,7 +99,7 @@ pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>, flavor: Fla
             };
 
             // At this point we know this must be a primitive of sorts.
-            let unit = arg.layout.homogeneous_aggregate(cx).unwrap();
+            let unit = arg.layout.homogeneous_aggregate(cx).unit().unwrap();
             assert_eq!(unit.size, arg.layout.size);
             if unit.kind == RegKind::Float {
                 continue;

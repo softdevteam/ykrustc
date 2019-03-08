@@ -1,18 +1,8 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use borrow_check::nll::constraints::OutlivesConstraint;
-use borrow_check::nll::region_infer::TypeTest;
-use borrow_check::nll::type_check::{Locations, MirTypeckRegionConstraints};
-use borrow_check::nll::universal_regions::UniversalRegions;
-use borrow_check::nll::ToRegionVid;
+use crate::borrow_check::nll::constraints::OutlivesConstraint;
+use crate::borrow_check::nll::region_infer::TypeTest;
+use crate::borrow_check::nll::type_check::{Locations, MirTypeckRegionConstraints};
+use crate::borrow_check::nll::universal_regions::UniversalRegions;
+use crate::borrow_check::nll::ToRegionVid;
 use rustc::infer::canonical::QueryRegionConstraint;
 use rustc::infer::outlives::env::RegionBoundPairs;
 use rustc::infer::outlives::obligations::{TypeOutlives, TypeOutlivesDelegate};
@@ -108,6 +98,11 @@ impl<'a, 'gcx, 'tcx> ConstraintConversion<'a, 'gcx, 'tcx> {
                     implicit_region_bound,
                     param_env,
                 ).type_must_outlive(origin, t1, r2);
+            }
+
+            UnpackedKind::Const(_) => {
+                // Consts cannot outlive one another, so we
+                // don't need to handle any relations here.
             }
         }
     }

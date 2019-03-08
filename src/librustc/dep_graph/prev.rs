@@ -1,14 +1,4 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-use ich::Fingerprint;
+use crate::ich::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use super::dep_node::DepNode;
 use super::serialized::{SerializedDepGraph, SerializedDepNodeIndex};
@@ -29,14 +19,11 @@ impl PreviousDepGraph {
     }
 
     #[inline]
-    pub fn edges_from(&self,
-                      dep_node: &DepNode)
-                      -> Option<(&[SerializedDepNodeIndex], SerializedDepNodeIndex)> {
-        self.index
-            .get(dep_node)
-            .map(|&node_index| {
-                (self.data.edge_targets_from(node_index), node_index)
-            })
+    pub fn edge_targets_from(
+        &self,
+        dep_node_index: SerializedDepNodeIndex
+    ) -> &[SerializedDepNodeIndex] {
+        self.data.edge_targets_from(dep_node_index)
     }
 
     #[inline]

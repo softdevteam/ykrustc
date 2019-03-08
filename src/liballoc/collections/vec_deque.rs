@@ -1,13 +1,3 @@
-// Copyright 2012-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A double-ended queue implemented with a growable ring buffer.
 //!
 //! This queue has `O(1)` amortized inserts and removals from both ends of the
@@ -17,22 +7,19 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use core::cmp::Ordering;
+use core::cmp::{self, Ordering};
 use core::fmt;
-use core::iter::{repeat, repeat_with, FromIterator, FusedIterator};
+use core::iter::{repeat_with, FromIterator, FusedIterator};
 use core::mem;
 use core::ops::Bound::{Excluded, Included, Unbounded};
-use core::ops::{Index, IndexMut, RangeBounds};
-use core::ptr;
-use core::ptr::NonNull;
+use core::ops::{Index, IndexMut, RangeBounds, Try};
+use core::ptr::{self, NonNull};
 use core::slice;
-
 use core::hash::{Hash, Hasher};
-use core::cmp;
 
-use collections::CollectionAllocErr;
-use raw_vec::RawVec;
-use vec::Vec;
+use crate::collections::CollectionAllocErr;
+use crate::raw_vec::RawVec;
+use crate::vec::Vec;
 
 const INITIAL_CAPACITY: usize = 7; // 2^3 - 1
 const MINIMUM_CAPACITY: usize = 1; // 2 - 1
@@ -137,7 +124,7 @@ impl<T> VecDeque<T> {
         ptr::write(self.ptr().add(off), value);
     }
 
-    /// Returns `true` if and only if the buffer is at full capacity.
+    /// Returns `true` if the buffer is at full capacity.
     #[inline]
     fn is_full(&self) -> bool {
         self.cap() - self.len() == 1
@@ -573,7 +560,7 @@ impl<T> VecDeque<T> {
     /// Does nothing if the capacity is already sufficient.
     ///
     /// Note that the allocator may give the collection more space than it
-    /// requests. Therefore capacity can not be relied upon to be precisely
+    /// requests. Therefore, capacity can not be relied upon to be precisely
     /// minimal. Prefer `reserve` if future insertions are expected.
     ///
     /// # Errors
@@ -701,7 +688,7 @@ impl<T> VecDeque<T> {
     /// buf.shrink_to(0);
     /// assert!(buf.capacity() >= 4);
     /// ```
-    #[unstable(feature = "shrink_to", reason = "new API", issue="0")]
+    #[unstable(feature = "shrink_to", reason = "new API", issue="56431")]
     pub fn shrink_to(&mut self, min_capacity: usize) {
         assert!(self.capacity() >= min_capacity, "Tried to shrink to a larger capacity");
 
@@ -808,7 +795,7 @@ impl<T> VecDeque<T> {
     /// assert_eq!(&c[..], b);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter(&self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             tail: self.tail,
             head: self.head,
@@ -834,7 +821,7 @@ impl<T> VecDeque<T> {
     /// assert_eq!(&buf.iter_mut().collect::<Vec<&mut i32>>()[..], b);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut {
             tail: self.tail,
             head: self.head,
@@ -937,7 +924,7 @@ impl<T> VecDeque<T> {
         self.tail == self.head
     }
 
-    /// Create a draining iterator that removes the specified range in the
+    /// Creates a draining iterator that removes the specified range in the
     /// `VecDeque` and yields the removed items.
     ///
     /// Note 1: The element range is removed even if the iterator is not
@@ -945,7 +932,7 @@ impl<T> VecDeque<T> {
     ///
     /// Note 2: It is unspecified how many elements are removed from the deque,
     /// if the `Drain` value is not dropped, but the borrow it holds expires
-    /// (eg. due to mem::forget).
+    /// (e.g., due to `mem::forget`).
     ///
     /// # Panics
     ///
@@ -968,7 +955,7 @@ impl<T> VecDeque<T> {
     /// ```
     #[inline]
     #[stable(feature = "drain", since = "1.6.0")]
-    pub fn drain<R>(&mut self, range: R) -> Drain<T>
+    pub fn drain<R>(&mut self, range: R) -> Drain<'_, T>
         where R: RangeBounds<usize>
     {
         // Memory safety
@@ -1026,7 +1013,10 @@ impl<T> VecDeque<T> {
             iter: Iter {
                 tail: drain_tail,
                 head: drain_head,
-                ring: unsafe { self.buffer_as_mut_slice() },
+                // Crucially, we only create shared references from `self` here and read from
+                // it.  We do not write to `self` nor reborrow to a mutable reference.
+                // Hence the raw pointer we created above, for `deque`, remains valid.
+                ring: unsafe { self.buffer_as_slice() },
             },
         }
     }
@@ -1886,6 +1876,154 @@ impl<T> VecDeque<T> {
             debug_assert!(!self.is_full());
         }
     }
+
+    /// Modifies the `VecDeque` in-place so that `len()` is equal to `new_len`,
+    /// either by removing excess elements from the back or by appending
+    /// elements generated by calling `generator` to the back.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::VecDeque;
+    ///
+    /// let mut buf = VecDeque::new();
+    /// buf.push_back(5);
+    /// buf.push_back(10);
+    /// buf.push_back(15);
+    /// assert_eq!(buf, [5, 10, 15]);
+    ///
+    /// buf.resize_with(5, Default::default);
+    /// assert_eq!(buf, [5, 10, 15, 0, 0]);
+    ///
+    /// buf.resize_with(2, || unreachable!());
+    /// assert_eq!(buf, [5, 10]);
+    ///
+    /// let mut state = 100;
+    /// buf.resize_with(5, || { state += 1; state });
+    /// assert_eq!(buf, [5, 10, 101, 102, 103]);
+    /// ```
+    #[stable(feature = "vec_resize_with", since = "1.33.0")]
+    pub fn resize_with(&mut self, new_len: usize, generator: impl FnMut()->T) {
+        let len = self.len();
+
+        if new_len > len {
+            self.extend(repeat_with(generator).take(new_len - len))
+        } else {
+            self.truncate(new_len);
+        }
+    }
+
+    /// Rotates the double-ended queue `mid` places to the left.
+    ///
+    /// Equivalently,
+    /// - Rotates item `mid` into the first position.
+    /// - Pops the first `mid` items and pushes them to the end.
+    /// - Rotates `len() - mid` places to the right.
+    ///
+    /// # Panics
+    ///
+    /// If `mid` is greater than `len()`. Note that `mid == len()`
+    /// does _not_ panic and is a no-op rotation.
+    ///
+    /// # Complexity
+    ///
+    /// Takes `O(min(mid, len() - mid))` time and no extra space.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(vecdeque_rotate)]
+    ///
+    /// use std::collections::VecDeque;
+    ///
+    /// let mut buf: VecDeque<_> = (0..10).collect();
+    ///
+    /// buf.rotate_left(3);
+    /// assert_eq!(buf, [3, 4, 5, 6, 7, 8, 9, 0, 1, 2]);
+    ///
+    /// for i in 1..10 {
+    ///     assert_eq!(i * 3 % 10, buf[0]);
+    ///     buf.rotate_left(3);
+    /// }
+    /// assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    /// ```
+    #[unstable(feature = "vecdeque_rotate", issue = "56686")]
+    pub fn rotate_left(&mut self, mid: usize) {
+        assert!(mid <= self.len());
+        let k = self.len() - mid;
+        if mid <= k {
+            unsafe { self.rotate_left_inner(mid) }
+        } else {
+            unsafe { self.rotate_right_inner(k) }
+        }
+    }
+
+    /// Rotates the double-ended queue `k` places to the right.
+    ///
+    /// Equivalently,
+    /// - Rotates the first item into position `k`.
+    /// - Pops the last `k` items and pushes them to the front.
+    /// - Rotates `len() - k` places to the left.
+    ///
+    /// # Panics
+    ///
+    /// If `k` is greater than `len()`. Note that `k == len()`
+    /// does _not_ panic and is a no-op rotation.
+    ///
+    /// # Complexity
+    ///
+    /// Takes `O(min(k, len() - k))` time and no extra space.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(vecdeque_rotate)]
+    ///
+    /// use std::collections::VecDeque;
+    ///
+    /// let mut buf: VecDeque<_> = (0..10).collect();
+    ///
+    /// buf.rotate_right(3);
+    /// assert_eq!(buf, [7, 8, 9, 0, 1, 2, 3, 4, 5, 6]);
+    ///
+    /// for i in 1..10 {
+    ///     assert_eq!(0, buf[i * 3 % 10]);
+    ///     buf.rotate_right(3);
+    /// }
+    /// assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    /// ```
+    #[unstable(feature = "vecdeque_rotate", issue = "56686")]
+    pub fn rotate_right(&mut self, k: usize) {
+        assert!(k <= self.len());
+        let mid = self.len() - k;
+        if k <= mid {
+            unsafe { self.rotate_right_inner(k) }
+        } else {
+            unsafe { self.rotate_left_inner(mid) }
+        }
+    }
+
+    // Safety: the following two methods require that the rotation amount
+    // be less than half the length of the deque.
+    //
+    // `wrap_copy` requres that `min(x, cap() - x) + copy_len <= cap()`,
+    // but than `min` is never more than half the capacity, regardless of x,
+    // so it's sound to call here because we're calling with something
+    // less than half the length, which is never above half the capacity.
+
+    unsafe fn rotate_left_inner(&mut self, mid: usize) {
+        debug_assert!(mid * 2 <= self.len());
+        self.wrap_copy(self.head, self.tail, mid);
+        self.head = self.wrap_add(self.head, mid);
+        self.tail = self.wrap_add(self.tail, mid);
+    }
+
+    unsafe fn rotate_right_inner(&mut self, k: usize) {
+        debug_assert!(k * 2 <= self.len());
+        self.head = self.wrap_sub(self.head, k);
+        self.tail = self.wrap_sub(self.tail, k);
+        self.wrap_copy(self.tail, self.head, k);
+    }
 }
 
 impl<T: Clone> VecDeque<T> {
@@ -1912,51 +2050,7 @@ impl<T: Clone> VecDeque<T> {
     /// ```
     #[stable(feature = "deque_extras", since = "1.16.0")]
     pub fn resize(&mut self, new_len: usize, value: T) {
-        let len = self.len();
-
-        if new_len > len {
-            self.extend(repeat(value).take(new_len - len))
-        } else {
-            self.truncate(new_len);
-        }
-    }
-
-    /// Modifies the `VecDeque` in-place so that `len()` is equal to `new_len`,
-    /// either by removing excess elements from the back or by appending
-    /// elements generated by calling `generator` to the back.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// #![feature(vec_resize_with)]
-    ///
-    /// use std::collections::VecDeque;
-    ///
-    /// let mut buf = VecDeque::new();
-    /// buf.push_back(5);
-    /// buf.push_back(10);
-    /// buf.push_back(15);
-    /// assert_eq!(buf, [5, 10, 15]);
-    ///
-    /// buf.resize_with(5, Default::default);
-    /// assert_eq!(buf, [5, 10, 15, 0, 0]);
-    ///
-    /// buf.resize_with(2, || unreachable!());
-    /// assert_eq!(buf, [5, 10]);
-    ///
-    /// let mut state = 100;
-    /// buf.resize_with(5, || { state += 1; state });
-    /// assert_eq!(buf, [5, 10, 101, 102, 103]);
-    /// ```
-    #[unstable(feature = "vec_resize_with", issue = "41758")]
-    pub fn resize_with(&mut self, new_len: usize, generator: impl FnMut()->T) {
-        let len = self.len();
-
-        if new_len > len {
-            self.extend(repeat_with(generator).take(new_len - len))
-        } else {
-            self.truncate(new_len);
-        }
+        self.resize_with(new_len, || value.clone());
     }
 }
 
@@ -1986,7 +2080,7 @@ trait RingSlices: Sized {
     }
 }
 
-impl<'a, T> RingSlices for &'a [T] {
+impl<T> RingSlices for &[T] {
     fn slice(self, from: usize, to: usize) -> Self {
         &self[from..to]
     }
@@ -1995,7 +2089,7 @@ impl<'a, T> RingSlices for &'a [T] {
     }
 }
 
-impl<'a, T> RingSlices for &'a mut [T] {
+impl<T> RingSlices for &mut [T] {
     fn slice(self, from: usize, to: usize) -> Self {
         &mut self[from..to]
     }
@@ -2026,8 +2120,8 @@ pub struct Iter<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for Iter<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (front, back) = RingSlices::ring_slices(self.ring, self.head, self.tail);
         f.debug_tuple("Iter")
             .field(&front)
@@ -2038,8 +2132,8 @@ impl<'a, T: 'a + fmt::Debug> fmt::Debug for Iter<'a, T> {
 
 // FIXME(#26925) Remove in favor of `#[derive(Clone)]`
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> Clone for Iter<'a, T> {
-    fn clone(&self) -> Iter<'a, T> {
+impl<T> Clone for Iter<'_, T> {
+    fn clone(&self) -> Self {
         Iter {
             ring: self.ring,
             tail: self.tail,
@@ -2075,6 +2169,31 @@ impl<'a, T> Iterator for Iter<'a, T> {
         accum = front.iter().fold(accum, &mut f);
         back.iter().fold(accum, &mut f)
     }
+
+    fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> R,
+        R: Try<Ok = B>,
+    {
+        let (mut iter, final_res);
+        if self.tail <= self.head {
+            // single slice self.ring[self.tail..self.head]
+            iter = self.ring[self.tail..self.head].iter();
+            final_res = iter.try_fold(init, &mut f);
+        } else {
+            // two slices: self.ring[self.tail..], self.ring[..self.head]
+            let (front, back) = self.ring.split_at(self.tail);
+            let mut back_iter = back.iter();
+            let res = back_iter.try_fold(init, &mut f);
+            let len = self.ring.len();
+            self.tail = (self.ring.len() - back_iter.len()) & (len - 1);
+            iter = front[..self.head].iter();
+            final_res = iter.try_fold(res?, &mut f);
+        }
+        self.tail = self.head - iter.len();
+        final_res
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -2095,17 +2214,41 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
         accum = back.iter().rfold(accum, &mut f);
         front.iter().rfold(accum, &mut f)
     }
+
+    fn try_rfold<B, F, R>(&mut self, init: B, mut f: F) -> R
+    where
+        Self: Sized,
+        F: FnMut(B, Self::Item) -> R,
+        R: Try<Ok = B>,
+    {
+        let (mut iter, final_res);
+        if self.tail <= self.head {
+            // single slice self.ring[self.tail..self.head]
+            iter = self.ring[self.tail..self.head].iter();
+            final_res = iter.try_rfold(init, &mut f);
+        } else {
+            // two slices: self.ring[self.tail..], self.ring[..self.head]
+            let (front, back) = self.ring.split_at(self.tail);
+            let mut front_iter = front[..self.head].iter();
+            let res = front_iter.try_rfold(init, &mut f);
+            self.head = front_iter.len();
+            iter = back.iter();
+            final_res = iter.try_rfold(res?, &mut f);
+        }
+        self.head = self.tail + iter.len();
+        final_res
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+impl<T> ExactSizeIterator for Iter<'_, T> {
     fn is_empty(&self) -> bool {
         self.head == self.tail
     }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T> FusedIterator for Iter<'a, T> {}
+impl<T> FusedIterator for Iter<'_, T> {}
 
 
 /// A mutable iterator over the elements of a `VecDeque`.
@@ -2123,8 +2266,8 @@ pub struct IterMut<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for IterMut<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for IterMut<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (front, back) = RingSlices::ring_slices(&*self.ring, self.head, self.tail);
         f.debug_tuple("IterMut")
             .field(&front)
@@ -2191,14 +2334,14 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
+impl<T> ExactSizeIterator for IterMut<'_, T> {
     fn is_empty(&self) -> bool {
         self.head == self.tail
     }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T> FusedIterator for IterMut<'a, T> {}
+impl<T> FusedIterator for IterMut<'_, T> {}
 
 /// An owning iterator over the elements of a `VecDeque`.
 ///
@@ -2215,7 +2358,7 @@ pub struct IntoIter<T> {
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
 impl<T: fmt::Debug> fmt::Debug for IntoIter<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("IntoIter")
          .field(&self.inner)
          .finish()
@@ -2272,8 +2415,8 @@ pub struct Drain<'a, T: 'a> {
 }
 
 #[stable(feature = "collection_debug", since = "1.17.0")]
-impl<'a, T: 'a + fmt::Debug> fmt::Debug for Drain<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl<T: fmt::Debug> fmt::Debug for Drain<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Drain")
          .field(&self.after_tail)
          .field(&self.after_head)
@@ -2283,12 +2426,12 @@ impl<'a, T: 'a + fmt::Debug> fmt::Debug for Drain<'a, T> {
 }
 
 #[stable(feature = "drain", since = "1.6.0")]
-unsafe impl<'a, T: Sync> Sync for Drain<'a, T> {}
+unsafe impl<T: Sync> Sync for Drain<'_, T> {}
 #[stable(feature = "drain", since = "1.6.0")]
-unsafe impl<'a, T: Send> Send for Drain<'a, T> {}
+unsafe impl<T: Send> Send for Drain<'_, T> {}
 
 #[stable(feature = "drain", since = "1.6.0")]
-impl<'a, T: 'a> Drop for Drain<'a, T> {
+impl<T> Drop for Drain<'_, T> {
     fn drop(&mut self) {
         self.for_each(drop);
 
@@ -2335,7 +2478,7 @@ impl<'a, T: 'a> Drop for Drain<'a, T> {
 }
 
 #[stable(feature = "drain", since = "1.6.0")]
-impl<'a, T: 'a> Iterator for Drain<'a, T> {
+impl<T> Iterator for Drain<'_, T> {
     type Item = T;
 
     #[inline]
@@ -2350,7 +2493,7 @@ impl<'a, T: 'a> Iterator for Drain<'a, T> {
 }
 
 #[stable(feature = "drain", since = "1.6.0")]
-impl<'a, T: 'a> DoubleEndedIterator for Drain<'a, T> {
+impl<T> DoubleEndedIterator for Drain<'_, T> {
     #[inline]
     fn next_back(&mut self) -> Option<T> {
         self.iter.next_back().map(|elt| unsafe { ptr::read(elt) })
@@ -2358,10 +2501,10 @@ impl<'a, T: 'a> DoubleEndedIterator for Drain<'a, T> {
 }
 
 #[stable(feature = "drain", since = "1.6.0")]
-impl<'a, T: 'a> ExactSizeIterator for Drain<'a, T> {}
+impl<T> ExactSizeIterator for Drain<'_, T> {}
 
 #[stable(feature = "fused", since = "1.26.0")]
-impl<'a, T: 'a> FusedIterator for Drain<'a, T> {}
+impl<T> FusedIterator for Drain<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<A: PartialEq> PartialEq for VecDeque<A> {
@@ -2411,7 +2554,7 @@ macro_rules! __impl_slice_eq1 {
     };
     ($Lhs: ty, $Rhs: ty, $Bound: ident) => {
         #[stable(feature = "vec_deque_partial_eq_slice", since = "1.17.0")]
-        impl<'a, 'b, A: $Bound, B> PartialEq<$Rhs> for $Lhs where A: PartialEq<B> {
+        impl<A: $Bound, B> PartialEq<$Rhs> for $Lhs where A: PartialEq<B> {
             fn eq(&self, other: &$Rhs) -> bool {
                 if self.len() != other.len() {
                     return false;
@@ -2425,15 +2568,15 @@ macro_rules! __impl_slice_eq1 {
 }
 
 __impl_slice_eq1! { VecDeque<A>, Vec<B> }
-__impl_slice_eq1! { VecDeque<A>, &'b [B] }
-__impl_slice_eq1! { VecDeque<A>, &'b mut [B] }
+__impl_slice_eq1! { VecDeque<A>, &[B] }
+__impl_slice_eq1! { VecDeque<A>, &mut [B] }
 
 macro_rules! array_impls {
     ($($N: expr)+) => {
         $(
             __impl_slice_eq1! { VecDeque<A>, [B; $N] }
-            __impl_slice_eq1! { VecDeque<A>, &'b [B; $N] }
-            __impl_slice_eq1! { VecDeque<A>, &'b mut [B; $N] }
+            __impl_slice_eq1! { VecDeque<A>, &[B; $N] }
+            __impl_slice_eq1! { VecDeque<A>, &mut [B; $N] }
         )+
     }
 }
@@ -2549,7 +2692,7 @@ impl<'a, T: 'a + Copy> Extend<&'a T> for VecDeque<T> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: fmt::Debug> fmt::Debug for VecDeque<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_list().entries(self).finish()
     }
 }
@@ -2653,7 +2796,7 @@ impl<T> From<VecDeque<T>> for Vec<T> {
 
 #[cfg(test)]
 mod tests {
-    use test;
+    use ::test;
 
     use super::VecDeque;
 
@@ -2801,7 +2944,7 @@ mod tests {
             // 0, 1, 2, .., len - 1
             let expected = (0..).take(len).collect::<VecDeque<_>>();
             for tail_pos in 0..cap {
-                for to_remove in 0..len + 1 {
+                for to_remove in 0..=len {
                     tester.tail = tail_pos;
                     tester.head = tail_pos;
                     for i in 0..len {
@@ -2827,10 +2970,10 @@ mod tests {
         let mut tester: VecDeque<usize> = VecDeque::with_capacity(7);
 
         let cap = tester.capacity();
-        for len in 0..cap + 1 {
-            for tail in 0..cap + 1 {
-                for drain_start in 0..len + 1 {
-                    for drain_end in drain_start..len + 1 {
+        for len in 0..=cap {
+            for tail in 0..=cap {
+                for drain_start in 0..=len {
+                    for drain_end in drain_start..=len {
                         tester.tail = tail;
                         tester.head = tail;
                         for i in 0..len {
@@ -2872,10 +3015,10 @@ mod tests {
         tester.reserve(63);
         let max_cap = tester.capacity();
 
-        for len in 0..cap + 1 {
+        for len in 0..=cap {
             // 0, 1, 2, .., len - 1
             let expected = (0..).take(len).collect::<VecDeque<_>>();
-            for tail_pos in 0..max_cap + 1 {
+            for tail_pos in 0..=max_cap {
                 tester.tail = tail_pos;
                 tester.head = tail_pos;
                 tester.reserve(63);
@@ -2905,7 +3048,7 @@ mod tests {
         // len is the length *before* splitting
         for len in 0..cap {
             // index to split at
-            for at in 0..len + 1 {
+            for at in 0..=len {
                 // 0, 1, 2, .., at - 1 (may be empty)
                 let expected_self = (0..).take(at).collect::<VecDeque<_>>();
                 // at, at + 1, .., len - 1 (may be empty)
@@ -2931,9 +3074,9 @@ mod tests {
 
     #[test]
     fn test_from_vec() {
-        use vec::Vec;
+        use crate::vec::Vec;
         for cap in 0..35 {
-            for len in 0..cap + 1 {
+            for len in 0..=cap {
                 let mut vec = Vec::with_capacity(cap);
                 vec.extend(0..len);
 
@@ -2947,7 +3090,7 @@ mod tests {
 
     #[test]
     fn test_vec_from_vecdeque() {
-        use vec::Vec;
+        use crate::vec::Vec;
 
         fn create_vec_and_test_convert(cap: usize, offset: usize, len: usize) {
             let mut vd = VecDeque::with_capacity(cap);
@@ -3009,7 +3152,7 @@ mod tests {
 
     #[test]
     fn issue_53529() {
-        use boxed::Box;
+        use crate::boxed::Box;
 
         let mut dst = VecDeque::new();
         dst.push_front(Box::new(1));
