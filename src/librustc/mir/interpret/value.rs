@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::ty::{Ty, layout::{HasDataLayout, Size}};
+use crate::ty::{Ty, InferConst, ParamConst, layout::{HasDataLayout, Size}};
 
 use super::{EvalResult, Pointer, PointerArithmetic, Allocation, AllocId, sign_extend, truncate};
 
@@ -13,16 +13,23 @@ pub struct RawConst<'tcx> {
     pub ty: Ty<'tcx>,
 }
 
-/// Represents a constant value in Rust. Scalar and ScalarPair are optimizations which
-/// matches the LocalState optimizations for easy conversions between Value and ConstValue.
+/// Represents a constant value in Rust. `Scalar` and `ScalarPair` are optimizations that
+/// match the `LocalState` optimizations for easy conversions between `Value` and `ConstValue`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
 pub enum ConstValue<'tcx> {
-    /// Used only for types with layout::abi::Scalar ABI and ZSTs
+    /// A const generic parameter.
+    Param(ParamConst),
+
+    /// Infer the value of the const.
+    Infer(InferConst<'tcx>),
+
+    /// Used only for types with `layout::abi::Scalar` ABI and ZSTs.
     ///
-    /// Not using the enum `Value` to encode that this must not be `Undef`
+    /// Not using the enum `Value` to encode that this must not be `Undef`.
     Scalar(Scalar),
 
-    /// Used only for slices and strings (`&[T]`, `&str`, `*const [T]`, `*mut str`, `Box<str>`, ...)
+    /// Used only for slices and strings (`&[T]`, `&str`, `*const [T]`, `*mut str`, `Box<str>`,
+    /// etc.).
     ///
     /// Empty slices don't necessarily have an address backed by an `AllocId`, thus we also need to
     /// enable integer pointers. The `Scalar` type covers exactly those two cases. While we could
@@ -30,9 +37,9 @@ pub enum ConstValue<'tcx> {
     /// it.
     Slice(Scalar, u64),
 
-    /// An allocation + offset into the allocation.
-    /// Invariant: The AllocId matches the allocation.
-    ByRef(AllocId, &'tcx Allocation, Size),
+    /// An allocation together with a pointer into the allocation.
+    /// Invariant: the pointer's `AllocId` resolves to the allocation.
+    ByRef(Pointer, &'tcx Allocation),
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -42,6 +49,8 @@ impl<'tcx> ConstValue<'tcx> {
     #[inline]
     pub fn try_to_scalar(&self) -> Option<Scalar> {
         match *self {
+            ConstValue::Param(_) |
+            ConstValue::Infer(_) |
             ConstValue::ByRef(..) |
             ConstValue::Slice(..) => None,
             ConstValue::Scalar(val) => Some(val),
@@ -515,7 +524,7 @@ impl<'tcx, Tag> ScalarMaybeUndef<Tag> {
     }
 }
 
-impl_stable_hash_for!(enum ::mir::interpret::ScalarMaybeUndef {
+impl_stable_hash_for!(enum crate::mir::interpret::ScalarMaybeUndef {
     Scalar(v),
     Undef
 });

@@ -1,6 +1,6 @@
-use abi::call::{ArgAttribute, FnType, PassMode, Reg, RegKind};
-use abi::{self, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
-use spec::HasTargetSpec;
+use crate::abi::call::{ArgAttribute, FnType, PassMode, Reg, RegKind};
+use crate::abi::{self, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
+use crate::spec::HasTargetSpec;
 
 #[derive(PartialEq)]
 pub enum Flavor {
@@ -88,7 +88,7 @@ pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>, flavor: Fla
 
         for arg in &mut fty.args {
             let attrs = match arg.mode {
-                PassMode::Ignore |
+                PassMode::Ignore(_) |
                 PassMode::Indirect(_, None) => continue,
                 PassMode::Direct(ref mut attrs) => attrs,
                 PassMode::Pair(..) |

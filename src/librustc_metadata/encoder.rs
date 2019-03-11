@@ -1,7 +1,7 @@
-use index::Index;
-use index_builder::{FromId, IndexBuilder, Untracked};
-use isolated_encoder::IsolatedEncoder;
-use schema::*;
+use crate::index::Index;
+use crate::index_builder::{FromId, IndexBuilder, Untracked};
+use crate::isolated_encoder::IsolatedEncoder;
+use crate::schema::*;
 
 use rustc::middle::cstore::{LinkagePreference, NativeLibrary,
                             EncodedMetadata, ForeignModule};
@@ -29,11 +29,12 @@ use std::hash::Hash;
 use std::path::Path;
 use rustc_data_structures::sync::Lrc;
 use std::u32;
-use syntax::ast::{self, CRATE_NODE_ID};
+use syntax::ast;
 use syntax::attr;
 use syntax::source_map::Spanned;
 use syntax::symbol::keywords;
 use syntax_pos::{self, hygiene, FileName, SourceFile, Span};
+use log::{debug, trace};
 
 use rustc::hir::{self, PatKind};
 use rustc::hir::itemlikevisit::ItemLikeVisitor;
@@ -313,7 +314,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
         let vis = Spanned { span: syntax_pos::DUMMY_SP, node: hir::VisibilityKind::Public };
         index.record(DefId::local(CRATE_DEF_INDEX),
                      IsolatedEncoder::encode_info_for_mod,
-                     FromId(CRATE_NODE_ID, (&krate.module, &krate.attrs, &vis)));
+                     FromId(hir::CRATE_HIR_ID, (&krate.module, &krate.attrs, &vis)));
         let mut visitor = EncodeVisitor { index };
         krate.visit_all_item_likes(&mut visitor.as_deep_visitor());
         for macro_def in &krate.exported_macros {
@@ -489,7 +490,11 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             } else {
                 None
             },
-
+            proc_macro_stability: if is_proc_macro {
+                tcx.lookup_stability(DefId::local(CRATE_DEF_INDEX)).map(|stab| stab.clone())
+            } else {
+                None
+            },
             compiler_builtins: attr::contains_name(&attrs, "compiler_builtins"),
             needs_allocator: attr::contains_name(&attrs, "needs_allocator"),
             needs_panic_runtime: attr::contains_name(&attrs, "needs_panic_runtime"),
@@ -587,8 +592,8 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
             }
         };
 
-        let enum_id = tcx.hir().as_local_node_id(enum_did).unwrap();
-        let enum_vis = &tcx.hir().expect_item(enum_id).vis;
+        let enum_id = tcx.hir().as_local_hir_id(enum_did).unwrap();
+        let enum_vis = &tcx.hir().expect_item_by_hir_id(enum_id).vis;
 
         Entry {
             kind: EntryKind::Variant(self.lazy(&data)),
@@ -623,7 +628,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
                                                                  &hir::Visibility)>)
                            -> Entry<'tcx> {
         let tcx = self.tcx;
-        let def_id = tcx.hir().local_def_id(id);
+        let def_id = tcx.hir().local_def_id_from_hir_id(id);
         debug!("IsolatedEncoder::encode_info_for_mod({:?})", def_id);
 
         let data = ModData {
@@ -673,7 +678,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
         let def_id = field.did;
         debug!("IsolatedEncoder::encode_field({:?})", def_id);
 
-        let variant_id = tcx.hir().as_local_node_id(variant.did).unwrap();
+        let variant_id = tcx.hir().as_local_hir_id(variant.did).unwrap();
         let variant_data = tcx.hir().expect_variant_data(variant_id);
 
         Entry {
@@ -713,8 +718,8 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
             }
         };
 
-        let struct_id = tcx.hir().as_local_node_id(adt_def_id).unwrap();
-        let struct_vis = &tcx.hir().expect_item(struct_id).vis;
+        let struct_id = tcx.hir().as_local_hir_id(adt_def_id).unwrap();
+        let struct_vis = &tcx.hir().expect_item_by_hir_id(struct_id).vis;
         let mut ctor_vis = ty::Visibility::from_hir(struct_vis, struct_id, tcx);
         for field in &variant.fields {
             if ctor_vis.is_at_least(field.vis, tcx) {
@@ -778,8 +783,8 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
         debug!("IsolatedEncoder::encode_info_for_trait_item({:?})", def_id);
         let tcx = self.tcx;
 
-        let node_id = tcx.hir().as_local_node_id(def_id).unwrap();
-        let ast_item = tcx.hir().expect_trait_item(node_id);
+        let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
+        let ast_item = tcx.hir().expect_trait_item(hir_id);
         let trait_item = tcx.associated_item(def_id);
 
         let container = match trait_item.defaultness {
@@ -888,8 +893,8 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
         debug!("IsolatedEncoder::encode_info_for_impl_item({:?})", def_id);
         let tcx = self.tcx;
 
-        let node_id = self.tcx.hir().as_local_node_id(def_id).unwrap();
-        let ast_item = self.tcx.hir().expect_impl_item(node_id);
+        let hir_id = self.tcx.hir().as_local_hir_id(def_id).unwrap();
+        let ast_item = self.tcx.hir().expect_impl_item(hir_id);
         let impl_item = self.tcx.associated_item(def_id);
 
         let container = match impl_item.defaultness {
@@ -1054,7 +1059,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
                 EntryKind::Fn(self.lazy(&data))
             }
             hir::ItemKind::Mod(ref m) => {
-                return self.encode_info_for_mod(FromId(item.id, (m, &item.attrs, &item.vis)));
+                return self.encode_info_for_mod(FromId(item.hir_id, (m, &item.attrs, &item.vis)));
             }
             hir::ItemKind::ForeignMod(_) => EntryKind::ForeignMod,
             hir::ItemKind::GlobalAsm(..) => EntryKind::GlobalAsm,
@@ -1068,7 +1073,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
                 // for methods, write all the stuff get_trait_method
                 // needs to know
                 let struct_ctor = if !struct_def.is_struct() {
-                    Some(tcx.hir().local_def_id(struct_def.id()).index)
+                    Some(tcx.hir().local_def_id_from_hir_id(struct_def.hir_id()).index)
                 } else {
                     None
                 };
@@ -1153,14 +1158,15 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
 
         Entry {
             kind,
-            visibility: self.lazy(&ty::Visibility::from_hir(&item.vis, item.id, tcx)),
+            visibility: self.lazy(&ty::Visibility::from_hir(&item.vis, item.hir_id, tcx)),
             span: self.lazy(&item.span),
             attributes: self.encode_attributes(&item.attrs),
             children: match item.node {
                 hir::ItemKind::ForeignMod(ref fm) => {
                     self.lazy_seq(fm.items
                         .iter()
-                        .map(|foreign_item| tcx.hir().local_def_id(foreign_item.id).index))
+                        .map(|foreign_item| tcx.hir().local_def_id_from_hir_id(
+                            foreign_item.hir_id).index))
                 }
                 hir::ItemKind::Enum(..) => {
                     let def = self.tcx.adt_def(def_id);
@@ -1278,7 +1284,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
     /// Serialize the text of exported macros
     fn encode_info_for_macro_def(&mut self, macro_def: &hir::MacroDef) -> Entry<'tcx> {
         use syntax::print::pprust;
-        let def_id = self.tcx.hir().local_def_id(macro_def.id);
+        let def_id = self.tcx.hir().local_def_id_from_hir_id(macro_def.hir_id);
         Entry {
             kind: EntryKind::MacroDef(self.lazy(&MacroDef {
                 body: pprust::tts_to_string(&macro_def.body.trees().collect::<Vec<_>>()),
@@ -1330,14 +1336,36 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
         }
     }
 
+    fn encode_info_for_const_param(&mut self, def_id: DefId) -> Entry<'tcx> {
+        debug!("IsolatedEncoder::encode_info_for_const_param({:?})", def_id);
+        let tcx = self.tcx;
+        Entry {
+            kind: EntryKind::Type,
+            visibility: self.lazy(&ty::Visibility::Public),
+            span: self.lazy(&tcx.def_span(def_id)),
+            attributes: LazySeq::empty(),
+            children: LazySeq::empty(),
+            stability: None,
+            deprecation: None,
+
+            ty: Some(self.encode_item_type(def_id)),
+            inherent_impls: LazySeq::empty(),
+            variances: LazySeq::empty(),
+            generics: None,
+            predicates: None,
+            predicates_defined_on: None,
+
+            mir: None,
+        }
+    }
+
     fn encode_info_for_closure(&mut self, def_id: DefId) -> Entry<'tcx> {
         debug!("IsolatedEncoder::encode_info_for_closure({:?})", def_id);
         let tcx = self.tcx;
 
         let tables = self.tcx.typeck_tables_of(def_id);
-        let node_id = self.tcx.hir().as_local_node_id(def_id).unwrap();
-        let hir_id = self.tcx.hir().node_to_hir_id(node_id);
-        let kind = match tables.node_id_to_type(hir_id).sty {
+        let hir_id = self.tcx.hir().as_local_hir_id(def_id).unwrap();
+        let kind = match tables.node_type(hir_id).sty {
             ty::Generator(def_id, ..) => {
                 let layout = self.tcx.generator_layout(def_id);
                 let data = GeneratorData {
@@ -1378,7 +1406,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
     fn encode_info_for_anon_const(&mut self, def_id: DefId) -> Entry<'tcx> {
         debug!("IsolatedEncoder::encode_info_for_anon_const({:?})", def_id);
         let tcx = self.tcx;
-        let id = tcx.hir().as_local_node_id(def_id).unwrap();
+        let id = tcx.hir().as_local_hir_id(def_id).unwrap();
         let body_id = tcx.hir().body_owned_by(id);
         let const_data = self.encode_rendered_const_for_body(body_id);
         let mir = tcx.mir_const_qualif(def_id).0;
@@ -1521,7 +1549,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
     // symbol associated with them (they weren't translated) or if they're an FFI
     // definition (as that's not defined in this crate).
     fn encode_exported_symbols(&mut self,
-                               exported_symbols: &[(ExportedSymbol, SymbolExportLevel)])
+                               exported_symbols: &[(ExportedSymbol<'_>, SymbolExportLevel)])
                                -> EncodedExportedSymbols {
         // The metadata symbol name is special. It should not show up in
         // downstream crates.
@@ -1585,7 +1613,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
 
         Entry {
             kind,
-            visibility: self.lazy(&ty::Visibility::from_hir(&nitem.vis, nitem.id, tcx)),
+            visibility: self.lazy(&ty::Visibility::from_hir(&nitem.vis, nitem.hir_id, tcx)),
             span: self.lazy(&nitem.span),
             attributes: self.encode_attributes(&nitem.attrs),
             children: LazySeq::empty(),
@@ -1621,7 +1649,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for EncodeVisitor<'a, 'b, 'tcx> {
     }
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         intravisit::walk_item(self, item);
-        let def_id = self.index.tcx.hir().local_def_id(item.id);
+        let def_id = self.index.tcx.hir().local_def_id_from_hir_id(item.hir_id);
         match item.node {
             hir::ItemKind::ExternCrate(_) |
             hir::ItemKind::Use(..) => (), // ignore these
@@ -1631,7 +1659,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for EncodeVisitor<'a, 'b, 'tcx> {
     }
     fn visit_foreign_item(&mut self, ni: &'tcx hir::ForeignItem) {
         intravisit::walk_foreign_item(self, ni);
-        let def_id = self.index.tcx.hir().local_def_id(ni.id);
+        let def_id = self.index.tcx.hir().local_def_id_from_hir_id(ni.hir_id);
         self.index.record(def_id,
                           IsolatedEncoder::encode_info_for_foreign_item,
                           (def_id, ni));
@@ -1639,11 +1667,11 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for EncodeVisitor<'a, 'b, 'tcx> {
     fn visit_variant(&mut self,
                      v: &'tcx hir::Variant,
                      g: &'tcx hir::Generics,
-                     id: ast::NodeId) {
+                     id: hir::HirId) {
         intravisit::walk_variant(self, v, g, id);
 
         if let Some(ref discr) = v.node.disr_expr {
-            let def_id = self.index.tcx.hir().local_def_id(discr.id);
+            let def_id = self.index.tcx.hir().local_def_id_from_hir_id(discr.hir_id);
             self.index.record(def_id, IsolatedEncoder::encode_info_for_anon_const, def_id);
         }
     }
@@ -1656,7 +1684,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for EncodeVisitor<'a, 'b, 'tcx> {
         self.index.encode_info_for_ty(ty);
     }
     fn visit_macro_def(&mut self, macro_def: &'tcx hir::MacroDef) {
-        let def_id = self.index.tcx.hir().local_def_id(macro_def.id);
+        let def_id = self.index.tcx.hir().local_def_id_from_hir_id(macro_def.hir_id);
         self.index.record(def_id, IsolatedEncoder::encode_info_for_macro_def, macro_def);
     }
 }
@@ -1678,10 +1706,15 @@ impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
             match param.kind {
                 hir::GenericParamKind::Lifetime { .. } => {}
                 hir::GenericParamKind::Type { ref default, .. } => {
-                    let def_id = self.tcx.hir().local_def_id(param.id);
+                    let def_id = self.tcx.hir().local_def_id_from_hir_id(param.hir_id);
                     let has_default = Untracked(default.is_some());
                     let encode_info = IsolatedEncoder::encode_info_for_ty_param;
                     self.record(def_id, encode_info, (def_id, has_default));
+                }
+                hir::GenericParamKind::Const { .. } => {
+                    let def_id = self.tcx.hir().local_def_id_from_hir_id(param.hir_id);
+                    let encode_info = IsolatedEncoder::encode_info_for_const_param;
+                    self.record(def_id, encode_info, def_id);
                 }
             }
         }
@@ -1690,7 +1723,7 @@ impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
     fn encode_info_for_ty(&mut self, ty: &hir::Ty) {
         match ty.node {
             hir::TyKind::Array(_, ref length) => {
-                let def_id = self.tcx.hir().local_def_id(length.id);
+                let def_id = self.tcx.hir().local_def_id_from_hir_id(length.hir_id);
                 self.record(def_id, IsolatedEncoder::encode_info_for_anon_const, def_id);
             }
             _ => {}
@@ -1700,7 +1733,7 @@ impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
     fn encode_info_for_expr(&mut self, expr: &hir::Expr) {
         match expr.node {
             hir::ExprKind::Closure(..) => {
-                let def_id = self.tcx.hir().local_def_id(expr.id);
+                let def_id = self.tcx.hir().local_def_id_from_hir_id(expr.hir_id);
                 self.record(def_id, IsolatedEncoder::encode_info_for_closure, def_id);
             }
             _ => {}
@@ -1712,7 +1745,7 @@ impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
     /// so it's easier to do that here then to wait until we would encounter
     /// normally in the visitor walk.
     fn encode_addl_info_for_item(&mut self, item: &hir::Item) {
-        let def_id = self.tcx.hir().local_def_id(item.id);
+        let def_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
         match item.node {
             hir::ItemKind::Static(..) |
             hir::ItemKind::Const(..) |
@@ -1742,7 +1775,7 @@ impl<'a, 'b, 'tcx> IndexBuilder<'a, 'b, 'tcx> {
 
                 // If the struct has a constructor, encode it.
                 if !struct_def.is_struct() {
-                    let ctor_def_id = self.tcx.hir().local_def_id(struct_def.id());
+                    let ctor_def_id = self.tcx.hir().local_def_id_from_hir_id(struct_def.hir_id());
                     self.record(ctor_def_id,
                                 IsolatedEncoder::encode_struct_ctor,
                                 (def_id, ctor_def_id));
@@ -1777,7 +1810,7 @@ struct ImplVisitor<'a, 'tcx: 'a> {
 impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for ImplVisitor<'a, 'tcx> {
     fn visit_item(&mut self, item: &hir::Item) {
         if let hir::ItemKind::Impl(..) = item.node {
-            let impl_id = self.tcx.hir().local_def_id(item.id);
+            let impl_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
             if let Some(trait_ref) = self.tcx.impl_trait_ref(impl_id) {
                 self.impls
                     .entry(trait_ref.def_id)

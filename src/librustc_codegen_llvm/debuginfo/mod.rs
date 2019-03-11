@@ -11,24 +11,24 @@ use self::type_names::compute_debuginfo_type_name;
 use self::metadata::{type_metadata, file_metadata, TypeMap};
 use self::source_loc::InternalDebugLocation::{self, UnknownLocation};
 
-use llvm;
-use llvm::debuginfo::{DIFile, DIType, DIScope, DIBuilder, DISubprogram, DIArray, DIFlags,
+use crate::llvm;
+use crate::llvm::debuginfo::{DIFile, DIType, DIScope, DIBuilder, DISubprogram, DIArray, DIFlags,
     DISPFlags, DILexicalBlock};
 use rustc::hir::CodegenFnAttrFlags;
 use rustc::hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
-use rustc::ty::subst::{Substs, UnpackedKind};
+use rustc::ty::subst::{SubstsRef, UnpackedKind};
 
-use abi::Abi;
-use common::CodegenCx;
-use builder::Builder;
-use monomorphize::Instance;
+use crate::abi::Abi;
+use crate::common::CodegenCx;
+use crate::builder::Builder;
+use crate::monomorphize::Instance;
+use crate::value::Value;
 use rustc::ty::{self, ParamEnv, Ty, InstanceDef};
 use rustc::mir;
 use rustc::session::config::{self, DebugInfo};
 use rustc::util::nodemap::{DefIdMap, FxHashMap, FxHashSet};
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_data_structures::indexed_vec::IndexVec;
-use value::Value;
 use rustc_codegen_ssa::debuginfo::{FunctionDebugContext, MirDebugScope, VariableAccess,
     VariableKind, FunctionDebugContextData};
 
@@ -103,8 +103,8 @@ impl<'a, 'tcx> CrateDebugContext<'a, 'tcx> {
     }
 }
 
-/// Create any deferred debug metadata nodes
-pub fn finalize(cx: &CodegenCx) {
+/// Creates any deferred debug metadata nodes
+pub fn finalize(cx: &CodegenCx<'_, '_>) {
     if cx.dbg_cx.is_none() {
         return;
     }
@@ -234,7 +234,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         instance: Instance<'tcx>,
         sig: ty::FnSig<'tcx>,
         llfn: &'ll Value,
-        mir: &mir::Mir,
+        mir: &mir::Mir<'_>,
     ) -> FunctionDebugContext<&'ll DISubprogram> {
         if self.sess().opts.debuginfo == DebugInfo::None {
             return FunctionDebugContext::DebugInfoDisabled;
@@ -400,7 +400,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         fn get_template_parameters<'ll, 'tcx>(
             cx: &CodegenCx<'ll, 'tcx>,
             generics: &ty::Generics,
-            substs: &Substs<'tcx>,
+            substs: SubstsRef<'tcx>,
             file_metadata: &'ll DIFile,
             name_to_append_suffix_to: &mut String,
         ) -> &'ll DIArray {
@@ -456,7 +456,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             return create_DIArray(DIB(cx), &template_params[..]);
         }
 
-        fn get_parameter_names(cx: &CodegenCx,
+        fn get_parameter_names(cx: &CodegenCx<'_, '_>,
                                generics: &ty::Generics)
                                -> Vec<InternedString> {
             let mut names = generics.parent.map_or(vec![], |def_id| {
@@ -519,7 +519,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
     fn create_mir_scopes(
         &self,
-        mir: &mir::Mir,
+        mir: &mir::Mir<'_>,
         debug_context: &FunctionDebugContext<&'ll DISubprogram>,
     ) -> IndexVec<mir::SourceScope, MirDebugScope<&'ll DIScope>> {
         create_scope_map::create_mir_scopes(self, mir, debug_context)

@@ -1,11 +1,11 @@
-use builder::Builder;
+use crate::builder::Builder;
+use crate::type_::Type;
+use crate::type_of::LayoutLlvmExt;
+use crate::value::Value;
 use rustc_codegen_ssa::mir::operand::OperandRef;
 use rustc_codegen_ssa::traits::{BaseTypeMethods, BuilderMethods, ConstMethods, DerivedTypeMethods};
 use rustc::ty::layout::{Align, HasDataLayout, HasTyCtxt, LayoutOf, Size};
 use rustc::ty::Ty;
-use type_::Type;
-use type_of::LayoutLlvmExt;
-use value::Value;
 
 #[allow(dead_code)]
 fn round_pointer_up_to_alignment(
@@ -109,12 +109,12 @@ pub(super) fn emit_va_arg(
                             Align::from_bytes(4).unwrap(), true)
         }
         // Windows Aarch64
-        ("aarch4", true) => {
+        ("aarch64", true) => {
             emit_ptr_va_arg(bx, addr, target_ty, false,
                             Align::from_bytes(8).unwrap(), false)
         }
         // iOS Aarch64
-        ("aarch4", _) if target.target_os == "ios" => {
+        ("aarch64", _) if target.target_os == "ios" => {
             emit_ptr_va_arg(bx, addr, target_ty, false,
                             Align::from_bytes(8).unwrap(), true)
         }

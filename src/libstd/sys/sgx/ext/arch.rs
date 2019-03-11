@@ -4,7 +4,7 @@
 //! Software Developer's Manual, Volume 3, Chapter 40.
 #![unstable(feature = "sgx_platform", issue = "56975")]
 
-use mem::MaybeUninit;
+use crate::mem::MaybeUninit;
 
 /// Wrapper struct to force 16-byte alignment.
 #[repr(align(16))]
@@ -41,7 +41,7 @@ pub fn egetkey(request: &Align512<[u8; 512]>) -> Result<Align16<[u8; 16]>, u32> 
         );
 
         match error {
-            0 => Ok(out.into_inner()),
+            0 => Ok(out.into_initialized()),
             err => Err(err),
         }
     }
@@ -69,6 +69,6 @@ pub fn ereport(
               "{rdx}"(report.as_mut_ptr())
         );
 
-        report.into_inner()
+        report.into_initialized()
     }
 }

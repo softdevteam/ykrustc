@@ -1,10 +1,10 @@
-use cell::UnsafeCell;
-use fmt;
-use mem;
-use ops::{Deref, DerefMut};
-use ptr;
-use sys_common::mutex as sys;
-use sys_common::poison::{self, TryLockError, TryLockResult, LockResult};
+use crate::cell::UnsafeCell;
+use crate::fmt;
+use crate::mem;
+use crate::ops::{Deref, DerefMut};
+use crate::ptr;
+use crate::sys_common::mutex as sys;
+use crate::sys_common::poison::{self, TryLockError, TryLockResult, LockResult};
 
 /// A mutual exclusion primitive useful for protecting shared data
 ///
@@ -150,9 +150,9 @@ pub struct MutexGuard<'a, T: ?Sized + 'a> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: ?Sized> !Send for MutexGuard<'a, T> { }
+impl<T: ?Sized> !Send for MutexGuard<'_, T> { }
 #[stable(feature = "mutexguard", since = "1.19.0")]
-unsafe impl<'a, T: ?Sized + Sync> Sync for MutexGuard<'a, T> { }
+unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> { }
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
@@ -335,7 +335,7 @@ impl<T: ?Sized> Mutex<T> {
     /// Returns a mutable reference to the underlying data.
     ///
     /// Since this call borrows the `Mutex` mutably, no actual locking needs to
-    /// take place---the mutable borrow statically guarantees no locks exist.
+    /// take place -- the mutable borrow statically guarantees no locks exist.
     ///
     /// # Errors
     ///
@@ -421,7 +421,7 @@ impl<'mutex, T: ?Sized> MutexGuard<'mutex, T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'mutex, T: ?Sized> Deref for MutexGuard<'mutex, T> {
+impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -430,14 +430,14 @@ impl<'mutex, T: ?Sized> Deref for MutexGuard<'mutex, T> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'mutex, T: ?Sized> DerefMut for MutexGuard<'mutex, T> {
+impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
         unsafe { &mut *self.__lock.data.get() }
     }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
+impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     #[inline]
     fn drop(&mut self) {
         unsafe {
@@ -448,14 +448,14 @@ impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
 }
 
 #[stable(feature = "std_debug", since = "1.16.0")]
-impl<'a, T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'a, T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
 }
 
 #[stable(feature = "std_guard_impls", since = "1.20.0")]
-impl<'a, T: ?Sized + fmt::Display> fmt::Display for MutexGuard<'a, T> {
+impl<T: ?Sized + fmt::Display> fmt::Display for MutexGuard<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         (**self).fmt(f)
     }
@@ -471,10 +471,10 @@ pub fn guard_poison<'a, T: ?Sized>(guard: &MutexGuard<'a, T>) -> &'a poison::Fla
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests {
-    use sync::mpsc::channel;
-    use sync::{Arc, Mutex, Condvar};
-    use sync::atomic::{AtomicUsize, Ordering};
-    use thread;
+    use crate::sync::mpsc::channel;
+    use crate::sync::{Arc, Mutex, Condvar};
+    use crate::sync::atomic::{AtomicUsize, Ordering};
+    use crate::thread;
 
     struct Packet<T>(Arc<(Mutex<T>, Condvar)>);
 

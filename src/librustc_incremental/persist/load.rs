@@ -9,7 +9,6 @@ use rustc::util::common::time_ext;
 use rustc_serialize::Decodable as RustcDecodable;
 use rustc_serialize::opaque::Decoder;
 use std::path::Path;
-use std;
 
 use super::data::*;
 use super::fs::*;
@@ -95,10 +94,10 @@ impl<T> MaybeAsync<T> {
     }
 }
 
+pub type DepGraphFuture = MaybeAsync<LoadResult<(PreviousDepGraph, WorkProductMap)>>;
+
 /// Launch a thread and load the dependency graph in the background.
-pub fn load_dep_graph(sess: &Session) ->
-    MaybeAsync<LoadResult<(PreviousDepGraph, WorkProductMap)>>
-{
+pub fn load_dep_graph(sess: &Session) -> DepGraphFuture {
     // Since `sess` isn't `Sync`, we perform all accesses to `sess`
     // before we fire the background thread.
 

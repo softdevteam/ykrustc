@@ -1,9 +1,9 @@
-use ty::query::Providers;
-use hir::def_id::DefId;
-use hir;
-use ty::TyCtxt;
+use crate::ty::query::Providers;
+use crate::hir::def_id::DefId;
+use crate::hir;
+use crate::ty::TyCtxt;
 use syntax_pos::symbol::Symbol;
-use hir::map::blocks::FnLikeNode;
+use crate::hir::map::blocks::FnLikeNode;
 use syntax::attr;
 
 impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
@@ -37,7 +37,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
         }
     }
 
-    /// Returns true if this function must conform to `min_const_fn`
+    /// Returns `true` if this function must conform to `min_const_fn`
     pub fn is_min_const_fn(self, def_id: DefId) -> bool {
         // Bail out if the signature doesn't contain `const`
         if !self.is_const_fn_raw(def_id) {
@@ -67,10 +67,10 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
 pub fn provide<'tcx>(providers: &mut Providers<'tcx>) {
     /// only checks whether the function has a `const` modifier
     fn is_const_fn_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> bool {
-        let node_id = tcx.hir().as_local_node_id(def_id)
-                             .expect("Non-local call to local provider is_const_fn");
+        let hir_id = tcx.hir().as_local_hir_id(def_id)
+                              .expect("Non-local call to local provider is_const_fn");
 
-        if let Some(fn_like) = FnLikeNode::from_node(tcx.hir().get(node_id)) {
+        if let Some(fn_like) = FnLikeNode::from_node(tcx.hir().get_by_hir_id(hir_id)) {
             fn_like.constness() == hir::Constness::Const
         } else {
             false

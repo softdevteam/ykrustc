@@ -9,6 +9,7 @@ use syntax::attr;
 use syntax::source_map::Span;
 use syntax::feature_gate::{self, GateIssue};
 use syntax::symbol::Symbol;
+use syntax::{span_err, struct_span_err};
 
 pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Vec<NativeLibrary> {
     let mut collector = Collector {
@@ -55,7 +56,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
                 name: None,
                 kind: cstore::NativeUnknown,
                 cfg: None,
-                foreign_module: Some(self.tcx.hir().local_def_id(it.id)),
+                foreign_module: Some(self.tcx.hir().local_def_id_from_hir_id(it.hir_id)),
                 wasm_import_module: None,
             };
             let mut kind_specified = false;

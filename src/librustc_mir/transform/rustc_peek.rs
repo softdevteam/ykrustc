@@ -3,28 +3,31 @@ use syntax::ast;
 use syntax_pos::Span;
 
 use rustc::ty::{self, TyCtxt};
+use rustc::hir;
 use rustc::mir::{self, Mir, Location};
 use rustc_data_structures::bit_set::BitSet;
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 
-use dataflow::{do_dataflow, DebugFormatted};
-use dataflow::MoveDataParamEnv;
-use dataflow::BitDenotation;
-use dataflow::DataflowResults;
-use dataflow::{DefinitelyInitializedPlaces, MaybeInitializedPlaces, MaybeUninitializedPlaces};
-use dataflow::move_paths::{MovePathIndex, LookupResult};
-use dataflow::move_paths::{HasMoveData, MoveData};
-use dataflow;
+use crate::dataflow::{do_dataflow, DebugFormatted};
+use crate::dataflow::MoveDataParamEnv;
+use crate::dataflow::BitDenotation;
+use crate::dataflow::DataflowResults;
+use crate::dataflow::{
+    DefinitelyInitializedPlaces, MaybeInitializedPlaces, MaybeUninitializedPlaces
+};
+use crate::dataflow::move_paths::{MovePathIndex, LookupResult};
+use crate::dataflow::move_paths::{HasMoveData, MoveData};
+use crate::dataflow;
 
-use dataflow::has_rustc_mir_with;
+use crate::dataflow::has_rustc_mir_with;
 
 pub struct SanityCheck;
 
 impl MirPass for SanityCheck {
     fn run_pass<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          src: MirSource, mir: &mut Mir<'tcx>) {
-        let def_id = src.def_id;
-        let id = tcx.hir().as_local_node_id(def_id).unwrap();
+                          src: MirSource<'tcx>, mir: &mut Mir<'tcx>) {
+        let def_id = src.def_id();
+        let id = tcx.hir().as_local_hir_id(def_id).unwrap();
         if !tcx.has_attr(def_id, "rustc_mir") {
             debug!("skipping rustc_peek::SanityCheck on {}", tcx.item_path_str(def_id));
             return;
@@ -83,7 +86,7 @@ impl MirPass for SanityCheck {
 /// errors are not intended to be used for unit tests.)
 pub fn sanity_check_via_rustc_peek<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                                 mir: &Mir<'tcx>,
-                                                id: ast::NodeId,
+                                                id: hir::HirId,
                                                 _attributes: &[ast::Attribute],
                                                 results: &DataflowResults<'tcx, O>)
     where O: BitDenotation<'tcx, Idx=MovePathIndex> + HasMoveData<'tcx>
@@ -113,8 +116,8 @@ fn each_block<'a, 'tcx, O>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     };
     assert!(args.len() == 1);
     let peek_arg_place = match args[0] {
-        mir::Operand::Copy(ref place @ mir::Place::Local(_)) |
-        mir::Operand::Move(ref place @ mir::Place::Local(_)) => Some(place),
+        mir::Operand::Copy(ref place @ mir::Place::Base(mir::PlaceBase::Local(_))) |
+        mir::Operand::Move(ref place @ mir::Place::Base(mir::PlaceBase::Local(_))) => Some(place),
         _ => None,
     };
 

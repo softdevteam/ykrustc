@@ -690,7 +690,7 @@ fn main() {
 }
 ```
 
-See also https://doc.rust-lang.org/book/first-edition/unsafe.html
+See also https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html
 "##,
 
 E0373: r##"
@@ -873,7 +873,7 @@ that at most one writer or multiple readers can access the data at any one time.
 If you wish to learn more about ownership in Rust, start with the chapter in the
 Book:
 
-https://doc.rust-lang.org/book/first-edition/ownership.html
+https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html
 "##,
 
 E0383: r##"
@@ -1207,7 +1207,7 @@ let mut a = &mut i;
 
 Please note that in rust, you can either have many immutable references, or one
 mutable reference. Take a look at
-https://doc.rust-lang.org/stable/book/references-and-borrowing.html for more
+https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html for more
 information. Example:
 
 
@@ -1374,7 +1374,7 @@ fn foo(a: &mut i32) {
 ```
 
 For more information on the rust ownership system, take a look at
-https://doc.rust-lang.org/stable/book/references-and-borrowing.html.
+https://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html.
 "##,
 
 E0503: r##"
@@ -1430,7 +1430,7 @@ fn main() {
 ```
 
 You can find more information about borrowing in the rust-book:
-http://doc.rust-lang.org/stable/book/references-and-borrowing.html
+http://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html
 "##,
 
 E0504: r##"
@@ -1545,20 +1545,22 @@ Erroneous code example:
 ```compile_fail,E0505
 struct Value {}
 
+fn borrow(val: &Value) {}
+
 fn eat(val: Value) {}
 
 fn main() {
     let x = Value{};
-    {
-        let _ref_to_val: &Value = &x;
-        eat(x);
-    }
+    let _ref_to_val: &Value = &x;
+    eat(x);
+    borrow(_ref_to_val);
 }
 ```
 
-Here, the function `eat` takes the ownership of `x`. However,
-`x` cannot be moved because it was borrowed to `_ref_to_val`.
-To fix that you can do few different things:
+Here, the function `eat` takes ownership of `x`. However,
+`x` cannot be moved because the borrow to `_ref_to_val`
+needs to last till the function `borrow`.
+To fix that you can do a few different things:
 
 * Try to avoid moving the variable.
 * Release borrow before move.
@@ -1569,14 +1571,15 @@ Examples:
 ```
 struct Value {}
 
+fn borrow(val: &Value) {}
+
 fn eat(val: &Value) {}
 
 fn main() {
     let x = Value{};
-    {
-        let _ref_to_val: &Value = &x;
-        eat(&x); // pass by reference, if it's possible
-    }
+    let _ref_to_val: &Value = &x;
+    eat(&x); // pass by reference, if it's possible
+    borrow(_ref_to_val);
 }
 ```
 
@@ -1585,12 +1588,15 @@ Or:
 ```
 struct Value {}
 
+fn borrow(val: &Value) {}
+
 fn eat(val: Value) {}
 
 fn main() {
     let x = Value{};
     {
         let _ref_to_val: &Value = &x;
+        borrow(_ref_to_val);
     }
     eat(x); // release borrow and then move it.
 }
@@ -1602,19 +1608,20 @@ Or:
 #[derive(Clone, Copy)] // implement Copy trait
 struct Value {}
 
+fn borrow(val: &Value) {}
+
 fn eat(val: Value) {}
 
 fn main() {
     let x = Value{};
-    {
-        let _ref_to_val: &Value = &x;
-        eat(x); // it will be copied here.
-    }
+    let _ref_to_val: &Value = &x;
+    eat(x); // it will be copied here.
+    borrow(_ref_to_val);
 }
 ```
 
 You can find more information about borrowing in the rust-book:
-http://doc.rust-lang.org/stable/book/references-and-borrowing.html
+http://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html
 "##,
 
 E0506: r##"
@@ -1825,7 +1832,7 @@ mem::replace(&mut borrowed.knight, TheDarkKnight).nothing_is_true(); // ok!
 ```
 
 You can find more information about borrowing in the rust-book:
-http://doc.rust-lang.org/book/first-edition/references-and-borrowing.html
+http://doc.rust-lang.org/book/ch04-02-references-and-borrowing.html
 "##,
 
 E0508: r##"
@@ -1978,8 +1985,8 @@ could cause the match to be non-exhaustive:
 let mut x = Some(0);
 match x {
     None => (),
-    Some(v) if { x = None; false } => (),
-    Some(_) => (), // No longer matches
+    Some(_) if { x = None; false } => (),
+    Some(v) => (), // No longer matches
 }
 ```
 
@@ -2367,6 +2374,37 @@ are stored into aggregate structures like a tuple or struct:
 // enclosing block.
 fn foo() -> i32 { 22 }
 let value = (&foo(), &foo());
+```
+"##,
+
+E0723: r##"
+An feature unstable in `const` contexts was used.
+
+Erroneous code example:
+
+```compile_fail,E0723
+trait T {}
+
+impl T for () {}
+
+const fn foo() -> impl T { // error: `impl Trait` in const fn is unstable
+    ()
+}
+```
+
+To enable this feature on a nightly version of rustc, add the `const_fn`
+feature flag:
+
+```
+#![feature(const_fn)]
+
+trait T {}
+
+impl T for () {}
+
+const fn foo() -> impl T {
+    ()
+}
 ```
 "##,
 

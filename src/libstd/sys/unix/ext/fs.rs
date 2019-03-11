@@ -2,13 +2,12 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use fs::{self, Permissions, OpenOptions};
-use io;
-use libc;
-use path::Path;
-use sys;
-use sys_common::{FromInner, AsInner, AsInnerMut};
-use sys::platform::fs::MetadataExt as UnixMetadataExt;
+use crate::fs::{self, Permissions, OpenOptions};
+use crate::io;
+use crate::path::Path;
+use crate::sys;
+use crate::sys_common::{FromInner, AsInner, AsInnerMut};
+use crate::sys::platform::fs::MetadataExt as UnixMetadataExt;
 
 /// Unix-specific extensions to [`File`].
 ///
@@ -684,7 +683,7 @@ impl MetadataExt for fs::Metadata {
 /// [`FileType`]: ../../../../std/fs/struct.FileType.html
 #[stable(feature = "file_type_ext", since = "1.5.0")]
 pub trait FileTypeExt {
-    /// Returns whether this file type is a block device.
+    /// Returns `true` if this file type is a block device.
     ///
     /// # Examples
     ///
@@ -702,7 +701,7 @@ pub trait FileTypeExt {
     /// ```
     #[stable(feature = "file_type_ext", since = "1.5.0")]
     fn is_block_device(&self) -> bool;
-    /// Returns whether this file type is a char device.
+    /// Returns `true` if this file type is a char device.
     ///
     /// # Examples
     ///
@@ -720,7 +719,7 @@ pub trait FileTypeExt {
     /// ```
     #[stable(feature = "file_type_ext", since = "1.5.0")]
     fn is_char_device(&self) -> bool;
-    /// Returns whether this file type is a fifo.
+    /// Returns `true` if this file type is a fifo.
     ///
     /// # Examples
     ///
@@ -738,7 +737,7 @@ pub trait FileTypeExt {
     /// ```
     #[stable(feature = "file_type_ext", since = "1.5.0")]
     fn is_fifo(&self) -> bool;
-    /// Returns whether this file type is a socket.
+    /// Returns `true` if this file type is a socket.
     ///
     /// # Examples
     ///
@@ -805,9 +804,9 @@ impl DirEntryExt for fs::DirEntry {
 /// # Note
 ///
 /// On Windows, you must specify whether a symbolic link points to a file
-/// or directory.  Use `os::windows::fs::symlink_file` to create a
+/// or directory. Use `os::windows::fs::symlink_file` to create a
 /// symbolic link to a file, or `os::windows::fs::symlink_dir` to create a
-/// symbolic link to a directory.  Additionally, the process must have
+/// symbolic link to a directory. Additionally, the process must have
 /// `SeCreateSymbolicLinkPrivilege` in order to be able to create a
 /// symbolic link.
 ///

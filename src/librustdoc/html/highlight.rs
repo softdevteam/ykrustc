@@ -5,7 +5,7 @@
 //!
 //! Use the `render_with_highlighting` to highlight some rust code.
 
-use html::escape::Escape;
+use crate::html::escape::Escape;
 
 use std::fmt::Display;
 use std::io;
@@ -124,7 +124,7 @@ trait Writer {
     /// Called at the end of a span of highlighted text.
     fn exit_span(&mut self) -> io::Result<()>;
 
-    /// Called for a span of text.  If the text should be highlighted differently from the
+    /// Called for a span of text. If the text should be highlighted differently from the
     /// surrounding text, then the `Class` argument will be a value other than `None`.
     ///
     /// The following sequences of callbacks are equivalent:

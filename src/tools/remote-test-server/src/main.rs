@@ -1,3 +1,5 @@
+#![deny(rust_2018_idioms)]
+
 /// This is a small server which is intended to run inside of an emulator or
 /// on a remote test device. This server pairs with the `remote-test-client`
 /// program in this repository. The `remote-test-client` connects to this
@@ -120,7 +122,7 @@ struct RemoveOnDrop<'a> {
     inner: &'a Path,
 }
 
-impl<'a> Drop for RemoveOnDrop<'a> {
+impl Drop for RemoveOnDrop<'_> {
     fn drop(&mut self) {
         t!(fs::remove_dir_all(self.inner));
     }
@@ -174,7 +176,7 @@ fn handle_run(socket: TcpStream, work: &Path, lock: &Mutex<()>) {
     // other thread created a child process with the file open for writing, and
     // we attempt to execute it, so we get an error.
     //
-    // This race is resolve by ensuring that only one thread can writ ethe file
+    // This race is resolve by ensuring that only one thread can write the file
     // and spawn a child process at once. Kinda an unfortunate solution, but we
     // don't have many other choices with this sort of setup!
     //

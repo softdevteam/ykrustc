@@ -16,17 +16,15 @@
 //! symbol, but that caused Debian to detect an unnecessarily strict versioned
 //! dependency on libc6 (#23628).
 
-use libc;
-
-use ffi::CString;
-use marker;
-use mem;
-use sync::atomic::{AtomicUsize, Ordering};
+use crate::ffi::CStr;
+use crate::marker;
+use crate::mem;
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 macro_rules! weak {
     (fn $name:ident($($t:ty),*) -> $ret:ty) => (
-        static $name: ::sys::weak::Weak<unsafe extern fn($($t),*) -> $ret> =
-            ::sys::weak::Weak::new(stringify!($name));
+        static $name: crate::sys::weak::Weak<unsafe extern fn($($t),*) -> $ret> =
+            crate::sys::weak::Weak::new(concat!(stringify!($name), '\0'));
     )
 }
 
@@ -45,23 +43,22 @@ impl<F> Weak<F> {
         }
     }
 
-    pub fn get(&self) -> Option<&F> {
+    pub fn get(&self) -> Option<F> {
         assert_eq!(mem::size_of::<F>(), mem::size_of::<usize>());
         unsafe {
             if self.addr.load(Ordering::SeqCst) == 1 {
                 self.addr.store(fetch(self.name), Ordering::SeqCst);
             }
-            if self.addr.load(Ordering::SeqCst) == 0 {
-                None
-            } else {
-                mem::transmute::<&AtomicUsize, Option<&F>>(&self.addr)
+            match self.addr.load(Ordering::SeqCst) {
+                0 => None,
+                addr => Some(mem::transmute_copy::<usize, F>(&addr)),
             }
         }
     }
 }
 
 unsafe fn fetch(name: &str) -> usize {
-    let name = match CString::new(name) {
+    let name = match CStr::from_bytes_with_nul(name.as_bytes()) {
         Ok(cstr) => cstr,
         Err(..) => return 0,
     };
@@ -72,7 +69,6 @@ unsafe fn fetch(name: &str) -> usize {
 macro_rules! syscall {
     (fn $name:ident($($arg_name:ident: $t:ty),*) -> $ret:ty) => (
         unsafe fn $name($($arg_name: $t),*) -> $ret {
-            use libc;
             use super::os;
 
             weak! { fn $name($($t),*) -> $ret }

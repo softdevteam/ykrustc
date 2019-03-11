@@ -1,8 +1,8 @@
-use cell::UnsafeCell;
-use intrinsics::{atomic_cxchg, atomic_xchg};
-use ptr;
+use crate::cell::UnsafeCell;
+use crate::intrinsics::{atomic_cxchg, atomic_xchg};
+use crate::ptr;
 
-use sys::syscall::{futex, getpid, FUTEX_WAIT, FUTEX_WAKE};
+use crate::sys::syscall::{futex, getpid, FUTEX_WAIT, FUTEX_WAKE};
 
 pub unsafe fn mutex_try_lock(m: *mut i32) -> bool {
     atomic_cxchg(m, 0, 1).0 == 0
@@ -50,7 +50,7 @@ pub struct Mutex {
 }
 
 impl Mutex {
-    /// Create a new mutex.
+    /// Creates a new mutex.
     pub const fn new() -> Self {
         Mutex {
             lock: UnsafeCell::new(0),

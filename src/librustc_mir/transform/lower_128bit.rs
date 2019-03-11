@@ -5,15 +5,14 @@ use rustc::middle::lang_items::LangItem;
 use rustc::mir::*;
 use rustc::ty::{List, Ty, TyCtxt, TyKind};
 use rustc_data_structures::indexed_vec::{Idx};
-use transform::{MirPass, MirSource};
-use syntax;
+use crate::transform::{MirPass, MirSource};
 
 pub struct Lower128Bit;
 
 impl MirPass for Lower128Bit {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource,
+                          _src: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         let debugging_override = tcx.sess.opts.debugging_opts.lower_128bit_ops;
         let target_default = tcx.sess.host.options.i128_lowering;
@@ -87,13 +86,13 @@ impl Lower128Bit {
                     block.statements.push(Statement {
                         source_info: source_info,
                         kind: StatementKind::Assign(
-                            Place::Local(local),
+                            Place::Base(PlaceBase::Local(local)),
                             box Rvalue::Cast(
                                 CastKind::Misc,
                                 rhs,
                                 rhs_override_ty.unwrap())),
                     });
-                    rhs = Operand::Move(Place::Local(local));
+                    rhs = Operand::Move(Place::Base(PlaceBase::Local(local)));
                 }
 
                 let call_did = check_lang_item_type(
@@ -182,7 +181,7 @@ impl RhsKind {
     }
 }
 
-fn sign_of_128bit(ty: Ty) -> Option<bool> {
+fn sign_of_128bit(ty: Ty<'_>) -> Option<bool> {
     match ty.sty {
         TyKind::Int(syntax::ast::IntTy::I128) => Some(true),
         TyKind::Uint(syntax::ast::UintTy::U128) => Some(false),

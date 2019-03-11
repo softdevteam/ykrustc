@@ -1,13 +1,15 @@
-use back::wasm;
 use super::archive::{ArchiveBuilder, ArchiveConfig};
 use super::bytecode::RLIB_BYTECODE_EXTENSION;
+use super::rpath::RPathConfig;
+use super::rpath;
+use crate::back::wasm;
+use crate::metadata::METADATA_FILENAME;
+use crate::context::get_reloc_model;
+use crate::llvm;
 use rustc_codegen_ssa::back::linker::Linker;
 use rustc_codegen_ssa::back::link::{remove, ignored_for_lto, each_linked_rlib, linker_and_flavor,
     get_linker};
 use rustc_codegen_ssa::back::command::Command;
-use super::rpath::RPathConfig;
-use super::rpath;
-use metadata::METADATA_FILENAME;
 use rustc::session::config::{self, DebugInfo, OutputFilenames, OutputType, PrintRequest};
 use rustc::session::config::{RUST_CGU_EXT, Lto, Sanitizer};
 use rustc::session::filesearch;
@@ -23,8 +25,6 @@ use tempfile::{Builder as TempFileBuilder, TempDir};
 use rustc_target::spec::{PanicStrategy, RelroLevel, LinkerFlavor};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_yk_sections::with_yk_debug_sections;
-use context::get_reloc_model;
-use llvm;
 
 use std::ascii;
 use std::char;
@@ -43,7 +43,7 @@ pub use rustc_codegen_utils::link::{find_crate_name, filename_for_input, default
                                     out_filename, check_file_is_writeable};
 
 
-/// Perform the linkage portion of the compilation phase. This will generate all
+/// Performs the linkage portion of the compilation phase. This will generate all
 /// of the requested outputs for this compilation session.
 pub(crate) fn link_binary(sess: &Session,
                           codegen_results: &CodegenResults,
@@ -524,7 +524,7 @@ fn link_natively(sess: &Session,
     }
 
     {
-        let target_cpu = ::llvm_util::target_cpu(sess);
+        let target_cpu = crate::llvm_util::target_cpu(sess);
         let mut linker = codegen_results.linker_info.to_linker(cmd, &sess, flavor, target_cpu);
         link_args(&mut *linker, flavor, sess, crate_type, tmpdir,
                   out_filename, codegen_results);
@@ -708,7 +708,6 @@ fn link_natively(sess: &Session,
     }
 
     if sess.opts.target_triple.triple() == "wasm32-unknown-unknown" {
-        wasm::rewrite_imports(&out_filename, &codegen_results.crate_info.wasm_imports);
         wasm::add_producer_section(
             &out_filename,
             &sess.edition().to_string(),
@@ -818,7 +817,7 @@ fn exec_linker(sess: &Session, cmd: &mut Command, out_filename: &Path, tmpdir: &
     }
 
     impl<'a> fmt::Display for Escape<'a> {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             if self.is_like_msvc {
                 // This is "documented" at
                 // https://msdn.microsoft.com/en-us/library/4xdcbak7.aspx
@@ -867,7 +866,7 @@ fn link_args(cmd: &mut dyn Linker,
              codegen_results: &CodegenResults) {
 
     // Linker plugins should be specified early in the list of arguments
-    cmd.cross_lang_lto();
+    cmd.linker_plugin_lto();
 
     // The default library location, we need this to find the runtime.
     // The location of crates will be determined as needed.
@@ -1501,7 +1500,7 @@ fn are_upstream_rust_objects_already_included(sess: &Session) -> bool {
         Lto::Thin => {
             // If we defer LTO to the linker, we haven't run LTO ourselves, so
             // any upstream object files have not been copied yet.
-            !sess.opts.debugging_opts.cross_lang_lto.enabled()
+            !sess.opts.cg.linker_plugin_lto.enabled()
         }
         Lto::No |
         Lto::ThinLocal => false,

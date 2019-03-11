@@ -1,13 +1,13 @@
-use borrow::{Borrow, Cow};
-use fmt;
-use ops;
-use cmp;
-use hash::{Hash, Hasher};
-use rc::Rc;
-use sync::Arc;
+use crate::borrow::{Borrow, Cow};
+use crate::fmt;
+use crate::ops;
+use crate::cmp;
+use crate::hash::{Hash, Hasher};
+use crate::rc::Rc;
+use crate::sync::Arc;
 
-use sys::os_str::{Buf, Slice};
-use sys_common::{AsInner, IntoInner, FromInner};
+use crate::sys::os_str::{Buf, Slice};
+use crate::sys_common::{AsInner, IntoInner, FromInner};
 
 /// A type that can represent owned, mutable platform-native strings, but is
 /// cheaply inter-convertible with Rust strings.
@@ -24,7 +24,7 @@ use sys_common::{AsInner, IntoInner, FromInner};
 ///
 /// `OsString` and [`OsStr`] bridge this gap by simultaneously representing Rust
 /// and platform-native string values, and in particular allowing a Rust string
-/// to be converted into an "OS" string with no cost if possible.  A consequence
+/// to be converted into an "OS" string with no cost if possible. A consequence
 /// of this is that `OsString` instances are *not* `NUL` terminated; in order
 /// to pass to e.g., Unix system call, you should create a [`CStr`].
 ///
@@ -259,7 +259,7 @@ impl OsString {
     /// already sufficient.
     ///
     /// Note that the allocator may give the collection more space than it
-    /// requests. Therefore capacity can not be relied upon to be precisely
+    /// requests. Therefore, capacity can not be relied upon to be precisely
     /// minimal. Prefer reserve if future insertions are expected.
     ///
     /// # Examples
@@ -778,10 +778,10 @@ impl Default for Box<OsStr> {
 }
 
 #[stable(feature = "osstring_default", since = "1.9.0")]
-impl<'a> Default for &'a OsStr {
+impl Default for &OsStr {
     /// Creates an empty `OsStr`.
     #[inline]
-    fn default() -> &'a OsStr {
+    fn default() -> Self {
         OsStr::new("")
     }
 }
@@ -968,10 +968,10 @@ impl AsInner<Slice> for OsStr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sys_common::{AsInner, IntoInner};
+    use crate::sys_common::{AsInner, IntoInner};
 
-    use rc::Rc;
-    use sync::Arc;
+    use crate::rc::Rc;
+    use crate::sync::Arc;
 
     #[test]
     fn test_os_string_with_capacity() {

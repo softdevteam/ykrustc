@@ -1,7 +1,7 @@
-use super::usercalls::alloc::UserRef;
-use cmp;
-use io::{self, Write};
-use mem;
+use super::usercalls::{alloc::UserRef, self};
+use crate::cmp;
+use crate::io::{self, Write};
+use crate::mem;
 
 extern "C" {
     fn take_debug_panic_buf_ptr() -> *mut u8;
@@ -52,7 +52,5 @@ impl Write for SgxPanicOutput {
 #[no_mangle]
 pub extern "C" fn panic_msg(msg: &str) -> ! {
     let _ = SgxPanicOutput::new().map(|mut out| out.write(msg.as_bytes()));
-    unsafe { usercall_exit(true); }
+    usercalls::exit(true)
 }
-
-extern "C" { pub fn usercall_exit(panic: bool) -> !; }

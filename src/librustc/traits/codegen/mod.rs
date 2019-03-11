@@ -3,19 +3,19 @@
 // seems likely that they should eventually be merged into more
 // general routines.
 
-use dep_graph::{DepKind, DepTrackingMapConfig};
+use crate::dep_graph::{DepKind, DepTrackingMapConfig};
 use std::marker::PhantomData;
 use syntax_pos::DUMMY_SP;
-use infer::InferCtxt;
+use crate::infer::InferCtxt;
 use syntax_pos::Span;
-use traits::{FulfillmentContext, Obligation, ObligationCause, SelectionContext,
+use crate::traits::{FulfillmentContext, Obligation, ObligationCause, SelectionContext,
              TraitEngine, Vtable};
-use ty::{self, Ty, TyCtxt};
-use ty::subst::{Subst, Substs};
-use ty::fold::TypeFoldable;
+use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::subst::{Subst, SubstsRef};
+use crate::ty::fold::TypeFoldable;
 
-/// Attempts to resolve an obligation to a vtable.. The result is
-/// a shallow vtable resolution -- meaning that we do not
+/// Attempts to resolve an obligation to a vtable. The result is
+/// a shallow vtable resolution, meaning that we do not
 /// (necessarily) resolve all nested obligations on the impl. Note
 /// that type check should guarantee to us that all nested
 /// obligations *could be* resolved if we wanted to.
@@ -82,7 +82,7 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
     /// types.
     pub fn subst_and_normalize_erasing_regions<T>(
         self,
-        param_substs: &Substs<'tcx>,
+        param_substs: SubstsRef<'tcx>,
         param_env: ty::ParamEnv<'tcx>,
         value: &T
     ) -> T

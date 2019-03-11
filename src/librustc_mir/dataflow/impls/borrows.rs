@@ -1,7 +1,7 @@
-use borrow_check::borrow_set::{BorrowSet, BorrowData};
-use borrow_check::place_ext::PlaceExt;
+use crate::borrow_check::borrow_set::{BorrowSet, BorrowData};
+use crate::borrow_check::place_ext::PlaceExt;
 
-use rustc::mir::{self, Location, Place, Mir};
+use rustc::mir::{self, Location, Place, PlaceBase, Mir};
 use rustc::ty::TyCtxt;
 use rustc::ty::RegionVid;
 
@@ -9,11 +9,11 @@ use rustc_data_structures::bit_set::{BitSet, BitSetOperator};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
 
-use dataflow::{BitDenotation, BlockSets, InitialFlow};
-pub use dataflow::indexes::BorrowIndex;
-use borrow_check::nll::region_infer::RegionInferenceContext;
-use borrow_check::nll::ToRegionVid;
-use borrow_check::places_conflict;
+use crate::dataflow::{BitDenotation, BlockSets, InitialFlow};
+pub use crate::dataflow::indexes::BorrowIndex;
+use crate::borrow_check::nll::region_infer::RegionInferenceContext;
+use crate::borrow_check::nll::ToRegionVid;
+use crate::borrow_check::places_conflict;
 
 use std::rc::Rc;
 
@@ -163,7 +163,7 @@ impl<'a, 'gcx, 'tcx> Borrows<'a, 'gcx, 'tcx> {
     /// Add all borrows to the kill set, if those borrows are out of scope at `location`.
     /// That means they went out of a nonlexical scope
     fn kill_loans_out_of_scope_at_location(&self,
-                                           sets: &mut BlockSets<BorrowIndex>,
+                                           sets: &mut BlockSets<'_, BorrowIndex>,
                                            location: Location) {
         // NOTE: The state associated with a given `location`
         // reflects the dataflow on entry to the statement.
@@ -184,12 +184,12 @@ impl<'a, 'gcx, 'tcx> Borrows<'a, 'gcx, 'tcx> {
     /// Kill any borrows that conflict with `place`.
     fn kill_borrows_on_place(
         &self,
-        sets: &mut BlockSets<BorrowIndex>,
+        sets: &mut BlockSets<'_, BorrowIndex>,
         place: &Place<'tcx>
     ) {
         debug!("kill_borrows_on_place: place={:?}", place);
         // Handle the `Place::Local(..)` case first and exit early.
-        if let Place::Local(local) = place {
+        if let Place::Base(PlaceBase::Local(local)) = place {
             if let Some(borrow_indices) = self.borrow_set.local_map.get(&local) {
                 debug!("kill_borrows_on_place: borrow_indices={:?}", borrow_indices);
                 sets.kill_all(borrow_indices);
@@ -243,13 +243,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for Borrows<'a, 'gcx, 'tcx> {
     }
 
     fn before_statement_effect(&self,
-                               sets: &mut BlockSets<BorrowIndex>,
+                               sets: &mut BlockSets<'_, BorrowIndex>,
                                location: Location) {
         debug!("Borrows::before_statement_effect sets: {:?} location: {:?}", sets, location);
         self.kill_loans_out_of_scope_at_location(sets, location);
     }
 
-    fn statement_effect(&self, sets: &mut BlockSets<BorrowIndex>, location: Location) {
+    fn statement_effect(&self, sets: &mut BlockSets<'_, BorrowIndex>, location: Location) {
         debug!("Borrows::statement_effect: sets={:?} location={:?}", sets, location);
 
         let block = &self.mir.basic_blocks().get(location.block).unwrap_or_else(|| {
@@ -285,7 +285,7 @@ impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for Borrows<'a, 'gcx, 'tcx> {
             mir::StatementKind::StorageDead(local) => {
                 // Make sure there are no remaining borrows for locals that
                 // are gone out of scope.
-                self.kill_borrows_on_place(sets, &Place::Local(local));
+                self.kill_borrows_on_place(sets, &Place::Base(PlaceBase::Local(local)));
             }
 
             mir::StatementKind::InlineAsm { ref outputs, ref asm, .. } => {
@@ -307,13 +307,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for Borrows<'a, 'gcx, 'tcx> {
     }
 
     fn before_terminator_effect(&self,
-                                sets: &mut BlockSets<BorrowIndex>,
+                                sets: &mut BlockSets<'_, BorrowIndex>,
                                 location: Location) {
         debug!("Borrows::before_terminator_effect sets: {:?} location: {:?}", sets, location);
         self.kill_loans_out_of_scope_at_location(sets, location);
     }
 
-    fn terminator_effect(&self, _: &mut BlockSets<BorrowIndex>, _: Location) {}
+    fn terminator_effect(&self, _: &mut BlockSets<'_, BorrowIndex>, _: Location) {}
 
     fn propagate_call_return(
         &self,

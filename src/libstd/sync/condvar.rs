@@ -1,10 +1,10 @@
-use fmt;
-use sync::atomic::{AtomicUsize, Ordering};
-use sync::{mutex, MutexGuard, PoisonError};
-use sys_common::condvar as sys;
-use sys_common::mutex as sys_mutex;
-use sys_common::poison::{self, LockResult};
-use time::{Duration, Instant};
+use crate::fmt;
+use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::{mutex, MutexGuard, PoisonError};
+use crate::sys_common::condvar as sys;
+use crate::sys_common::mutex as sys_mutex;
+use crate::sys_common::poison::{self, LockResult};
+use crate::time::{Duration, Instant};
 
 /// A type indicating whether a timed wait on a condition variable returned
 /// due to a time out or not.
@@ -17,7 +17,7 @@ use time::{Duration, Instant};
 pub struct WaitTimeoutResult(bool);
 
 impl WaitTimeoutResult {
-    /// Returns whether the wait was known to have timed out.
+    /// Returns `true` if the wait was known to have timed out.
     ///
     /// # Examples
     ///
@@ -343,13 +343,13 @@ impl Condvar {
     ///
     /// Note that the best effort is made to ensure that the time waited is
     /// measured with a monotonic clock, and not affected by the changes made to
-    /// the system time.  This function is susceptible to spurious wakeups.
+    /// the system time. This function is susceptible to spurious wakeups.
     /// Condition variables normally have a boolean predicate associated with
     /// them, and the predicate must always be checked each time this function
-    /// returns to protect against spurious wakeups.  Additionally, it is
+    /// returns to protect against spurious wakeups. Additionally, it is
     /// typically desirable for the time-out to not exceed some duration in
     /// spite of spurious wakes, thus the sleep-duration is decremented by the
-    /// amount slept.  Alternatively, use the `wait_timeout_until` method
+    /// amount slept. Alternatively, use the `wait_timeout_until` method
     /// to wait until a condition is met with a total time-out regardless
     /// of spurious wakes.
     ///
@@ -413,7 +413,7 @@ impl Condvar {
     }
 
     /// Waits on this condition variable for a notification, timing out after a
-    /// specified duration.  Spurious wakes will not cause this function to
+    /// specified duration. Spurious wakes will not cause this function to
     /// return.
     ///
     /// The semantics of this function are equivalent to [`wait_until`] except
@@ -612,12 +612,12 @@ impl Drop for Condvar {
 #[cfg(test)]
 mod tests {
     /// #![feature(wait_until)]
-    use sync::mpsc::channel;
-    use sync::{Condvar, Mutex, Arc};
-    use sync::atomic::{AtomicBool, Ordering};
-    use thread;
-    use time::Duration;
-    use u64;
+    use crate::sync::mpsc::channel;
+    use crate::sync::{Condvar, Mutex, Arc};
+    use crate::sync::atomic::{AtomicBool, Ordering};
+    use crate::thread;
+    use crate::time::Duration;
+    use crate::u64;
 
     #[test]
     fn smoke() {

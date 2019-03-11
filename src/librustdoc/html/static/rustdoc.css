@@ -424,7 +424,8 @@ h4 > code, h3 > code, .invisible > code {
 
 .docblock table {
 	margin: .5em 0;
-	width: 100%;
+	width: calc(100% - 2px);
+	border: 1px dashed;
 }
 
 .docblock table td {
@@ -657,7 +658,7 @@ a {
 	transition: border-color 300ms ease;
 	transition: border-radius 300ms ease-in-out;
 	transition: box-shadow 300ms ease-in-out;
-	width: 100%;
+	width: calc(100% - 32px);
 }
 
 #crate-search + .search-input {
@@ -767,11 +768,14 @@ body.blur > :not(#help) {
 }
 
 .module-item .stab {
-	display: inline;
-	border-width: 0;
-	padding: 0;
-	margin: 0;
-	background: inherit !important;
+	border-radius: 3px;
+	display: inline-block;
+	font-size: 80%;
+	line-height: 1.2;
+	margin-bottom: 0;
+	margin-right: .3em;
+	padding: 2px;
+	vertical-align: text-bottom;
 }
 
 .module-item.unstable {
@@ -1570,5 +1574,6 @@ div.name::before {
 }
 div.name.expand::before {
 	transform: rotate(90deg);
-	left: -14px;
+	left: -15px;
+	top: 2px;
 }

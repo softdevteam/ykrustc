@@ -1,4 +1,4 @@
-/// Shared channels
+/// Shared channels.
 ///
 /// This is the flavor of channels which are not necessarily optimized for any
 /// particular use case, but are the most general in how they are used. Shared
@@ -14,16 +14,16 @@ use core::cmp;
 use core::intrinsics::abort;
 use core::isize;
 
-use cell::UnsafeCell;
-use ptr;
-use sync::atomic::{AtomicUsize, AtomicIsize, AtomicBool, Ordering};
-use sync::mpsc::blocking::{self, SignalToken};
-use sync::mpsc::mpsc_queue as mpsc;
-use sync::mpsc::select::StartResult::*;
-use sync::mpsc::select::StartResult;
-use sync::{Mutex, MutexGuard};
-use thread;
-use time::Instant;
+use crate::cell::UnsafeCell;
+use crate::ptr;
+use crate::sync::atomic::{AtomicUsize, AtomicIsize, AtomicBool, Ordering};
+use crate::sync::mpsc::blocking::{self, SignalToken};
+use crate::sync::mpsc::mpsc_queue as mpsc;
+use crate::sync::mpsc::select::StartResult::*;
+use crate::sync::mpsc::select::StartResult;
+use crate::sync::{Mutex, MutexGuard};
+use crate::thread;
+use crate::time::Instant;
 
 const DISCONNECTED: isize = isize::MIN;
 const FUDGE: isize = 1024;

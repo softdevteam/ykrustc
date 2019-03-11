@@ -3,12 +3,12 @@
  * building is complete.
  */
 
-use mir::*;
-use ty::subst::{Subst, Substs};
-use ty::{self, AdtDef, Ty, TyCtxt};
-use ty::layout::VariantIdx;
-use hir;
-use ty::util::IntTypeExt;
+use crate::mir::*;
+use crate::ty::subst::{Subst, SubstsRef};
+use crate::ty::{self, AdtDef, Ty, TyCtxt};
+use crate::ty::layout::VariantIdx;
+use crate::hir;
+use crate::ty::util::IntTypeExt;
 
 #[derive(Copy, Clone, Debug)]
 pub enum PlaceTy<'tcx> {
@@ -17,7 +17,7 @@ pub enum PlaceTy<'tcx> {
 
     /// Downcast to a particular variant of an enum.
     Downcast { adt_def: &'tcx AdtDef,
-               substs: &'tcx Substs<'tcx>,
+               substs: SubstsRef<'tcx>,
                variant_index: VariantIdx },
 }
 
@@ -158,10 +158,10 @@ impl<'tcx> Place<'tcx> {
         where D: HasLocalDecls<'tcx>
     {
         match *self {
-            Place::Local(index) =>
+            Place::Base(PlaceBase::Local(index)) =>
                 PlaceTy::Ty { ty: local_decls.local_decls()[index].ty },
-            Place::Promoted(ref data) => PlaceTy::Ty { ty: data.1 },
-            Place::Static(ref data) =>
+            Place::Base(PlaceBase::Promoted(ref data)) => PlaceTy::Ty { ty: data.1 },
+            Place::Base(PlaceBase::Static(ref data)) =>
                 PlaceTy::Ty { ty: data.ty },
             Place::Projection(ref proj) =>
                 proj.base.ty(local_decls, tcx).projection_ty(tcx, &proj.elem),
@@ -278,7 +278,7 @@ impl<'tcx> Rvalue<'tcx> {
     }
 
     #[inline]
-    /// Returns whether this rvalue is deeply initialized (most rvalues) or
+    /// Returns `true` if this rvalue is deeply initialized (most rvalues) or
     /// whether its only shallowly initialized (`Rvalue::Box`).
     pub fn initialization_state(&self) -> RvalueInitializationState {
         match *self {

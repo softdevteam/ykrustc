@@ -1,8 +1,8 @@
 //! This module contains `HashStable` implementations for various MIR data
 //! types in no particular order.
 
-use ich::StableHashingContext;
-use mir;
+use crate::ich::StableHashingContext;
+use crate::mir;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
                                            StableHasherResult};
 use std::mem;
@@ -196,7 +196,12 @@ impl_stable_hash_for!(impl<'gcx> for enum mir::StatementKind<'gcx> [ mir::Statem
 });
 
 impl_stable_hash_for!(enum mir::RetagKind { FnEntry, TwoPhase, Raw, Default });
-impl_stable_hash_for!(enum mir::FakeReadCause { ForMatchGuard, ForMatchedPlace, ForLet });
+impl_stable_hash_for!(enum mir::FakeReadCause {
+    ForMatchGuard,
+    ForMatchedPlace,
+    ForGuardBinding,
+    ForLet
+});
 
 impl<'a, 'gcx> HashStable<StableHashingContext<'a>> for mir::Place<'gcx> {
     fn hash_stable<W: StableHasherResult>(&self,
@@ -204,13 +209,13 @@ impl<'a, 'gcx> HashStable<StableHashingContext<'a>> for mir::Place<'gcx> {
                                           hasher: &mut StableHasher<W>) {
         mem::discriminant(self).hash_stable(hcx, hasher);
         match *self {
-            mir::Place::Local(ref local) => {
+            mir::Place::Base(mir::PlaceBase::Local(ref local)) => {
                 local.hash_stable(hcx, hasher);
             }
-            mir::Place::Static(ref statik) => {
+            mir::Place::Base(mir::PlaceBase::Static(ref statik)) => {
                 statik.hash_stable(hcx, hasher);
             }
-            mir::Place::Promoted(ref promoted) => {
+            mir::Place::Base(mir::PlaceBase::Promoted(ref promoted)) => {
                 promoted.hash_stable(hcx, hasher);
             }
             mir::Place::Projection(ref place_projection) => {
@@ -373,6 +378,7 @@ impl_stable_hash_for!(enum mir::CastKind {
     ReifyFnPointer,
     ClosureFnPointer,
     UnsafeFnPointer,
+    MutToConstPointer,
     Unsize
 });
 

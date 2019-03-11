@@ -266,18 +266,21 @@
 // And now that you've seen all the races that I found and attempted to fix,
 // here's the code for you to find some more!
 
-use sync::Arc;
-use error;
-use fmt;
-use mem;
-use cell::UnsafeCell;
-use time::{Duration, Instant};
+use crate::sync::Arc;
+use crate::error;
+use crate::fmt;
+use crate::mem;
+use crate::cell::UnsafeCell;
+use crate::time::{Duration, Instant};
 
 #[unstable(feature = "mpsc_select", issue = "27800")]
 pub use self::select::{Select, Handle};
 use self::select::StartResult;
 use self::select::StartResult::*;
 use self::blocking::SignalToken;
+
+#[cfg(all(test, not(target_os = "emscripten")))]
+mod select_tests;
 
 mod blocking;
 mod oneshot;
@@ -789,7 +792,7 @@ impl<T> Sender<T> {
     /// where the corresponding receiver has already been deallocated. Note
     /// that a return value of [`Err`] means that the data will never be
     /// received, but a return value of [`Ok`] does *not* mean that the data
-    /// will be received.  It is possible for the corresponding receiver to
+    /// will be received. It is possible for the corresponding receiver to
     /// hang up immediately after this function returns [`Ok`].
     ///
     /// [`Err`]: ../../../std/result/enum.Result.html#variant.Err
@@ -1819,10 +1822,10 @@ impl From<RecvError> for RecvTimeoutError {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests {
-    use env;
     use super::*;
-    use thread;
-    use time::{Duration, Instant};
+    use crate::env;
+    use crate::thread;
+    use crate::time::{Duration, Instant};
 
     pub fn stress_factor() -> usize {
         match env::var("RUST_TEST_STRESS") {
@@ -2511,10 +2514,10 @@ mod tests {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod sync_tests {
-    use env;
-    use thread;
     use super::*;
-    use time::Duration;
+    use crate::env;
+    use crate::thread;
+    use crate::time::Duration;
 
     pub fn stress_factor() -> usize {
         match env::var("RUST_TEST_STRESS") {

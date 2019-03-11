@@ -1,4 +1,4 @@
-use hair::*;
+use crate::hair::*;
 
 #[derive(Debug, PartialEq)]
 pub enum Category {
@@ -62,6 +62,7 @@ impl Category {
             | ExprKind::ReifyFnPointer { .. }
             | ExprKind::ClosureFnPointer { .. }
             | ExprKind::UnsafeFnPointer { .. }
+            | ExprKind::MutToConstPointer { .. }
             | ExprKind::Unsize { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Borrow { .. }

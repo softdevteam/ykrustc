@@ -1,6 +1,6 @@
-use hair::*;
-use hair::cx::Cx;
-use hair::cx::to_ref::ToRef;
+use crate::hair::{self, *};
+use crate::hair::cx::Cx;
+use crate::hair::cx::to_ref::ToRef;
 use rustc::middle::region;
 use rustc::hir;
 use rustc::ty;
@@ -30,7 +30,7 @@ impl<'tcx> Mirror<'tcx> for &'tcx hir::Block {
                 hir::BlockCheckMode::DefaultBlock =>
                     BlockSafety::Safe,
                 hir::BlockCheckMode::UnsafeBlock(..) =>
-                    BlockSafety::ExplicitUnsafe(self.id),
+                    BlockSafety::ExplicitUnsafe(self.hir_id),
                 hir::BlockCheckMode::PushUnsafeBlock(..) =>
                     BlockSafety::PushUnsafe,
                 hir::BlockCheckMode::PopUnsafeBlock(..) =>
@@ -46,9 +46,9 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                                 -> Vec<StmtRef<'tcx>> {
     let mut result = vec![];
     for (index, stmt) in stmts.iter().enumerate() {
-        let hir_id = cx.tcx.hir().node_to_hir_id(stmt.id);
+        let hir_id = stmt.hir_id;
         let opt_dxn_ext = cx.region_scope_tree.opt_destruction_scope(hir_id.local_id);
-        let stmt_span = StatementSpan(cx.tcx.hir().span(stmt.id));
+        let stmt_span = StatementSpan(cx.tcx.hir().span_by_hir_id(hir_id));
         match stmt.node {
             hir::StmtKind::Expr(ref expr) |
             hir::StmtKind::Semi(ref expr) => {
@@ -83,10 +83,12 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                             ty: pattern.ty,
                             span: pattern.span,
                             kind: Box::new(PatternKind::AscribeUserType {
-                                user_ty: PatternTypeProjection::from_user_type(user_ty),
-                                user_ty_span: ty.span,
+                                ascription: hair::pattern::Ascription {
+                                    user_ty: PatternTypeProjection::from_user_type(user_ty),
+                                    user_ty_span: ty.span,
+                                    variance: ty::Variance::Covariant,
+                                },
                                 subpattern: pattern,
-                                variance: ty::Variance::Covariant,
                             })
                         };
                     }
@@ -101,7 +103,7 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                         },
                         pattern,
                         initializer: local.init.to_ref(),
-                        lint_level: cx.lint_level_of(local.id),
+                        lint_level: cx.lint_level_of(local.hir_id),
                     },
                     opt_destruction_scope: opt_dxn_ext,
                     span: stmt_span,
@@ -115,7 +117,7 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
 pub fn to_expr_ref<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                                    block: &'tcx hir::Block)
                                    -> ExprRef<'tcx> {
-    let block_ty = cx.tables().node_id_to_type(block.hir_id);
+    let block_ty = cx.tables().node_type(block.hir_id);
     let temp_lifetime = cx.region_scope_tree.temporary_scope(block.hir_id.local_id);
     let expr = Expr {
         ty: block_ty,

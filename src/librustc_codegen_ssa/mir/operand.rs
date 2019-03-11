@@ -3,11 +3,11 @@ use rustc::mir;
 use rustc::ty;
 use rustc::ty::layout::{self, Align, LayoutOf, TyLayout};
 
-use base;
-use MemFlags;
-use glue;
+use crate::base;
+use crate::MemFlags;
+use crate::glue;
 
-use traits::*;
+use crate::traits::*;
 
 use std::fmt;
 
@@ -48,7 +48,7 @@ pub struct OperandRef<'tcx, V> {
 }
 
 impl<V: CodegenObject> fmt::Debug for OperandRef<'tcx, V> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "OperandRef({:?} @ {:?})", self.val, self.layout)
     }
 }
@@ -76,6 +76,8 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
         }
 
         let val = match val.val {
+            ConstValue::Param(_) => bug!("encountered a ConstValue::Param in codegen"),
+            ConstValue::Infer(_) => bug!("encountered a ConstValue::Infer in codegen"),
             ConstValue::Scalar(x) => {
                 let scalar = match layout.abi {
                     layout::Abi::Scalar(ref x) => x,
@@ -101,8 +103,8 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
                 let b_llval = bx.cx().const_usize(b);
                 OperandValue::Pair(a_llval, b_llval)
             },
-            ConstValue::ByRef(_, alloc, offset) => {
-                return Ok(bx.load_operand(bx.cx().from_const_alloc(layout, alloc, offset)));
+            ConstValue::ByRef(ptr, alloc) => {
+                return Ok(bx.load_operand(bx.cx().from_const_alloc(layout, alloc, ptr.offset)));
             },
         };
 
@@ -378,7 +380,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // watch out for locals that do not have an
         // alloca; they are handled somewhat differently
-        if let mir::Place::Local(index) = *place {
+        if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
             match self.locals[index] {
                 LocalRef::Operand(Some(o)) => {
                     return Some(o);

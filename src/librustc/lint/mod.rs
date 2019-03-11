@@ -23,13 +23,16 @@ pub use self::LintSource::*;
 
 use rustc_data_structures::sync::{self, Lrc};
 
+use crate::hir::def_id::{CrateNum, LOCAL_CRATE};
+use crate::hir::intravisit;
+use crate::hir;
+use crate::lint::builtin::{BuiltinLintDiagnostics, DUPLICATE_MATCHER_BINDING_NAME};
+use crate::lint::builtin::parser::{QUESTION_MARK_MACRO_SEP, ILL_FORMED_ATTRIBUTE_INPUT};
+use crate::session::{Session, DiagnosticMessageId};
+use crate::ty::TyCtxt;
+use crate::ty::query::Providers;
+use crate::util::nodemap::NodeMap;
 use errors::{DiagnosticBuilder, DiagnosticId};
-use hir::def_id::{CrateNum, LOCAL_CRATE};
-use hir::intravisit;
-use hir;
-use lint::builtin::BuiltinLintDiagnostics;
-use lint::builtin::parser::{QUESTION_MARK_MACRO_SEP, ILL_FORMED_ATTRIBUTE_INPUT};
-use session::{Session, DiagnosticMessageId};
 use std::{hash, ptr};
 use syntax::ast;
 use syntax::source_map::{MultiSpan, ExpnFormat};
@@ -37,11 +40,8 @@ use syntax::early_buffered_lints::BufferedEarlyLintId;
 use syntax::edition::Edition;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
-use ty::TyCtxt;
-use ty::query::Providers;
-use util::nodemap::NodeMap;
 
-pub use lint::context::{LateContext, EarlyContext, LintContext, LintStore,
+pub use crate::lint::context::{LateContext, EarlyContext, LintContext, LintStore,
                         check_crate, check_ast_crate, CheckLintNameResult,
                         FutureIncompatibleInfo, BufferedEarlyLint};
 
@@ -72,7 +72,7 @@ pub struct Lint {
     /// `default_level`.
     pub edition_lint_opts: Option<(Edition, Level)>,
 
-    /// Whether this lint is reported even inside expansions of external macros
+    /// `true` if this lint is reported even inside expansions of external macros.
     pub report_in_external_macro: bool,
 }
 
@@ -82,10 +82,11 @@ impl Lint {
         match lint_id {
             BufferedEarlyLintId::QuestionMarkMacroSep => QUESTION_MARK_MACRO_SEP,
             BufferedEarlyLintId::IllFormedAttributeInput => ILL_FORMED_ATTRIBUTE_INPUT,
+            BufferedEarlyLintId::DuplicateMacroMatcherBindingName => DUPLICATE_MATCHER_BINDING_NAME,
         }
     }
 
-    /// Get the lint's name, with ASCII letters converted to lowercase.
+    /// Gets the lint's name, with ASCII letters converted to lowercase.
     pub fn name_lower(&self) -> String {
         self.name.to_ascii_lowercase()
     }
@@ -98,7 +99,7 @@ impl Lint {
     }
 }
 
-/// Declare a static item of type `&'static Lint`.
+/// Declares a static item of type `&'static Lint`.
 #[macro_export]
 macro_rules! declare_lint {
     ($vis: vis $NAME: ident, $Level: ident, $desc: expr) => (
@@ -131,14 +132,22 @@ macro_rules! declare_lint {
 
 #[macro_export]
 macro_rules! declare_tool_lint {
-    ($vis: vis $tool: ident ::$NAME: ident, $Level: ident, $desc: expr) => (
-        declare_tool_lint!{$vis $tool::$NAME, $Level, $desc, false}
+    (
+        $(#[$attr:meta])* $vis:vis $tool:ident ::$NAME:ident, $Level: ident, $desc: expr
+    ) => (
+        declare_tool_lint!{$(#[$attr])* $vis $tool::$NAME, $Level, $desc, false}
     );
-    ($vis: vis $tool: ident ::$NAME: ident, $Level: ident, $desc: expr,
-     report_in_external_macro: $rep: expr) => (
-         declare_tool_lint!{$vis $tool::$NAME, $Level, $desc, $rep}
+    (
+        $(#[$attr:meta])* $vis:vis $tool:ident ::$NAME:ident, $Level:ident, $desc:expr,
+        report_in_external_macro: $rep:expr
+    ) => (
+         declare_tool_lint!{$(#[$attr])* $vis $tool::$NAME, $Level, $desc, $rep}
     );
-    ($vis: vis $tool: ident ::$NAME: ident, $Level: ident, $desc: expr, $external: expr) => (
+    (
+        $(#[$attr:meta])* $vis:vis $tool:ident ::$NAME:ident, $Level:ident, $desc:expr,
+        $external:expr
+    ) => (
+        $(#[$attr])*
         $vis static $NAME: &$crate::lint::Lint = &$crate::lint::Lint {
             name: &concat!(stringify!($tool), "::", stringify!($NAME)),
             default_level: $crate::lint::$Level,
@@ -149,7 +158,7 @@ macro_rules! declare_tool_lint {
     );
 }
 
-/// Declare a static `LintArray` and return it as an expression.
+/// Declares a static `LintArray` and return it as an expression.
 #[macro_export]
 macro_rules! lint_array {
     ($( $lint:expr ),* ,) => { lint_array!( $($lint),* ) };
@@ -163,7 +172,7 @@ pub type LintArray = Vec<&'static Lint>;
 pub trait LintPass {
     fn name(&self) -> &'static str;
 
-    /// Get descriptions of the lints this `LintPass` object can emit.
+    /// Gets descriptions of the lints this `LintPass` object can emit.
     ///
     /// N.B., there is no enforcement that the object only emits lints it registered.
     /// And some `rustc` internal `LintPass`es register lints to be emitted by other
@@ -181,8 +190,8 @@ macro_rules! late_lint_methods {
             fn check_name(a: Span, b: ast::Name);
             fn check_crate(a: &$hir hir::Crate);
             fn check_crate_post(a: &$hir hir::Crate);
-            fn check_mod(a: &$hir hir::Mod, b: Span, c: ast::NodeId);
-            fn check_mod_post(a: &$hir hir::Mod, b: Span, c: ast::NodeId);
+            fn check_mod(a: &$hir hir::Mod, b: Span, c: hir::HirId);
+            fn check_mod_post(a: &$hir hir::Mod, b: Span, c: hir::HirId);
             fn check_foreign_item(a: &$hir hir::ForeignItem);
             fn check_foreign_item_post(a: &$hir hir::ForeignItem);
             fn check_item(a: &$hir hir::Item);
@@ -205,13 +214,13 @@ macro_rules! late_lint_methods {
                 b: &$hir hir::FnDecl,
                 c: &$hir hir::Body,
                 d: Span,
-                e: ast::NodeId);
+                e: hir::HirId);
             fn check_fn_post(
                 a: hir::intravisit::FnKind<$hir>,
                 b: &$hir hir::FnDecl,
                 c: &$hir hir::Body,
                 d: Span,
-                e: ast::NodeId
+                e: hir::HirId
             );
             fn check_trait_item(a: &$hir hir::TraitItem);
             fn check_trait_item_post(a: &$hir hir::TraitItem);
@@ -221,13 +230,13 @@ macro_rules! late_lint_methods {
                 a: &$hir hir::VariantData,
                 b: ast::Name,
                 c: &$hir hir::Generics,
-                d: ast::NodeId
+                d: hir::HirId
             );
             fn check_struct_def_post(
                 a: &$hir hir::VariantData,
                 b: ast::Name,
                 c: &$hir hir::Generics,
-                d: ast::NodeId
+                d: hir::HirId
             );
             fn check_struct_field(a: &$hir hir::StructField);
             fn check_variant(a: &$hir hir::Variant, b: &$hir hir::Generics);
@@ -486,7 +495,7 @@ impl hash::Hash for LintId {
 }
 
 impl LintId {
-    /// Get the `LintId` for a `Lint`.
+    /// Gets the `LintId` for a `Lint`.
     pub fn of(lint: &'static Lint) -> LintId {
         LintId {
             lint,
@@ -497,7 +506,7 @@ impl LintId {
         self.lint.name
     }
 
-    /// Get the name of the lint.
+    /// Gets the name of the lint.
     pub fn to_string(&self) -> String {
         self.lint.name_lower()
     }
@@ -517,7 +526,7 @@ impl_stable_hash_for!(enum self::Level {
 });
 
 impl Level {
-    /// Convert a level to a lower-case string.
+    /// Converts a level to a lower-case string.
     pub fn as_str(self) -> &'static str {
         match self {
             Allow => "allow",
@@ -527,7 +536,7 @@ impl Level {
         }
     }
 
-    /// Convert a lower-case string to a level.
+    /// Converts a lower-case string to a level.
     pub fn from_str(x: &str) -> Option<Level> {
         match x {
             "allow" => Some(Allow),
@@ -678,7 +687,7 @@ pub fn struct_lint_level<'a>(sess: &'a Session,
             "this was previously accepted by the compiler but is being phased out; \
              it will become a hard error";
 
-        let explanation = if lint_id == LintId::of(::lint::builtin::UNSTABLE_NAME_COLLISIONS) {
+        let explanation = if lint_id == LintId::of(crate::lint::builtin::UNSTABLE_NAME_COLLISIONS) {
             "once this method is added to the standard library, \
              the ambiguity may cause an error or change in behavior!"
                 .to_owned()
@@ -722,7 +731,7 @@ fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
     };
     let krate = tcx.hir().krate();
 
-    builder.with_lint_attrs(ast::CRATE_NODE_ID, &krate.attrs, |builder| {
+    builder.with_lint_attrs(hir::CRATE_HIR_ID, &krate.attrs, |builder| {
         intravisit::walk_crate(builder, krate);
     });
 
@@ -736,13 +745,13 @@ struct LintLevelMapBuilder<'a, 'tcx: 'a> {
 
 impl<'a, 'tcx> LintLevelMapBuilder<'a, 'tcx> {
     fn with_lint_attrs<F>(&mut self,
-                          id: ast::NodeId,
+                          id: hir::HirId,
                           attrs: &[ast::Attribute],
                           f: F)
         where F: FnOnce(&mut Self)
     {
         let push = self.levels.push(attrs);
-        self.levels.register_id(self.tcx.hir().definitions().node_to_hir_id(id));
+        self.levels.register_id(id);
         f(self);
         self.levels.pop(push);
     }
@@ -754,25 +763,25 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'a, 'tcx> {
     }
 
     fn visit_item(&mut self, it: &'tcx hir::Item) {
-        self.with_lint_attrs(it.id, &it.attrs, |builder| {
+        self.with_lint_attrs(it.hir_id, &it.attrs, |builder| {
             intravisit::walk_item(builder, it);
         });
     }
 
     fn visit_foreign_item(&mut self, it: &'tcx hir::ForeignItem) {
-        self.with_lint_attrs(it.id, &it.attrs, |builder| {
+        self.with_lint_attrs(it.hir_id, &it.attrs, |builder| {
             intravisit::walk_foreign_item(builder, it);
         })
     }
 
     fn visit_expr(&mut self, e: &'tcx hir::Expr) {
-        self.with_lint_attrs(e.id, &e.attrs, |builder| {
+        self.with_lint_attrs(e.hir_id, &e.attrs, |builder| {
             intravisit::walk_expr(builder, e);
         })
     }
 
     fn visit_struct_field(&mut self, s: &'tcx hir::StructField) {
-        self.with_lint_attrs(s.id, &s.attrs, |builder| {
+        self.with_lint_attrs(s.hir_id, &s.attrs, |builder| {
             intravisit::walk_struct_field(builder, s);
         })
     }
@@ -780,26 +789,26 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'a, 'tcx> {
     fn visit_variant(&mut self,
                      v: &'tcx hir::Variant,
                      g: &'tcx hir::Generics,
-                     item_id: ast::NodeId) {
-        self.with_lint_attrs(v.node.data.id(), &v.node.attrs, |builder| {
+                     item_id: hir::HirId) {
+        self.with_lint_attrs(v.node.data.hir_id(), &v.node.attrs, |builder| {
             intravisit::walk_variant(builder, v, g, item_id);
         })
     }
 
     fn visit_local(&mut self, l: &'tcx hir::Local) {
-        self.with_lint_attrs(l.id, &l.attrs, |builder| {
+        self.with_lint_attrs(l.hir_id, &l.attrs, |builder| {
             intravisit::walk_local(builder, l);
         })
     }
 
     fn visit_trait_item(&mut self, trait_item: &'tcx hir::TraitItem) {
-        self.with_lint_attrs(trait_item.id, &trait_item.attrs, |builder| {
+        self.with_lint_attrs(trait_item.hir_id, &trait_item.attrs, |builder| {
             intravisit::walk_trait_item(builder, trait_item);
         });
     }
 
     fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
-        self.with_lint_attrs(impl_item.id, &impl_item.attrs, |builder| {
+        self.with_lint_attrs(impl_item.hir_id, &impl_item.attrs, |builder| {
             intravisit::walk_impl_item(builder, impl_item);
         });
     }

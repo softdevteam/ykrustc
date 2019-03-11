@@ -34,18 +34,18 @@ macro_rules! book {
             type Output = ();
             const DEFAULT: bool = true;
 
-            fn should_run(run: ShouldRun) -> ShouldRun {
+            fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
                 let builder = run.builder;
                 run.path($path).default_condition(builder.config.docs)
             }
 
-            fn make_run(run: RunConfig) {
+            fn make_run(run: RunConfig<'_>) {
                 run.builder.ensure($name {
                     target: run.target,
                 });
             }
 
-            fn run(self, builder: &Builder) {
+            fn run(self, builder: &Builder<'_>) {
                 builder.ensure(Rustbook {
                     target: self.target,
                     name: INTERNER.intern_str($book_name),
@@ -60,7 +60,8 @@ macro_rules! book {
 // NOTE: When adding a book here, make sure to ALSO build the book by
 // adding a build step in `src/bootstrap/builder.rs`!
 book!(
-    EditionGuide, "src/doc/edition-guide", "edition-guide", RustbookVersion::MdBook1;
+    EditionGuide, "src/doc/edition-guide", "edition-guide", RustbookVersion::MdBook2;
+    EmbeddedBook, "src/doc/embedded-book", "embedded-book", RustbookVersion::MdBook2;
     Nomicon, "src/doc/nomicon", "nomicon", RustbookVersion::MdBook1;
     Reference, "src/doc/reference", "reference", RustbookVersion::MdBook1;
     RustByExample, "src/doc/rust-by-example", "rust-by-example", RustbookVersion::MdBook1;
@@ -71,10 +72,6 @@ book!(
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 enum RustbookVersion {
     MdBook1,
-
-    /// Note: Currently no books use mdBook v2, but we want the option
-    /// to be available
-    #[allow(dead_code)]
     MdBook2,
 }
 
@@ -90,7 +87,7 @@ impl Step for Rustbook {
 
     // rustbook is never directly called, and only serves as a shim for the nomicon and the
     // reference.
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.never()
     }
 
@@ -98,7 +95,7 @@ impl Step for Rustbook {
     ///
     /// This will not actually generate any documentation if the documentation has
     /// already been generated.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let src = builder.src.join("src/doc");
         builder.ensure(RustbookSrc {
             target: self.target,
@@ -118,18 +115,18 @@ impl Step for UnstableBook {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.path("src/doc/unstable-book").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(UnstableBook {
             target: run.target,
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         builder.ensure(UnstableBookGen {
             target: self.target,
         });
@@ -152,19 +149,19 @@ impl Step for CargoBook {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.path("src/tools/cargo/src/doc/book").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(CargoBook {
             target: run.target,
             name: INTERNER.intern_str("cargo"),
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let target = self.target;
         let name = self.name;
         let src = builder.src.join("src/tools/cargo/src/doc");
@@ -197,7 +194,7 @@ struct RustbookSrc {
 impl Step for RustbookSrc {
     type Output = ();
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.never()
     }
 
@@ -205,7 +202,7 @@ impl Step for RustbookSrc {
     ///
     /// This will not actually generate any documentation if the documentation has
     /// already been generated.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let target = self.target;
         let name = self.name;
         let src = self.src;
@@ -249,12 +246,12 @@ impl Step for TheBook {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.path("src/doc/book").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(TheBook {
             compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
             target: run.target,
@@ -262,7 +259,7 @@ impl Step for TheBook {
         });
     }
 
-    /// Build the book and associated stuff.
+    /// Builds the book and associated stuff.
     ///
     /// We need to build:
     ///
@@ -271,7 +268,7 @@ impl Step for TheBook {
     /// * Version info and CSS
     /// * Index page
     /// * Redirect pages
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let compiler = self.compiler;
         let target = self.target;
         let name = self.name;
@@ -324,7 +321,12 @@ impl Step for TheBook {
     }
 }
 
-fn invoke_rustdoc(builder: &Builder, compiler: Compiler, target: Interned<String>, markdown: &str) {
+fn invoke_rustdoc(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: Interned<String>,
+    markdown: &str,
+) {
     let out = builder.doc_out(target);
 
     let path = builder.src.join("src/doc").join(markdown);
@@ -361,12 +363,12 @@ impl Step for Standalone {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.path("src/doc").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Standalone {
             compiler: run.builder.compiler(run.builder.top_stage, run.builder.config.build),
             target: run.target,
@@ -381,7 +383,7 @@ impl Step for Standalone {
     /// `STAMP` along with providing the various header/footer HTML we've customized.
     ///
     /// In the end, this is just a glorified wrapper around rustdoc!
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let target = self.target;
         let compiler = self.compiler;
         builder.info(&format!("Documenting standalone ({})", target));
@@ -455,12 +457,12 @@ impl Step for Std {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.all_krates("std").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Std {
             stage: run.builder.top_stage,
             target: run.target
@@ -471,7 +473,7 @@ impl Step for Std {
     ///
     /// This will generate all documentation for the standard library and its
     /// dependencies. This is largely just a wrapper around `cargo doc`.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let stage = self.stage;
         let target = self.target;
         builder.info(&format!("Documenting stage{} std ({})", stage, target));
@@ -520,6 +522,7 @@ impl Step for Std {
             cargo.arg("--")
                  .arg("--markdown-css").arg("rust.css")
                  .arg("--markdown-no-toc")
+                 .arg("--generate-redirect-pages")
                  .arg("--index-page").arg(&builder.src.join("src/doc/index.md"));
 
             builder.run(&mut cargo);
@@ -541,12 +544,12 @@ impl Step for Test {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.krate("test").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Test {
             stage: run.builder.top_stage,
             target: run.target,
@@ -557,7 +560,7 @@ impl Step for Test {
     ///
     /// This will generate all documentation for libtest and its dependencies. This
     /// is largely just a wrapper around `cargo doc`.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let stage = self.stage;
         let target = self.target;
         builder.info(&format!("Documenting stage{} test ({})", stage, target));
@@ -584,7 +587,9 @@ impl Step for Test {
         let mut cargo = builder.cargo(compiler, Mode::Test, target, "doc");
         compile::test_cargo(builder, &compiler, target, &mut cargo);
 
-        cargo.arg("--no-deps").arg("-p").arg("test");
+        cargo.arg("--no-deps")
+             .arg("-p").arg("test")
+             .env("RUSTDOC_GENERATE_REDIRECT_PAGES", "1");
 
         builder.run(&mut cargo);
         builder.cp_r(&my_out, &out);
@@ -602,19 +607,19 @@ impl Step for WhitelistedRustc {
     const DEFAULT: bool = true;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.krate("rustc-main").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(WhitelistedRustc {
             stage: run.builder.top_stage,
             target: run.target,
         });
     }
 
-    /// Generate whitelisted compiler crate documentation.
+    /// Generates whitelisted compiler crate documentation.
     ///
     /// This will generate all documentation for crates that are whitelisted
     /// to be included in the standard documentation. This documentation is
@@ -623,7 +628,7 @@ impl Step for WhitelistedRustc {
     /// documentation. We don't build other compiler documentation
     /// here as we want to be able to keep it separate from the standard
     /// documentation. This is largely just a wrapper around `cargo doc`.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let stage = self.stage;
         let target = self.target;
         builder.info(&format!("Documenting stage{} whitelisted compiler ({})", stage, target));
@@ -653,9 +658,9 @@ impl Step for WhitelistedRustc {
         // We don't want to build docs for internal compiler dependencies in this
         // step (there is another step for that). Therefore, we whitelist the crates
         // for which docs must be built.
-        cargo.arg("--no-deps");
         for krate in &["proc_macro"] {
-            cargo.arg("-p").arg(krate);
+            cargo.arg("-p").arg(krate)
+                 .env("RUSTDOC_GENERATE_REDIRECT_PAGES", "1");
         }
 
         builder.run(&mut cargo);
@@ -674,25 +679,25 @@ impl Step for Rustc {
     const DEFAULT: bool = true;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.krate("rustc-main").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Rustc {
             stage: run.builder.top_stage,
             target: run.target,
         });
     }
 
-    /// Generate compiler documentation.
+    /// Generates compiler documentation.
     ///
     /// This will generate all documentation for compiler and dependencies.
     /// Compiler documentation is distributed separately, so we make sure
     /// we do not merge it with the other documentation from std, test and
     /// proc_macros. This is largely just a wrapper around `cargo doc`.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let stage = self.stage;
         let target = self.target;
         builder.info(&format!("Documenting stage{} compiler ({})", stage, target));
@@ -750,7 +755,7 @@ impl Step for Rustc {
 }
 
 fn find_compiler_crates(
-    builder: &Builder,
+    builder: &Builder<'_>,
     name: &Interned<String>,
     crates: &mut HashSet<Interned<String>>
 ) {
@@ -776,24 +781,24 @@ impl Step for Rustdoc {
     const DEFAULT: bool = true;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.krate("rustdoc-tool")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Rustdoc {
             stage: run.builder.top_stage,
             target: run.target,
         });
     }
 
-    /// Generate compiler documentation.
+    /// Generates compiler documentation.
     ///
     /// This will generate all documentation for compiler and dependencies.
     /// Compiler documentation is distributed separately, so we make sure
     /// we do not merge it with the other documentation from std, test and
     /// proc_macros. This is largely just a wrapper around `cargo doc`.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let stage = self.stage;
         let target = self.target;
         builder.info(&format!("Documenting stage{} rustdoc ({})", stage, target));
@@ -859,12 +864,12 @@ impl Step for ErrorIndex {
     const DEFAULT: bool = true;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.path("src/tools/error_index_generator").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(ErrorIndex {
             target: run.target,
         });
@@ -872,7 +877,7 @@ impl Step for ErrorIndex {
 
     /// Generates the HTML rendered error-index by running the
     /// `error_index_generator` tool.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let target = self.target;
 
         builder.info(&format!("Documenting error index ({})", target));
@@ -900,18 +905,18 @@ impl Step for UnstableBookGen {
     const DEFAULT: bool = true;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         let builder = run.builder;
         run.path("src/tools/unstable-book-gen").default_condition(builder.config.docs)
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(UnstableBookGen {
             target: run.target,
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let target = self.target;
 
         builder.ensure(compile::Std {

@@ -1,3 +1,4 @@
+// ignore-tidy-linelength
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
@@ -348,13 +349,14 @@ fn main() {
 "##,
 
 E0044: r##"
-You can't use type parameters on foreign items. Example of erroneous code:
+You can't use type or const parameters on foreign items.
+Example of erroneous code:
 
 ```compile_fail,E0044
 extern { fn some_func<T>(x: T); }
 ```
 
-To fix this, replace the type parameter with the specializations that you
+To fix this, replace the generic parameter with the specializations that you
 need:
 
 ```
@@ -421,7 +423,7 @@ impl Foo for Bar {
 
 E0049: r##"
 This error indicates that an attempted implementation of a trait method
-has the wrong number of type parameters.
+has the wrong number of type or const parameters.
 
 For example, the trait below has a method `foo` with a type parameter `T`,
 but the implementation of `foo` for the type `Bar` is missing this parameter:
@@ -1030,6 +1032,7 @@ enum NightsWatch {}
 ```
 "##,
 
+// FIXME(const_generics:docs): example of inferring const parameter.
 E0087: r##"
 #### Note: this error code is no longer emitted by the compiler.
 
@@ -1150,8 +1153,8 @@ fn main() {
 "##,
 
 E0091: r##"
-You gave an unnecessary type parameter in a type alias. Erroneous code
-example:
+You gave an unnecessary type or const parameter in a type alias. Erroneous
+code example:
 
 ```compile_fail,E0091
 type Foo<T> = u32; // error: type parameter `T` is unused
@@ -1159,7 +1162,7 @@ type Foo<T> = u32; // error: type parameter `T` is unused
 type Foo<A,B> = Box<A>; // error: type parameter `B` is unused
 ```
 
-Please check you didn't write too many type parameters. Example:
+Please check you didn't write too many parameters. Example:
 
 ```
 type Foo = u32; // ok!
@@ -1322,6 +1325,10 @@ it doesn't need the lifetime parameter. Example:
 ```
 type X = u32; // ok!
 ```
+"##,
+
+E0111: r##"
+You tried to give a const parameter to a type which doesn't need it.
 "##,
 
 E0116: r##"
@@ -1543,7 +1550,9 @@ fn f<T>() {}
 
 It is not possible to declare type parameters on a function that has the `start`
 attribute. Such a function must have the following type signature (for more
-information: http://doc.rust-lang.org/stable/book/first-edition/no-stdlib.html):
+information, view [the unstable book][1]):
+
+[1]: https://doc.rust-lang.org/unstable-book/language-features/lang-items.html#writing-an-executable-without-stdlib
 
 ```
 # let _:
@@ -2865,8 +2874,8 @@ E0370: r##"
 The maximum value of an enum was reached, so it cannot be automatically
 set in the next enum value. Erroneous code example:
 
-```compile_fail
-#[deny(overflowing_literals)]
+```compile_fail,E0370
+#[repr(i64)]
 enum Foo {
     X = 0x7fffffffffffffff,
     Y, // error: enum discriminant overflowed on value after
@@ -2879,6 +2888,7 @@ To fix this, please set manually the next enum value or put the enum variant
 with the maximum value at the end of the enum. Examples:
 
 ```
+#[repr(i64)]
 enum Foo {
     X = 0x7fffffffffffffff,
     Y = 0, // ok!
@@ -2888,6 +2898,7 @@ enum Foo {
 Or:
 
 ```
+#[repr(i64)]
 enum Foo {
     Y = 0, // ok!
     X = 0x7fffffffffffffff,
@@ -2917,10 +2928,11 @@ impl Baz for Bar { } // Note: This is OK
 
 E0374: r##"
 A struct without a field containing an unsized type cannot implement
-`CoerceUnsized`. An
-[unsized type](https://doc.rust-lang.org/book/first-edition/unsized-types.html)
-is any type that the compiler doesn't know the length or alignment of at
-compile time. Any struct containing an unsized type is also unsized.
+`CoerceUnsized`. An [unsized type][1] is any type that the compiler
+doesn't know the length or alignment of at compile time. Any struct
+containing an unsized type is also unsized.
+
+[1]: https://doc.rust-lang.org/book/ch19-04-advanced-types.html#dynamically-sized-types-and-the-sized-trait
 
 Example of erroneous code:
 
@@ -2977,9 +2989,9 @@ A struct with more than one field containing an unsized type cannot implement
 `CoerceUnsized`. This only occurs when you are trying to coerce one of the
 types in your struct to another type in the struct. In this case we try to
 impl `CoerceUnsized` from `T` to `U` which are both types that the struct
-takes. An [unsized type] is any type that the compiler doesn't know the length
-or alignment of at compile time. Any struct containing an unsized type is also
-unsized.
+takes. An [unsized type][1] is any type that the compiler doesn't know the
+length or alignment of at compile time. Any struct containing an unsized type
+is also unsized.
 
 Example of erroneous code:
 
@@ -3024,7 +3036,7 @@ fn coerce_foo<T: CoerceUnsized<U>, U>(t: T) -> Foo<U> {
 }
 ```
 
-[unsized type]: https://doc.rust-lang.org/book/first-edition/unsized-types.html
+[1]: https://doc.rust-lang.org/book/ch19-04-advanced-types.html#dynamically-sized-types-and-the-sized-trait
 "##,
 
 E0376: r##"
@@ -3032,10 +3044,11 @@ The type you are trying to impl `CoerceUnsized` for is not a struct.
 `CoerceUnsized` can only be implemented for a struct. Unsized types are
 already able to be coerced without an implementation of `CoerceUnsized`
 whereas a struct containing an unsized type needs to know the unsized type
-field it's containing is able to be coerced. An
-[unsized type](https://doc.rust-lang.org/book/first-edition/unsized-types.html)
+field it's containing is able to be coerced. An [unsized type][1]
 is any type that the compiler doesn't know the length or alignment of at
 compile time. Any struct containing an unsized type is also unsized.
+
+[1]: https://doc.rust-lang.org/book/ch19-04-advanced-types.html#dynamically-sized-types-and-the-sized-trait
 
 Example of erroneous code:
 
@@ -3882,8 +3895,10 @@ let c = 86u8 as char; // ok!
 assert_eq!(c, 'V');
 ```
 
-For more information about casts, take a look at The Book:
-https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+For more information about casts, take a look at the Type cast section in
+[The Reference Book][1].
+
+[1]: https://doc.rust-lang.org/reference/expressions/operator-expr.html#type-cast-expressions
 "##,
 
 E0605: r##"
@@ -3911,8 +3926,10 @@ let v = 0 as *const u8;
 v as *const i8; // ok!
 ```
 
-For more information about casts, take a look at The Book:
-https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+For more information about casts, take a look at the Type cast section in
+[The Reference Book][1].
+
+[1]: https://doc.rust-lang.org/reference/expressions/operator-expr.html#type-cast-expressions
 "##,
 
 E0606: r##"
@@ -3933,8 +3950,10 @@ let x = &0u8;
 let y: u32 = *x as u32; // We dereference it first and then cast it.
 ```
 
-For more information about casts, take a look at The Book:
-https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+For more information about casts, take a look at the Type cast section in
+[The Reference Book][1].
+
+[1]: https://doc.rust-lang.org/reference/expressions/operator-expr.html#type-cast-expressions
 "##,
 
 E0607: r##"
@@ -3960,8 +3979,10 @@ pointer holds is their size.
 
 To fix this error, don't try to cast directly between thin and fat pointers.
 
-For more information about casts, take a look at The Book:
-https://doc.rust-lang.org/book/first-edition/casting-between-types.html
+For more information about casts, take a look at the Type cast section in
+[The Reference Book][1].
+
+[1]: https://doc.rust-lang.org/reference/expressions/operator-expr.html#type-cast-expressions
 "##,
 
 E0609: r##"
@@ -4019,8 +4040,8 @@ println!("x: {}, y: {}", variable.x, variable.y);
 ```
 
 For more information about primitives and structs, take a look at The Book:
-https://doc.rust-lang.org/book/first-edition/primitive-types.html
-https://doc.rust-lang.org/book/first-edition/structs.html
+https://doc.rust-lang.org/book/ch03-02-data-types.html
+https://doc.rust-lang.org/book/ch05-00-structs.html
 "##,
 
 E0614: r##"
@@ -4720,4 +4741,5 @@ register_diagnostics! {
     E0698, // type inside generator must be known in this context
     E0719, // duplicate values for associated type binding
     E0722, // Malformed #[optimize] attribute
+    E0724, // `#[ffi_returns_twice]` is only allowed in foreign functions
 }

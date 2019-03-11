@@ -1,18 +1,20 @@
-//! misc. type-system utilities too small to deserve their own file
+//! Miscellaneous type-system utilities that are too small to deserve their own modules.
 
-use hir::def::Def;
-use hir::def_id::DefId;
-use hir::map::DefPathData;
-use hir::{self, Node};
-use ich::NodeIdHashingMode;
-use traits::{self, ObligationCause};
-use ty::{self, Ty, TyCtxt, GenericParamDefKind, TypeFoldable};
-use ty::subst::{Subst, Substs, UnpackedKind};
-use ty::query::TyCtxtAt;
-use ty::TyKind::*;
-use ty::layout::{Integer, IntegerExt};
-use util::common::ErrorReported;
-use middle::lang_items;
+use crate::hir::def::Def;
+use crate::hir::def_id::DefId;
+use crate::hir::map::DefPathData;
+use crate::hir::{self, Node};
+use crate::mir::interpret::{sign_extend, truncate};
+use crate::ich::NodeIdHashingMode;
+use crate::traits::{self, ObligationCause};
+use crate::ty::{self, Ty, TyCtxt, GenericParamDefKind, TypeFoldable};
+use crate::ty::subst::{Subst, InternalSubsts, SubstsRef, UnpackedKind};
+use crate::ty::query::TyCtxtAt;
+use crate::ty::TyKind::*;
+use crate::ty::layout::{Integer, IntegerExt};
+use crate::mir::interpret::ConstValue;
+use crate::util::common::ErrorReported;
+use crate::middle::lang_items;
 
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -23,7 +25,7 @@ use syntax_pos::{Span, DUMMY_SP};
 
 #[derive(Copy, Clone, Debug)]
 pub struct Discr<'tcx> {
-    /// bit representation of the discriminant, so `-128i8` is `0xFF_u128`
+    /// Bit representation of the discriminant (e.g., `-128i8` is `0xFF_u128`).
     pub val: u128,
     pub ty: Ty<'tcx>
 }
@@ -32,12 +34,12 @@ impl<'tcx> fmt::Display for Discr<'tcx> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.ty.sty {
             ty::Int(ity) => {
-                let bits = ty::tls::with(|tcx| {
-                    Integer::from_attr(&tcx, SignedInt(ity)).size().bits()
+                let size = ty::tls::with(|tcx| {
+                    Integer::from_attr(&tcx, SignedInt(ity)).size()
                 });
-                let x = self.val as i128;
+                let x = self.val;
                 // sign extend the raw representation to be an i128
-                let x = (x << (128 - bits)) >> (128 - bits);
+                let x = sign_extend(x, size) as i128;
                 write!(fmt, "{}", x)
             },
             _ => write!(fmt, "{}", self.val),
@@ -46,7 +48,7 @@ impl<'tcx> fmt::Display for Discr<'tcx> {
 }
 
 impl<'tcx> Discr<'tcx> {
-    /// Adds 1 to the value and wraps around if the maximum for the type is reached
+    /// Adds `1` to the value and wraps around if the maximum for the type is reached.
     pub fn wrap_incr<'a, 'gcx>(self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Self {
         self.checked_add(tcx, 1).0
     }
@@ -57,12 +59,12 @@ impl<'tcx> Discr<'tcx> {
             _ => bug!("non integer discriminant"),
         };
 
+        let size = int.size();
         let bit_size = int.size().bits();
         let shift = 128 - bit_size;
         if signed {
             let sext = |u| {
-                let i = u as i128;
-                (i << shift) >> shift
+                sign_extend(u, size) as i128
             };
             let min = sext(1_u128 << (bit_size - 1));
             let max = i128::max_value() >> shift;
@@ -77,7 +79,7 @@ impl<'tcx> Discr<'tcx> {
             };
             // zero the upper bits
             let val = val as u128;
-            let val = (val << shift) >> shift;
+            let val = truncate(val, size);
             (Self {
                 val: val as u128,
                 ty: self.ty,
@@ -342,9 +344,9 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     ///
     /// Requires that trait definitions have been processed so that we can
     /// elaborate predicates and walk supertraits.
-    ///
-    /// FIXME callers may only have a &[Predicate], not a Vec, so that's
-    /// what this code should accept.
+    //
+    // FIXME: callers may only have a `&[Predicate]`, not a `Vec`, so that's
+    // what this code should accept.
     pub fn required_region_bounds(self,
                                   erased_self_ty: Ty<'tcx>,
                                   predicates: Vec<ty::Predicate<'tcx>>)
@@ -402,7 +404,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             return None;
         };
 
-        ty::query::queries::coherent_trait::ensure(self, drop_trait);
+        self.ensure().coherent_trait(drop_trait);
 
         let mut dtor_did = None;
         let ty = self.type_of(adt_did);
@@ -417,7 +419,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         Some(ty::Destructor { did: dtor_did? })
     }
 
-    /// Return the set of types that are required to be alive in
+    /// Returns the set of types that are required to be alive in
     /// order to run the destructor of `def` (see RFCs 769 and
     /// 1238).
     ///
@@ -494,8 +496,16 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     }) => {
                         !impl_generics.type_param(pt, self).pure_wrt_drop
                     }
-                    UnpackedKind::Lifetime(_) | UnpackedKind::Type(_) => {
-                        // not a type or region param - this should be reported
+                    UnpackedKind::Const(&ty::LazyConst::Evaluated(ty::Const {
+                        val: ConstValue::Param(ref pc),
+                        ..
+                    })) => {
+                        !impl_generics.const_param(pc, self).pure_wrt_drop
+                    }
+                    UnpackedKind::Lifetime(_) |
+                    UnpackedKind::Type(_) |
+                    UnpackedKind::Const(_) => {
+                        // Not a type, const or region param: this should be reported
                         // as an error.
                         false
                     }
@@ -507,17 +517,17 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         result
     }
 
-    /// True if `def_id` refers to a closure (e.g., `|x| x * 2`). Note
-    /// that closures have a def-id, but the closure *expression* also
+    /// Returns `true` if `def_id` refers to a closure (e.g., `|x| x * 2`). Note
+    /// that closures have a `DefId`, but the closure *expression* also
     /// has a `HirId` that is located within the context where the
     /// closure appears (and, sadly, a corresponding `NodeId`, since
     /// those are not yet phased out). The parent of the closure's
-    /// def-id will also be the context where it appears.
+    /// `DefId` will also be the context where it appears.
     pub fn is_closure(self, def_id: DefId) -> bool {
         self.def_key(def_id).disambiguated_data.data == DefPathData::ClosureExpr
     }
 
-    /// True if `def_id` refers to a trait (i.e., `trait Foo { ... }`).
+    /// Returns `true` if `def_id` refers to a trait (i.e., `trait Foo { ... }`).
     pub fn is_trait(self, def_id: DefId) -> bool {
         if let DefPathData::Trait(_) = self.def_key(def_id).disambiguated_data.data {
             true
@@ -526,7 +536,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// True if `def_id` refers to a trait alias (i.e., `trait Foo = ...;`).
+    /// Returns `true` if `def_id` refers to a trait alias (i.e., `trait Foo = ...;`),
+    /// and `false` otherwise.
     pub fn is_trait_alias(self, def_id: DefId) -> bool {
         if let DefPathData::TraitAlias(_) = self.def_key(def_id).disambiguated_data.data {
             true
@@ -535,17 +546,17 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// True if this def-id refers to the implicit constructor for
-    /// a tuple struct like `struct Foo(u32)`.
+    /// Returns `true` if this `DefId` refers to the implicit constructor for
+    /// a tuple struct like `struct Foo(u32)`, and `false` otherwise.
     pub fn is_struct_constructor(self, def_id: DefId) -> bool {
         self.def_key(def_id).disambiguated_data.data == DefPathData::StructCtor
     }
 
     /// Given the `DefId` of a fn or closure, returns the `DefId` of
     /// the innermost fn item that the closure is contained within.
-    /// This is a significant def-id because, when we do
+    /// This is a significant `DefId` because, when we do
     /// type-checking, we type-check this fn item and all of its
-    /// (transitive) closures together.  Therefore, when we fetch the
+    /// (transitive) closures together. Therefore, when we fetch the
     /// `typeck_tables_of` the closure, for example, we really wind up
     /// fetching the `typeck_tables_of` the enclosing fn item.
     pub fn closure_base_def_id(self, def_id: DefId) -> DefId {
@@ -558,10 +569,10 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         def_id
     }
 
-    /// Given the def-id and substs a closure, creates the type of
+    /// Given the `DefId` and substs a closure, creates the type of
     /// `self` argument that the closure expects. For example, for a
     /// `Fn` closure, this would return a reference type `&T` where
-    /// `T=closure_ty`.
+    /// `T = closure_ty`.
     ///
     /// Returns `None` if this closure's kind has not yet been inferred.
     /// This should only be possible during type checking.
@@ -585,20 +596,23 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         Some(ty::Binder::bind(env_ty))
     }
 
-    /// Given the def-id of some item that has no type parameters, make
+    /// Given the `DefId` of some item that has no type or const parameters, make
     /// a suitable "empty substs" for it.
-    pub fn empty_substs_for_def_id(self, item_def_id: DefId) -> &'tcx Substs<'tcx> {
-        Substs::for_item(self, item_def_id, |param, _| {
+    pub fn empty_substs_for_def_id(self, item_def_id: DefId) -> SubstsRef<'tcx> {
+        InternalSubsts::for_item(self, item_def_id, |param, _| {
             match param.kind {
                 GenericParamDefKind::Lifetime => self.types.re_erased.into(),
-                GenericParamDefKind::Type {..} => {
+                GenericParamDefKind::Type { .. } => {
                     bug!("empty_substs_for_def_id: {:?} has type parameters", item_def_id)
+                }
+                GenericParamDefKind::Const { .. } => {
+                    bug!("empty_substs_for_def_id: {:?} has const parameters", item_def_id)
                 }
             }
         })
     }
 
-    /// Return whether the node pointed to by def_id is a static item, and its mutability
+    /// Returns `true` if the node pointed to by `def_id` is a static item, and its mutability.
     pub fn is_static(&self, def_id: DefId) -> Option<hir::Mutability> {
         if let Some(node) = self.hir().get_if_local(def_id) {
             match node {
@@ -632,7 +646,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn try_expand_impl_trait_type(
         self,
         def_id: DefId,
-        substs: &'tcx Substs<'tcx>,
+        substs: SubstsRef<'tcx>,
     ) -> Result<Ty<'tcx>, Ty<'tcx>> {
         use crate::ty::fold::TypeFolder;
 
@@ -651,7 +665,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             fn expand_opaque_ty(
                 &mut self,
                 def_id: DefId,
-                substs: &'tcx Substs<'tcx>,
+                substs: SubstsRef<'tcx>,
             ) -> Option<Ty<'tcx>> {
                 if self.found_recursion {
                     None
@@ -730,7 +744,7 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
 
     /// Checks whether values of this type `T` implement the `Freeze`
     /// trait -- frozen types are those that do not contain a
-    /// `UnsafeCell` anywhere.  This is a language concept used to
+    /// `UnsafeCell` anywhere. This is a language concept used to
     /// distinguish "true immutability", which is relevant to
     /// optimization as well as the rules around static values. Note
     /// that the `Freeze` trait is not exposed to end users and is
@@ -754,7 +768,7 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
                       tcx: TyCtxt<'a, 'tcx, 'tcx>,
                       param_env: ty::ParamEnv<'tcx>)
                       -> bool {
-        tcx.needs_drop_raw(param_env.and(self))
+        tcx.needs_drop_raw(param_env.and(self)).0
     }
 
     pub fn same_type(a: Ty<'tcx>, b: Ty<'tcx>) -> bool {
@@ -991,29 +1005,22 @@ fn is_freeze_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         ))
 }
 
+#[derive(Clone)]
+pub struct NeedsDrop(pub bool);
+
 fn needs_drop_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                             query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
-                            -> bool
+                            -> NeedsDrop
 {
     let (param_env, ty) = query.into_parts();
 
     let needs_drop = |ty: Ty<'tcx>| -> bool {
-        tcx.try_needs_drop_raw(DUMMY_SP, param_env.and(ty)).unwrap_or_else(|mut bug| {
-            // Cycles should be reported as an error by `check_representable`.
-            //
-            // Consider the type as not needing drop in the meanwhile to
-            // avoid further errors.
-            //
-            // In case we forgot to emit a bug elsewhere, delay our
-            // diagnostic to get emitted as a compiler bug.
-            bug.delay_as_bug();
-            false
-        })
+        tcx.needs_drop_raw(param_env.and(ty)).0
     };
 
     assert!(!ty.needs_infer());
 
-    match ty.sty {
+    NeedsDrop(match ty.sty {
         // Fast-path for primitive types
         ty::Infer(ty::FreshIntTy(_)) | ty::Infer(ty::FreshFloatTy(_)) |
         ty::Bool | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Never |
@@ -1071,7 +1078,7 @@ fn needs_drop_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             def.variants.iter().any(
                 |variant| variant.fields.iter().any(
                     |field| needs_drop(field.ty(tcx, substs)))),
-    }
+    })
 }
 
 pub enum ExplicitSelf<'tcx> {

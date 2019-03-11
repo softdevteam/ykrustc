@@ -1,4 +1,4 @@
-use index;
+use crate::index;
 
 use rustc::hir;
 use rustc::hir::def::{self, CtorKind};
@@ -187,6 +187,7 @@ pub struct CrateRoot {
     pub has_default_lib_allocator: bool,
     pub plugin_registrar_fn: Option<DefIndex>,
     pub proc_macro_decls_static: Option<DefIndex>,
+    pub proc_macro_stability: Option<attr::Stability>,
 
     pub crate_deps: LazySeq<CrateDep>,
     pub dylib_dependency_formats: LazySeq<Option<LinkagePreference>>,
@@ -518,7 +519,7 @@ pub enum AssociatedContainer {
     ImplFinal,
 }
 
-impl_stable_hash_for!(enum ::schema::AssociatedContainer {
+impl_stable_hash_for!(enum crate::schema::AssociatedContainer {
     TraitRequired,
     TraitWithDefault,
     ImplDefault,

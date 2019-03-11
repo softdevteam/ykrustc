@@ -1,17 +1,17 @@
-use os::windows::prelude::*;
+use crate::os::windows::prelude::*;
 
-use ffi::OsStr;
-use io;
-use mem;
-use path::Path;
-use ptr;
-use slice;
-use sync::atomic::Ordering::SeqCst;
-use sync::atomic::AtomicUsize;
-use sys::c;
-use sys::fs::{File, OpenOptions};
-use sys::handle::Handle;
-use sys::hashmap_random_keys;
+use crate::ffi::OsStr;
+use crate::io;
+use crate::mem;
+use crate::path::Path;
+use crate::ptr;
+use crate::slice;
+use crate::sync::atomic::Ordering::SeqCst;
+use crate::sync::atomic::AtomicUsize;
+use crate::sys::c;
+use crate::sys::fs::{File, OpenOptions};
+use crate::sys::handle::Handle;
+use crate::sys::hashmap_random_keys;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Anonymous pipes
@@ -282,7 +282,7 @@ impl<'a> AsyncPipe<'a> {
     /// Takes a parameter `wait` which indicates if this pipe is currently being
     /// read whether the function should block waiting for the read to complete.
     ///
-    /// Return values:
+    /// Returns values:
     ///
     /// * `true` - finished any pending read and the pipe is not at EOF (keep
     ///            going)

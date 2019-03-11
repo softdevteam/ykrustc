@@ -3,14 +3,15 @@
 //! hand, though we've recently added some macros (e.g.,
 //! `BraceStructLiftImpl!`) to help with the tedium.
 
-use mir::ProjectionKind;
-use mir::interpret::ConstValue;
-use ty::{self, Lift, Ty, TyCtxt};
-use ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
+use crate::mir::ProjectionKind;
+use crate::mir::interpret::ConstValue;
+use crate::ty::{self, Lift, Ty, TyCtxt, ConstVid, InferConst};
+use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
 use smallvec::SmallVec;
-use mir::interpret;
+use crate::mir::interpret;
 
+use std::marker::PhantomData;
 use std::rc::Rc;
 
 ///////////////////////////////////////////////////////////////////////////
@@ -23,35 +24,36 @@ CloneTypeFoldableAndLiftImpls! {
     (),
     bool,
     usize,
-    ::ty::layout::VariantIdx,
+    crate::ty::layout::VariantIdx,
     u64,
     String,
-    ::middle::region::Scope,
+    crate::middle::region::Scope,
     ::syntax::ast::FloatTy,
     ::syntax::ast::NodeId,
     ::syntax_pos::symbol::Symbol,
-    ::hir::def::Def,
-    ::hir::def_id::DefId,
-    ::hir::InlineAsm,
-    ::hir::MatchSource,
-    ::hir::Mutability,
-    ::hir::Unsafety,
+    crate::hir::def::Def,
+    crate::hir::def_id::DefId,
+    crate::hir::InlineAsm,
+    crate::hir::MatchSource,
+    crate::hir::Mutability,
+    crate::hir::Unsafety,
     ::rustc_target::spec::abi::Abi,
-    ::mir::Local,
-    ::mir::Promoted,
-    ::traits::Reveal,
-    ::ty::adjustment::AutoBorrowMutability,
-    ::ty::AdtKind,
+    crate::mir::Local,
+    crate::mir::Promoted,
+    crate::traits::Reveal,
+    crate::ty::adjustment::AutoBorrowMutability,
+    crate::ty::AdtKind,
     // Including `BoundRegion` is a *bit* dubious, but direct
     // references to bound region appear in `ty::Error`, and aren't
     // really meant to be folded. In general, we can only fold a fully
     // general `Region`.
-    ::ty::BoundRegion,
-    ::ty::ClosureKind,
-    ::ty::IntVarValue,
-    ::ty::ParamTy,
-    ::ty::UniverseIndex,
-    ::ty::Variance,
+    crate::ty::BoundRegion,
+    crate::ty::ClosureKind,
+    crate::ty::IntVarValue,
+    crate::ty::ParamConst,
+    crate::ty::ParamTy,
+    crate::ty::UniverseIndex,
+    crate::ty::Variance,
     ::syntax_pos::Span,
 }
 
@@ -396,7 +398,7 @@ impl<'a, 'tcx> Lift<'tcx> for ty::FnSig<'a> {
         tcx.lift(&self.inputs_and_output).map(|x| {
             ty::FnSig {
                 inputs_and_output: x,
-                variadic: self.variadic,
+                c_variadic: self.c_variadic,
                 unsafety: self.unsafety,
                 abi: self.abi,
             }
@@ -421,7 +423,7 @@ impl<'tcx, T: Lift<'tcx>> Lift<'tcx> for ty::error::ExpectedFound<T> {
 impl<'a, 'tcx> Lift<'tcx> for ty::error::TypeError<'a> {
     type Lifted = ty::error::TypeError<'tcx>;
     fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<Self::Lifted> {
-        use ty::error::TypeError::*;
+        use crate::ty::error::TypeError::*;
 
         Some(match *self {
             Mismatch => Mismatch,
@@ -433,6 +435,12 @@ impl<'a, 'tcx> Lift<'tcx> for ty::error::TypeError<'a> {
             ArgCount => ArgCount,
             RegionsDoesNotOutlive(a, b) => {
                 return tcx.lift(&(a, b)).map(|(a, b)| RegionsDoesNotOutlive(a, b))
+            }
+            RegionsInsufficientlyPolymorphic(a, b) => {
+                return tcx.lift(&b).map(|b| RegionsInsufficientlyPolymorphic(a, b))
+            }
+            RegionsOverlyPolymorphic(a, b) => {
+                return tcx.lift(&b).map(|b| RegionsOverlyPolymorphic(a, b))
             }
             RegionsPlaceholderMismatch => RegionsPlaceholderMismatch,
             IntMismatch(x) => IntMismatch(x),
@@ -497,12 +505,30 @@ impl<'a, 'tcx> Lift<'tcx> for ConstValue<'a> {
     type Lifted = ConstValue<'tcx>;
     fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<Self::Lifted> {
         match *self {
+            ConstValue::Param(param) => Some(ConstValue::Param(param)),
+            ConstValue::Infer(infer) => {
+                Some(ConstValue::Infer(match infer {
+                    InferConst::Var(vid) => InferConst::Var(vid.lift_to_tcx(tcx)?),
+                    InferConst::Fresh(i) => InferConst::Fresh(i),
+                    InferConst::Canonical(debrujin, var) => InferConst::Canonical(debrujin, var),
+                }))
+            }
             ConstValue::Scalar(x) => Some(ConstValue::Scalar(x)),
             ConstValue::Slice(x, y) => Some(ConstValue::Slice(x, y)),
-            ConstValue::ByRef(x, alloc, z) => Some(ConstValue::ByRef(
-                x, alloc.lift_to_tcx(tcx)?, z,
+            ConstValue::ByRef(ptr, alloc) => Some(ConstValue::ByRef(
+                ptr, alloc.lift_to_tcx(tcx)?,
             )),
         }
+    }
+}
+
+impl<'a, 'tcx> Lift<'tcx> for ConstVid<'a> {
+    type Lifted = ConstVid<'tcx>;
+    fn lift_to_tcx<'b, 'gcx>(&self, _: TyCtxt<'b, 'gcx, 'tcx>) -> Option<Self::Lifted> {
+        Some(ConstVid {
+            index: self.index,
+            phantom: PhantomData,
+        })
     }
 }
 
@@ -651,7 +677,7 @@ impl<'tcx> TypeFoldable<'tcx> for &'tcx ty::List<ProjectionKind<'tcx>> {
 
 impl<'tcx> TypeFoldable<'tcx> for ty::instance::Instance<'tcx> {
     fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
-        use ty::InstanceDef::*;
+        use crate::ty::InstanceDef::*;
         Self {
             substs: self.substs.fold_with(folder),
             def: match self.def {
@@ -682,7 +708,7 @@ impl<'tcx> TypeFoldable<'tcx> for ty::instance::Instance<'tcx> {
     }
 
     fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
-        use ty::InstanceDef::*;
+        use crate::ty::InstanceDef::*;
         self.substs.visit_with(visitor) ||
         match self.def {
             Item(did) | VtableShim(did) | Intrinsic(did) | Virtual(did, _) => {
@@ -826,7 +852,7 @@ BraceStructTypeFoldableImpl! {
 
 BraceStructTypeFoldableImpl! {
     impl<'tcx> TypeFoldable<'tcx> for ty::FnSig<'tcx> {
-        inputs_and_output, variadic, unsafety, abi
+        inputs_and_output, c_variadic, unsafety, abi
     }
 }
 
@@ -1021,6 +1047,8 @@ EnumTypeFoldableImpl! {
         (ty::error::TypeError::FixedArraySize)(x),
         (ty::error::TypeError::ArgCount),
         (ty::error::TypeError::RegionsDoesNotOutlive)(a, b),
+        (ty::error::TypeError::RegionsInsufficientlyPolymorphic)(a, b),
+        (ty::error::TypeError::RegionsOverlyPolymorphic)(a, b),
         (ty::error::TypeError::RegionsPlaceholderMismatch),
         (ty::error::TypeError::IntMismatch)(x),
         (ty::error::TypeError::FloatMismatch)(x),
@@ -1042,7 +1070,7 @@ impl<'tcx> TypeFoldable<'tcx> for &'tcx ty::LazyConst<'tcx> {
                 ty::LazyConst::Unevaluated(*def_id, substs.fold_with(folder))
             }
         };
-        folder.tcx().intern_lazy_const(new)
+        folder.tcx().mk_lazy_const(new)
     }
 
     fn fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {

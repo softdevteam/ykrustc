@@ -24,7 +24,7 @@
 	url = https://github.com/rust-lang-nursery/rustfmt.git
 [submodule "src/tools/miri"]
 	path = src/tools/miri
-	url = https://github.com/solson/miri.git
+	url = https://github.com/rust-lang/miri.git
 [submodule "src/doc/rust-by-example"]
 	path = src/doc/rust-by-example
 	url = https://github.com/rust-lang/rust-by-example.git
@@ -44,3 +44,6 @@
 	path = src/llvm-project
 	url = https://github.com/rust-lang/llvm-project.git
 	branch = rustc/8.0-2019-01-16
+[submodule "src/doc/embedded-book"]
+	path = src/doc/embedded-book
+	url = https://github.com/rust-embedded/book.git

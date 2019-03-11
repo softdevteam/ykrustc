@@ -1,9 +1,10 @@
-use io::{self, Error, ErrorKind};
-use libc::{self, c_int, gid_t, pid_t, uid_t};
-use ptr;
-use sys::cvt;
-use sys::process::process_common::*;
-use sys;
+use crate::io::{self, Error, ErrorKind};
+use crate::ptr;
+use crate::sys::cvt;
+use crate::sys::process::process_common::*;
+use crate::sys;
+
+use libc::{c_int, gid_t, pid_t, uid_t};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -164,7 +165,7 @@ impl Command {
         stdio: ChildPipes,
         maybe_envp: Option<&CStringArray>
     ) -> io::Error {
-        use sys::{self, cvt_r};
+        use crate::sys::{self, cvt_r};
 
         macro_rules! t {
             ($e:expr) => (match $e {
@@ -207,7 +208,7 @@ impl Command {
         // emscripten has no signal support.
         #[cfg(not(any(target_os = "emscripten")))]
         {
-            use mem;
+            use crate::mem;
             // Reset signal handling so the child process starts in a
             // standardized state. libstd ignores SIGPIPE, and signal-handling
             // libraries often set a mask. Child processes inherit ignored
@@ -278,11 +279,10 @@ impl Command {
     fn posix_spawn(&mut self, stdio: &ChildPipes, envp: Option<&CStringArray>)
         -> io::Result<Option<Process>>
     {
-        use mem;
-        use sys;
+        use crate::mem;
+        use crate::sys;
 
-        if self.get_cwd().is_some() ||
-            self.get_gid().is_some() ||
+        if self.get_gid().is_some() ||
             self.get_uid().is_some() ||
             self.env_saw_path() ||
             self.get_closures().len() != 0 {
@@ -300,6 +300,24 @@ impl Command {
                 return Ok(None)
             }
         }
+
+        // Solaris and glibc 2.29+ can set a new working directory, and maybe
+        // others will gain this non-POSIX function too. We'll check for this
+        // weak symbol as soon as it's needed, so we can return early otherwise
+        // to do a manual chdir before exec.
+        weak! {
+            fn posix_spawn_file_actions_addchdir_np(
+                *mut libc::posix_spawn_file_actions_t,
+                *const libc::c_char
+            ) -> libc::c_int
+        }
+        let addchdir = match self.get_cwd() {
+            Some(cwd) => match posix_spawn_file_actions_addchdir_np.get() {
+                Some(f) => Some((f, cwd)),
+                None => return Ok(None),
+            },
+            None => None,
+        };
 
         let mut p = Process { pid: 0, status: None };
 
@@ -345,6 +363,9 @@ impl Command {
                                                            fd,
                                                            libc::STDERR_FILENO))?;
             }
+            if let Some((f, cwd)) = addchdir {
+                cvt(f(&mut file_actions.0, cwd.as_ptr()))?;
+            }
 
             let mut set: libc::sigset_t = mem::uninitialized();
             cvt(libc::sigemptyset(&mut set))?;
@@ -383,7 +404,7 @@ impl Command {
 // Processes
 ////////////////////////////////////////////////////////////////////////////////
 
-/// The unique id of the process (this should never be negative).
+/// The unique ID of the process (this should never be negative).
 pub struct Process {
     pid: pid_t,
     status: Option<ExitStatus>,
@@ -407,7 +428,7 @@ impl Process {
     }
 
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        use sys::cvt_r;
+        use crate::sys::cvt_r;
         if let Some(status) = self.status {
             return Ok(status)
         }

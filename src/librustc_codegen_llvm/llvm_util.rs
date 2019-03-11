@@ -1,6 +1,6 @@
+use crate::back::write::create_informational_target_machine;
+use crate::llvm;
 use syntax_pos::symbol::Symbol;
-use back::write::create_informational_target_machine;
-use llvm;
 use rustc::session::Session;
 use rustc::session::config::PrintRequest;
 use rustc_target::spec::MergeFunctions;
@@ -100,9 +100,11 @@ const ARM_WHITELIST: &[(&str, Option<&str>)] = &[
     ("dsp", Some("arm_target_feature")),
     ("neon", Some("arm_target_feature")),
     ("v5te", Some("arm_target_feature")),
+    ("v6", Some("arm_target_feature")),
     ("v6k", Some("arm_target_feature")),
     ("v6t2", Some("arm_target_feature")),
     ("v7", Some("arm_target_feature")),
+    ("v8", Some("arm_target_feature")),
     ("vfp2", Some("arm_target_feature")),
     ("vfp3", Some("arm_target_feature")),
     ("vfp4", Some("arm_target_feature")),

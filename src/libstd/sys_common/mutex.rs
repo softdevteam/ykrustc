@@ -1,4 +1,4 @@
-use sys::mutex as imp;
+use crate::sys::mutex as imp;
 
 /// An OS-based mutual exclusion lock.
 ///
@@ -76,7 +76,7 @@ pub fn raw(mutex: &Mutex) -> &imp::Mutex { &mutex.0 }
 /// A simple RAII utility for the above Mutex without the poisoning semantics.
 pub struct MutexGuard<'a>(&'a imp::Mutex);
 
-impl<'a> Drop for MutexGuard<'a> {
+impl Drop for MutexGuard<'_> {
     #[inline]
     fn drop(&mut self) {
         unsafe { self.0.unlock(); }
