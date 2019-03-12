@@ -49,25 +49,25 @@
 //! user of the `DepNode` API of having to know how to compute the expected
 //! fingerprint for a given set of node parameters.
 
-use mir::interpret::GlobalId;
-use hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX};
-use hir::map::DefPathHash;
-use hir::HirId;
+use crate::mir::interpret::GlobalId;
+use crate::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX};
+use crate::hir::map::DefPathHash;
+use crate::hir::HirId;
 
-use ich::{Fingerprint, StableHashingContext};
+use crate::ich::{Fingerprint, StableHashingContext};
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
 use std::fmt;
 use std::hash::Hash;
 use syntax_pos::symbol::InternedString;
-use traits;
-use traits::query::{
+use crate::traits;
+use crate::traits::query::{
     CanonicalProjectionGoal, CanonicalTyGoal, CanonicalTypeOpAscribeUserTypeGoal,
     CanonicalTypeOpEqGoal, CanonicalTypeOpSubtypeGoal, CanonicalPredicateGoal,
     CanonicalTypeOpProvePredicateGoal, CanonicalTypeOpNormalizeGoal,
 };
-use ty::{TyCtxt, FnSig, Instance, InstanceDef,
+use crate::ty::{TyCtxt, FnSig, Instance, InstanceDef,
          ParamEnv, ParamEnvAnd, Predicate, PolyFnSig, PolyTraitRef, Ty};
-use ty::subst::Substs;
+use crate::ty::subst::SubstsRef;
 
 // erase!() just makes tokens go away. It's used to specify which macro argument
 // is repeated (i.e., which sub-expression of the macro we are in) but don't need
@@ -111,7 +111,7 @@ macro_rules! define_dep_nodes {
     (<$tcx:tt>
     $(
         [$($attr:ident),* ]
-        $variant:ident $(( $tuple_arg_ty:ty $(,)* ))*
+        $variant:ident $(( $tuple_arg_ty:ty $(,)? ))*
                        $({ $($struct_arg_name:ident : $struct_arg_ty:ty),* })*
       ,)*
     ) => (
@@ -302,7 +302,7 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            /// Create a new, parameterless DepNode. This method will assert
+            /// Creates a new, parameterless DepNode. This method will assert
             /// that the DepNode corresponding to the given DepKind actually
             /// does not require any parameters.
             #[inline(always)]
@@ -314,7 +314,7 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            /// Extract the DefId corresponding to this DepNode. This will work
+            /// Extracts the DefId corresponding to this DepNode. This will work
             /// if two conditions are met:
             ///
             /// 1. The Fingerprint of the DepNode actually is a DefPathHash, and
@@ -389,7 +389,7 @@ impl fmt::Debug for DepNode {
 
         write!(f, "(")?;
 
-        ::ty::tls::with_opt(|opt_tcx| {
+        crate::ty::tls::with_opt(|opt_tcx| {
             if let Some(tcx) = opt_tcx {
                 if let Some(def_id) = self.extract_def_id(tcx) {
                     write!(f, "{}", tcx.def_path_debug_str(def_id))?;
@@ -456,6 +456,8 @@ define_dep_nodes!( <'tcx>
     [eval_always] CoherenceInherentImplOverlapCheck,
     [] CoherenceCheckTrait(DefId),
     [eval_always] PrivacyAccessLevels(CrateNum),
+    [eval_always] CheckPrivateInPublic(CrateNum),
+    [eval_always] Analysis(CrateNum),
 
     // Represents the MIR for a fn; also used as the task node for
     // things read/modify that MIR.
@@ -479,6 +481,7 @@ define_dep_nodes!( <'tcx>
     [] CheckModPrivacy(DefId),
     [] CheckModIntrinsics(DefId),
     [] CheckModLiveness(DefId),
+    [] CheckModImplWf(DefId),
     [] CollectModItemTypes(DefId),
 
     [] Reachability,
@@ -660,7 +663,7 @@ define_dep_nodes!( <'tcx>
     [] TypeOpNormalizePolyFnSig(CanonicalTypeOpNormalizeGoal<'tcx, PolyFnSig<'tcx>>),
     [] TypeOpNormalizeFnSig(CanonicalTypeOpNormalizeGoal<'tcx, FnSig<'tcx>>),
 
-    [] SubstituteNormalizeAndTestPredicates { key: (DefId, &'tcx Substs<'tcx>) },
+    [] SubstituteNormalizeAndTestPredicates { key: (DefId, SubstsRef<'tcx>) },
     [] MethodAutoderefSteps(CanonicalTyGoal<'tcx>),
 
     [input] TargetFeaturesWhitelist,
@@ -797,7 +800,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for HirId {
 }
 
 /// A "work product" corresponds to a `.o` (or other) file that we
-/// save in between runs. These ids do not have a DefId but rather
+/// save in between runs. These IDs do not have a `DefId` but rather
 /// some independent path or string that persists between runs without
 /// the need to be mapped or unmapped. (This ensures we can serialize
 /// them even in the absence of a tcx.)
@@ -824,6 +827,6 @@ impl WorkProductId {
     }
 }
 
-impl_stable_hash_for!(struct ::dep_graph::WorkProductId {
+impl_stable_hash_for!(struct crate::dep_graph::WorkProductId {
     hash
 });

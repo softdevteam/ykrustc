@@ -323,8 +323,8 @@
 //! // A client of the bar. They have a blood alcohol level.
 //! struct Person { blood_alcohol: f32 }
 //!
-//! // All the orders made to the bar, by client id.
-//! let orders = vec![1,2,1,2,3,4,1,2,2,3,4,1,1,1];
+//! // All the orders made to the bar, by client ID.
+//! let orders = vec![1, 2, 1, 2, 3, 4, 1, 2, 2, 3, 4, 1, 1, 1];
 //!
 //! // Our clients.
 //! let mut blood_alcohol = BTreeMap::new();
@@ -412,7 +412,7 @@
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_deprecated(reason = "moved to `std::ops::Bound`", since = "1.26.0")]
 #[doc(hidden)]
-pub use ops::Bound;
+pub use crate::ops::Bound;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use alloc_crate::collections::{BinaryHeap, BTreeMap, BTreeSet};
 #[stable(feature = "rust1", since = "1.0.0")]

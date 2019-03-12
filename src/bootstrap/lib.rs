@@ -69,7 +69,7 @@
 //! ## Copying stage0 {std,test,rustc}
 //!
 //! This copies the build output from Cargo into
-//! `build/$HOST/stage0-sysroot/lib/rustlib/$ARCH/lib`. FIXME: This step's
+//! `build/$HOST/stage0-sysroot/lib/rustlib/$ARCH/lib`. FIXME: this step's
 //! documentation should be expanded -- the information already here may be
 //! incorrect.
 //!
@@ -103,7 +103,7 @@
 //! More documentation can be found in each respective module below, and you can
 //! also check out the `src/bootstrap/README.md` file for more information.
 
-#![deny(bare_trait_objects)]
+#![deny(rust_2018_idioms)]
 #![deny(warnings)]
 #![feature(core_intrinsics)]
 #![feature(drain_filter)]
@@ -114,22 +114,10 @@ extern crate build_helper;
 extern crate serde_derive;
 #[macro_use]
 extern crate lazy_static;
-extern crate serde_json;
-extern crate cmake;
-extern crate filetime;
-extern crate cc;
-extern crate getopts;
-extern crate num_cpus;
-extern crate toml;
-extern crate time;
-extern crate petgraph;
 
 #[cfg(test)]
 #[macro_use]
 extern crate pretty_assertions;
-
-#[cfg(unix)]
-extern crate libc;
 
 use std::cell::{RefCell, Cell};
 use std::collections::{HashSet, HashMap};
@@ -176,8 +164,6 @@ mod job;
 
 #[cfg(all(unix, not(target_os = "haiku")))]
 mod job {
-    use libc;
-
     pub unsafe fn setup(build: &mut crate::Build) {
         if build.config.low_priority {
             libc::setpriority(libc::PRIO_PGRP as _, 0, 10);
@@ -504,7 +490,7 @@ impl Build {
         cleared
     }
 
-    /// Get the space-separated set of activated features for the standard
+    /// Gets the space-separated set of activated features for the standard
     /// library.
     fn std_features(&self) -> String {
         let mut features = "panic-unwind".to_string();
@@ -521,7 +507,7 @@ impl Build {
         features
     }
 
-    /// Get the space-separated set of activated features for the compiler.
+    /// Gets the space-separated set of activated features for the compiler.
     fn rustc_features(&self) -> String {
         let mut features = String::new();
         if self.config.jemalloc {
@@ -609,7 +595,7 @@ impl Build {
         self.out.join(&*target).join("crate-docs")
     }
 
-    /// Returns true if no custom `llvm-config` is set for the specified target.
+    /// Returns `true` if no custom `llvm-config` is set for the specified target.
     ///
     /// If no custom `llvm-config` was specified then Rust's llvm will be used.
     fn is_rust_llvm(&self, target: Interned<String>) -> bool {
@@ -831,6 +817,7 @@ impl Build {
                   !target.contains("msvc") &&
                   !target.contains("emscripten") &&
                   !target.contains("wasm32") &&
+                  !target.contains("nvptx") &&
                   !target.contains("fuchsia") {
             Some(self.cc(target))
         } else {
@@ -856,13 +843,13 @@ impl Build {
             .map(|p| &**p)
     }
 
-    /// Returns true if this is a no-std `target`, if defined
+    /// Returns `true` if this is a no-std `target`, if defined
     fn no_std(&self, target: Interned<String>) -> Option<bool> {
         self.config.target_config.get(&target)
             .map(|t| t.no_std)
     }
 
-    /// Returns whether the target will be tested using the `remote-test-client`
+    /// Returns `true` if the target will be tested using the `remote-test-client`
     /// and `remote-test-server` binaries.
     fn remote_tested(&self, target: Interned<String>) -> bool {
         self.qemu_rootfs(target).is_some() || target.contains("android") ||
@@ -1058,7 +1045,7 @@ impl Build {
         self.rust_info.version(self, channel::CFG_RELEASE_NUM)
     }
 
-    /// Return the full commit hash
+    /// Returns the full commit hash.
     fn rust_sha(&self) -> Option<&str> {
         self.rust_info.sha()
     }
@@ -1078,7 +1065,7 @@ impl Build {
         panic!("failed to find version in {}'s Cargo.toml", package)
     }
 
-    /// Returns whether unstable features should be enabled for the compiler
+    /// Returns `true` if unstable features should be enabled for the compiler
     /// we're building.
     fn unstable_features(&self) -> bool {
         match &self.config.channel[..] {
@@ -1142,7 +1129,7 @@ impl Build {
         ret
     }
 
-    fn read_stamp_file(&self, stamp: &Path) -> Vec<PathBuf> {
+    fn read_stamp_file(&self, stamp: &Path) -> Vec<(PathBuf, bool)> {
         if self.config.dry_run {
             return Vec::new();
         }
@@ -1155,8 +1142,9 @@ impl Build {
             if part.is_empty() {
                 continue
             }
-            let path = PathBuf::from(t!(str::from_utf8(part)));
-            paths.push(path);
+            let host = part[0] as char == 'h';
+            let path = PathBuf::from(t!(str::from_utf8(&part[1..])));
+            paths.push((path, host));
         }
         paths
     }
@@ -1326,7 +1314,7 @@ impl<'a> Compiler {
         self
     }
 
-    /// Returns whether this is a snapshot compiler for `build`'s configuration
+    /// Returns `true` if this is a snapshot compiler for `build`'s configuration
     pub fn is_snapshot(&self, build: &Build) -> bool {
         self.stage == 0 && self.host == build.build
     }

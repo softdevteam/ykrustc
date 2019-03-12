@@ -12,7 +12,7 @@ use syntax::ast::Ident;
 use rustc::hir;
 
 impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
-    /// Check a `a <op>= b`
+    /// Checks a `a <op>= b`
     pub fn check_binop_assign(&self,
                               expr: &'gcx hir::Expr,
                               op: hir::BinOp,
@@ -42,7 +42,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         ty
     }
 
-    /// Check a potentially overloaded binary operator.
+    /// Checks a potentially overloaded binary operator.
     pub fn check_binop(&self,
                        expr: &'gcx hir::Expr,
                        op: hir::BinOp,
@@ -51,8 +51,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     {
         let tcx = self.tcx;
 
-        debug!("check_binop(expr.id={}, expr={:?}, op={:?}, lhs_expr={:?}, rhs_expr={:?})",
-               expr.id,
+        debug!("check_binop(expr.hir_id={}, expr={:?}, op={:?}, lhs_expr={:?}, rhs_expr={:?})",
+               expr.hir_id,
                expr,
                op,
                lhs_expr,
@@ -150,8 +150,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                               is_assign: IsAssign)
                               -> (Ty<'tcx>, Ty<'tcx>, Ty<'tcx>)
     {
-        debug!("check_overloaded_binop(expr.id={}, op={:?}, is_assign={:?})",
-               expr.id,
+        debug!("check_overloaded_binop(expr.hir_id={}, op={:?}, is_assign={:?})",
+               expr.hir_id,
                op,
                is_assign);
 
@@ -416,7 +416,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         rhs_expr: &'gcx hir::Expr,
         lhs_ty: Ty<'tcx>,
         rhs_ty: Ty<'tcx>,
-        err: &mut errors::DiagnosticBuilder,
+        err: &mut errors::DiagnosticBuilder<'_>,
         is_assign: bool,
     ) -> bool {
         let source_map = self.tcx.sess.source_map();
@@ -672,7 +672,7 @@ enum Op {
     Unary(hir::UnOp, Span),
 }
 
-/// Returns true if this is a built-in arithmetic operation (e.g., u32
+/// Returns `true` if this is a built-in arithmetic operation (e.g., u32
 /// + u32, i16x4 == i16x4) and false if these types would have to be
 /// overloaded to be legal. There are two reasons that we distinguish
 /// builtin operations from overloaded ones (vs trying to drive
@@ -681,14 +681,14 @@ enum Op {
 ///
 /// 1. Builtin operations can trivially be evaluated in constants.
 /// 2. For comparison operators applied to SIMD types the result is
-///    not of type `bool`. For example, `i16x4==i16x4` yields a
+///    not of type `bool`. For example, `i16x4 == i16x4` yields a
 ///    type like `i16x4`. This means that the overloaded trait
 ///    `PartialEq` is not applicable.
 ///
 /// Reason #2 is the killer. I tried for a while to always use
 /// overloaded logic and just check the types in constants/codegen after
 /// the fact, and it worked fine, except for SIMD types. -nmatsakis
-fn is_builtin_binop(lhs: Ty, rhs: Ty, op: hir::BinOp) -> bool {
+fn is_builtin_binop(lhs: Ty<'_>, rhs: Ty<'_>, op: hir::BinOp) -> bool {
     match BinOpCategory::from(op) {
         BinOpCategory::Shortcircuit => {
             true

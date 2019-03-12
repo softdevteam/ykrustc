@@ -1,12 +1,11 @@
-use borrow_check::location::LocationTable;
-use borrow_check::nll::region_infer::values::{self, PointIndex, RegionValueElements};
-use borrow_check::nll::type_check::liveness::liveness_map::{LiveVar, NllLivenessMap};
-use borrow_check::nll::type_check::liveness::local_use_map::LocalUseMap;
-use borrow_check::nll::type_check::NormalizeLocation;
-use borrow_check::nll::type_check::TypeChecker;
-use dataflow::move_paths::indexes::MovePathIndex;
-use dataflow::move_paths::MoveData;
-use dataflow::{FlowAtLocation, FlowsAtLocation, MaybeInitializedPlaces};
+use crate::borrow_check::location::LocationTable;
+use crate::borrow_check::nll::region_infer::values::{self, PointIndex, RegionValueElements};
+use crate::borrow_check::nll::type_check::liveness::local_use_map::LocalUseMap;
+use crate::borrow_check::nll::type_check::NormalizeLocation;
+use crate::borrow_check::nll::type_check::TypeChecker;
+use crate::dataflow::move_paths::indexes::MovePathIndex;
+use crate::dataflow::move_paths::MoveData;
+use crate::dataflow::{FlowAtLocation, FlowsAtLocation, MaybeInitializedPlaces};
 use rustc::infer::canonical::QueryRegionConstraint;
 use rustc::mir::{BasicBlock, ConstraintCategory, Local, Location, Mir};
 use rustc::traits::query::dropck_outlives::DropckOutlivesResult;
@@ -16,7 +15,6 @@ use rustc::ty::{Ty, TypeFoldable};
 use rustc_data_structures::bit_set::HybridBitSet;
 use rustc_data_structures::fx::FxHashMap;
 use std::rc::Rc;
-use util::liveness::LiveVariableMap;
 
 /// This is the heart of the liveness computation. For each variable X
 /// that requires a liveness computation, it walks over all the uses
@@ -38,16 +36,12 @@ pub(super) fn trace(
     elements: &Rc<RegionValueElements>,
     flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'_, 'gcx, 'tcx>>,
     move_data: &MoveData<'tcx>,
-    liveness_map: &NllLivenessMap,
+    live_locals: Vec<Local>,
     location_table: &LocationTable,
 ) {
     debug!("trace()");
 
-    if liveness_map.is_empty() {
-        return;
-    }
-
-    let local_use_map = &LocalUseMap::build(liveness_map, elements, mir);
+    let local_use_map = &LocalUseMap::build(&live_locals, elements, mir);
 
     let cx = LivenessContext {
         typeck,
@@ -56,12 +50,11 @@ pub(super) fn trace(
         elements,
         local_use_map,
         move_data,
-        liveness_map,
         drop_data: FxHashMap::default(),
         location_table,
     };
 
-    LivenessResults::new(cx).compute_for_all_locals();
+    LivenessResults::new(cx).compute_for_all_locals(live_locals);
 }
 
 /// Contextual state for the type-liveness generator.
@@ -93,10 +86,7 @@ where
 
     /// Index indicating where each variable is assigned, used, or
     /// dropped.
-    local_use_map: &'me LocalUseMap<'me>,
-
-    /// Map tracking which variables need liveness computation.
-    liveness_map: &'me NllLivenessMap,
+    local_use_map: &'me LocalUseMap,
 
     /// Maps between a MIR Location and a LocationIndex
     location_table: &'me LocationTable,
@@ -148,15 +138,12 @@ impl LivenessResults<'me, 'typeck, 'flow, 'gcx, 'tcx> {
         }
     }
 
-    fn compute_for_all_locals(&mut self) {
-        for live_local in self.cx.liveness_map.to_local.indices() {
-            let local = self.cx.liveness_map.from_live_var(live_local);
-            debug!("local={:?} live_local={:?}", local, live_local);
-
+    fn compute_for_all_locals(&mut self, live_locals: Vec<Local>) {
+        for local in live_locals {
             self.reset_local_state();
-            self.add_defs_for(live_local);
-            self.compute_use_live_points_for(live_local);
-            self.compute_drop_live_points_for(live_local);
+            self.add_defs_for(local);
+            self.compute_use_live_points_for(local);
+            self.compute_drop_live_points_for(local);
 
             let local_ty = self.cx.mir.local_decls[local].ty;
 
@@ -185,23 +172,23 @@ impl LivenessResults<'me, 'typeck, 'flow, 'gcx, 'tcx> {
     }
 
     /// Adds the definitions of `local` into `self.defs`.
-    fn add_defs_for(&mut self, live_local: LiveVar) {
-        for def in self.cx.local_use_map.defs(live_local) {
+    fn add_defs_for(&mut self, local: Local) {
+        for def in self.cx.local_use_map.defs(local) {
             debug!("- defined at {:?}", def);
             self.defs.insert(def);
         }
     }
 
-    /// Compute all points where local is "use live" -- meaning its
+    /// Computes all points where local is "use live" -- meaning its
     /// current value may be used later (except by a drop). This is
-    /// done by walking backwards from each use of `live_local` until we
+    /// done by walking backwards from each use of `local` until we
     /// find a `def` of local.
     ///
-    /// Requires `add_defs_for(live_local)` to have been executed.
-    fn compute_use_live_points_for(&mut self, live_local: LiveVar) {
-        debug!("compute_use_live_points_for(live_local={:?})", live_local);
+    /// Requires `add_defs_for(local)` to have been executed.
+    fn compute_use_live_points_for(&mut self, local: Local) {
+        debug!("compute_use_live_points_for(local={:?})", local);
 
-        self.stack.extend(self.cx.local_use_map.uses(live_local));
+        self.stack.extend(self.cx.local_use_map.uses(local));
         while let Some(p) = self.stack.pop() {
             if self.defs.contains(p) {
                 continue;
@@ -215,7 +202,7 @@ impl LivenessResults<'me, 'typeck, 'flow, 'gcx, 'tcx> {
         }
     }
 
-    /// Compute all points where local is "drop live" -- meaning its
+    /// Computes all points where local is "drop live" -- meaning its
     /// current value may be dropped later (but not used). This is
     /// done by iterating over the drops of `local` where `local` (or
     /// some subpart of `local`) is initialized. For each such drop,
@@ -224,15 +211,14 @@ impl LivenessResults<'me, 'typeck, 'flow, 'gcx, 'tcx> {
     ///
     /// Requires `compute_use_live_points_for` and `add_defs_for` to
     /// have been executed.
-    fn compute_drop_live_points_for(&mut self, live_local: LiveVar) {
-        debug!("compute_drop_live_points_for(live_local={:?})", live_local);
+    fn compute_drop_live_points_for(&mut self, local: Local) {
+        debug!("compute_drop_live_points_for(local={:?})", local);
 
-        let local = self.cx.liveness_map.from_live_var(live_local);
         let mpi = self.cx.move_data.rev_lookup.find_local(local);
         debug!("compute_drop_live_points_for: mpi = {:?}", mpi);
 
         // Find the drops where `local` is initialized.
-        for drop_point in self.cx.local_use_map.drops(live_local) {
+        for drop_point in self.cx.local_use_map.drops(local) {
             let location = self.cx.elements.to_location(drop_point);
             debug_assert_eq!(self.cx.mir.terminator_loc(location.block), location,);
 
@@ -407,7 +393,7 @@ impl LivenessResults<'me, 'typeck, 'flow, 'gcx, 'tcx> {
 }
 
 impl LivenessContext<'_, '_, '_, '_, 'tcx> {
-    /// True if the local variable (or some part of it) is initialized in
+    /// Returns `true` if the local variable (or some part of it) is initialized in
     /// the terminator of `block`. We need to check this to determine if a
     /// DROP of some local variable will have an effect -- note that
     /// drops, as they may unwind, are always terminators.
@@ -429,7 +415,7 @@ impl LivenessContext<'_, '_, '_, '_, 'tcx> {
         self.flow_inits.has_any_child_of(mpi).is_some()
     }
 
-    /// True if the path `mpi` (or some part of it) is initialized at
+    /// Returns `true` if the path `mpi` (or some part of it) is initialized at
     /// the exit of `block`.
     ///
     /// **Warning:** Does not account for the result of `Call`
@@ -439,7 +425,7 @@ impl LivenessContext<'_, '_, '_, '_, 'tcx> {
         self.flow_inits.has_any_child_of(mpi).is_some()
     }
 
-    /// Store the result that all regions in `value` are live for the
+    /// Stores the result that all regions in `value` are live for the
     /// points `live_at`.
     fn add_use_live_facts_for(
         &mut self,

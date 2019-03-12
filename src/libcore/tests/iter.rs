@@ -253,6 +253,7 @@ fn test_iterator_step_by_nth_overflow() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_iterator_step_by_zero() {
     let mut it = (0..).step_by(0);
     it.next();
@@ -877,7 +878,7 @@ fn test_iterator_flat_map() {
     assert_eq!(i, ys.len());
 }
 
-/// Test `FlatMap::fold` with items already picked off the front and back,
+/// Tests `FlatMap::fold` with items already picked off the front and back,
 /// to make sure all parts of the `FlatMap` are folded correctly.
 #[test]
 fn test_iterator_flat_map_fold() {
@@ -915,7 +916,7 @@ fn test_iterator_flatten() {
     assert_eq!(i, ys.len());
 }
 
-/// Test `Flatten::fold` with items already picked off the front and back,
+/// Tests `Flatten::fold` with items already picked off the front and back,
 /// to make sure all parts of the `Flatten` are folded correctly.
 #[test]
 fn test_iterator_flatten_fold() {
@@ -1413,6 +1414,7 @@ fn test_rposition() {
 
 #[test]
 #[should_panic]
+#[cfg(not(miri))] // Miri does not support panics
 fn test_rposition_panic() {
     let v: [(Box<_>, Box<_>); 4] =
         [(box 0, box 0), (box 0, box 0),
@@ -1739,18 +1741,36 @@ fn test_range_inclusive_folds() {
     assert_eq!((1..=10).sum::<i32>(), 55);
     assert_eq!((1..=10).rev().sum::<i32>(), 55);
 
-    let mut it = 40..=50;
+    let mut it = 44..=50;
     assert_eq!(it.try_fold(0, i8::checked_add), None);
-    assert_eq!(it, 44..=50);
+    assert_eq!(it, 47..=50);
+    assert_eq!(it.try_fold(0, i8::checked_add), None);
+    assert_eq!(it, 50..=50);
+    assert_eq!(it.try_fold(0, i8::checked_add), Some(50));
+    assert!(it.is_empty());
+    assert_eq!(it.try_fold(0, i8::checked_add), Some(0));
+    assert!(it.is_empty());
+
+    let mut it = 40..=47;
     assert_eq!(it.try_rfold(0, i8::checked_add), None);
-    assert_eq!(it, 44..=47);
+    assert_eq!(it, 40..=44);
+    assert_eq!(it.try_rfold(0, i8::checked_add), None);
+    assert_eq!(it, 40..=41);
+    assert_eq!(it.try_rfold(0, i8::checked_add), Some(81));
+    assert!(it.is_empty());
+    assert_eq!(it.try_rfold(0, i8::checked_add), Some(0));
+    assert!(it.is_empty());
 
     let mut it = 10..=20;
     assert_eq!(it.try_fold(0, |a,b| Some(a+b)), Some(165));
     assert!(it.is_empty());
+    assert_eq!(it.try_fold(0, |a,b| Some(a+b)), Some(0));
+    assert!(it.is_empty());
 
     let mut it = 10..=20;
     assert_eq!(it.try_rfold(0, |a,b| Some(a+b)), Some(165));
+    assert!(it.is_empty());
+    assert_eq!(it.try_rfold(0, |a,b| Some(a+b)), Some(0));
     assert!(it.is_empty());
 }
 

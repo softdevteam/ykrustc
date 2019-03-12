@@ -1,14 +1,14 @@
 //! Handles codegen of callees as well as other call-related
-//! things.  Callees are a superset of normal rust values and sometimes
-//! have different representations.  In particular, top-level fn items
+//! things. Callees are a superset of normal rust values and sometimes
+//! have different representations. In particular, top-level fn items
 //! and methods are represented as just a fn ptr and not a full
 //! closure.
 
-use attributes;
-use llvm;
-use monomorphize::Instance;
-use context::CodegenCx;
-use value::Value;
+use crate::attributes;
+use crate::llvm;
+use crate::monomorphize::Instance;
+use crate::context::CodegenCx;
+use crate::value::Value;
 use rustc_codegen_ssa::traits::*;
 
 use rustc::ty::TypeFoldable;
@@ -113,7 +113,7 @@ pub fn get_fn(
         unsafe {
             llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::ExternalLinkage);
 
-            let is_generic = instance.substs.types().next().is_some();
+            let is_generic = instance.substs.non_erasable_generics().next().is_some();
 
             if is_generic {
                 // This is a monomorphization. Its expected visibility depends

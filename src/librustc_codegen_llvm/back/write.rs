@@ -1,28 +1,27 @@
-use attributes;
-use back::bytecode::{self, RLIB_BYTECODE_EXTENSION};
-use back::lto::ThinBuffer;
+use crate::attributes;
+use crate::back::bytecode::{self, RLIB_BYTECODE_EXTENSION};
+use crate::back::lto::ThinBuffer;
+use crate::base;
+use crate::consts;
+use crate::time_graph::Timeline;
+use crate::llvm::{self, DiagnosticInfo, PassManager, SMDiagnostic};
+use crate::llvm_util;
+use crate::ModuleLlvm;
+use crate::type_::Type;
+use crate::context::{is_pie_binary, get_reloc_model};
+use crate::common;
+use crate::LlvmCodegenBackend;
 use rustc_codegen_ssa::back::write::{CodegenContext, ModuleConfig, run_assembler};
 use rustc_codegen_ssa::traits::*;
-use base;
-use consts;
 use rustc::hir::def_id::LOCAL_CRATE;
 use rustc::session::config::{self, OutputType, Passes, Lto};
 use rustc::session::Session;
 use rustc::ty::TyCtxt;
-use time_graph::Timeline;
-use llvm::{self, DiagnosticInfo, PassManager, SMDiagnostic};
-use llvm_util;
-use ModuleLlvm;
 use rustc_codegen_ssa::{ModuleCodegen, CompiledModule};
 use rustc::util::common::time_ext;
 use rustc_fs_util::{path_to_c_string, link_or_copy};
 use rustc_data_structures::small_c_str::SmallCStr;
-use errors::{self, Handler, FatalError};
-use type_::Type;
-use context::{is_pie_binary, get_reloc_model};
-use common;
-use LlvmCodegenBackend;
-use rustc_demangle;
+use errors::{Handler, FatalError};
 
 use std::ffi::{CString, CStr};
 use std::fs;
@@ -84,7 +83,7 @@ pub fn write_output_file(
 }
 
 pub fn create_target_machine(
-    tcx: TyCtxt,
+    tcx: TyCtxt<'_, '_, '_>,
     find_features: bool,
 ) -> &'static mut llvm::TargetMachine {
     target_machine_factory(tcx.sess, tcx.backend_optimization_level(LOCAL_CRATE), find_features)()
@@ -366,7 +365,7 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
                 let opt_level = config.opt_level.map(|x| to_llvm_opt_settings(x).0)
                     .unwrap_or(llvm::CodeGenOptLevel::None);
                 let prepare_for_thin_lto = cgcx.lto == Lto::Thin || cgcx.lto == Lto::ThinLocal ||
-                    (cgcx.lto != Lto::Fat && cgcx.opts.debugging_opts.cross_lang_lto.enabled());
+                    (cgcx.lto != Lto::Fat && cgcx.opts.cg.linker_plugin_lto.enabled());
                 with_llvm_pmb(llmod, &config, opt_level, prepare_for_thin_lto, &mut |b| {
                     llvm::LLVMPassManagerBuilderPopulateFunctionPassManager(b, fpm);
                     llvm::LLVMPassManagerBuilderPopulateModulePassManager(b, mpm);

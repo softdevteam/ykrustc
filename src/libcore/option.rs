@@ -214,7 +214,7 @@ impl<T> Option<T> {
     ///
     /// # Examples
     ///
-    /// Convert an `Option<`[`String`]`>` into an `Option<`[`usize`]`>`, preserving the original.
+    /// Converts an `Option<`[`String`]`>` into an `Option<`[`usize`]`>`, preserving the original.
     /// The [`map`] method takes the `self` argument by value, consuming the original,
     /// so this technique uses `as_ref` to first take an `Option` to a reference
     /// to the value inside the original.
@@ -395,7 +395,7 @@ impl<T> Option<T> {
     ///
     /// # Examples
     ///
-    /// Convert an `Option<`[`String`]`>` into an `Option<`[`usize`]`>`, consuming the original:
+    /// Converts an `Option<`[`String`]`>` into an `Option<`[`usize`]`>`, consuming the original:
     ///
     /// [`String`]: ../../std/string/struct.String.html
     /// [`usize`]: ../../std/primitive.usize.html
@@ -874,7 +874,7 @@ impl<T> Option<T> {
     }
 }
 
-impl<'a, T: Copy> Option<&'a T> {
+impl<T: Copy> Option<&T> {
     /// Maps an `Option<&T>` to an `Option<T>` by copying the contents of the
     /// option.
     ///
@@ -895,7 +895,7 @@ impl<'a, T: Copy> Option<&'a T> {
     }
 }
 
-impl<'a, T: Copy> Option<&'a mut T> {
+impl<T: Copy> Option<&mut T> {
     /// Maps an `Option<&mut T>` to an `Option<T>` by copying the contents of the
     /// option.
     ///
@@ -916,7 +916,7 @@ impl<'a, T: Copy> Option<&'a mut T> {
     }
 }
 
-impl<'a, T: Clone> Option<&'a T> {
+impl<T: Clone> Option<&T> {
     /// Maps an `Option<&T>` to an `Option<T>` by cloning the contents of the
     /// option.
     ///
@@ -935,7 +935,7 @@ impl<'a, T: Clone> Option<&'a T> {
     }
 }
 
-impl<'a, T: Clone> Option<&'a mut T> {
+impl<T: Clone> Option<&mut T> {
     /// Maps an `Option<&mut T>` to an `Option<T>` by cloning the contents of the
     /// option.
     ///
@@ -963,7 +963,7 @@ impl<T: Default> Option<T> {
     ///
     /// # Examples
     ///
-    /// Convert a string to an integer, turning poorly-formed strings
+    /// Converts a string to an integer, turning poorly-formed strings
     /// into 0 (the default value for integers). [`parse`] converts
     /// a string to any other type that implements [`FromStr`], returning
     /// [`None`] on error.
@@ -1286,7 +1286,7 @@ impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
     /// # Examples
     ///
     /// Here is an example which increments every integer in a vector.
-    /// `We use the checked variant of `add` that returns `None` when the
+    /// We use the checked variant of `add` that returns `None` when the
     /// calculation would result in an overflow.
     ///
     /// ```

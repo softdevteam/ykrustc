@@ -1,9 +1,9 @@
-use attributes;
-use base;
-use context::CodegenCx;
-use llvm;
-use monomorphize::Instance;
-use type_of::LayoutLlvmExt;
+use crate::attributes;
+use crate::base;
+use crate::context::CodegenCx;
+use crate::llvm;
+use crate::monomorphize::Instance;
+use crate::type_of::LayoutLlvmExt;
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::mono::{Linkage, Visibility};
 use rustc::ty::TypeFoldable;
@@ -36,10 +36,10 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     }
 
     fn predefine_fn(&self,
-                              instance: Instance<'tcx>,
-                              linkage: Linkage,
-                              visibility: Visibility,
-                              symbol_name: &str) {
+                    instance: Instance<'tcx>,
+                    linkage: Linkage,
+                    visibility: Visibility,
+                    symbol_name: &str) {
         assert!(!instance.substs.needs_infer() &&
                 !instance.substs.has_param_types());
 

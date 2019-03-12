@@ -15,15 +15,15 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_target::spec::PanicStrategy;
 use rustc_codegen_ssa::traits::*;
 
-use abi::Abi;
-use attributes;
-use llvm::{self, Attribute};
-use llvm::AttributePlace::Function;
-use llvm_util;
+use crate::abi::Abi;
+use crate::attributes;
+use crate::llvm::{self, Attribute};
+use crate::llvm::AttributePlace::Function;
+use crate::llvm_util;
 pub use syntax::attr::{self, InlineAttr, OptimizeAttr};
 
-use context::CodegenCx;
-use value::Value;
+use crate::context::CodegenCx;
+use crate::value::Value;
 
 /// Mark LLVM function to use provided inline heuristic.
 #[inline]
@@ -223,6 +223,9 @@ pub fn from_fn_attrs(
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
         Attribute::Cold.apply_llfn(Function, llfn);
     }
+    if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::FFI_RETURNS_TWICE) {
+        Attribute::ReturnsTwice.apply_llfn(Function, llfn);
+    }
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
         naked(llfn, true);
     }
@@ -305,7 +308,7 @@ pub fn from_fn_attrs(
     }
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     providers.target_features_whitelist = |tcx, cnum| {
         assert_eq!(cnum, LOCAL_CRATE);
         if tcx.sess.opts.actually_rustdoc {
@@ -325,7 +328,7 @@ pub fn provide(providers: &mut Providers) {
     provide_extern(providers);
 }
 
-pub fn provide_extern(providers: &mut Providers) {
+pub fn provide_extern(providers: &mut Providers<'_>) {
     providers.wasm_import_module_map = |tcx, cnum| {
         // Build up a map from DefId to a `NativeLibrary` structure, where
         // `NativeLibrary` internally contains information about
@@ -359,7 +362,7 @@ pub fn provide_extern(providers: &mut Providers) {
     };
 }
 
-fn wasm_import_module(tcx: TyCtxt, id: DefId) -> Option<CString> {
+fn wasm_import_module(tcx: TyCtxt<'_, '_, '_>, id: DefId) -> Option<CString> {
     tcx.wasm_import_module_map(id.krate)
         .get(&id)
         .map(|s| CString::new(&s[..]).unwrap())

@@ -1,5 +1,5 @@
-use fmt;
-use sync::{Mutex, Condvar};
+use crate::fmt;
+use crate::sync::{Mutex, Condvar};
 
 /// A barrier enables multiple threads to synchronize the beginning
 /// of some computation.
@@ -159,7 +159,7 @@ impl fmt::Debug for BarrierWaitResult {
 }
 
 impl BarrierWaitResult {
-    /// Returns whether this thread from [`wait`] is the "leader thread".
+    /// Returns `true` if this thread from [`wait`] is the "leader thread".
     ///
     /// Only one thread will have `true` returned from their result, all other
     /// threads will have `false` returned.
@@ -181,9 +181,9 @@ impl BarrierWaitResult {
 
 #[cfg(test)]
 mod tests {
-    use sync::{Arc, Barrier};
-    use sync::mpsc::{channel, TryRecvError};
-    use thread;
+    use crate::sync::{Arc, Barrier};
+    use crate::sync::mpsc::{channel, TryRecvError};
+    use crate::thread;
 
     #[test]
     #[cfg_attr(target_os = "emscripten", ignore)]

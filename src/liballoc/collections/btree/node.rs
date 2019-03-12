@@ -36,8 +36,8 @@ use core::mem::{self, MaybeUninit};
 use core::ptr::{self, Unique, NonNull};
 use core::slice;
 
-use alloc::{Global, Alloc, Layout};
-use boxed::Box;
+use crate::alloc::{Global, Alloc, Layout};
+use crate::boxed::Box;
 
 const B: usize = 6;
 pub const MIN_LEN: usize = B - 1;
@@ -50,11 +50,11 @@ pub const CAPACITY: usize = 2 * B - 1;
 ///
 /// We have a separate type for the header and rely on it matching the prefix of `LeafNode`, in
 /// order to statically allocate a single dummy node to avoid allocations. This struct is
-/// `repr(C)` to prevent them from being reordered.  `LeafNode` does not just contain a
+/// `repr(C)` to prevent them from being reordered. `LeafNode` does not just contain a
 /// `NodeHeader` because we do not want unnecessary padding between `len` and the keys.
-/// Crucially, `NodeHeader` can be safely transmuted to different K and V.  (This is exploited
+/// Crucially, `NodeHeader` can be safely transmuted to different K and V. (This is exploited
 /// by `as_header`.)
-/// See `into_key_slice` for an explanation of K2.  K2 cannot be safely transmuted around
+/// See `into_key_slice` for an explanation of K2. K2 cannot be safely transmuted around
 /// because the size of `NodeHeader` depends on its alignment!
 #[repr(C)]
 struct NodeHeader<K, V, K2 = ()> {
@@ -226,7 +226,7 @@ impl<K, V> Root<K, V> {
     }
 
     pub fn as_ref(&self)
-            -> NodeRef<marker::Immut, K, V, marker::LeafOrInternal> {
+            -> NodeRef<marker::Immut<'_>, K, V, marker::LeafOrInternal> {
         NodeRef {
             height: self.height,
             node: self.node.as_ptr(),
@@ -236,7 +236,7 @@ impl<K, V> Root<K, V> {
     }
 
     pub fn as_mut(&mut self)
-            -> NodeRef<marker::Mut, K, V, marker::LeafOrInternal> {
+            -> NodeRef<marker::Mut<'_>, K, V, marker::LeafOrInternal> {
         NodeRef {
             height: self.height,
             node: self.node.as_ptr(),
@@ -258,7 +258,7 @@ impl<K, V> Root<K, V> {
     /// Adds a new internal node with a single edge, pointing to the previous root, and make that
     /// new node the root. This increases the height by 1 and is the opposite of `pop_level`.
     pub fn push_level(&mut self)
-            -> NodeRef<marker::Mut, K, V, marker::Internal> {
+            -> NodeRef<marker::Mut<'_>, K, V, marker::Internal> {
         debug_assert!(!self.is_shared_root());
         let mut new_node = Box::new(unsafe { InternalNode::new() });
         new_node.edges[0].set(unsafe { BoxedNode::from_ptr(self.node.as_ptr()) });
@@ -453,7 +453,7 @@ impl<BorrowType, K, V, Type> NodeRef<BorrowType, K, V, Type> {
                     root: self.root,
                     _marker: PhantomData
                 },
-                idx: unsafe { usize::from(*self.as_header().parent_idx.get_ref()) },
+                idx: unsafe { usize::from(*self.as_header().parent_idx.as_ptr()) },
                 _marker: PhantomData
             })
         } else {
@@ -531,7 +531,7 @@ impl<'a, K, V, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
     /// Unsafely asserts to the compiler some static information about whether this
     /// node is a `Leaf`.
     unsafe fn cast_unchecked<NewType>(&mut self)
-            -> NodeRef<marker::Mut, K, V, NewType> {
+            -> NodeRef<marker::Mut<'_>, K, V, NewType> {
 
         NodeRef {
             height: self.height,
@@ -551,7 +551,7 @@ impl<'a, K, V, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
     /// of a reborrowed handle, out of bounds.
     // FIXME(@gereeter) consider adding yet another type parameter to `NodeRef` that restricts
     // the use of `ascend` and `into_root_mut` on reborrowed pointers, preventing this unsafety.
-    unsafe fn reborrow_mut(&mut self) -> NodeRef<marker::Mut, K, V, Type> {
+    unsafe fn reborrow_mut(&mut self) -> NodeRef<marker::Mut<'_>, K, V, Type> {
         NodeRef {
             height: self.height,
             node: self.node,
@@ -645,6 +645,8 @@ impl<'a, K: 'a, V: 'a, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
     }
 
     fn into_key_slice_mut(mut self) -> &'a mut [K] {
+        // Same as for `into_key_slice` above, we try to avoid a run-time check
+        // (the alignment comparison will usually be performed at compile-time).
         if mem::align_of::<K>() > mem::align_of::<LeafNode<(), ()>>() && self.is_shared_root() {
             &mut []
         } else {
@@ -667,9 +669,26 @@ impl<'a, K: 'a, V: 'a, Type> NodeRef<marker::Mut<'a>, K, V, Type> {
         }
     }
 
-    fn into_slices_mut(self) -> (&'a mut [K], &'a mut [V]) {
-        let k = unsafe { ptr::read(&self) };
-        (k.into_key_slice_mut(), self.into_val_slice_mut())
+    fn into_slices_mut(mut self) -> (&'a mut [K], &'a mut [V]) {
+        debug_assert!(!self.is_shared_root());
+        // We cannot use the getters here, because calling the second one
+        // invalidates the reference returned by the first.
+        // More precisely, it is the call to `len` that is the culprit,
+        // because that creates a shared reference to the header, which *can*
+        // overlap with the keys (and even the values, for ZST keys).
+        unsafe {
+            let len = self.len();
+            let leaf = self.as_leaf_mut();
+            let keys = slice::from_raw_parts_mut(
+                MaybeUninit::first_ptr_mut(&mut (*leaf).keys),
+                len
+            );
+            let vals = slice::from_raw_parts_mut(
+                MaybeUninit::first_ptr_mut(&mut (*leaf).vals),
+                len
+            );
+            (keys, vals)
+        }
     }
 }
 
@@ -928,7 +947,7 @@ impl<BorrowType, K, V, NodeType, HandleType>
 
     /// Temporarily takes out another, immutable handle on the same location.
     pub fn reborrow(&self)
-            -> Handle<NodeRef<marker::Immut, K, V, NodeType>, HandleType> {
+            -> Handle<NodeRef<marker::Immut<'_>, K, V, NodeType>, HandleType> {
 
         // We can't use Handle::new_kv or Handle::new_edge because we don't know our type
         Handle {
@@ -953,7 +972,7 @@ impl<'a, K, V, NodeType, HandleType>
     // FIXME(@gereeter) consider adding yet another type parameter to `NodeRef` that restricts
     // the use of `ascend` and `into_root_mut` on reborrowed pointers, preventing this unsafety.
     pub unsafe fn reborrow_mut(&mut self)
-            -> Handle<NodeRef<marker::Mut, K, V, NodeType>, HandleType> {
+            -> Handle<NodeRef<marker::Mut<'_>, K, V, NodeType>, HandleType> {
 
         // We can't use Handle::new_kv or Handle::new_edge because we don't know our type
         Handle {
@@ -1068,7 +1087,7 @@ impl<'a, K, V> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Internal>, marker::
     /// Unsafely asserts to the compiler some static information about whether the underlying
     /// node of this handle is a `Leaf`.
     unsafe fn cast_unchecked<NewType>(&mut self)
-            -> Handle<NodeRef<marker::Mut, K, V, NewType>, marker::Edge> {
+            -> Handle<NodeRef<marker::Mut<'_>, K, V, NewType>, marker::Edge> {
 
         Handle::new_edge(self.node.cast_unchecked(), self.idx)
     }
@@ -1143,7 +1162,7 @@ impl<BorrowType, K, V>
         NodeRef {
             height: self.node.height - 1,
             node: unsafe {
-                self.node.as_internal().edges.get_unchecked(self.idx).get_ref().as_ptr()
+                (&*self.node.as_internal().edges.get_unchecked(self.idx).as_ptr()).as_ptr()
             },
             root: self.node.root,
             _marker: PhantomData
@@ -1295,7 +1314,7 @@ impl<'a, K, V> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Internal>, marker::
         }
     }
 
-    /// Returns whether it is valid to call `.merge()`, i.e., whether there is enough room in
+    /// Returns `true` if it is valid to call `.merge()`, i.e., whether there is enough room in
     /// a node to hold the combination of the nodes to the left and right of this handle along
     /// with the key/value pair at this handle.
     pub fn can_merge(&self) -> bool {
@@ -1558,8 +1577,8 @@ unsafe fn move_kv<K, V>(
 
 // Source and destination must have the same height.
 unsafe fn move_edges<K, V>(
-    mut source: NodeRef<marker::Mut, K, V, marker::Internal>, source_offset: usize,
-    mut dest: NodeRef<marker::Mut, K, V, marker::Internal>, dest_offset: usize,
+    mut source: NodeRef<marker::Mut<'_>, K, V, marker::Internal>, source_offset: usize,
+    mut dest: NodeRef<marker::Mut<'_>, K, V, marker::Internal>, dest_offset: usize,
     count: usize)
 {
     let source_ptr = source.as_internal_mut().edges.as_mut_ptr();
@@ -1573,7 +1592,7 @@ unsafe fn move_edges<K, V>(
 impl<BorrowType, K, V, HandleType>
         Handle<NodeRef<BorrowType, K, V, marker::LeafOrInternal>, HandleType> {
 
-    /// Check whether the underlying node is an `Internal` node or a `Leaf` node.
+    /// Checks whether the underlying node is an `Internal` node or a `Leaf` node.
     pub fn force(self) -> ForceResult<
         Handle<NodeRef<BorrowType, K, V, marker::Leaf>, HandleType>,
         Handle<NodeRef<BorrowType, K, V, marker::Internal>, HandleType>

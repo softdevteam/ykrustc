@@ -2,7 +2,7 @@
 // unresolved type variables and replaces "ty_var" types with their
 // substitutions.
 
-use check::FnCtxt;
+use crate::check::FnCtxt;
 use errors::DiagnosticBuilder;
 use rustc::hir;
 use rustc::hir::def_id::{DefId, DefIndex};
@@ -50,7 +50,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         wbcx.visit_liberated_fn_sigs();
         wbcx.visit_fru_field_types();
         wbcx.visit_opaque_types(body.value.span);
-        wbcx.visit_cast_types();
+        wbcx.visit_coercion_casts();
         wbcx.visit_free_region_map();
         wbcx.visit_user_provided_tys();
         wbcx.visit_user_provided_sigs();
@@ -100,7 +100,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
         body: &'gcx hir::Body,
         rustc_dump_user_substs: bool,
     ) -> WritebackCx<'cx, 'gcx, 'tcx> {
-        let owner = fcx.tcx.hir().definitions().node_to_hir_id(body.id().node_id);
+        let owner = body.id().hir_id;
 
         WritebackCx {
             fcx,
@@ -243,11 +243,11 @@ impl<'cx, 'gcx, 'tcx> Visitor<'gcx> for WritebackCx<'cx, 'gcx, 'tcx> {
             }
             hir::ExprKind::Struct(_, ref fields, _) => {
                 for field in fields {
-                    self.visit_field_id(field.id);
+                    self.visit_field_id(field.hir_id);
                 }
             }
             hir::ExprKind::Field(..) => {
-                self.visit_field_id(e.id);
+                self.visit_field_id(e.hir_id);
             }
             _ => {}
         }
@@ -273,7 +273,7 @@ impl<'cx, 'gcx, 'tcx> Visitor<'gcx> for WritebackCx<'cx, 'gcx, 'tcx> {
             }
             hir::PatKind::Struct(_, ref fields, _) => {
                 for field in fields {
-                    self.visit_field_id(field.node.id);
+                    self.visit_field_id(field.node.hir_id);
                 }
             }
             _ => {}
@@ -287,7 +287,7 @@ impl<'cx, 'gcx, 'tcx> Visitor<'gcx> for WritebackCx<'cx, 'gcx, 'tcx> {
 
     fn visit_local(&mut self, l: &'gcx hir::Local) {
         intravisit::walk_local(self, l);
-        let var_ty = self.fcx.local_ty(l.span, l.id).decl_ty;
+        let var_ty = self.fcx.local_ty(l.span, l.hir_id).decl_ty;
         let var_ty = self.resolve(&var_ty, &l.span);
         self.write_ty_to_tables(l.hir_id, var_ty);
     }
@@ -355,19 +355,13 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
         }
     }
 
-    fn visit_cast_types(&mut self) {
+    fn visit_coercion_casts(&mut self) {
         let fcx_tables = self.fcx.tables.borrow();
-        let fcx_cast_kinds = fcx_tables.cast_kinds();
+        let fcx_coercion_casts = fcx_tables.coercion_casts();
         debug_assert_eq!(fcx_tables.local_id_root, self.tables.local_id_root);
-        let mut self_cast_kinds = self.tables.cast_kinds_mut();
-        let common_local_id_root = fcx_tables.local_id_root.unwrap();
 
-        for (&local_id, &cast_kind) in fcx_cast_kinds.iter() {
-            let hir_id = hir::HirId {
-                owner: common_local_id_root.index,
-                local_id,
-            };
-            self_cast_kinds.insert(hir_id, cast_kind);
+        for local_id in fcx_coercion_casts {
+            self.tables.set_coercion_cast(*local_id);
         }
     }
 
@@ -407,8 +401,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
             if let ty::UserType::TypeOf(_, user_substs) = c_ty.value {
                 if self.rustc_dump_user_substs {
                     // This is a unit-testing mechanism.
-                    let node_id = self.tcx().hir().hir_to_node_id(hir_id);
-                    let span = self.tcx().hir().span(node_id);
+                    let span = self.tcx().hir().span_by_hir_id(hir_id);
                     // We need to buffer the errors in order to guarantee a consistent
                     // order when emitting them.
                     let err = self.tcx().sess.struct_span_err(
@@ -561,21 +554,29 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
                 if def_id == defin_ty_def_id {
                     // Concrete type resolved to the existential type itself
                     // Force a cycle error
+                    // FIXME(oli-obk): we could just not insert it into `concrete_existential_types`
+                    // which simply would make this use not a defining use.
                     self.tcx().at(span).type_of(defin_ty_def_id);
                 }
             }
 
+            let new = ty::ResolvedOpaqueTy {
+                concrete_type: definition_ty,
+                substs: self.tcx().lift_to_global(&opaque_defn.substs).unwrap(),
+            };
+
             let old = self.tables
                 .concrete_existential_types
-                .insert(def_id, definition_ty);
+                .insert(def_id, new);
             if let Some(old) = old {
-                if old != definition_ty {
+                if old.concrete_type != definition_ty || old.substs != opaque_defn.substs {
                     span_bug!(
                         span,
                         "visit_opaque_types tried to write \
-                        different types for the same existential type: {:?}, {:?}, {:?}",
+                        different types for the same existential type: {:?}, {:?}, {:?}, {:?}",
                         def_id,
                         definition_ty,
+                        opaque_defn,
                         old,
                     );
                 }
@@ -583,8 +584,7 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
         }
     }
 
-    fn visit_field_id(&mut self, node_id: ast::NodeId) {
-        let hir_id = self.tcx().hir().node_to_hir_id(node_id);
+    fn visit_field_id(&mut self, hir_id: hir::HirId) {
         if let Some(index) = self.fcx
             .tables
             .borrow_mut()
@@ -722,32 +722,31 @@ impl<'cx, 'gcx, 'tcx> WritebackCx<'cx, 'gcx, 'tcx> {
 }
 
 trait Locatable {
-    fn to_span(&self, tcx: &TyCtxt) -> Span;
+    fn to_span(&self, tcx: &TyCtxt<'_, '_, '_>) -> Span;
 }
 
 impl Locatable for Span {
-    fn to_span(&self, _: &TyCtxt) -> Span {
+    fn to_span(&self, _: &TyCtxt<'_, '_, '_>) -> Span {
         *self
     }
 }
 
 impl Locatable for ast::NodeId {
-    fn to_span(&self, tcx: &TyCtxt) -> Span {
+    fn to_span(&self, tcx: &TyCtxt<'_, '_, '_>) -> Span {
         tcx.hir().span(*self)
     }
 }
 
 impl Locatable for DefIndex {
-    fn to_span(&self, tcx: &TyCtxt) -> Span {
-        let node_id = tcx.hir().def_index_to_node_id(*self);
-        tcx.hir().span(node_id)
+    fn to_span(&self, tcx: &TyCtxt<'_, '_, '_>) -> Span {
+        let hir_id = tcx.hir().def_index_to_hir_id(*self);
+        tcx.hir().span_by_hir_id(hir_id)
     }
 }
 
 impl Locatable for hir::HirId {
-    fn to_span(&self, tcx: &TyCtxt) -> Span {
-        let node_id = tcx.hir().hir_to_node_id(*self);
-        tcx.hir().span(node_id)
+    fn to_span(&self, tcx: &TyCtxt<'_, '_, '_>) -> Span {
+        tcx.hir().span_by_hir_id(*self)
     }
 }
 

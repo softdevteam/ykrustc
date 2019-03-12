@@ -7,12 +7,11 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::str;
 
-use back::bytecode::RLIB_BYTECODE_EXTENSION;
+use crate::back::bytecode::RLIB_BYTECODE_EXTENSION;
+use crate::llvm::archive_ro::{ArchiveRO, Child};
+use crate::llvm::{self, ArchiveKind};
+use crate::metadata::METADATA_FILENAME;
 use rustc_codegen_ssa::back::archive::find_library;
-use libc;
-use llvm::archive_ro::{ArchiveRO, Child};
-use llvm::{self, ArchiveKind};
-use metadata::METADATA_FILENAME;
 use rustc::session::Session;
 
 pub struct ArchiveConfig<'a> {
@@ -43,7 +42,7 @@ enum Addition {
     },
 }
 
-fn is_relevant_child(c: &Child) -> bool {
+fn is_relevant_child(c: &Child<'_>) -> bool {
     match c.name() {
         Some(name) => !name.contains("SYMDEF"),
         None => false,
@@ -51,7 +50,7 @@ fn is_relevant_child(c: &Child) -> bool {
 }
 
 impl<'a> ArchiveBuilder<'a> {
-    /// Create a new static archive, ready for modifying the archive specified
+    /// Creates a new static archive, ready for modifying the archive specified
     /// by `config`.
     pub fn new(config: ArchiveConfig<'a>) -> ArchiveBuilder<'a> {
         ArchiveBuilder {

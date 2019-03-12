@@ -33,7 +33,7 @@ pub fn exe(name: &str, target: &str) -> String {
     }
 }
 
-/// Returns whether the file name given looks like a dynamic library.
+/// Returns `true` if the file name given looks like a dynamic library.
 pub fn is_dylib(name: &str) -> bool {
     name.ends_with(".dylib") || name.ends_with(".so") || name.ends_with(".dll")
 }
@@ -95,7 +95,7 @@ pub fn push_exe_path(mut buf: PathBuf, components: &[&str]) -> PathBuf {
 pub struct TimeIt(bool, Instant);
 
 /// Returns an RAII structure that prints out how long it took to drop.
-pub fn timeit(builder: &Builder) -> TimeIt {
+pub fn timeit(builder: &Builder<'_>) -> TimeIt {
     TimeIt(builder.config.dry_run, Instant::now())
 }
 

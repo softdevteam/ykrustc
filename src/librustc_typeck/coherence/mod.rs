@@ -5,10 +5,11 @@
 // done by the orphan and overlap modules. Then we build up various
 // mappings. That mapping code resides here.
 
-use hir::def_id::{DefId, LOCAL_CRATE};
+use crate::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::traits;
 use rustc::ty::{self, TyCtxt, TypeFoldable};
 use rustc::ty::query::Providers;
+use rustc::util::common::time;
 
 use syntax::ast;
 
@@ -40,7 +41,11 @@ fn check_impl<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, node_id: ast::NodeId) {
     }
 }
 
-fn enforce_trait_manually_implementable(tcx: TyCtxt, impl_def_id: DefId, trait_def_id: DefId) {
+fn enforce_trait_manually_implementable(
+    tcx: TyCtxt<'_, '_, '_>,
+    impl_def_id: DefId,
+    trait_def_id: DefId
+) {
     let did = Some(trait_def_id);
     let li = tcx.lang_items();
     let span = tcx.sess.source_map().def_span(tcx.span_of_impl(impl_def_id).unwrap());
@@ -92,7 +97,11 @@ fn enforce_trait_manually_implementable(tcx: TyCtxt, impl_def_id: DefId, trait_d
 
 /// We allow impls of marker traits to overlap, so they can't override impls
 /// as that could make it ambiguous which associated item to use.
-fn enforce_empty_impls_for_marker_traits(tcx: TyCtxt, impl_def_id: DefId, trait_def_id: DefId) {
+fn enforce_empty_impls_for_marker_traits(
+    tcx: TyCtxt<'_, '_, '_>,
+    impl_def_id: DefId,
+    trait_def_id: DefId
+) {
     if !tcx.trait_def(trait_def_id).is_marker {
         return;
     }
@@ -109,7 +118,7 @@ fn enforce_empty_impls_for_marker_traits(tcx: TyCtxt, impl_def_id: DefId, trait_
         .emit();
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     use self::builtin::coerce_unsized_info;
     use self::inherent_impls::{crate_inherent_impls, inherent_impls};
     use self::inherent_impls_overlap::crate_inherent_impls_overlap_check;
@@ -137,18 +146,18 @@ fn coherent_trait<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) {
 
 pub fn check_coherence<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     for &trait_def_id in tcx.hir().krate().trait_impls.keys() {
-        ty::query::queries::coherent_trait::ensure(tcx, trait_def_id);
+        tcx.ensure().coherent_trait(trait_def_id);
     }
 
-    unsafety::check(tcx);
-    orphan::check(tcx);
+    time(tcx.sess, "unsafety checking", || unsafety::check(tcx));
+    time(tcx.sess, "orphan checking", || orphan::check(tcx));
 
     // these queries are executed for side-effects (error reporting):
-    ty::query::queries::crate_inherent_impls::ensure(tcx, LOCAL_CRATE);
-    ty::query::queries::crate_inherent_impls_overlap_check::ensure(tcx, LOCAL_CRATE);
+    tcx.ensure().crate_inherent_impls(LOCAL_CRATE);
+    tcx.ensure().crate_inherent_impls_overlap_check(LOCAL_CRATE);
 }
 
-/// Overlap: No two impls for the same trait are implemented for the
+/// Overlap: no two impls for the same trait are implemented for the
 /// same type. Likewise, no two inherent impls for a given type
 /// constructor provide a method with the same name.
 fn check_impl_overlap<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, node_id: ast::NodeId) {

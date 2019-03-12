@@ -11,17 +11,17 @@
 
 pub use self::LangItem::*;
 
-use hir::def_id::DefId;
-use hir::check_attr::Target;
-use ty::{self, TyCtxt};
-use middle::weak_lang_items;
-use util::nodemap::FxHashMap;
+use crate::hir::def_id::DefId;
+use crate::hir::check_attr::Target;
+use crate::ty::{self, TyCtxt};
+use crate::middle::weak_lang_items;
+use crate::util::nodemap::FxHashMap;
 
 use syntax::ast;
 use syntax::symbol::Symbol;
 use syntax_pos::Span;
-use hir::itemlikevisit::ItemLikeVisitor;
-use hir;
+use crate::hir::itemlikevisit::ItemLikeVisitor;
+use crate::hir;
 
 // The actual lang items defined come at the end of this file in one handy table.
 // So you probably just want to nip down to the end.
@@ -98,7 +98,7 @@ impl<'a, 'v, 'tcx> ItemLikeVisitor<'v> for LanguageItemCollector<'a, 'tcx> {
             match self.item_refs.get(&*value.as_str()).cloned() {
                 // Known lang item with attribute on correct target.
                 Some((item_index, expected_target)) if actual_target == expected_target => {
-                    let def_id = self.tcx.hir().local_def_id(item.id);
+                    let def_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
                     self.collect_item(item_index, def_id);
                 },
                 // Known lang item with attribute on incorrect target.

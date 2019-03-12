@@ -4,9 +4,7 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-      html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-      html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
@@ -19,11 +17,12 @@
 #![feature(nll)]
 #![feature(range_contains)]
 #![feature(rustc_diagnostic_macros)]
-#![feature(slice_sort_by_cached_key)]
 #![feature(optin_builtin_traits)]
 #![feature(concat_idents)]
 #![feature(link_args)]
 #![feature(static_nobundle)]
+#![deny(rust_2018_idioms)]
+#![allow(explicit_outlives_requirements)]
 
 use back::write::create_target_machine;
 use syntax_pos::symbol::Symbol;
@@ -32,32 +31,24 @@ extern crate flate2;
 #[macro_use] extern crate bitflags;
 extern crate libc;
 #[macro_use] extern crate rustc;
-extern crate jobserver;
-extern crate num_cpus;
 extern crate rustc_mir;
 extern crate rustc_allocator;
-extern crate rustc_apfloat;
 extern crate rustc_target;
 #[macro_use] extern crate rustc_data_structures;
-extern crate rustc_demangle;
 extern crate rustc_incremental;
-extern crate rustc_llvm;
 extern crate rustc_codegen_utils;
 extern crate rustc_codegen_ssa;
 extern crate rustc_fs_util;
-extern crate rustc_yk_sections;
 
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
 extern crate syntax_pos;
 extern crate rustc_errors as errors;
 extern crate serialize;
-extern crate cc; // Used to locate MSVC
 extern crate tempfile;
-extern crate memmap;
 
 use rustc_codegen_ssa::traits::*;
-use rustc_codegen_ssa::back::write::{CodegenContext, ModuleConfig};
+use rustc_codegen_ssa::back::write::{CodegenContext, ModuleConfig, FatLTOInput};
 use rustc_codegen_ssa::back::lto::{SerializedModule, LtoModuleCodegen, ThinModule};
 use rustc_codegen_ssa::CompiledModule;
 use errors::{FatalError, Handler};
@@ -72,12 +63,13 @@ use std::sync::{mpsc, Arc};
 use rustc::dep_graph::DepGraph;
 use rustc::middle::allocator::AllocatorKind;
 use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
-use rustc::session::{Session, CompileIncomplete};
+use rustc::session::Session;
 use rustc::session::config::{OutputFilenames, OutputType, PrintRequest, OptLevel};
 use rustc::ty::{self, TyCtxt};
 use rustc::util::nodemap::DefIdSet;
 use rustc::util::time_graph;
 use rustc::util::profiling::ProfileCategory;
+use rustc::util::common::ErrorReported;
 use rustc_mir::monomorphize;
 use rustc_codegen_ssa::ModuleCodegen;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
@@ -123,17 +115,22 @@ mod va_arg;
 pub struct LlvmCodegenBackend(());
 
 impl ExtraBackendMethods for LlvmCodegenBackend {
-    fn new_metadata(&self, tcx: TyCtxt, mod_name: &str) -> ModuleLlvm {
+    fn new_metadata(&self, tcx: TyCtxt<'_, '_, '_>, mod_name: &str) -> ModuleLlvm {
         ModuleLlvm::new(tcx, mod_name)
     }
     fn write_metadata<'b, 'gcx>(
         &self,
         tcx: TyCtxt<'b, 'gcx, 'gcx>,
-        metadata: &ModuleLlvm
+        metadata: &mut ModuleLlvm
     ) -> EncodedMetadata {
         base::write_metadata(tcx, metadata)
     }
-    fn codegen_allocator(&self, tcx: TyCtxt, mods: &ModuleLlvm, kind: AllocatorKind) {
+    fn codegen_allocator<'b, 'gcx>(
+        &self,
+        tcx: TyCtxt<'b, 'gcx, 'gcx>,
+        mods: &mut ModuleLlvm,
+        kind: AllocatorKind
+    ) {
         unsafe { allocator::codegen(tcx, mods, kind) }
     }
     fn compile_codegen_unit<'a, 'tcx: 'a>(
@@ -169,10 +166,11 @@ impl WriteBackendMethods for LlvmCodegenBackend {
     }
     fn run_fat_lto(
         cgcx: &CodegenContext<Self>,
-        modules: Vec<ModuleCodegen<Self::Module>>,
+        modules: Vec<FatLTOInput<Self>>,
+        cached_modules: Vec<(SerializedModule<Self::ModuleBuffer>, WorkProduct)>,
         timeline: &mut Timeline
     ) -> Result<LtoModuleCodegen<Self>, FatalError> {
-        back::lto::run_fat(cgcx, modules, timeline)
+        back::lto::run_fat(cgcx, modules, cached_modules, timeline)
     }
     fn run_thin_lto(
         cgcx: &CodegenContext<Self>,
@@ -208,10 +206,14 @@ impl WriteBackendMethods for LlvmCodegenBackend {
         back::write::codegen(cgcx, diag_handler, module, config, timeline)
     }
     fn prepare_thin(
-        cgcx: &CodegenContext<Self>,
         module: ModuleCodegen<Self::Module>
     ) -> (String, Self::ThinBuffer) {
-        back::lto::prepare_thin(cgcx, module)
+        back::lto::prepare_thin(module)
+    }
+    fn serialize_module(
+        module: ModuleCodegen<Self::Module>
+    ) -> (String, Self::ModuleBuffer) {
+        (module.name, back::lto::ModuleBuffer::new(module.module_llvm.llmod()))
     }
     fn run_lto_pass_manager(
         cgcx: &CodegenContext<Self>,
@@ -284,14 +286,14 @@ impl CodegenBackend for LlvmCodegenBackend {
         box metadata::LlvmMetadataLoader
     }
 
-    fn provide(&self, providers: &mut ty::query::Providers) {
+    fn provide(&self, providers: &mut ty::query::Providers<'_>) {
         rustc_codegen_utils::symbol_names::provide(providers);
         rustc_codegen_ssa::back::symbol_export::provide(providers);
         rustc_codegen_ssa::base::provide_both(providers);
         attributes::provide(providers);
     }
 
-    fn provide_extern(&self, providers: &mut ty::query::Providers) {
+    fn provide_extern(&self, providers: &mut ty::query::Providers<'_>) {
         rustc_codegen_ssa::back::symbol_export::provide_extern(providers);
         rustc_codegen_ssa::base::provide_both(providers);
         attributes::provide_extern(providers);
@@ -313,7 +315,7 @@ impl CodegenBackend for LlvmCodegenBackend {
         sess: &Session,
         dep_graph: &DepGraph,
         outputs: &OutputFilenames,
-    ) -> Result<(), CompileIncomplete>{
+    ) -> Result<(), ErrorReported>{
         use rustc::util::common::time;
         let (codegen_results, work_products) =
             ongoing_codegen.downcast::
@@ -368,7 +370,7 @@ unsafe impl Send for ModuleLlvm { }
 unsafe impl Sync for ModuleLlvm { }
 
 impl ModuleLlvm {
-    fn new(tcx: TyCtxt, mod_name: &str) -> Self {
+    fn new(tcx: TyCtxt<'_, '_, '_>, mod_name: &str) -> Self {
         unsafe {
             let llcx = llvm::LLVMRustContextCreate(tcx.sess.fewer_names());
             let llmod_raw = context::create_module(tcx, llcx, mod_name) as *const _;
@@ -378,6 +380,31 @@ impl ModuleLlvm {
                 llcx,
                 tm: create_target_machine(tcx, false),
             }
+        }
+    }
+
+    fn parse(
+        cgcx: &CodegenContext<LlvmCodegenBackend>,
+        name: &str,
+        buffer: &back::lto::ModuleBuffer,
+        handler: &Handler,
+    ) -> Result<Self, FatalError> {
+        unsafe {
+            let llcx = llvm::LLVMRustContextCreate(cgcx.fewer_names);
+            let llmod_raw = buffer.parse(name, llcx, handler)?;
+            let tm = match (cgcx.tm_factory.0)() {
+                Ok(m) => m,
+                Err(e) => {
+                    handler.struct_err(&e).emit();
+                    return Err(FatalError)
+                }
+            };
+
+            Ok(ModuleLlvm {
+                llmod_raw,
+                llcx,
+                tm,
+            })
         }
     }
 

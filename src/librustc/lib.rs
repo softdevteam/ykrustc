@@ -26,9 +26,10 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
+
+#![deny(rust_2018_idioms)]
+#![allow(explicit_outlives_requirements)]
 
 #![feature(box_patterns)]
 #![feature(box_syntax)]
@@ -46,7 +47,6 @@
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_attrs)]
 #![feature(slice_patterns)]
-#![feature(slice_sort_by_cached_key)]
 #![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(thread_local)]
@@ -62,44 +62,24 @@
 
 #![recursion_limit="512"]
 
-#![warn(elided_lifetimes_in_paths)]
-
-extern crate arena;
 #[macro_use] extern crate bitflags;
-extern crate core;
-extern crate fmt_macros;
 extern crate getopts;
-extern crate graphviz;
-extern crate num_cpus;
 #[macro_use] extern crate lazy_static;
 #[macro_use] extern crate scoped_tls;
 #[cfg(windows)]
 extern crate libc;
-extern crate polonius_engine;
-extern crate rustc_target;
 #[macro_use] extern crate rustc_data_structures;
-extern crate serialize;
-extern crate parking_lot;
-extern crate rustc_errors as errors;
-extern crate rustc_rayon as rayon;
-extern crate rustc_rayon_core as rayon_core;
-extern crate rustc_yk_link;
+
 #[macro_use] extern crate log;
 #[macro_use] extern crate syntax;
-extern crate syntax_pos;
-extern crate jobserver;
-extern crate proc_macro;
-extern crate chalk_engine;
-extern crate rustc_fs_util;
 
-extern crate serialize as rustc_serialize; // used by deriving
+// FIXME: This import is used by deriving `RustcDecodable` and `RustcEncodable`. Removing this
+// results in a bunch of "failed to resolve" errors. Hopefully, the compiler moves to serde or
+// something, and we can get rid of this.
+#[allow(rust_2018_idioms)]
+extern crate serialize as rustc_serialize;
 
-extern crate rustc_apfloat;
-extern crate byteorder;
-extern crate backtrace;
-
-#[macro_use]
-extern crate smallvec;
+#[macro_use] extern crate smallvec;
 
 // Note that librustc doesn't actually depend on these crates, see the note in
 // `Cargo.toml` for this crate about why these are here.
@@ -161,14 +141,8 @@ pub mod util {
     pub mod bug;
 }
 
-// A private module so that macro-expanded idents like
-// `::rustc::lint::Lint` will also work in `rustc` itself.
-//
-// `libstd` uses the same trick.
-#[doc(hidden)]
-mod rustc {
-    pub use lint;
-}
+// Allows macros to refer to this crate as `::rustc`
+extern crate self as rustc;
 
 // FIXME(#27438): right now the unit tests of librustc don't refer to any actual
 //                functions generated in librustc_data_structures (all

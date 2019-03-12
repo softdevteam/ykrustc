@@ -4,13 +4,14 @@ use super::debuginfo::DebugInfoBuilderMethods;
 use super::intrinsic::IntrinsicCallMethods;
 use super::type_::ArgTypeMethods;
 use super::{HasCodegen, StaticBuilderMethods};
-use common::{AtomicOrdering, AtomicRmwBinOp, IntPredicate, RealPredicate, SynchronizationScope};
-use mir::operand::OperandRef;
-use mir::place::PlaceRef;
+use crate::common::{AtomicOrdering, AtomicRmwBinOp, IntPredicate, RealPredicate,
+    SynchronizationScope};
+use crate::mir::operand::OperandRef;
+use crate::mir::place::PlaceRef;
+use crate::MemFlags;
 use rustc::ty::Ty;
 use rustc::ty::layout::{Align, Size};
 use std::ffi::CStr;
-use MemFlags;
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -99,7 +100,7 @@ pub trait BuilderMethods<'a, 'tcx: 'a>:
     fn checked_binop(
         &mut self,
         oop: OverflowOp,
-        ty: Ty,
+        ty: Ty<'_>,
         lhs: Self::Value,
         rhs: Self::Value,
     ) -> (Self::Value, Self::Value);

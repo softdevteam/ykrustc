@@ -1,17 +1,18 @@
 /// Common code for printing the backtrace in the same way across the different
 /// supported platforms.
 
-use env;
-use io::prelude::*;
-use io;
-use path::{self, Path};
-use ptr;
-use rustc_demangle::demangle;
-use str;
-use sync::atomic::{self, Ordering};
-use sys::mutex::Mutex;
+use crate::env;
+use crate::io::prelude::*;
+use crate::io;
+use crate::path::{self, Path};
+use crate::ptr;
+use crate::str;
+use crate::sync::atomic::{self, Ordering};
+use crate::sys::mutex::Mutex;
 
-pub use sys::backtrace::{
+use rustc_demangle::demangle;
+
+pub use crate::sys::backtrace::{
     unwind_backtrace,
     resolve_symname,
     foreach_symbol_fileline,
@@ -171,7 +172,7 @@ pub fn log_enabled() -> Option<PrintFormat> {
     val
 }
 
-/// Print the symbol of the backtrace frame.
+/// Prints the symbol of the backtrace frame.
 ///
 /// These output functions should now be used everywhere to ensure consistency.
 /// You may want to also use `output_fileline`.
@@ -203,7 +204,7 @@ fn output(w: &mut dyn Write, idx: usize, frame: Frame,
     w.write_all(b"\n")
 }
 
-/// Print the filename and line number of the backtrace frame.
+/// Prints the filename and line number of the backtrace frame.
 ///
 /// See also `output`.
 #[allow(dead_code)]

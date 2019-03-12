@@ -491,23 +491,21 @@ pub fn once_with<A, F: FnOnce() -> A>(gen: F) -> OnceWith<F> {
 }
 
 /// Creates a new iterator where each iteration calls the provided closure
-/// `F: FnMut(&mut St) -> Option<T>`.
+/// `F: FnMut() -> Option<T>`.
 ///
 /// This allows creating a custom iterator with any behavior
 /// without using the more verbose syntax of creating a dedicated type
 /// and implementing the `Iterator` trait for it.
 ///
-/// In addition to its captures and environment,
-/// the closure is given a mutable reference to some state
-/// that is preserved across iterations.
-/// That state starts as the given `initial_state` value.
-///
-/// Note that the `Unfold` iterator doesn’t make assumptions about the behavior of the closure,
+/// Note that the `FromFn` iterator doesn’t make assumptions about the behavior of the closure,
 /// and therefore conservatively does not implement [`FusedIterator`],
 /// or override [`Iterator::size_hint`] from its default `(0, None)`.
 ///
 /// [`FusedIterator`]: trait.FusedIterator.html
 /// [`Iterator::size_hint`]: trait.Iterator.html#method.size_hint
+///
+/// The closure can use captures and its environment to track state across iterations. Depending on
+/// how the iterator is used, this may require specifying the `move` keyword on the closure.
 ///
 /// # Examples
 ///
@@ -516,14 +514,14 @@ pub fn once_with<A, F: FnOnce() -> A>(gen: F) -> OnceWith<F> {
 /// [module-level documentation]: index.html
 ///
 /// ```
-/// #![feature(iter_unfold)]
-/// let counter = std::iter::unfold(0, |count| {
+/// let mut count = 0;
+/// let counter = std::iter::from_fn(move || {
 ///     // Increment our count. This is why we started at zero.
-///     *count += 1;
+///     count += 1;
 ///
 ///     // Check to see if we've finished counting or not.
-///     if *count < 6 {
-///         Some(*count)
+///     if count < 6 {
+///         Some(count)
 ///     } else {
 ///         None
 ///     }
@@ -531,47 +529,39 @@ pub fn once_with<A, F: FnOnce() -> A>(gen: F) -> OnceWith<F> {
 /// assert_eq!(counter.collect::<Vec<_>>(), &[1, 2, 3, 4, 5]);
 /// ```
 #[inline]
-#[unstable(feature = "iter_unfold", issue = "55977")]
-pub fn unfold<St, T, F>(initial_state: St, f: F) -> Unfold<St, F>
-    where F: FnMut(&mut St) -> Option<T>
+#[stable(feature = "iter_from_fn", since = "1.34.0")]
+pub fn from_fn<T, F>(f: F) -> FromFn<F>
+    where F: FnMut() -> Option<T>
 {
-    Unfold {
-        state: initial_state,
-        f,
-    }
+    FromFn(f)
 }
 
-/// An iterator where each iteration calls the provided closure `F: FnMut(&mut St) -> Option<T>`.
+/// An iterator where each iteration calls the provided closure `F: FnMut() -> Option<T>`.
 ///
-/// This `struct` is created by the [`unfold`] function.
+/// This `struct` is created by the [`iter::from_fn`] function.
 /// See its documentation for more.
 ///
-/// [`unfold`]: fn.unfold.html
+/// [`iter::from_fn`]: fn.from_fn.html
 #[derive(Clone)]
-#[unstable(feature = "iter_unfold", issue = "55977")]
-pub struct Unfold<St, F> {
-    state: St,
-    f: F,
-}
+#[stable(feature = "iter_from_fn", since = "1.34.0")]
+pub struct FromFn<F>(F);
 
-#[unstable(feature = "iter_unfold", issue = "55977")]
-impl<St, T, F> Iterator for Unfold<St, F>
-    where F: FnMut(&mut St) -> Option<T>
+#[stable(feature = "iter_from_fn", since = "1.34.0")]
+impl<T, F> Iterator for FromFn<F>
+    where F: FnMut() -> Option<T>
 {
     type Item = T;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        (self.f)(&mut self.state)
+        (self.0)()
     }
 }
 
-#[unstable(feature = "iter_unfold", issue = "55977")]
-impl<St: fmt::Debug, F> fmt::Debug for Unfold<St, F> {
+#[stable(feature = "iter_from_fn", since = "1.34.0")]
+impl<F> fmt::Debug for FromFn<F> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Unfold")
-            .field("state", &self.state)
-            .finish()
+        f.debug_struct("FromFn").finish()
     }
 }
 
@@ -581,13 +571,12 @@ impl<St: fmt::Debug, F> fmt::Debug for Unfold<St, F> {
 /// and calls the given `FnMut(&T) -> Option<T>` closure to compute each item’s successor.
 ///
 /// ```
-/// #![feature(iter_unfold)]
 /// use std::iter::successors;
 ///
 /// let powers_of_10 = successors(Some(1_u16), |n| n.checked_mul(10));
 /// assert_eq!(powers_of_10.collect::<Vec<_>>(), &[1, 10, 100, 1_000, 10_000]);
 /// ```
-#[unstable(feature = "iter_unfold", issue = "55977")]
+#[stable(feature = "iter_successors", since = "1.34.0")]
 pub fn successors<T, F>(first: Option<T>, succ: F) -> Successors<T, F>
     where F: FnMut(&T) -> Option<T>
 {
@@ -607,13 +596,13 @@ pub fn successors<T, F>(first: Option<T>, succ: F) -> Successors<T, F>
 ///
 /// [`successors`]: fn.successors.html
 #[derive(Clone)]
-#[unstable(feature = "iter_unfold", issue = "55977")]
+#[stable(feature = "iter_successors", since = "1.34.0")]
 pub struct Successors<T, F> {
     next: Option<T>,
     succ: F,
 }
 
-#[unstable(feature = "iter_unfold", issue = "55977")]
+#[stable(feature = "iter_successors", since = "1.34.0")]
 impl<T, F> Iterator for Successors<T, F>
     where F: FnMut(&T) -> Option<T>
 {
@@ -637,12 +626,12 @@ impl<T, F> Iterator for Successors<T, F>
     }
 }
 
-#[unstable(feature = "iter_unfold", issue = "55977")]
+#[stable(feature = "iter_successors", since = "1.34.0")]
 impl<T, F> FusedIterator for Successors<T, F>
     where F: FnMut(&T) -> Option<T>
 {}
 
-#[unstable(feature = "iter_unfold", issue = "55977")]
+#[stable(feature = "iter_successors", since = "1.34.0")]
 impl<T: fmt::Debug, F> fmt::Debug for Successors<T, F> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Successors")

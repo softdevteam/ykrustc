@@ -1,9 +1,9 @@
 use fmt_macros::{Parser, Piece, Position};
 
-use hir::def_id::DefId;
-use ty::{self, TyCtxt, GenericParamDefKind};
-use util::common::ErrorReported;
-use util::nodemap::FxHashMap;
+use crate::hir::def_id::DefId;
+use crate::ty::{self, TyCtxt, GenericParamDefKind};
+use crate::util::common::ErrorReported;
+use crate::util::nodemap::FxHashMap;
 
 use syntax::ast::{MetaItem, NestedMetaItem};
 use syntax::attr;
@@ -280,7 +280,8 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
         let generics = tcx.generics_of(trait_ref.def_id);
         let generic_map = generics.params.iter().filter_map(|param| {
             let value = match param.kind {
-                GenericParamDefKind::Type {..} => {
+                GenericParamDefKind::Type { .. } |
+                GenericParamDefKind::Const => {
                     trait_ref.substs[param.index as usize].to_string()
                 },
                 GenericParamDefKind::Lifetime => return None

@@ -35,7 +35,7 @@ pub fn change_field_value_struct_like() -> Enum {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_field_value_struct_like() -> Enum {
     Enum::Struct {
@@ -97,7 +97,7 @@ pub fn change_constructor_path_struct_like() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_path_struct_like() {
     let _ = Enum2::Struct {
@@ -120,7 +120,7 @@ pub fn change_constructor_variant_struct_like() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_variant_struct_like() {
     let _ = Enum2::Struct2 {
@@ -140,7 +140,7 @@ pub mod change_constructor_path_indirectly_struct_like {
 
     #[rustc_clean(
         cfg="cfail2",
-        except="FnSignature,Hir,HirBody,MirOptimized,MirValidated,\
+        except="FnSignature,Hir,HirBody,MirOptimized,MirBuilt,\
                 TypeckTables"
     )]
     #[rustc_clean(cfg="cfail3")]
@@ -162,7 +162,7 @@ pub mod change_constructor_variant_indirectly_struct_like {
     #[cfg(not(cfail1))]
     use super::Enum2::Struct2 as Variant;
 
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
     #[rustc_clean(cfg="cfail3")]
     pub fn function() -> Enum2 {
         Variant {
@@ -181,7 +181,7 @@ pub fn change_field_value_tuple_like() -> Enum {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_field_value_tuple_like() -> Enum {
     Enum::Tuple(0, 1, 3)
@@ -198,7 +198,7 @@ pub fn change_constructor_path_tuple_like() {
 #[cfg(not(cfail1))]
 #[rustc_clean(
     cfg="cfail2",
-    except="HirBody,MirOptimized,MirValidated,TypeckTables"
+    except="HirBody,MirOptimized,MirBuilt,TypeckTables"
 )]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_path_tuple_like() {
@@ -216,7 +216,7 @@ pub fn change_constructor_variant_tuple_like() {
 #[cfg(not(cfail1))]
 #[rustc_clean(
     cfg="cfail2",
-    except="HirBody,MirOptimized,MirValidated,TypeckTables"
+    except="HirBody,MirOptimized,MirBuilt,TypeckTables"
 )]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_variant_tuple_like() {
@@ -233,7 +233,7 @@ pub mod change_constructor_path_indirectly_tuple_like {
 
     #[rustc_clean(
         cfg="cfail2",
-        except="FnSignature,Hir,HirBody,MirOptimized,MirValidated,\
+        except="FnSignature,Hir,HirBody,MirOptimized,MirBuilt,\
                 TypeckTables"
     )]
     #[rustc_clean(cfg="cfail3")]
@@ -252,7 +252,7 @@ pub mod change_constructor_variant_indirectly_tuple_like {
     #[cfg(not(cfail1))]
     use super::Enum2::Tuple2 as Variant;
 
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
     #[rustc_clean(cfg="cfail3")]
     pub fn function() -> Enum2 {
         Variant(0, 1, 2)
@@ -279,7 +279,7 @@ pub fn change_constructor_path_c_like() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated,TypeckTables")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt,TypeckTables")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_path_c_like() {
     let _ = Clike2::B;
@@ -294,7 +294,7 @@ pub fn change_constructor_variant_c_like() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+#[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_constructor_variant_c_like() {
     let _ = Clike::C;
@@ -310,7 +310,7 @@ pub mod change_constructor_path_indirectly_c_like {
 
     #[rustc_clean(
         cfg="cfail2",
-        except="FnSignature,Hir,HirBody,MirOptimized,MirValidated,\
+        except="FnSignature,Hir,HirBody,MirOptimized,MirBuilt,\
                 TypeckTables"
     )]
     #[rustc_clean(cfg="cfail3")]
@@ -329,7 +329,7 @@ pub mod change_constructor_variant_indirectly_c_like {
     #[cfg(not(cfail1))]
     use super::Clike::B as Variant;
 
-    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirValidated")]
+    #[rustc_clean(cfg="cfail2", except="HirBody,MirOptimized,MirBuilt")]
     #[rustc_clean(cfg="cfail3")]
     pub fn function() -> Clike {
         Variant

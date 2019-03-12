@@ -1,9 +1,9 @@
 //! Error Reporting for Anonymous Region Lifetime Errors
 //! where both the regions are anonymous.
 
-use infer::error_reporting::nice_region_error::NiceRegionError;
-use infer::error_reporting::nice_region_error::util::AnonymousArgInfo;
-use util::common::ErrorReported;
+use crate::infer::error_reporting::nice_region_error::NiceRegionError;
+use crate::infer::error_reporting::nice_region_error::util::AnonymousArgInfo;
+use crate::util::common::ErrorReported;
 
 impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     /// Print the error message for lifetime errors when both the concerned regions are anonymous.
@@ -39,7 +39,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     ///     x.push(y);
     ///     ^ ...but data from `y` flows into `x` here
     /// }
-    /// ````
+    /// ```
     ///
     /// It will later be extended to trait objects.
     pub(super) fn try_report_anon_anon_conflict(&self) -> Option<ErrorReported> {
@@ -101,7 +101,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
 
         let (span_1, span_2, main_label, span_label) = match (sup_is_ret_type, sub_is_ret_type) {
             (None, None) => {
-                let (main_label_1, span_label_1) = if ty_sup.id == ty_sub.id {
+                let (main_label_1, span_label_1) = if ty_sup.hir_id == ty_sub.hir_id {
                     (
                         "this type is declared with multiple lifetimes...".to_owned(),
                         "...but data with one lifetime flows into the other here".to_owned()

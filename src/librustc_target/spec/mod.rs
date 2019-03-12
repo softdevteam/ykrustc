@@ -40,7 +40,7 @@ use std::default::Default;
 use std::{fmt, io};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use spec::abi::{Abi, lookup as lookup_abi};
+use crate::spec::abi::{Abi, lookup as lookup_abi};
 
 pub mod abi;
 mod android_base;
@@ -75,6 +75,7 @@ pub enum LinkerFlavor {
     Ld,
     Msvc,
     Lld(LldFlavor),
+    PtxLinker,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
@@ -143,6 +144,7 @@ flavor_mappings! {
     ((LinkerFlavor::Gcc), "gcc"),
     ((LinkerFlavor::Ld), "ld"),
     ((LinkerFlavor::Msvc), "msvc"),
+    ((LinkerFlavor::PtxLinker), "ptx-linker"),
     ((LinkerFlavor::Lld(LldFlavor::Wasm)), "wasm-ld"),
     ((LinkerFlavor::Lld(LldFlavor::Ld64)), "ld64.lld"),
     ((LinkerFlavor::Lld(LldFlavor::Ld)), "ld.lld"),
@@ -257,6 +259,11 @@ impl ToJson for MergeFunctions {
     }
 }
 
+pub enum LoadTargetError {
+    BuiltinTargetNotFound(String),
+    Other(String),
+}
+
 pub type LinkArgs = BTreeMap<LinkerFlavor, Vec<String>>;
 pub type TargetResult = Result<Target, String>;
 
@@ -267,21 +274,24 @@ macro_rules! supported_targets {
         /// List of supported targets
         const TARGETS: &[&str] = &[$($triple),*];
 
-        fn load_specific(target: &str) -> TargetResult {
+        fn load_specific(target: &str) -> Result<Target, LoadTargetError> {
             match target {
                 $(
                     $triple => {
-                        let mut t = $module::target()?;
+                        let mut t = $module::target()
+                            .map_err(LoadTargetError::Other)?;
                         t.options.is_builtin = true;
 
                         // round-trip through the JSON parser to ensure at
                         // run-time that the parser works correctly
-                        t = Target::from_json(t.to_json())?;
+                        t = Target::from_json(t.to_json())
+                            .map_err(LoadTargetError::Other)?;
                         debug!("Got builtin target: {:?}", t);
                         Ok(t)
                     },
                 )+
-                _ => Err(format!("Unable to find target: {}", target))
+                    _ => Err(LoadTargetError::BuiltinTargetNotFound(
+                        format!("Unable to find target: {}", target)))
             }
         }
 
@@ -366,6 +376,8 @@ supported_targets! {
     ("aarch64-linux-android", aarch64_linux_android),
 
     ("aarch64-unknown-freebsd", aarch64_unknown_freebsd),
+    ("armv6-unknown-freebsd", armv6_unknown_freebsd),
+    ("armv7-unknown-freebsd", armv7_unknown_freebsd),
     ("i686-unknown-freebsd", i686_unknown_freebsd),
     ("powerpc64-unknown-freebsd", powerpc64_unknown_freebsd),
     ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
@@ -449,12 +461,16 @@ supported_targets! {
 
     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
     ("riscv32imac-unknown-none-elf", riscv32imac_unknown_none_elf),
+    ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
+    ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
 
     ("aarch64-unknown-none", aarch64_unknown_none),
 
     ("x86_64-fortanix-unknown-sgx", x86_64_fortanix_unknown_sgx),
 
     ("x86_64-unknown-uefi", x86_64_unknown_uefi),
+
+    ("nvptx64-nvidia-cuda", nvptx64_nvidia_cuda),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -521,7 +537,7 @@ pub struct TargetOptions {
     pub pre_link_objects_exe_crt: Vec<String>, // ... when linking an executable with a bundled crt
     pub pre_link_objects_dll: Vec<String>, // ... when linking a dylib
     /// Linker arguments that are unconditionally passed after any
-    /// user-defined but before post_link_objects.  Standard platform
+    /// user-defined but before post_link_objects. Standard platform
     /// libraries that should be always be linked to, usually go here.
     pub late_link_args: LinkArgs,
     /// Objects to link after all others, always found within the
@@ -637,7 +653,7 @@ pub struct TargetOptions {
     pub allow_asm: bool,
     /// Whether the target uses a custom unwind resumption routine.
     /// By default LLVM lowers `resume` instructions into calls to `_Unwind_Resume`
-    /// defined in libgcc.  If this option is enabled, the target must provide
+    /// defined in libgcc. If this option is enabled, the target must provide
     /// `eh_unwind_resume` lang item.
     pub custom_unwind_resume: bool,
 
@@ -701,7 +717,7 @@ pub struct TargetOptions {
     /// for this target unconditionally.
     pub no_builtins: bool,
 
-    /// Whether to lower 128-bit operations to compiler_builtins calls.  Use if
+    /// Whether to lower 128-bit operations to compiler_builtins calls. Use if
     /// your backend only supports 64-bit and smaller math.
     pub i128_lowering: bool,
 
@@ -743,7 +759,7 @@ pub struct TargetOptions {
 }
 
 impl Default for TargetOptions {
-    /// Create a set of "sane defaults" for any target. This is still
+    /// Creates a set of "sane defaults" for any target. This is still
     /// incomplete, and if used for compilation, will certainly not work.
     fn default() -> TargetOptions {
         TargetOptions {
@@ -868,7 +884,7 @@ impl Target {
         abi.generic() || !self.options.abi_blacklist.contains(&abi)
     }
 
-    /// Load a target descriptor from a JSON object.
+    /// Loads a target descriptor from a JSON object.
     pub fn from_json(obj: Json) -> TargetResult {
         // While ugly, this code must remain this way to retain
         // compatibility with existing JSON fields and the internal
@@ -1170,8 +1186,10 @@ impl Target {
         match *target_triple {
             TargetTriple::TargetTriple(ref target_triple) => {
                 // check if triple is in list of supported targets
-                if let Ok(t) = load_specific(target_triple) {
-                    return Ok(t)
+                match load_specific(target_triple) {
+                    Ok(t) => return Ok(t),
+                    Err(LoadTargetError::BuiltinTargetNotFound(_)) => (),
+                    Err(LoadTargetError::Other(e)) => return Err(e),
                 }
 
                 // search for a file named `target_triple`.json in RUST_TARGET_PATH
@@ -1404,7 +1422,7 @@ impl TargetTriple {
 }
 
 impl fmt::Display for TargetTriple {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.debug_triple())
     }
 }

@@ -152,6 +152,9 @@ fn check_rvalue(
                 _ => check_operand(tcx, mir, operand, span),
             }
         }
+        Rvalue::Cast(CastKind::MutToConstPointer, operand, _) => {
+            check_operand(tcx, mir, operand, span)
+        }
         Rvalue::Cast(CastKind::UnsafeFnPointer, _, _) |
         Rvalue::Cast(CastKind::ClosureFnPointer, _, _) |
         Rvalue::Cast(CastKind::ReifyFnPointer, _, _) => Err((
@@ -252,10 +255,11 @@ fn check_place(
     span: Span,
 ) -> McfResult {
     match place {
-        Place::Local(_) => Ok(()),
+        Place::Base(PlaceBase::Local(_)) => Ok(()),
         // promoteds are always fine, they are essentially constants
-        Place::Promoted(_) => Ok(()),
-        Place::Static(_) => Err((span, "cannot access `static` items in const fn".into())),
+        Place::Base(PlaceBase::Promoted(_)) => Ok(()),
+        Place::Base(PlaceBase::Static(_)) =>
+            Err((span, "cannot access `static` items in const fn".into())),
         Place::Projection(proj) => {
             match proj.elem {
                 | ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. }
@@ -358,7 +362,7 @@ fn check_terminator(
     }
 }
 
-/// Returns true if the `def_id` refers to an intrisic which we've whitelisted
+/// Returns `true` if the `def_id` refers to an intrisic which we've whitelisted
 /// for being called from stable `const fn`s (`min_const_fn`).
 ///
 /// Adding more intrinsics requires sign-off from @rust-lang/lang.
@@ -374,6 +378,8 @@ fn is_intrinsic_whitelisted(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> bool 
         | "overflowing_add" // ~> .wrapping_add
         | "overflowing_sub" // ~> .wrapping_sub
         | "overflowing_mul" // ~> .wrapping_mul
+        | "saturating_add" // ~> .saturating_add
+        | "saturating_sub" // ~> .saturating_sub
         | "unchecked_shl" // ~> .wrapping_shl
         | "unchecked_shr" // ~> .wrapping_shr
         | "rotate_left" // ~> .rotate_left

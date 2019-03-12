@@ -7,7 +7,7 @@
 //! primitives](#primitives), [standard macros](#macros), [I/O] and
 //! [multithreading], among [many other things][other].
 //!
-//! `std` is available to all Rust crates by default. Therefore the
+//! `std` is available to all Rust crates by default. Therefore, the
 //! standard library can be accessed in [`use`] statements through the path
 //! `std`, as in [`use std::env`].
 //!
@@ -187,7 +187,7 @@
 //! [`sync`]: sync/index.html
 //! [`thread`]: thread/index.html
 //! [`use std::env`]: env/index.html
-//! [`use`]: ../book/ch07-02-modules-and-use-to-control-scope-and-privacy.html#the-use-keyword-to-bring-paths-into-a-scope
+//! [`use`]: ../book/ch07-02-defining-modules-to-control-scope-and-privacy.html
 //! [crates.io]: https://crates.io
 //! [deref-coercions]: ../book/ch15-02-deref.html#implicit-deref-coercions-with-functions-and-methods
 //! [files]: fs/struct.File.html
@@ -196,9 +196,7 @@
 //! [primitive types]: ../book/ch03-02-data-types.html
 
 #![stable(feature = "rust1", since = "1.0.0")]
-#![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
-       html_favicon_url = "https://doc.rust-lang.org/favicon.ico",
-       html_root_url = "https://doc.rust-lang.org/nightly/",
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        html_playground_url = "https://play.rust-lang.org/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
        test(no_crate_inject, attr(deny(warnings))),
@@ -211,44 +209,63 @@
 #![deny(intra_doc_link_resolution_failure)]
 #![deny(missing_debug_implementations)]
 
+#![deny(rust_2018_idioms)]
+#![allow(explicit_outlives_requirements)]
+#![allow(elided_lifetimes_in_paths)]
+
 // Tell the compiler to link to either panic_abort or panic_unwind
 #![needs_panic_runtime]
 
 // std may use features in a platform-specific way
 #![allow(unused_features)]
 
+#![cfg_attr(test, feature(print_internals, set_stdio, test, update_panic_count))]
+#![cfg_attr(all(target_vendor = "fortanix", target_env = "sgx"),
+            feature(global_asm, range_contains, slice_index_methods,
+                    decl_macro, coerce_unsized, sgx_platform, ptr_wrapping_offset_from))]
+
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
-#![cfg_attr(test, feature(test, update_panic_count))]
-#![feature(alloc)]
+// NB: the following list is sorted to minimize merge conflicts.
+#![feature(align_offset)]
 #![feature(alloc_error_handler)]
+#![feature(alloc_layout_extra)]
+#![feature(alloc)]
 #![feature(allocator_api)]
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
-#![feature(align_offset)]
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
 #![feature(asm)]
+#![feature(bind_by_move_pattern_guards)]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
 #![feature(cfg_target_has_atomic)]
 #![feature(cfg_target_thread_local)]
 #![feature(char_error_internals)]
+#![feature(checked_duration_since)]
 #![feature(compiler_builtins_lib)]
 #![feature(concat_idents)]
-#![feature(const_raw_ptr_deref)]
 #![feature(const_cstr_unchecked)]
+#![feature(const_raw_ptr_deref)]
 #![feature(core_intrinsics)]
+#![feature(doc_alias)]
+#![feature(doc_cfg)]
+#![feature(doc_keyword)]
+#![feature(doc_masked)]
+#![feature(doc_spotlight)]
 #![feature(dropck_eyepatch)]
 #![feature(duration_constants)]
 #![feature(exact_size_is_empty)]
+#![feature(exhaustive_patterns)]
 #![feature(external_doc)]
 #![feature(fixed_size_array)]
 #![feature(fn_traits)]
 #![feature(fnbox)]
 #![feature(futures_api)]
 #![feature(generator_trait)]
+#![feature(hash_raw_entry)]
 #![feature(hashmap_internals)]
 #![feature(int_error_internals)]
 #![feature(integer_atomics)]
@@ -256,51 +273,40 @@
 #![feature(libc)]
 #![feature(link_args)]
 #![feature(linkage)]
+#![feature(maybe_uninit)]
 #![feature(needs_panic_runtime)]
 #![feature(never_type)]
 #![feature(nll)]
-#![feature(exhaustive_patterns)]
+#![feature(non_exhaustive)]
 #![feature(on_unimplemented)]
 #![feature(optin_builtin_traits)]
+#![feature(panic_info_message)]
 #![feature(panic_internals)]
 #![feature(panic_unwind)]
 #![feature(prelude_import)]
 #![feature(ptr_internals)]
 #![feature(raw)]
-#![feature(hash_raw_entry)]
+#![feature(renamed_spin_loop)]
 #![feature(rustc_attrs)]
 #![feature(rustc_const_unstable)]
-#![feature(std_internals)]
-#![feature(stdsimd)]
+#![feature(rustc_private)]
 #![feature(shrink_to)]
 #![feature(slice_concat_ext)]
 #![feature(slice_internals)]
 #![feature(slice_patterns)]
 #![feature(staged_api)]
+#![feature(std_internals)]
+#![feature(stdsimd)]
 #![feature(stmt_expr_attributes)]
 #![feature(str_internals)]
-#![feature(renamed_spin_loop)]
-#![feature(rustc_private)]
 #![feature(thread_local)]
 #![feature(toowned_clone_into)]
-#![feature(try_from)]
 #![feature(try_reserve)]
 #![feature(unboxed_closures)]
 #![feature(untagged_unions)]
 #![feature(unwind_attributes)]
-#![feature(doc_cfg)]
-#![feature(doc_masked)]
-#![feature(doc_spotlight)]
-#![feature(doc_alias)]
-#![feature(doc_keyword)]
-#![feature(panic_info_message)]
-#![feature(non_exhaustive)]
-#![feature(alloc_layout_extra)]
 #![feature(yk_swt)]
-#![feature(maybe_uninit)]
-#![cfg_attr(all(target_vendor = "fortanix", target_env = "sgx"),
-            feature(global_asm, range_contains, slice_index_methods,
-                    decl_macro, coerce_unsized, sgx_platform, ptr_wrapping_offset_from))]
+// NB: the above list is sorted to minimize merge conflicts.
 
 #![default_lib_allocator]
 
@@ -312,28 +318,24 @@ use prelude::v1::*;
 
 // Access to Bencher, etc.
 #[cfg(test)] extern crate test;
-#[cfg(test)] extern crate rand;
 
 // Re-export a few macros from core
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::{assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core::{unreachable, unimplemented, write, writeln, try};
+pub use core::{unreachable, unimplemented, write, writeln, r#try};
 
 #[allow(unused_imports)] // macros from `alloc` are not used on all platforms
 #[macro_use]
 extern crate alloc as alloc_crate;
 #[doc(masked)]
+#[allow(unused_extern_crates)]
 extern crate libc;
-extern crate rustc_demangle;
 
 // We always need an unwinder currently for backtraces
 #[doc(masked)]
 #[allow(unused_extern_crates)]
 extern crate unwind;
-
-#[cfg(feature = "backtrace")]
-extern crate backtrace_sys;
 
 // During testing, this crate is not actually the "real" std library, but rather
 // it links to the real std library, which was compiled from this same source
@@ -342,12 +344,6 @@ extern crate backtrace_sys;
 // _not_ the globals used by "real" std. So this import, defined only during
 // testing gives test-std access to real-std lang items and globals. See #2912
 #[cfg(test)] extern crate std as realstd;
-
-#[cfg(all(target_vendor = "fortanix", target_env = "sgx"))]
-#[macro_use]
-#[allow(unused_imports)] // FIXME: without `#[macro_use]`, get error: “cannot
-                         // determine resolution for the macro `usercalls_asm`”
-extern crate fortanix_sgx_abi;
 
 // The standard macros that are not built-in to the compiler.
 #[macro_use]
@@ -469,8 +465,6 @@ pub mod task {
     //! Types and Traits for working with asynchronous tasks.
     #[doc(inline)]
     pub use core::task::*;
-    #[doc(inline)]
-    pub use alloc_crate::task::*;
 }
 
 #[unstable(feature = "futures_api",

@@ -1,15 +1,16 @@
-use hir::def_id::DefId;
-use hir::map::definitions::DefPathData;
-use middle::region;
-use ty::subst::{self, Subst};
-use ty::{BrAnon, BrEnv, BrFresh, BrNamed};
-use ty::{Bool, Char, Adt};
-use ty::{Error, Str, Array, Slice, Float, FnDef, FnPtr};
-use ty::{Param, Bound, RawPtr, Ref, Never, Tuple};
-use ty::{Closure, Generator, GeneratorWitness, Foreign, Projection, Opaque};
-use ty::{Placeholder, UnnormalizedProjection, Dynamic, Int, Uint, Infer};
-use ty::{self, Ty, TyCtxt, TypeFoldable, GenericParamCount, GenericParamDefKind};
-use util::nodemap::FxHashSet;
+use crate::hir::def_id::DefId;
+use crate::hir::map::definitions::DefPathData;
+use crate::middle::region;
+use crate::ty::subst::{self, Subst, SubstsRef};
+use crate::ty::{BrAnon, BrEnv, BrFresh, BrNamed};
+use crate::ty::{Bool, Char, Adt};
+use crate::ty::{Error, Str, Array, Slice, Float, FnDef, FnPtr};
+use crate::ty::{Param, Bound, RawPtr, Ref, Never, Tuple};
+use crate::ty::{Closure, Generator, GeneratorWitness, Foreign, Projection, Opaque};
+use crate::ty::{Placeholder, UnnormalizedProjection, Dynamic, Int, Uint, Infer};
+use crate::ty::{self, Ty, TyCtxt, TypeFoldable, GenericParamCount, GenericParamDefKind, ParamConst};
+use crate::mir::interpret::ConstValue;
+use crate::util::nodemap::FxHashSet;
 
 use std::cell::Cell;
 use std::fmt;
@@ -18,23 +19,23 @@ use std::usize;
 use rustc_target::spec::abi::Abi;
 use syntax::ast::CRATE_NODE_ID;
 use syntax::symbol::{Symbol, InternedString};
-use hir;
+use crate::hir;
 
 /// The "region highlights" are used to control region printing during
 /// specific error messages. When a "region highlight" is enabled, it
 /// gives an alternate way to print specific regions. For now, we
-/// always print those regions using a number, so something like `'0`.
+/// always print those regions using a number, so something like "`'0`".
 ///
 /// Regions not selected by the region highlight mode are presently
 /// unaffected.
 #[derive(Copy, Clone, Default)]
 pub struct RegionHighlightMode {
-    /// If enabled, when we see the selected region, use `"'N"`
+    /// If enabled, when we see the selected region, use "`'N`"
     /// instead of the ordinary behavior.
     highlight_regions: [Option<(ty::RegionKind, usize)>; 3],
 
     /// If enabled, when printing a "free region" that originated from
-    /// the given `ty::BoundRegion`, print it as `'1`. Free regions that would ordinarily
+    /// the given `ty::BoundRegion`, print it as "`'1`". Free regions that would ordinarily
     /// have names print as normal.
     ///
     /// This is used when you have a signature like `fn foo(x: &u32,
@@ -51,12 +52,12 @@ thread_local! {
 }
 
 impl RegionHighlightMode {
-    /// Read and return current region highlight settings (accesses thread-local state).a
+    /// Reads and returns the current region highlight settings (accesses thread-local state).
     pub fn get() -> Self {
         REGION_HIGHLIGHT_MODE.with(|c| c.get())
     }
 
-    /// Internal helper to update current settings during the execution of `op`.
+    // Internal helper to update current settings during the execution of `op`.
     fn set<R>(
         old_mode: Self,
         new_mode: Self,
@@ -70,8 +71,8 @@ impl RegionHighlightMode {
         })
     }
 
-    /// If `region` and `number` are both `Some`, invoke
-    /// `highlighting_region`. Otherwise, just invoke `op` directly.
+    /// If `region` and `number` are both `Some`, invokes
+    /// `highlighting_region`; otherwise, just invokes `op` directly.
     pub fn maybe_highlighting_region<R>(
         region: Option<ty::Region<'_>>,
         number: Option<usize>,
@@ -86,8 +87,8 @@ impl RegionHighlightMode {
         op()
     }
 
-    /// During the execution of `op`, highlight the region inference
-    /// vairable `vid` as `'N`.  We can only highlight one region vid
+    /// During the execution of `op`, highlights the region inference
+    /// variable `vid` as `'N`. We can only highlight one region `vid`
     /// at a time.
     pub fn highlighting_region<R>(
         region: ty::Region<'_>,
@@ -109,7 +110,7 @@ impl RegionHighlightMode {
         Self::set(old_mode, new_mode, op)
     }
 
-    /// Convenience wrapper for `highlighting_region`
+    /// Convenience wrapper for `highlighting_region`.
     pub fn highlighting_region_vid<R>(
         vid: ty::RegionVid,
         number: usize,
@@ -118,7 +119,7 @@ impl RegionHighlightMode {
         Self::highlighting_region(&ty::ReVar(vid), number, op)
     }
 
-    /// Returns true if any placeholders are highlighted.
+    /// Returns `true` if any placeholders are highlighted, and `false` otherwise.
     fn any_region_vids_highlighted(&self) -> bool {
         Self::get()
             .highlight_regions
@@ -129,8 +130,7 @@ impl RegionHighlightMode {
             })
     }
 
-    /// Returns `Some(n)` with the number to use for the given region,
-    /// if any.
+    /// Returns `Some(n)` with the number to use for the given region, if any.
     fn region_highlighted(&self, region: ty::Region<'_>) -> Option<usize> {
         Self::get()
             .highlight_regions
@@ -143,7 +143,7 @@ impl RegionHighlightMode {
     }
 
     /// During the execution of `op`, highlight the given bound
-    /// region. We can only highlight one bound region at a time.  See
+    /// region. We can only highlight one bound region at a time. See
     /// the field `highlight_bound_region` for more detailed notes.
     pub fn highlighting_bound_region<R>(
         br: ty::BoundRegion,
@@ -162,7 +162,7 @@ impl RegionHighlightMode {
         )
     }
 
-    /// Returns true if any placeholders are highlighted.
+    /// Returns `true` if any placeholders are highlighted, and `false` otherwise.
     pub fn any_placeholders_highlighted(&self) -> bool {
         Self::get()
             .highlight_regions
@@ -173,7 +173,7 @@ impl RegionHighlightMode {
             })
     }
 
-    /// Returns `Some(N)` if the placeholder `p` is highlighted to print as `'N`.
+    /// Returns `Some(N)` if the placeholder `p` is highlighted to print as "`'N`".
     pub fn placeholder_highlight(&self, p: ty::PlaceholderRegion) -> Option<usize> {
         self.region_highlighted(&ty::RePlaceholder(p))
     }
@@ -361,7 +361,7 @@ impl PrintContext {
     fn fn_sig<F: fmt::Write>(&mut self,
                              f: &mut F,
                              inputs: &[Ty<'_>],
-                             variadic: bool,
+                             c_variadic: bool,
                              output: Ty<'_>)
                              -> fmt::Result {
         write!(f, "(")?;
@@ -371,7 +371,7 @@ impl PrintContext {
             for &ty in inputs {
                 print!(f, self, write(", "), print_display(ty))?;
             }
-            if variadic {
+            if c_variadic {
                 write!(f, ", ...")?;
             }
         }
@@ -385,7 +385,7 @@ impl PrintContext {
 
     fn parameterized<F: fmt::Write>(&mut self,
                                     f: &mut F,
-                                    substs: &subst::Substs<'_>,
+                                    substs: SubstsRef<'_>,
                                     did: DefId,
                                     projections: &[ty::ProjectionPredicate<'_>])
                                     -> fmt::Result {
@@ -426,6 +426,7 @@ impl PrintContext {
                     DefPathData::ClosureExpr |
                     DefPathData::TypeParam(_) |
                     DefPathData::LifetimeParam(_) |
+                    DefPathData::ConstParam(_) |
                     DefPathData::Field(_) |
                     DefPathData::StructCtor |
                     DefPathData::AnonConst |
@@ -478,6 +479,7 @@ impl PrintContext {
                         GenericParamDefKind::Type { has_default, .. } => {
                             Some((param.def_id, has_default))
                         }
+                        GenericParamDefKind::Const => None, // FIXME(const_generics:defaults)
                     }).peekable();
                 let has_default = {
                     let has_default = type_params.peek().map(|(_, has_default)| has_default);
@@ -569,6 +571,14 @@ impl PrintContext {
                              tcx.associated_item(projection.projection_ty.item_def_id).ident),
                        print_display(projection.ty))
             )?;
+        }
+
+        // FIXME(const_generics::defaults)
+        let consts = substs.consts();
+
+        for ct in consts {
+            start_or_continue(f, "<", ", ")?;
+            ct.print_display(f, self)?;
         }
 
         start_or_continue(f, "", ">")?;
@@ -692,7 +702,7 @@ pub fn identify_regions() -> bool {
 }
 
 pub fn parameterized<F: fmt::Write>(f: &mut F,
-                                    substs: &subst::Substs<'_>,
+                                    substs: SubstsRef<'_>,
                                     did: DefId,
                                     projections: &[ty::ProjectionPredicate<'_>])
                                     -> fmt::Result {
@@ -763,7 +773,8 @@ impl fmt::Debug for ty::GenericParamDef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let type_name = match self.kind {
             ty::GenericParamDefKind::Lifetime => "Lifetime",
-            ty::GenericParamDefKind::Type {..} => "Type",
+            ty::GenericParamDefKind::Type { .. } => "Type",
+            ty::GenericParamDefKind::Const => "Const",
         };
         write!(f, "{}({}, {:?}, {})",
                type_name,
@@ -801,7 +812,7 @@ impl fmt::Debug for ty::UpvarId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "UpvarId({:?};`{}`;{:?})",
                self.var_path.hir_id,
-               ty::tls::with(|tcx| tcx.hir().name(tcx.hir().hir_to_node_id(self.var_path.hir_id))),
+               ty::tls::with(|tcx| tcx.hir().name_by_hir_id(self.var_path.hir_id)),
                self.closure_expr_id)
     }
 }
@@ -1074,10 +1085,10 @@ define_print! {
             }
 
             write!(f, "fn")?;
-            cx.fn_sig(f, self.inputs(), self.variadic, self.output())
+            cx.fn_sig(f, self.inputs(), self.c_variadic, self.output())
         }
         debug {
-            write!(f, "({:?}; variadic: {})->{:?}", self.inputs(), self.variadic, self.output())
+            write!(f, "({:?}; c_variadic: {})->{:?}", self.inputs(), self.c_variadic, self.output())
         }
     }
 }
@@ -1085,6 +1096,12 @@ define_print! {
 impl fmt::Debug for ty::TyVid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "_#{}t", self.index)
+    }
+}
+
+impl<'tcx> fmt::Debug for ty::ConstVid<'tcx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "_#{}f", self.index)
     }
 }
 
@@ -1290,7 +1307,7 @@ define_print! {
                         Ok(())
                     }
                 }
-                Foreign(def_id) => parameterized(f, subst::Substs::empty(), def_id, &[]),
+                Foreign(def_id) => parameterized(f, subst::InternalSubsts::empty(), def_id, &[]),
                 Projection(ref data) => data.print(f, cx),
                 UnnormalizedProjection(ref data) => {
                     write!(f, "Unnormalized(")?;
@@ -1363,10 +1380,10 @@ define_print! {
                         write!(f, "[static generator")?;
                     }
 
-                    if let Some(node_id) = tcx.hir().as_local_node_id(did) {
-                        write!(f, "@{:?}", tcx.hir().span(node_id))?;
+                    if let Some(hir_id) = tcx.hir().as_local_hir_id(did) {
+                        write!(f, "@{:?}", tcx.hir().span_by_hir_id(hir_id))?;
                         let mut sep = " ";
-                        tcx.with_freevars(node_id, |freevars| {
+                        tcx.with_freevars(hir_id, |freevars| {
                             for (freevar, upvar_ty) in freevars.iter().zip(upvar_tys) {
                                 print!(f, cx,
                                        write("{}{}:",
@@ -1399,14 +1416,14 @@ define_print! {
                     let upvar_tys = substs.upvar_tys(did, tcx);
                     write!(f, "[closure")?;
 
-                    if let Some(node_id) = tcx.hir().as_local_node_id(did) {
+                    if let Some(hir_id) = tcx.hir().as_local_hir_id(did) {
                         if tcx.sess.opts.debugging_opts.span_free_formats {
-                            write!(f, "@{:?}", node_id)?;
+                            write!(f, "@{:?}", hir_id)?;
                         } else {
-                            write!(f, "@{:?}", tcx.hir().span(node_id))?;
+                            write!(f, "@{:?}", tcx.hir().span_by_hir_id(hir_id))?;
                         }
                         let mut sep = " ";
-                        tcx.with_freevars(node_id, |freevars| {
+                        tcx.with_freevars(hir_id, |freevars| {
                             for (freevar, upvar_ty) in freevars.iter().zip(upvar_tys) {
                                 print!(f, cx,
                                        write("{}{}:",
@@ -1430,6 +1447,15 @@ define_print! {
                         }
                     }
 
+                    if cx.is_verbose {
+                        write!(
+                            f,
+                            " closure_kind_ty={:?} closure_sig_ty={:?}",
+                            substs.closure_kind_ty(did, tcx),
+                            substs.closure_sig_ty(did, tcx),
+                        )?;
+                    }
+
                     write!(f, "]")
                 }),
                 Array(ty, sz) => {
@@ -1439,7 +1465,12 @@ define_print! {
                             write!(f, "_")?;
                         }
                         ty::LazyConst::Evaluated(c) => ty::tls::with(|tcx| {
-                            write!(f, "{}", c.unwrap_usize(tcx))
+                            match c.val {
+                                ConstValue::Infer(..) => write!(f, "_"),
+                                ConstValue::Param(ParamConst { name, .. }) =>
+                                    write!(f, "{}", name),
+                                _ => write!(f, "{}", c.unwrap_usize(tcx)),
+                            }
                         })?,
                     }
                     write!(f, "]")
@@ -1464,12 +1495,54 @@ define_print! {
 }
 
 define_print! {
+    ('tcx) ConstValue<'tcx>, (self, f, cx) {
+        display {
+            match self {
+                ConstValue::Infer(..) => write!(f, "_"),
+                ConstValue::Param(ParamConst { name, .. }) => write!(f, "{}", name),
+                _ => write!(f, "{:?}", self),
+            }
+        }
+    }
+}
+
+define_print! {
+    ('tcx) ty::Const<'tcx>, (self, f, cx) {
+        display {
+            write!(f, "{} : {}", self.val, self.ty)
+        }
+    }
+}
+
+define_print! {
+    ('tcx) ty::LazyConst<'tcx>, (self, f, cx) {
+        display {
+            match self {
+                ty::LazyConst::Unevaluated(..) => write!(f, "_ : _"),
+                ty::LazyConst::Evaluated(c) => write!(f, "{}", c),
+            }
+        }
+    }
+}
+
+define_print! {
     () ty::ParamTy, (self, f, cx) {
         display {
             write!(f, "{}", self.name)
         }
         debug {
             write!(f, "{}/#{}", self.name, self.idx)
+        }
+    }
+}
+
+define_print! {
+    () ty::ParamConst, (self, f, cx) {
+        display {
+            write!(f, "{}", self.name)
+        }
+        debug {
+            write!(f, "{}/#{}", self.name, self.index)
         }
     }
 }

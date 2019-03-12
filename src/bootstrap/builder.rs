@@ -60,23 +60,23 @@ pub trait Step: 'static + Clone + Debug + PartialEq + Eq + Hash {
     /// Run this rule for all hosts without cross compiling.
     const ONLY_HOSTS: bool = false;
 
-    /// Primary function to execute this rule. Can call `builder.ensure(...)`
+    /// Primary function to execute this rule. Can call `builder.ensure()`
     /// with other steps to run those.
-    fn run(self, builder: &Builder) -> Self::Output;
+    fn run(self, builder: &Builder<'_>) -> Self::Output;
 
     /// When bootstrap is passed a set of paths, this controls whether this rule
     /// will execute. However, it does not get called in a "default" context
-    /// when we are not passed any paths; in that case, make_run is called
+    /// when we are not passed any paths; in that case, `make_run` is called
     /// directly.
-    fn should_run(run: ShouldRun) -> ShouldRun;
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_>;
 
-    /// Build up a "root" rule, either as a default rule or from a path passed
+    /// Builds up a "root" rule, either as a default rule or from a path passed
     /// to us.
     ///
     /// When path is `None`, we are executing in a context where no paths were
     /// passed. When `./x.py build` is run, for example, this rule could get
     /// called if it is in the correct list below with a path of `None`.
-    fn make_run(_run: RunConfig) {
+    fn make_run(_run: RunConfig<'_>) {
         // It is reasonable to not have an implementation of make_run for rules
         // who do not want to get called from the root context. This means that
         // they are likely dependencies (e.g., sysroot creation) or similar, and
@@ -95,8 +95,8 @@ pub struct RunConfig<'a> {
 struct StepDescription {
     default: bool,
     only_hosts: bool,
-    should_run: fn(ShouldRun) -> ShouldRun,
-    make_run: fn(RunConfig),
+    should_run: fn(ShouldRun<'_>) -> ShouldRun<'_>,
+    make_run: fn(RunConfig<'_>),
     name: &'static str,
 }
 
@@ -124,7 +124,7 @@ impl PathSet {
         }
     }
 
-    fn path(&self, builder: &Builder) -> PathBuf {
+    fn path(&self, builder: &Builder<'_>) -> PathBuf {
         match self {
             PathSet::Set(set) => set
                 .iter()
@@ -147,7 +147,7 @@ impl StepDescription {
         }
     }
 
-    fn maybe_run(&self, builder: &Builder, pathset: &PathSet) {
+    fn maybe_run(&self, builder: &Builder<'_>, pathset: &PathSet) {
         if builder.config.exclude.iter().any(|e| pathset.has(e)) {
             eprintln!("Skipping {:?} because it is excluded", pathset);
             return;
@@ -183,7 +183,7 @@ impl StepDescription {
         }
     }
 
-    fn run(v: &[StepDescription], builder: &Builder, paths: &[PathBuf]) {
+    fn run(v: &[StepDescription], builder: &Builder<'_>, paths: &[PathBuf]) {
         let should_runs = v
             .iter()
             .map(|desc| (desc.should_run)(ShouldRun::new(builder)))
@@ -245,7 +245,7 @@ pub struct ShouldRun<'a> {
 }
 
 impl<'a> ShouldRun<'a> {
-    fn new(builder: &'a Builder) -> ShouldRun<'a> {
+    fn new(builder: &'a Builder<'_>) -> ShouldRun<'a> {
         ShouldRun {
             builder,
             paths: BTreeSet::new(),
@@ -326,7 +326,7 @@ pub enum Kind {
 impl<'a> Builder<'a> {
     fn get_step_descriptions(kind: Kind) -> Vec<StepDescription> {
         macro_rules! describe {
-            ($($rule:ty),+ $(,)*) => {{
+            ($($rule:ty),+ $(,)?) => {{
                 vec![$(StepDescription::from::<$rule>()),+]
             }};
         }
@@ -400,6 +400,7 @@ impl<'a> Builder<'a> {
                 test::TheBook,
                 test::UnstableBook,
                 test::RustcBook,
+                test::EmbeddedBook,
                 test::Rustfmt,
                 test::Miri,
                 test::Clippy,
@@ -430,6 +431,7 @@ impl<'a> Builder<'a> {
                 doc::RustByExample,
                 doc::RustcBook,
                 doc::CargoBook,
+                doc::EmbeddedBook,
                 doc::EditionGuide,
             ),
             Kind::Dist => describe!(
@@ -509,7 +511,7 @@ impl<'a> Builder<'a> {
         Some(help)
     }
 
-    pub fn new(build: &Build) -> Builder {
+    pub fn new(build: &Build) -> Builder<'_> {
         let (kind, paths) = match build.config.cmd {
             Subcommand::Build { ref paths } => (Kind::Build, &paths[..]),
             Subcommand::Check { ref paths } => (Kind::Check, &paths[..]),
@@ -589,11 +591,11 @@ impl<'a> Builder<'a> {
         impl Step for Libdir {
             type Output = Interned<PathBuf>;
 
-            fn should_run(run: ShouldRun) -> ShouldRun {
+            fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
                 run.never()
             }
 
-            fn run(self, builder: &Builder) -> Interned<PathBuf> {
+            fn run(self, builder: &Builder<'_>) -> Interned<PathBuf> {
                 let compiler = self.compiler;
                 let config = &builder.build.config;
                 let lib = if compiler.stage >= 1 && config.libdir_relative().is_some() {
@@ -646,7 +648,7 @@ impl<'a> Builder<'a> {
         add_lib_path(vec![self.rustc_libdir(compiler)], cmd);
     }
 
-    /// Get a path to the compiler specified.
+    /// Gets a path to the compiler specified.
     pub fn rustc(&self, compiler: Compiler) -> PathBuf {
         if compiler.is_snapshot(self) {
             self.initial_rustc.clone()
@@ -657,7 +659,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    /// Get the paths to all of the compiler's codegen backends.
+    /// Gets the paths to all of the compiler's codegen backends.
     fn codegen_backends(&self, compiler: Compiler) -> impl Iterator<Item = PathBuf> {
         fs::read_dir(self.sysroot_codegen_backends(compiler))
             .into_iter()
@@ -675,10 +677,9 @@ impl<'a> Builder<'a> {
         let compiler = self.compiler(self.top_stage, host);
         cmd.env("RUSTC_STAGE", compiler.stage.to_string())
             .env("RUSTC_SYSROOT", self.sysroot(compiler))
-            .env(
-                "RUSTDOC_LIBDIR",
-                self.sysroot_libdir(compiler, self.config.build),
-            )
+            // Note that this is *not* the sysroot_libdir because rustdoc must be linked
+            // equivalently to rustc.
+            .env("RUSTDOC_LIBDIR", self.rustc_libdir(compiler))
             .env("CFG_RELEASE_CHANNEL", &self.config.channel)
             .env("RUSTDOC_REAL", self.rustdoc(host))
             .env("RUSTDOC_CRATE_VERSION", self.rust_version())
@@ -811,6 +812,17 @@ impl<'a> Builder<'a> {
             cargo.env("RUST_CHECK", "1");
         }
 
+        match mode {
+            Mode::Std | Mode::Test | Mode::ToolBootstrap | Mode::ToolStd | Mode::ToolTest=> {},
+            Mode::Rustc | Mode::Codegen | Mode::ToolRustc => {
+                // Build proc macros both for the host and the target
+                if target != compiler.host && cmd != "check" {
+                    cargo.arg("-Zdual-proc-macros");
+                    cargo.env("RUST_DUAL_PROC_MACROS", "1");
+                }
+            },
+        }
+
         cargo.arg("-j").arg(self.jobs().to_string());
         // Remove make-related flags to ensure Cargo can correctly set things up
         cargo.env_remove("MAKEFLAGS");
@@ -872,7 +884,7 @@ impl<'a> Builder<'a> {
         } else {
             &maybe_sysroot
         };
-        let libdir = sysroot.join(libdir(&compiler.host));
+        let libdir = self.rustc_libdir(compiler);
 
         // Customize the compiler we're running. Specify the compiler to cargo
         // as our shim and then pass it some various options used to configure
@@ -914,7 +926,7 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_ERROR_FORMAT", error_format);
         }
         if cmd != "build" && cmd != "check" && cmd != "rustc" && want_rustdoc {
-            cargo.env("RUSTDOC_LIBDIR", self.sysroot_libdir(compiler, self.config.build));
+            cargo.env("RUSTDOC_LIBDIR", self.rustc_libdir(compiler));
         }
 
         if mode.is_tool() {
@@ -1017,8 +1029,7 @@ impl<'a> Builder<'a> {
 
         cargo.env("RUSTC_VERBOSE", self.verbosity.to_string());
 
-        // in std, we want to avoid denying warnings for stage 0 as that makes cfg's painful.
-        if self.config.deny_warnings && !(mode == Mode::Std && stage == 0) {
+        if self.config.deny_warnings {
             cargo.env("RUSTC_DENY_WARNINGS", "1");
         }
 

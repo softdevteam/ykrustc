@@ -1,6 +1,6 @@
-pub use llvm::Value;
+pub use crate::llvm::Value;
 
-use llvm;
+use crate::llvm;
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -22,7 +22,7 @@ impl Hash for Value {
 
 
 impl fmt::Debug for Value {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&llvm::build_string(|s| unsafe {
             llvm::LLVMRustWriteValueToString(self, s);
         }).expect("non-UTF8 value description from LLVM"))

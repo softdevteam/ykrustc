@@ -1,6 +1,5 @@
 #![cfg_attr(test, allow(dead_code))]
 
-use libc;
 use self::imp::{make_handler, drop_handler};
 
 pub use self::imp::cleanup;
@@ -34,17 +33,17 @@ impl Drop for Handler {
           target_os = "openbsd"))]
 mod imp {
     use super::Handler;
-    use mem;
-    use ptr;
+    use crate::mem;
+    use crate::ptr;
+
     use libc::{sigaltstack, SIGSTKSZ, SS_DISABLE};
     use libc::{sigaction, SIGBUS, SIG_DFL,
                SA_SIGINFO, SA_ONSTACK, sighandler_t};
-    use libc;
     use libc::{mmap, munmap};
     use libc::{SIGSEGV, PROT_READ, PROT_WRITE, MAP_PRIVATE, MAP_ANON};
     use libc::MAP_FAILED;
 
-    use sys_common::thread_info;
+    use crate::sys_common::thread_info;
 
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -91,7 +90,7 @@ mod imp {
         use core::yk_swt;
         yk_swt::invalidate_trace();
 
-        use sys_common::util::report_overflow;
+        use crate::sys_common::util::report_overflow;
 
         let guard = thread_info::stack_guard().unwrap_or(0..0);
         let addr = siginfo_si_addr(info);
@@ -197,7 +196,7 @@ mod imp {
               all(target_os = "netbsd", not(target_vendor = "rumprun")),
               target_os = "openbsd")))]
 mod imp {
-    use ptr;
+    use crate::ptr;
 
     pub unsafe fn init() {
     }

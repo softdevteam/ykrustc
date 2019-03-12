@@ -52,11 +52,11 @@
 // You'll find a few more details in the implementation, but that's the gist of
 // it!
 
-use fmt;
-use marker;
-use ptr;
-use sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-use thread::{self, Thread};
+use crate::fmt;
+use crate::marker;
+use crate::ptr;
+use crate::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use crate::thread::{self, Thread};
 
 /// A synchronization primitive which can be used to run a one-time global
 /// initialization. Useful for one-time initialization for FFI or related
@@ -228,7 +228,7 @@ impl Once {
     /// result in an immediate panic. If `f` panics, the `Once` will remain
     /// in a poison state. If `f` does _not_ panic, the `Once` will no
     /// longer be in a poison state and all future calls to `call_once` or
-    /// `call_one_force` will no-op.
+    /// `call_one_force` will be no-ops.
     ///
     /// The closure `f` is yielded a [`OnceState`] structure which can be used
     /// to query the poison status of the `Once`.
@@ -279,7 +279,7 @@ impl Once {
         });
     }
 
-    /// Returns true if some `call_once` call has completed
+    /// Returns `true` if some `call_once` call has completed
     /// successfully. Specifically, `is_completed` will return false in
     /// the following situations:
     ///   * `call_once` was not called at all,
@@ -436,7 +436,7 @@ impl fmt::Debug for Once {
     }
 }
 
-impl<'a> Drop for Finish<'a> {
+impl Drop for Finish<'_> {
     fn drop(&mut self) {
         // Swap out our state with however we finished. We should only ever see
         // an old state which was RUNNING.
@@ -465,7 +465,7 @@ impl<'a> Drop for Finish<'a> {
 }
 
 impl OnceState {
-    /// Returns whether the associated [`Once`] was poisoned prior to the
+    /// Returns `true` if the associated [`Once`] was poisoned prior to the
     /// invocation of the closure passed to [`call_once_force`].
     ///
     /// [`call_once_force`]: struct.Once.html#method.call_once_force
@@ -514,9 +514,9 @@ impl OnceState {
 
 #[cfg(all(test, not(target_os = "emscripten")))]
 mod tests {
-    use panic;
-    use sync::mpsc::channel;
-    use thread;
+    use crate::panic;
+    use crate::sync::mpsc::channel;
+    use crate::thread;
     use super::Once;
 
     #[test]

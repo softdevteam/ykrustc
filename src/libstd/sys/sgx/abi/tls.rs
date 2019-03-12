@@ -1,8 +1,8 @@
-use sync::atomic::{AtomicUsize, Ordering};
-use ptr;
-use mem;
-use cell::Cell;
-use num::NonZeroUsize;
+use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::ptr;
+use crate::mem;
+use crate::cell::Cell;
+use crate::num::NonZeroUsize;
 use self::sync_bitset::*;
 
 #[cfg(target_pointer_width="64")]
@@ -152,9 +152,9 @@ impl Tls {
 }
 
 mod sync_bitset {
-    use sync::atomic::{AtomicUsize, Ordering};
-    use iter::{Enumerate, Peekable};
-    use slice::Iter;
+    use crate::sync::atomic::{AtomicUsize, Ordering};
+    use crate::iter::{Enumerate, Peekable};
+    use crate::slice::Iter;
     use super::{TLS_KEYS_BITSET_SIZE, USIZE_BITS};
 
     /// A bitset that can be used synchronously.
@@ -182,7 +182,7 @@ mod sync_bitset {
             self.0[hi].fetch_and(!lo, Ordering::Relaxed);
         }
 
-        /// Set any unset bit. Not atomic. Returns `None` if all bits were
+        /// Sets any unset bit. Not atomic. Returns `None` if all bits were
         /// observed to be set.
         pub fn set(&self) -> Option<usize> {
             'elems: for (idx, elem) in self.0.iter().enumerate() {

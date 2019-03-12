@@ -1,8 +1,8 @@
-//! Markdown formatting for rustdoc
+//! Markdown formatting for rustdoc.
 //!
 //! This module implements markdown formatting through the pulldown-cmark
 //! rust-library. This module exposes all of the
-//! functionality through a unit-struct, `Markdown`, which has an implementation
+//! functionality through a unit struct, `Markdown`, which has an implementation
 //! of `fmt::Display`. Example usage:
 //!
 //! ```
@@ -29,9 +29,9 @@ use std::ops::Range;
 use std::str;
 use syntax::edition::Edition;
 
-use html::toc::TocBuilder;
-use html::highlight;
-use test;
+use crate::html::toc::TocBuilder;
+use crate::html::highlight;
+use crate::test;
 
 use pulldown_cmark::{html, Event, Tag, Parser};
 use pulldown_cmark::{Options, OPTION_ENABLE_FOOTNOTES, OPTION_ENABLE_TABLES};
@@ -101,7 +101,7 @@ impl<'a> Line<'a> {
 // is done in the single # case. This inconsistency seems okay, if non-ideal. In
 // order to fix it we'd have to iterate to find the first non-# character, and
 // then reallocate to remove it; which would make us return a String.
-fn map_line(s: &str) -> Line {
+fn map_line(s: &str) -> Line<'_> {
     let trimmed = s.trim();
     if trimmed.starts_with("##") {
         Line::Shown(Cow::Owned(s.replacen("##", "#", 1)))
@@ -139,7 +139,7 @@ thread_local!(pub static PLAYGROUND: RefCell<Option<(Option<String>, String)>> =
     RefCell::new(None)
 });
 
-/// Adds syntax highlighting and playground Run buttons to rust code blocks.
+/// Adds syntax highlighting and playground Run buttons to Rust code blocks.
 struct CodeBlocks<'a, I: Iterator<Item = Event<'a>>> {
     inner: I,
     check_error_codes: ErrorCodes,
@@ -185,7 +185,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'a, I> {
             }
         }
         let lines = origtext.lines().filter_map(|l| map_line(l).for_html());
-        let text = lines.collect::<Vec<Cow<str>>>().join("\n");
+        let text = lines.collect::<Vec<Cow<'_, str>>>().join("\n");
         PLAYGROUND.with(|play| {
             // insert newline to clearly separate it from the
             // previous block so we can shorten the html output
@@ -196,7 +196,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'a, I> {
                 }
                 let test = origtext.lines()
                     .map(|l| map_line(l).for_code())
-                    .collect::<Vec<Cow<str>>>().join("\n");
+                    .collect::<Vec<Cow<'_, str>>>().join("\n");
                 let krate = krate.as_ref().map(|s| &**s);
                 let (test, _) = test::make_test(&test, krate, false,
                                            &Default::default());
@@ -277,7 +277,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'a, I> {
     }
 }
 
-/// Make headings links with anchor ids and build up TOC.
+/// Make headings links with anchor IDs and build up TOC.
 struct LinkReplacer<'a, 'b, I: Iterator<Item = Event<'a>>> {
     inner: I,
     links: &'b [(String, String)],
@@ -310,7 +310,7 @@ impl<'a, 'b, I: Iterator<Item = Event<'a>>> Iterator for LinkReplacer<'a, 'b, I>
     }
 }
 
-/// Make headings links with anchor ids and build up TOC.
+/// Make headings links with anchor IDs and build up TOC.
 struct HeadingLinks<'a, 'b, 'ids, I: Iterator<Item = Event<'a>>> {
     inner: I,
     toc: Option<&'b mut TocBuilder>,
@@ -386,7 +386,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> SummaryLine<'a, I> {
     }
 }
 
-fn check_if_allowed_tag(t: &Tag) -> bool {
+fn check_if_allowed_tag(t: &Tag<'_>) -> bool {
     match *t {
         Tag::Paragraph
         | Tag::Item
@@ -523,7 +523,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for Footnotes<'a, I> {
 pub struct TestableCodeError(());
 
 impl fmt::Display for TestableCodeError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "invalid start of a new code block")
     }
 }
@@ -569,7 +569,7 @@ pub fn find_testable_code<T: test::Tester>(
                 }
                 if let Some(offset) = offset {
                     let lines = test_s.lines().map(|l| map_line(l).for_code());
-                    let text = lines.collect::<Vec<Cow<str>>>().join("\n");
+                    let text = lines.collect::<Vec<Cow<'_, str>>>().join("\n");
                     nb_lines += doc[prev_offset..offset].lines().count();
                     let line = tests.get_line() + (nb_lines - 1);
                     tests.add_test(text, block_info, line);
@@ -681,7 +681,7 @@ impl LangString {
 }
 
 impl<'a> fmt::Display for Markdown<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Markdown(md, links, ref ids, codes) = *self;
         let mut ids = ids.borrow_mut();
 
@@ -714,7 +714,7 @@ impl<'a> fmt::Display for Markdown<'a> {
 }
 
 impl<'a> fmt::Display for MarkdownWithToc<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let MarkdownWithToc(md, ref ids, codes) = *self;
         let mut ids = ids.borrow_mut();
 
@@ -742,7 +742,7 @@ impl<'a> fmt::Display for MarkdownWithToc<'a> {
 }
 
 impl<'a> fmt::Display for MarkdownHtml<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let MarkdownHtml(md, ref ids, codes) = *self;
         let mut ids = ids.borrow_mut();
 
@@ -772,7 +772,7 @@ impl<'a> fmt::Display for MarkdownHtml<'a> {
 }
 
 impl<'a> fmt::Display for MarkdownSummaryLine<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let MarkdownSummaryLine(md, links) = *self;
         // This is actually common enough to special-case
         if md.is_empty() { return Ok(()) }

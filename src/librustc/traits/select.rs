@@ -27,17 +27,17 @@ use super::{
     VtableGeneratorData, VtableImplData, VtableObjectData, VtableTraitAliasData,
 };
 
-use dep_graph::{DepKind, DepNodeIndex};
-use hir::def_id::DefId;
-use infer::{InferCtxt, InferOk, TypeFreshener};
-use middle::lang_items;
-use mir::interpret::GlobalId;
-use ty::fast_reject;
-use ty::relate::TypeRelation;
-use ty::subst::{Subst, Substs};
-use ty::{self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, TypeFoldable};
+use crate::dep_graph::{DepKind, DepNodeIndex};
+use crate::hir::def_id::DefId;
+use crate::infer::{CombinedSnapshot, InferCtxt, InferOk, PlaceholderMap, TypeFreshener};
+use crate::middle::lang_items;
+use crate::mir::interpret::GlobalId;
+use crate::ty::fast_reject;
+use crate::ty::relate::TypeRelation;
+use crate::ty::subst::{Subst, SubstsRef};
+use crate::ty::{self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, TypeFoldable};
 
-use hir;
+use crate::hir;
 use rustc_data_structures::bit_set::GrowableBitSet;
 use rustc_data_structures::sync::Lock;
 use rustc_target::spec::abi::Abi;
@@ -45,7 +45,7 @@ use std::cmp;
 use std::fmt::{self, Display};
 use std::iter;
 use std::rc::Rc;
-use util::nodemap::{FxHashMap, FxHashSet};
+use crate::util::nodemap::{FxHashMap, FxHashSet};
 
 pub struct SelectionContext<'cx, 'gcx: 'cx + 'tcx, 'tcx: 'cx> {
     infcx: &'cx InferCtxt<'cx, 'gcx, 'tcx>,
@@ -103,7 +103,7 @@ impl IntercrateAmbiguityCause {
     /// See #23980 for details.
     pub fn add_intercrate_ambiguity_hint<'a, 'tcx>(
         &self,
-        err: &mut ::errors::DiagnosticBuilder<'_>,
+        err: &mut errors::DiagnosticBuilder<'_>,
     ) {
         err.note(&self.intercrate_ambiguity_hint());
     }
@@ -162,11 +162,11 @@ pub struct SelectionCache<'tcx> {
 }
 
 /// The selection process begins by considering all impls, where
-/// clauses, and so forth that might resolve an obligation.  Sometimes
+/// clauses, and so forth that might resolve an obligation. Sometimes
 /// we'll be able to say definitively that (e.g.) an impl does not
 /// apply to the obligation: perhaps it is defined for `usize` but the
 /// obligation is for `int`. In that case, we drop the impl out of the
-/// list.  But the other cases are considered *candidates*.
+/// list. But the other cases are considered *candidates*.
 ///
 /// For selection to succeed, there must be exactly one matching
 /// candidate. If the obligation is fully known, this is guaranteed
@@ -331,7 +331,7 @@ enum BuiltinImplConditions<'tcx> {
 ///     - `EvaluatedToErr` implies `EvaluatedToRecur`
 ///     - the "union" of evaluation results is equal to their maximum -
 ///     all the "potential success" candidates can potentially succeed,
-///     so they are no-ops when unioned with a definite error, and within
+///     so they are noops when unioned with a definite error, and within
 ///     the categories it's easy to see that the unions are correct.
 pub enum EvaluationResult {
     /// Evaluation successful
@@ -383,31 +383,30 @@ pub enum EvaluationResult {
     /// ```
     ///
     /// When we try to prove it, we first go the first option, which
-    /// recurses. This shows us that the impl is "useless" - it won't
+    /// recurses. This shows us that the impl is "useless" -- it won't
     /// tell us that `T: Trait` unless it already implemented `Trait`
     /// by some other means. However, that does not prevent `T: Trait`
     /// does not hold, because of the bound (which can indeed be satisfied
     /// by `SomeUnsizedType` from another crate).
-    ///
-    /// FIXME: when an `EvaluatedToRecur` goes past its parent root, we
-    /// ought to convert it to an `EvaluatedToErr`, because we know
-    /// there definitely isn't a proof tree for that obligation. Not
-    /// doing so is still sound - there isn't any proof tree, so the
-    /// branch still can't be a part of a minimal one - but does not
-    /// re-enable caching.
+    //
+    // FIXME: when an `EvaluatedToRecur` goes past its parent root, we
+    // ought to convert it to an `EvaluatedToErr`, because we know
+    // there definitely isn't a proof tree for that obligation. Not
+    // doing so is still sound -- there isn't any proof tree, so the
+    // branch still can't be a part of a minimal one -- but does not re-enable caching.
     EvaluatedToRecur,
-    /// Evaluation failed
+    /// Evaluation failed.
     EvaluatedToErr,
 }
 
 impl EvaluationResult {
-    /// True if this evaluation result is known to apply, even
+    /// Returns `true` if this evaluation result is known to apply, even
     /// considering outlives constraints.
     pub fn must_apply_considering_regions(self) -> bool {
         self == EvaluatedToOk
     }
 
-    /// True if this evaluation result is known to apply, ignoring
+    /// Returns `true` if this evaluation result is known to apply, ignoring
     /// outlives constraints.
     pub fn must_apply_modulo_regions(self) -> bool {
         self <= EvaluatedToOkModuloRegions
@@ -981,8 +980,8 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     /// that recursion is ok. This routine returns true if the top of the
     /// stack (`cycle[0]`):
     ///
-    /// - is a defaulted trait, and
-    /// - it also appears in the backtrace at some position `X`; and,
+    /// - is a defaulted trait,
+    /// - it also appears in the backtrace at some position `X`,
     /// - all the predicates at positions `X..` between `X` an the top are
     ///   also defaulted traits.
     pub fn coinductive_match<I>(&mut self, cycle: I) -> bool
@@ -1003,7 +1002,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     }
 
     /// Further evaluate `candidate` to decide whether all type parameters match and whether nested
-    /// obligations are met. Returns true if `candidate` remains viable after this further
+    /// obligations are met. Returns whether `candidate` remains viable after this further
     /// scrutiny.
     fn evaluate_candidate<'o>(
         &mut self,
@@ -1434,7 +1433,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         }
     }
 
-    /// Returns true if the global caches can be used.
+    /// Returns `true` if the global caches can be used.
     /// Do note that if the type itself is not in the
     /// global tcx, the local caches will be used.
     fn can_use_global_caches(&self, param_env: ty::ParamEnv<'tcx>) -> bool {
@@ -1668,8 +1667,11 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             _ => return,
         }
 
-        let result = self.infcx.probe(|_| {
-            self.match_projection_obligation_against_definition_bounds(obligation)
+        let result = self.infcx.probe(|snapshot| {
+            self.match_projection_obligation_against_definition_bounds(
+                obligation,
+                snapshot,
+            )
         });
 
         if result {
@@ -1680,18 +1682,19 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     fn match_projection_obligation_against_definition_bounds(
         &mut self,
         obligation: &TraitObligation<'tcx>,
+        snapshot: &CombinedSnapshot<'_, 'tcx>,
     ) -> bool {
         let poly_trait_predicate = self.infcx()
             .resolve_type_vars_if_possible(&obligation.predicate);
-        let (skol_trait_predicate, _) = self.infcx()
+        let (placeholder_trait_predicate, placeholder_map) = self.infcx()
             .replace_bound_vars_with_placeholders(&poly_trait_predicate);
         debug!(
             "match_projection_obligation_against_definition_bounds: \
-             skol_trait_predicate={:?}",
-            skol_trait_predicate,
+             placeholder_trait_predicate={:?}",
+            placeholder_trait_predicate,
         );
 
-        let (def_id, substs) = match skol_trait_predicate.trait_ref.self_ty().sty {
+        let (def_id, substs) = match placeholder_trait_predicate.trait_ref.self_ty().sty {
             ty::Projection(ref data) => (data.trait_ref(self.tcx()).def_id, data.substs),
             ty::Opaque(def_id, substs) => (def_id, substs),
             _ => {
@@ -1699,7 +1702,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                     obligation.cause.span,
                     "match_projection_obligation_against_definition_bounds() called \
                      but self-ty is not a projection: {:?}",
-                    skol_trait_predicate.trait_ref.self_ty()
+                    placeholder_trait_predicate.trait_ref.self_ty()
                 );
             }
         };
@@ -1724,7 +1727,9 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                     self.match_projection(
                         obligation,
                         bound.clone(),
-                        skol_trait_predicate.trait_ref.clone(),
+                        placeholder_trait_predicate.trait_ref.clone(),
+                        &placeholder_map,
+                        snapshot,
                     )
                 })
             });
@@ -1741,7 +1746,9 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                 let result = self.match_projection(
                     obligation,
                     bound,
-                    skol_trait_predicate.trait_ref.clone(),
+                    placeholder_trait_predicate.trait_ref.clone(),
+                    &placeholder_map,
+                    snapshot,
                 );
 
                 assert!(result);
@@ -1754,13 +1761,17 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         &mut self,
         obligation: &TraitObligation<'tcx>,
         trait_bound: ty::PolyTraitRef<'tcx>,
-        skol_trait_ref: ty::TraitRef<'tcx>,
+        placeholder_trait_ref: ty::TraitRef<'tcx>,
+        placeholder_map: &PlaceholderMap<'tcx>,
+        snapshot: &CombinedSnapshot<'_, 'tcx>,
     ) -> bool {
-        debug_assert!(!skol_trait_ref.has_escaping_bound_vars());
+        debug_assert!(!placeholder_trait_ref.has_escaping_bound_vars());
         self.infcx
             .at(&obligation.cause, obligation.param_env)
-            .sup(ty::Binder::dummy(skol_trait_ref), trait_bound)
+            .sup(ty::Binder::dummy(placeholder_trait_ref), trait_bound)
             .is_ok()
+            &&
+            self.infcx.leak_check(false, placeholder_map, snapshot).is_ok()
     }
 
     /// Given an obligation like `<SomeTrait for T>`, search the obligations that the caller
@@ -1850,7 +1861,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         Ok(())
     }
 
-    /// Check for the artificial impl that the compiler will create for an obligation like `X :
+    /// Checks for the artificial impl that the compiler will create for an obligation like `X :
     /// FnMut<..>` where `X` is a closure type.
     ///
     /// Note: the type parameters on a closure candidate are modeled as *output* type
@@ -1933,7 +1944,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                 if let ty::FnSig {
                     unsafety: hir::Unsafety::Normal,
                     abi: Abi::Rust,
-                    variadic: false,
+                    c_variadic: false,
                     ..
                 } = self_ty.fn_sig(self.tcx()).skip_binder()
                 {
@@ -1961,8 +1972,8 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             obligation.predicate.def_id(),
             obligation.predicate.skip_binder().trait_ref.self_ty(),
             |impl_def_id| {
-                self.infcx.probe(|_| {
-                    if let Ok(_substs) = self.match_impl(impl_def_id, obligation)
+                self.infcx.probe(|snapshot| {
+                    if let Ok(_substs) = self.match_impl(impl_def_id, obligation, snapshot)
                     {
                         candidates.vec.push(ImplCandidate(impl_def_id));
                     }
@@ -2231,8 +2242,8 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     // type variables and then we also attempt to evaluate recursive
     // bounds to see if they are satisfied.
 
-    /// Returns true if `victim` should be dropped in favor of
-    /// `other`.  Generally speaking we will drop duplicate
+    /// Returns `true` if `victim` should be dropped in favor of
+    /// `other`. Generally speaking we will drop duplicate
     /// candidates and prefer where-clause candidates.
     ///
     /// See the comment for "SelectionCandidate" for more details.
@@ -2759,9 +2770,12 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     }
 
     fn confirm_projection_candidate(&mut self, obligation: &TraitObligation<'tcx>) {
-        self.infcx.in_snapshot(|_| {
+        self.infcx.in_snapshot(|snapshot| {
             let result =
-                self.match_projection_obligation_against_definition_bounds(obligation);
+                self.match_projection_obligation_against_definition_bounds(
+                    obligation,
+                    snapshot,
+                );
             assert!(result);
         })
     }
@@ -2913,8 +2927,8 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
 
         // First, create the substitutions by matching the impl again,
         // this time not in a probe.
-        self.infcx.in_snapshot(|_| {
-            let substs = self.rematch_impl(impl_def_id, obligation);
+        self.infcx.in_snapshot(|snapshot| {
+            let substs = self.rematch_impl(impl_def_id, obligation, snapshot);
             debug!("confirm_impl_candidate: substs={:?}", substs);
             let cause = obligation.derived_cause(ImplDerivedObligation);
             self.vtable_impl(
@@ -2930,7 +2944,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     fn vtable_impl(
         &mut self,
         impl_def_id: DefId,
-        mut substs: Normalized<'tcx, &'tcx Substs<'tcx>>,
+        mut substs: Normalized<'tcx, SubstsRef<'tcx>>,
         cause: ObligationCause<'tcx>,
         recursion_depth: usize,
         param_env: ty::ParamEnv<'tcx>,
@@ -3221,7 +3235,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     /// we currently treat the input type parameters on the trait as
     /// outputs. This means that when we have a match we have only
     /// considered the self type, so we have to go back and make sure
-    /// to relate the argument types too.  This is kind of wrong, but
+    /// to relate the argument types too. This is kind of wrong, but
     /// since we control the full set of impls, also not that wrong,
     /// and it DOES yield better error messages (since we don't report
     /// errors as if there is no applicable impl, but rather report
@@ -3235,7 +3249,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     ///     impl Fn(int) for Closure { ... }
     ///
     /// Now imagine our obligation is `Fn(usize) for Closure`. So far
-    /// we have matched the self-type `Closure`. At this point we'll
+    /// we have matched the self type `Closure`. At this point we'll
     /// compare the `int` to `usize` and generate an error.
     ///
     /// Note that this checking occurs *after* the impl has selected,
@@ -3301,9 +3315,27 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                     tcx.mk_existential_predicates(iter)
                 });
                 let source_trait = tcx.mk_dynamic(existential_predicates, r_b);
+
+                // Require that the traits involved in this upcast are **equal**;
+                // only the **lifetime bound** is changed.
+                //
+                // FIXME: This condition is arguably too strong -- it
+                // would suffice for the source trait to be a
+                // *subtype* of the target trait. In particular
+                // changing from something like `for<'a, 'b> Foo<'a,
+                // 'b>` to `for<'a> Foo<'a, 'a>` should be
+                // permitted. And, indeed, in the in commit
+                // 904a0bde93f0348f69914ee90b1f8b6e4e0d7cbc, this
+                // condition was loosened. However, when the leak check was added
+                // back, using subtype here actually guies the coercion code in
+                // such a way that it accepts `old-lub-glb-object.rs`. This is probably
+                // a good thing, but I've modified this to `.eq` because I want
+                // to continue rejecting that test (as we have done for quite some time)
+                // before we are firmly comfortable with what our behavior
+                // should be there. -nikomatsakis
                 let InferOk { obligations, .. } = self.infcx
                     .at(&obligation.cause, obligation.param_env)
-                    .sup(target, source_trait)
+                    .eq(target, source_trait) // FIXME -- see below
                     .map_err(|_| Unimplemented)?;
                 nested.extend(obligations);
 
@@ -3505,8 +3537,9 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         &mut self,
         impl_def_id: DefId,
         obligation: &TraitObligation<'tcx>,
-    ) -> Normalized<'tcx, &'tcx Substs<'tcx>> {
-        match self.match_impl(impl_def_id, obligation) {
+        snapshot: &CombinedSnapshot<'_, 'tcx>,
+    ) -> Normalized<'tcx, SubstsRef<'tcx>> {
+        match self.match_impl(impl_def_id, obligation, snapshot) {
             Ok(substs) => substs,
             Err(()) => {
                 bug!(
@@ -3522,7 +3555,8 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         &mut self,
         impl_def_id: DefId,
         obligation: &TraitObligation<'tcx>,
-    ) -> Result<Normalized<'tcx, &'tcx Substs<'tcx>>, ()> {
+        snapshot: &CombinedSnapshot<'_, 'tcx>,
+    ) -> Result<Normalized<'tcx, SubstsRef<'tcx>>, ()> {
         let impl_trait_ref = self.tcx().impl_trait_ref(impl_def_id).unwrap();
 
         // Before we create the substitutions and everything, first
@@ -3532,7 +3566,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             return Err(());
         }
 
-        let (skol_obligation, _) = self.infcx()
+        let (skol_obligation, placeholder_map) = self.infcx()
             .replace_bound_vars_with_placeholders(&obligation.predicate);
         let skol_obligation_trait_ref = skol_obligation.trait_ref;
 
@@ -3563,6 +3597,11 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             .eq(skol_obligation_trait_ref, impl_trait_ref)
             .map_err(|e| debug!("match_impl: failed eq_trait_refs due to `{}`", e))?;
         nested_obligations.extend(obligations);
+
+        if let Err(e) = self.infcx.leak_check(false, &placeholder_map, snapshot) {
+            debug!("match_impl: failed leak check due to `{}`", e);
+            return Err(());
+        }
 
         debug!("match_impl: success impl_substs={:?}", impl_substs);
         Ok(Normalized {
@@ -3597,7 +3636,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
     }
 
     /// Normalize `where_clause_trait_ref` and try to match it against
-    /// `obligation`.  If successful, return any predicates that
+    /// `obligation`. If successful, return any predicates that
     /// result from the normalization. Normalization is necessary
     /// because where-clauses are stored in the parameter environment
     /// unnormalized.
@@ -3722,7 +3761,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         recursion_depth: usize,
         param_env: ty::ParamEnv<'tcx>,
         def_id: DefId,         // of impl or trait
-        substs: &Substs<'tcx>, // for impl or trait
+        substs: SubstsRef<'tcx>,  // for impl or trait
     ) -> Vec<PredicateObligation<'tcx>> {
         debug!("impl_or_trait_obligations(def_id={:?})", def_id);
         let tcx = self.tcx();

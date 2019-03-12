@@ -23,7 +23,7 @@ pub(crate) mod indexes {
     use rustc_data_structures::indexed_vec::Idx;
 
     macro_rules! new_index {
-        ($Index:ident, $debug_name:expr) => {
+        ($(#[$attrs:meta])* $Index:ident, $debug_name:expr) => {
             #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
             pub struct $Index(NonZeroUsize);
 
@@ -37,24 +37,36 @@ pub(crate) mod indexes {
             }
 
             impl fmt::Debug for $Index {
-                fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
                     write!(fmt, "{}{}", $debug_name, self.index())
                 }
             }
         }
     }
 
-    /// Index into MovePathData.move_paths
-    new_index!(MovePathIndex, "mp");
+    new_index!(
+        /// Index into MovePathData.move_paths
+        MovePathIndex,
+        "mp"
+    );
 
-    /// Index into MoveData.moves.
-    new_index!(MoveOutIndex, "mo");
+    new_index!(
+        /// Index into MoveData.moves.
+        MoveOutIndex,
+        "mo"
+    );
 
-    /// Index into MoveData.inits.
-    new_index!(InitIndex, "in");
+    new_index!(
+        /// Index into MoveData.inits.
+        InitIndex,
+        "in"
+    );
 
-    /// Index into Borrows.locations
-    new_index!(BorrowIndex, "bw");
+    new_index!(
+        /// Index into Borrows.locations
+        BorrowIndex,
+        "bw"
+    );
 }
 
 pub use self::indexes::MovePathIndex;
@@ -62,7 +74,7 @@ pub use self::indexes::MoveOutIndex;
 pub use self::indexes::InitIndex;
 
 impl MoveOutIndex {
-    pub fn move_path_index(&self, move_data: &MoveData) -> MovePathIndex {
+    pub fn move_path_index(&self, move_data: &MoveData<'_>) -> MovePathIndex {
         move_data.moves[*self].path
     }
 }
@@ -88,7 +100,10 @@ pub struct MovePath<'tcx> {
 }
 
 impl<'tcx> MovePath<'tcx> {
-    pub fn parents(&self, move_paths: &IndexVec<MovePathIndex, MovePath>) -> Vec<MovePathIndex> {
+    pub fn parents(
+        &self,
+        move_paths: &IndexVec<MovePathIndex, MovePath<'_>>,
+    ) -> Vec<MovePathIndex> {
         let mut parents = Vec::new();
 
         let mut curr_parent = self.parent;
@@ -102,7 +117,7 @@ impl<'tcx> MovePath<'tcx> {
 }
 
 impl<'tcx> fmt::Debug for MovePath<'tcx> {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, w: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(w, "MovePath {{")?;
         if let Some(parent) = self.parent {
             write!(w, " parent: {:?},", parent)?;
@@ -118,7 +133,7 @@ impl<'tcx> fmt::Debug for MovePath<'tcx> {
 }
 
 impl<'tcx> fmt::Display for MovePath<'tcx> {
-    fn fmt(&self, w: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, w: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(w, "{:?}", self.place)
     }
 }
@@ -166,7 +181,7 @@ impl<T> IndexMut<Location> for LocationMap<T> {
 }
 
 impl<T> LocationMap<T> where T: Default + Clone {
-    fn new(mir: &Mir) -> Self {
+    fn new(mir: &Mir<'_>) -> Self {
         LocationMap {
             map: mir.basic_blocks().iter().map(|block| {
                 vec![T::default(); block.statements.len()+1]
@@ -190,7 +205,7 @@ pub struct MoveOut {
 }
 
 impl fmt::Debug for MoveOut {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{:?}@{:?}", self.path, self.source)
     }
 }
@@ -227,7 +242,7 @@ pub enum InitKind {
 }
 
 impl fmt::Debug for Init {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{:?}@{:?} ({:?})", self.path, self.location, self.kind)
     }
 }
@@ -270,9 +285,9 @@ impl<'tcx> MovePathLookup<'tcx> {
     // parent.
     pub fn find(&self, place: &Place<'tcx>) -> LookupResult {
         match *place {
-            Place::Local(local) => LookupResult::Exact(self.locals[local]),
-            Place::Promoted(_) |
-            Place::Static(..) => LookupResult::Parent(None),
+            Place::Base(PlaceBase::Local(local)) => LookupResult::Exact(self.locals[local]),
+            Place::Base(PlaceBase::Promoted(_)) |
+            Place::Base(PlaceBase::Static(..)) => LookupResult::Parent(None),
             Place::Projection(ref proj) => {
                 match self.find(&proj.base) {
                     LookupResult::Exact(base_path) => {
@@ -344,7 +359,7 @@ impl<'a, 'gcx, 'tcx> MoveData<'tcx> {
     pub fn base_local(&self, mut mpi: MovePathIndex) -> Option<Local> {
         loop {
             let path = &self.move_paths[mpi];
-            if let Place::Local(l) = path.place { return Some(l); }
+            if let Place::Base(PlaceBase::Local(l)) = path.place { return Some(l); }
             if let Some(parent) = path.parent { mpi = parent; continue } else { return None }
         }
     }

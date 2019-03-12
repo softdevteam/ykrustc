@@ -8,11 +8,10 @@ use rustc::mir::{BinOp, BorrowKind, Field, UnOp};
 use rustc::hir::def_id::DefId;
 use rustc::infer::canonical::Canonical;
 use rustc::middle::region;
-use rustc::ty::subst::Substs;
+use rustc::ty::subst::SubstsRef;
 use rustc::ty::{AdtDef, UpvarSubsts, Ty, Const, LazyConst, UserType};
 use rustc::ty::layout::VariantIdx;
 use rustc::hir;
-use syntax::ast;
 use syntax_pos::Span;
 use self::cx::Cx;
 
@@ -28,7 +27,7 @@ mod util;
 #[derive(Copy, Clone, Debug)]
 pub enum LintLevel {
     Inherited,
-    Explicit(ast::NodeId)
+    Explicit(hir::HirId)
 }
 
 impl LintLevel {
@@ -54,7 +53,7 @@ pub struct Block<'tcx> {
 #[derive(Copy, Clone, Debug)]
 pub enum BlockSafety {
     Safe,
-    ExplicitUnsafe(ast::NodeId),
+    ExplicitUnsafe(hir::HirId),
     PushUnsafe,
     PopUnsafe
 }
@@ -190,6 +189,9 @@ pub enum ExprKind<'tcx> {
     UnsafeFnPointer {
         source: ExprRef<'tcx>,
     },
+    MutToConstPointer {
+        source: ExprRef<'tcx>,
+    },
     Unsize {
         source: ExprRef<'tcx>,
     },
@@ -203,7 +205,7 @@ pub enum ExprKind<'tcx> {
         body: ExprRef<'tcx>,
     },
     Match {
-        discriminant: ExprRef<'tcx>,
+        scrutinee: ExprRef<'tcx>,
         arms: Vec<Arm<'tcx>>,
     },
     Block {
@@ -227,7 +229,7 @@ pub enum ExprKind<'tcx> {
         index: ExprRef<'tcx>,
     },
     VarRef {
-        id: ast::NodeId,
+        id: hir::HirId,
     },
     /// first argument, used for self in a closure
     SelfRef,
@@ -261,7 +263,7 @@ pub enum ExprKind<'tcx> {
     Adt {
         adt_def: &'tcx AdtDef,
         variant_index: VariantIdx,
-        substs: &'tcx Substs<'tcx>,
+        substs: SubstsRef<'tcx>,
 
         /// Optional user-given substs: for something like `let x =
         /// Bar::<T> { ... }`.
@@ -358,7 +360,7 @@ impl<'tcx> ExprRef<'tcx> {
 /// Mirroring is gradual: when you mirror an outer expression like `e1
 /// + e2`, the references to the inner expressions `e1` and `e2` are
 /// `ExprRef<'tcx>` instances, and they may or may not be eagerly
-/// mirrored.  This allows a single AST node from the compiler to
+/// mirrored. This allows a single AST node from the compiler to
 /// expand into one or more Hair nodes, which lets the Hair nodes be
 /// simpler.
 pub trait Mirror<'tcx> {

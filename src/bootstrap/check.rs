@@ -17,17 +17,17 @@ impl Step for Std {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.all_krates("std")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Std {
             target: run.target,
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let target = self.target;
         let compiler = builder.compiler(0, builder.config.build);
 
@@ -42,7 +42,8 @@ impl Step for Std {
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);
-        add_to_sysroot(&builder, &libdir, &libstd_stamp(builder, compiler, target));
+        let hostdir = builder.sysroot_libdir(compiler, compiler.host);
+        add_to_sysroot(&builder, &libdir, &hostdir, &libstd_stamp(builder, compiler, target));
     }
 }
 
@@ -56,22 +57,22 @@ impl Step for Rustc {
     const ONLY_HOSTS: bool = true;
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.all_krates("rustc-main")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Rustc {
             target: run.target,
         });
     }
 
-    /// Build the compiler.
+    /// Builds the compiler.
     ///
     /// This will build the compiler for a particular stage of the build using
     /// the `compiler` targeting the `target` architecture. The artifacts
     /// created will also be linked into the sysroot directory.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let compiler = builder.compiler(0, builder.config.build);
         let target = self.target;
 
@@ -88,7 +89,8 @@ impl Step for Rustc {
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);
-        add_to_sysroot(&builder, &libdir, &librustc_stamp(builder, compiler, target));
+        let hostdir = builder.sysroot_libdir(compiler, compiler.host);
+        add_to_sysroot(&builder, &libdir, &hostdir, &librustc_stamp(builder, compiler, target));
     }
 }
 
@@ -103,11 +105,11 @@ impl Step for CodegenBackend {
     const ONLY_HOSTS: bool = true;
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.all_krates("rustc_codegen_llvm")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         let backend = run.builder.config.rust_codegen_backends.get(0);
         let backend = backend.cloned().unwrap_or_else(|| {
             INTERNER.intern_str("llvm")
@@ -118,7 +120,7 @@ impl Step for CodegenBackend {
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let compiler = builder.compiler(0, builder.config.build);
         let target = self.target;
         let backend = self.backend;
@@ -148,17 +150,17 @@ impl Step for Test {
     type Output = ();
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.all_krates("test")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Test {
             target: run.target,
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let compiler = builder.compiler(0, builder.config.build);
         let target = self.target;
 
@@ -175,7 +177,8 @@ impl Step for Test {
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);
-        add_to_sysroot(builder, &libdir, &libtest_stamp(builder, compiler, target));
+        let hostdir = builder.sysroot_libdir(compiler, compiler.host);
+        add_to_sysroot(builder, &libdir, &hostdir, &libtest_stamp(builder, compiler, target));
     }
 }
 
@@ -189,17 +192,17 @@ impl Step for Rustdoc {
     const ONLY_HOSTS: bool = true;
     const DEFAULT: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.path("src/tools/rustdoc")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Rustdoc {
             target: run.target,
         });
     }
 
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         let compiler = builder.compiler(0, builder.config.build);
         let target = self.target;
 
@@ -222,32 +225,45 @@ impl Step for Rustdoc {
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);
-        add_to_sysroot(&builder, &libdir, &rustdoc_stamp(builder, compiler, target));
+        let hostdir = builder.sysroot_libdir(compiler, compiler.host);
+        add_to_sysroot(&builder, &libdir, &hostdir, &rustdoc_stamp(builder, compiler, target));
         builder.cargo(compiler, Mode::ToolRustc, target, "clean");
     }
 }
 
 /// Cargo's output path for the standard library in a given stage, compiled
 /// by a particular compiler for the specified target.
-pub fn libstd_stamp(builder: &Builder, compiler: Compiler, target: Interned<String>) -> PathBuf {
+pub fn libstd_stamp(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: Interned<String>,
+) -> PathBuf {
     builder.cargo_out(compiler, Mode::Std, target).join(".libstd-check.stamp")
 }
 
 /// Cargo's output path for libtest in a given stage, compiled by a particular
 /// compiler for the specified target.
-pub fn libtest_stamp(builder: &Builder, compiler: Compiler, target: Interned<String>) -> PathBuf {
+pub fn libtest_stamp(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: Interned<String>,
+) -> PathBuf {
     builder.cargo_out(compiler, Mode::Test, target).join(".libtest-check.stamp")
 }
 
 /// Cargo's output path for librustc in a given stage, compiled by a particular
 /// compiler for the specified target.
-pub fn librustc_stamp(builder: &Builder, compiler: Compiler, target: Interned<String>) -> PathBuf {
+pub fn librustc_stamp(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: Interned<String>,
+) -> PathBuf {
     builder.cargo_out(compiler, Mode::Rustc, target).join(".librustc-check.stamp")
 }
 
 /// Cargo's output path for librustc_codegen_llvm in a given stage, compiled by a particular
 /// compiler for the specified target and backend.
-fn codegen_backend_stamp(builder: &Builder,
+fn codegen_backend_stamp(builder: &Builder<'_>,
                          compiler: Compiler,
                          target: Interned<String>,
                          backend: Interned<String>) -> PathBuf {
@@ -257,7 +273,11 @@ fn codegen_backend_stamp(builder: &Builder,
 
 /// Cargo's output path for rustdoc in a given stage, compiled by a particular
 /// compiler for the specified target.
-pub fn rustdoc_stamp(builder: &Builder, compiler: Compiler, target: Interned<String>) -> PathBuf {
+pub fn rustdoc_stamp(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: Interned<String>,
+) -> PathBuf {
     builder.cargo_out(compiler, Mode::ToolRustc, target)
         .join(".rustdoc-check.stamp")
 }

@@ -1,15 +1,14 @@
-use self::Context::*;
+use Context::*;
 
 use rustc::session::Session;
 
 use rustc::ty::query::Providers;
-use rustc::ty::query::queries;
 use rustc::ty::TyCtxt;
 use rustc::hir::def_id::DefId;
 use rustc::hir::map::Map;
 use rustc::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use rustc::hir::{self, Node, Destination};
-use syntax::ast;
+use syntax::struct_span_err;
 use syntax_pos::Span;
 use errors::Applicability;
 
@@ -46,12 +45,6 @@ struct CheckLoopVisitor<'a, 'hir: 'a> {
     cx: Context,
 }
 
-pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    for &module in tcx.hir().krate().modules.keys() {
-        queries::check_mod_loops::ensure(tcx, tcx.hir().local_def_id(module));
-    }
-}
-
 fn check_mod_loops<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(module_def_id, &mut CheckLoopVisitor {
         sess: &tcx.sess,
@@ -60,7 +53,7 @@ fn check_mod_loops<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
     }.as_deep_visitor());
 }
 
-pub(crate) fn provide(providers: &mut Providers) {
+pub(crate) fn provide(providers: &mut Providers<'_>) {
     *providers = Providers {
         check_mod_loops,
         ..*providers
@@ -105,25 +98,25 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
 
                 let loop_id = match label.target_id.into() {
                     Ok(loop_id) => loop_id,
-                    Err(hir::LoopIdError::OutsideLoopScope) => ast::DUMMY_NODE_ID,
+                    Err(hir::LoopIdError::OutsideLoopScope) => hir::DUMMY_HIR_ID,
                     Err(hir::LoopIdError::UnlabeledCfInWhileCondition) => {
                         self.emit_unlabled_cf_in_while_condition(e.span, "break");
-                        ast::DUMMY_NODE_ID
+                        hir::DUMMY_HIR_ID
                     },
-                    Err(hir::LoopIdError::UnresolvedLabel) => ast::DUMMY_NODE_ID,
+                    Err(hir::LoopIdError::UnresolvedLabel) => hir::DUMMY_HIR_ID,
                 };
 
-                if loop_id != ast::DUMMY_NODE_ID {
-                    if let Node::Block(_) = self.hir_map.find(loop_id).unwrap() {
+                if loop_id != hir::DUMMY_HIR_ID {
+                    if let Node::Block(_) = self.hir_map.find_by_hir_id(loop_id).unwrap() {
                         return
                     }
                 }
 
                 if opt_expr.is_some() {
-                    let loop_kind = if loop_id == ast::DUMMY_NODE_ID {
+                    let loop_kind = if loop_id == hir::DUMMY_HIR_ID {
                         None
                     } else {
-                        Some(match self.hir_map.expect_expr(loop_id).node {
+                        Some(match self.hir_map.expect_expr_by_hir_id(loop_id).node {
                             hir::ExprKind::While(..) => LoopKind::WhileLoop,
                             hir::ExprKind::Loop(_, _, source) => LoopKind::Loop(source),
                             ref r => span_bug!(e.span,
@@ -162,7 +155,7 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
 
                 match destination.target_id {
                     Ok(loop_id) => {
-                        if let Node::Block(block) = self.hir_map.find(loop_id).unwrap() {
+                        if let Node::Block(block) = self.hir_map.find_by_hir_id(loop_id).unwrap() {
                             struct_span_err!(self.sess, e.span, E0696,
                                             "`continue` pointing to a labeled block")
                                 .span_label(e.span,

@@ -1,8 +1,8 @@
 //! See docs in build/expr/mod.rs
 
-use build::expr::category::{Category, RvalueFunc};
-use build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
-use hair::*;
+use crate::build::expr::category::{Category, RvalueFunc};
+use crate::build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
+use crate::hair::*;
 use rustc::mir::*;
 use rustc::ty;
 
@@ -53,8 +53,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::Block { body: ast_block } => {
                 this.ast_block(destination, block, ast_block, source_info)
             }
-            ExprKind::Match { discriminant, arms } => {
-                this.match_expr(destination, expr_span, block, discriminant, arms)
+            ExprKind::Match { scrutinee, arms } => {
+                this.match_expr(destination, expr_span, block, scrutinee, arms)
             }
             ExprKind::NeverToAny { source } => {
                 let source = this.hir.mirror(source);
@@ -295,7 +295,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         is_user_variable: None,
                         is_block_tail: None,
                     });
-                    let ptr_temp = Place::Local(ptr_temp);
+                    let ptr_temp = Place::Base(PlaceBase::Local(ptr_temp));
                     let block = unpack!(this.into(&ptr_temp, block, ptr));
                     this.into(&ptr_temp.deref(), block, val)
                 } else {
@@ -383,6 +383,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             | ExprKind::ReifyFnPointer { .. }
             | ExprKind::ClosureFnPointer { .. }
             | ExprKind::UnsafeFnPointer { .. }
+            | ExprKind::MutToConstPointer { .. }
             | ExprKind::Unsize { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Borrow { .. }

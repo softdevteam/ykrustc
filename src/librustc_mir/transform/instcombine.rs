@@ -1,19 +1,19 @@
 //! Performs various peephole optimizations.
 
-use rustc::mir::{Constant, Location, Place, Mir, Operand, ProjectionElem, Rvalue, Local};
+use rustc::mir::{Constant, Location, Place, PlaceBase, Mir, Operand, ProjectionElem, Rvalue, Local};
 use rustc::mir::visit::{MutVisitor, Visitor};
 use rustc::ty::{TyCtxt, TyKind};
 use rustc::util::nodemap::{FxHashMap, FxHashSet};
 use rustc_data_structures::indexed_vec::Idx;
 use std::mem;
-use transform::{MirPass, MirSource};
+use crate::transform::{MirPass, MirSource};
 
 pub struct InstCombine;
 
 impl MirPass for InstCombine {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _: MirSource,
+                          _: MirSource<'tcx>,
                           mir: &mut Mir<'tcx>) {
         // We only run when optimizing MIR (at any level).
         if tcx.sess.opts.debugging_opts.mir_opt_level == 0 {
@@ -45,7 +45,7 @@ impl<'tcx> MutVisitor<'tcx> for InstCombineVisitor<'tcx> {
             let new_place = match *rvalue {
                 Rvalue::Ref(_, _, Place::Projection(ref mut projection)) => {
                     // Replace with dummy
-                    mem::replace(&mut projection.base, Place::Local(Local::new(0)))
+                    mem::replace(&mut projection.base, Place::Base(PlaceBase::Local(Local::new(0))))
                 }
                 _ => bug!("Detected `&*` but didn't find `&*`!"),
             };
