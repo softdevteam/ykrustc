@@ -10,7 +10,6 @@ crate-type = ["dylib"]
 
 [dependencies]
 rustc_yk_sections = { path = "../librustc_yk_sections" }
-rustc_yk_link = { path = "../librustc_yk_link" }
 log = "0.4"
 rustc-rayon = "0.1.1"
 smallvec = { version = "0.6.7", features = ["union", "may_dangle"] }

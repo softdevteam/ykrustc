@@ -12,16 +12,6 @@
 extern crate rustc;
 extern crate rustc_yk_link;
 extern crate rustc_codegen_utils;
-extern crate byteorder;
-
-use std::env;
-
-/// Are Yorick debug sections enabled?
-pub fn with_yk_debug_sections() -> bool {
-    match env::var("YK_DEBUG_SECTIONS") {
-        Ok(_) => true,
-        _ => false,
-    }
-}
+extern crate ykpack;
 
 pub mod mir_cfg;
