@@ -46,8 +46,7 @@ use syntax::symbol::Symbol;
 use syntax::feature_gate::AttributeType;
 use syntax_pos::{FileName, hygiene};
 use syntax_ext;
-use rustc_yk_sections::mir_cfg::emit_mir_cfg_section;
-use rustc_yk_sections::with_yk_debug_sections;
+use rustc_yk_sections::mir_cfg::generate_tir;
 use rustc_codegen_utils::link::out_filename;
 use rustc::util::nodemap::DefIdSet;
 
@@ -1040,14 +1039,18 @@ pub fn start_codegen<'tcx>(
     }
 
     // Output Yorick debug sections into binary targets.
-    if tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) &&
-        with_yk_debug_sections() {
-            let out_fname = out_filename(
-                tcx.sess, config::CrateType::Executable, &outputs,
-                &*tcx.crate_name(LOCAL_CRATE).as_str());
+    if tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) {
+        let out_fname = out_filename(
+            tcx.sess, config::CrateType::Executable, &outputs,
+            &*tcx.crate_name(LOCAL_CRATE).as_str());
 
-            tcx.sess.yk_link_objects.borrow_mut()
-                .push(emit_mir_cfg_section(&tcx, &def_ids, out_fname));
+        match generate_tir(&tcx, &def_ids, out_fname) {
+            Ok(tir) => tcx.sess.yk_link_objects.borrow_mut().push(tir),
+            Err(e) => {
+                tcx.sess.err(&format!("could not emit TIR: {}", e));
+                tcx.sess.abort_if_errors();
+            }
+        }
     }
 
     codegen
