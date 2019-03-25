@@ -3062,8 +3062,10 @@ version = "0.0.0"
 name = "rustc_yk_sections"
 version = "0.0.0"
 dependencies = [
+ "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc 0.0.0",
  "rustc_codegen_utils 0.0.0",
+ "rustc_data_structures 0.0.0",
  "rustc_yk_link 0.0.0",
  "ykpack 0.1.0 (git+https://github.com/softdevteam/ykpack)",
 ]
@@ -4044,7 +4046,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/ykpack#e0fd6162b9522fd04b6bbb77a232986c4ea5c257"
+source = "git+https://github.com/softdevteam/ykpack#358a7403a5b8c03809f5c5b07933a6850060afa4"
 dependencies = [
  "fallible-iterator 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rmp-serde 0.14.0 (git+https://github.com/3Hren/msgpack-rust?rev=40b3d480b20961e6eeceb416b32bcd0a3383846a)",
