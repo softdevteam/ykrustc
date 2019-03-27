@@ -425,6 +425,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
 
     for output_type in sess.opts.output_types.keys() {
         match *output_type {
+            OutputType::YkTir => {},
             OutputType::Bitcode => { modules_config.emit_bc = true; }
             OutputType::LlvmAssembly => { modules_config.emit_ir = true; }
             OutputType::Assembly => {
@@ -598,6 +599,7 @@ fn produce_final_output_artifacts(sess: &Session,
                 user_wants_objects = true;
                 copy_if_one_unit(OutputType::Object, true);
             }
+            OutputType::YkTir |
             OutputType::Mir |
             OutputType::Metadata |
             OutputType::Exe |

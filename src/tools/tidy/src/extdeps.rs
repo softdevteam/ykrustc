@@ -6,7 +6,7 @@ use std::path::Path;
 /// List of whitelisted sources for packages.
 const WHITELISTED_SOURCES: &[&str] = &[
     "\"registry+https://github.com/rust-lang/crates.io-index\"",
-    "\"git+https://github.com/softdevteam/ykpack#358a7403a5b8c03809f5c5b07933a6850060afa4\"",
+    "\"git+https://github.com/softdevteam/ykpack#9c5542d9d556ce745f0b21983a009a1297f371e4\"",
     // The following are needed for Yorick whilst we use an unreleased revision not on crates.io.
     "\"git+https://github.com/3Hren/msgpack-rust?\
         rev=40b3d480b20961e6eeceb416b32bcd0a3383846a#40b3d480b20961e6eeceb416b32bcd0a3383846a\"",

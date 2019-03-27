@@ -4046,7 +4046,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/ykpack#358a7403a5b8c03809f5c5b07933a6850060afa4"
+source = "git+https://github.com/softdevteam/ykpack#9c5542d9d556ce745f0b21983a009a1297f371e4"
 dependencies = [
  "fallible-iterator 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rmp-serde 0.14.0 (git+https://github.com/3Hren/msgpack-rust?rev=40b3d480b20961e6eeceb416b32bcd0a3383846a)",
