@@ -4,7 +4,7 @@ use crate::common::{output_base_dir, output_base_name, output_testname_unique};
 use crate::common::{Codegen, CodegenUnits, DebugInfoBoth, DebugInfoGdb, DebugInfoLldb, Rustdoc};
 use crate::common::{CompileFail, Pretty, RunFail, RunPass, RunPassValgrind};
 use crate::common::{Config, TestPaths};
-use crate::common::{Incremental, MirOpt, RunMake, Ui};
+use crate::common::{Incremental, MirOpt, RunMake, Ui, YkTir};
 use diff;
 use crate::errors::{self, Error, ErrorKind};
 use filetime::FileTime;
@@ -275,6 +275,7 @@ impl<'test> TestCx<'test> {
             RunMake => self.run_rmake_test(),
             RunPass | Ui => self.run_ui_test(),
             MirOpt => self.run_mir_opt_test(),
+            YkTir => self.run_yk_tir_test(),
         }
     }
 
@@ -1801,6 +1802,13 @@ impl<'test> TestCx<'test> {
 
                 rustc.arg(dir_opt);
             }
+            YkTir => {
+                rustc.args(&[ "--emit", "yk-tir"]);
+
+                let mir_dump_dir = self.get_mir_dump_dir();
+                let _ = fs::remove_dir_all(&mir_dump_dir);
+                create_dir_all(mir_dump_dir.as_path()).unwrap();
+            },
             RunFail | RunPassValgrind | Pretty | DebugInfoBoth | DebugInfoGdb | DebugInfoLldb
             | Codegen | Rustdoc | RunMake | CodegenUnits => {
                 // do not use JSON output
@@ -3258,6 +3266,41 @@ impl<'test> TestCx<'test> {
         let stamp = crate::stamp(&self.config, self.testpaths, self.revision);
         fs::write(&stamp, compute_stamp_hash(&self.config)).unwrap();
     }
+
+    fn run_yk_tir_test(&self) {
+        let proc_res = self.compile_test();
+
+        if !proc_res.status.success() {
+            self.fatal_proc_rec("compilation failed!", &proc_res);
+        }
+
+        self.check_yk_tir_dump();
+    }
+
+    fn check_yk_tir_dump(&self) {
+        let test_file_contents = fs::read_to_string(&self.testpaths.file).unwrap();
+        if let Some(idx) = test_file_contents.find("// END RUST SOURCE") {
+            let (_, test_text) = test_file_contents.split_at(idx + "// END_RUST SOURCE".len());
+            let mut test_lines = vec![ExpectedLine::Elision];
+            for l in test_text.lines() {
+                if l.is_empty() {
+                    // ignore
+                } else if l.starts_with("//") && l.split_at("//".len()).1.trim() == "..." {
+                    test_lines.push(ExpectedLine::Elision)
+                } else if l.starts_with("// ") {
+                    let (_, test_content) = l.split_at("// ".len());
+                    test_lines.push(ExpectedLine::Text(test_content));
+                }
+            }
+            // From here on out, we are re-using parts of the `MirOpt` test suite's matcher. The
+            // "exe_name" here is actually a textual MIR dump because we invoked rustc with:
+            // `--emit yk-mir`.
+            self.compare_mir_test_output(self.make_exe_name().to_str().unwrap(), &test_lines);
+        } else {
+            panic!("no expected outcome in test file!");
+        }
+    }
+
 }
 
 struct ProcArgs {

@@ -16,4 +16,4 @@ extern crate ykpack;
 extern crate rustc_data_structures;
 #[macro_use] extern crate log;
 
-pub mod mir_cfg;
+pub mod emit_tir;
