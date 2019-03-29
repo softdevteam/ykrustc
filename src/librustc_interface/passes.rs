@@ -46,7 +46,7 @@ use syntax::symbol::Symbol;
 use syntax::feature_gate::AttributeType;
 use syntax_pos::{FileName, hygiene};
 use syntax_ext;
-use rustc_yk_sections::mir_cfg::{generate_tir, TirMode};
+use rustc_yk_sections::emit_tir::{generate_tir, TirMode};
 use rustc_codegen_utils::link::out_filename;
 use rustc::util::nodemap::DefIdSet;
 
