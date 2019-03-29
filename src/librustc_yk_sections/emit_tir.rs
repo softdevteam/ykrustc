@@ -31,7 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
-use rustc_data_structures::graph::dominators::Dominators;
+use rustc_data_structures::graph::dominators::DominatorFrontiers;
 use ykpack;
 use ykpack::LocalIndex as TirLocal;
 
@@ -208,83 +208,9 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
     Ok(tir_path)
 }
 
-/// Lazy computation of dominance frontiers.
-///
-/// See p404 of the 2nd edition of the Appel book mentioned above.
-///
-/// Since the frontier of one node may depend on the frontiers of other nodes (depending upon their
-/// relationships), we cache the frontiers so as to avoid computing things more than once.
-struct DominatorFrontiers<'a, 'tcx> {
-    /// The MIR we are working on.
-    mir: &'a Mir<'tcx>,
-    /// The dominators of the above MIR.
-    doms: Dominators<BasicBlock>,
-    /// The dominance frontier cache. Lazily computed. `None` means as-yet uncomputed.
-    df: IndexVec<BasicBlock, Option<BitSet<BasicBlock>>>,
-    /// The number of MIR (and thus TIR) blocks.
-    num_blks: usize,
-}
-
-impl<'a, 'tcx> DominatorFrontiers<'a, 'tcx> {
-    fn new(mir: &'a Mir<'tcx>) -> Self {
-        let num_blks = mir.basic_blocks().len();
-        let df = IndexVec::from_elem_n(None, num_blks);
-
-        Self {
-            mir,
-            doms: mir.dominators(),
-            df,
-            num_blks: mir.basic_blocks().len(),
-        }
-    }
-
-    /// Get the dominance frontier of the given basic block, computing it if we have not already
-    /// done so. Since computing the frontiers for a full CFG requests the same frontiers
-    /// repeatedly, the requested frontier (and its dependencies) are inserted into a cache to
-    /// avoid duplicate computations.
-    fn frontier(&mut self, n: BasicBlock) -> &BitSet<BasicBlock> {
-        if self.df[n].is_none() {
-            // We haven't yet computed dominator frontiers for this node. Compute them.
-            let mut s: BitSet<BasicBlock> = BitSet::new_empty(self.num_blks);
-
-            // Append what Appel calls 'DF_{local}[n]'.
-            for y in self.mir.basic_blocks()[n].terminator().successors() {
-                if self.doms.immediate_dominator(*y) != n {
-                    s.insert(*y);
-                }
-            }
-
-            // The second stage of the algorithm needs the children nodes in the dominator tree.
-            let mut children = Vec::new();
-            for (b, _) in self.mir.basic_blocks().iter_enumerated() {
-                let b = BasicBlock::from_u32(b.as_u32());
-                if self.doms.is_dominated_by(b, n) && b != n {
-                    children.push(b);
-                    // Force the frontier of `b` into the cache (`self.df`). Doing this here avoids
-                    // a simultaneous mutable + immutable borrow of `self` in the final stage of
-                    // the algorithm.
-                    self.frontier(b);
-                }
-            }
-
-            // Append what Appel calls `DF_{up}[c]` for each dominator tree child `c` of `n`.
-            for c in children {
-                for w in self.df[c].as_ref().unwrap().iter() {
-                    if n == w || !self.doms.is_dominated_by(w, n) {
-                        s.insert(w);
-                    }
-                }
-            }
-            self.df[n] = Some(s);
-        }
-
-        self.df[n].as_ref().unwrap()
-    }
-}
-
 /// This struct deals with inserting PHI nodes into the initial pre-SSA TIR pack.
 ///
-/// See the bottom of p406 of the 2nd edition of the Appel book mentioned above.
+/// See the bottom of p406 of 'Modern Compiler Implementation in Java (2nd ed.)' by Andrew Appel.
 struct PhiInserter<'a, 'tcx> {
     mir: &'a Mir<'tcx>,
     pack: ykpack::Pack,
@@ -302,7 +228,8 @@ impl<'a, 'tcx> PhiInserter<'a, 'tcx> {
 
     /// Insert PHI nodes, returning the mutated pack.
     fn pack(mut self) -> ykpack::Pack {
-        let mut df = DominatorFrontiers::new(self.mir);
+        let doms = self.mir.dominators();
+        let df = DominatorFrontiers::new(self.mir, &doms);
         let num_tir_vars = self.def_sites.len();
 
         // We first need a mapping from block to the variables it defines. Appel calls this
