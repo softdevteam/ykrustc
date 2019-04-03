@@ -34,6 +34,7 @@ use rustc_data_structures::indexed_vec::{IndexVec, Idx};
 use rustc_data_structures::graph::dominators::DominatorFrontiers;
 use ykpack;
 use ykpack::LocalIndex as TirLocal;
+use rustc_data_structures::fx::FxHashSet;
 
 const SECTION_NAME: &'static str = ".yk_tir";
 const TMP_EXT: &'static str = ".yk_tir.tmp";
@@ -53,6 +54,8 @@ struct ConvCx<'a, 'tcx, 'gcx> {
     tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
     /// Maps TIR variables to their definition sites.
     def_sites: RefCell<Vec<BitSet<BasicBlock>>>,
+    /// Maps each block to the variable it defines. This is what Appel calls `A_{orig}`.
+    block_defines: RefCell<IndexVec<BasicBlock, FxHashSet<TirLocal>>>,
     /// Monotonically increasing number used to give TIR variables a unique ID.
     next_tir_var: Cell<TirLocal>,
     /// A mapping from MIR variables to TIR variables.
@@ -64,13 +67,15 @@ struct ConvCx<'a, 'tcx, 'gcx> {
 impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, mir: &Mir<'tcx>) -> Self {
         let var_map = IndexVec::new();
+        let num_blks = mir.basic_blocks().len();
 
         Self {
             tcx,
             def_sites: RefCell::new(Vec::new()),
+            block_defines: RefCell::new(IndexVec::from_elem_n(FxHashSet::default(), num_blks)),
             next_tir_var: Cell::new(0),
             var_map: RefCell::new(var_map),
-            num_blks: mir.basic_blocks().len(),
+            num_blks: num_blks,
         }
     }
 
@@ -101,8 +106,9 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         })
     }
 
-    fn def_sites(self) -> Vec<BitSet<BasicBlock>> {
-        self.def_sites.into_inner()
+    /// Finalise the conversion context, returning the definition sites and block defines mappings.
+    fn done(self) -> (Vec<BitSet<BasicBlock>>, IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
+        (self.def_sites.into_inner(), self.block_defines.into_inner())
     }
 
     /// Add `bb` as a definition site of the TIR variable `var`.
@@ -118,6 +124,9 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 BitSet::new_empty(self.num_blks));
         }
         sites[var_usize].insert(bb);
+
+        // Also push into the inverse mapping (blocks to defined vars).
+        self.block_defines.borrow_mut()[bb].insert(var);
     }
 }
 
@@ -186,7 +195,8 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
             let mut pack = (&ccx, def_id, tcx.optimized_mir(*def_id)).to_pack();
             {
                 let ykpack::Pack::Mir(ykpack::Mir{ref mut blocks, ..}) = pack;
-                insert_phis(blocks, mir, ccx.def_sites());
+                let (def_sites, block_defines) = ccx.done();
+                insert_phis(blocks, mir, def_sites, block_defines);
             }
 
             // FIXME - rename variables with fresh SSA names.
@@ -213,27 +223,12 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
 /// Algorithm reference:
 /// Bottom of p406 of 'Modern Compiler Implementation in Java (2nd ed.)' by Andrew Appel.
 fn insert_phis(blocks: &mut Vec<ykpack::BasicBlock>, mir: &Mir,
-               mut def_sites: Vec<BitSet<BasicBlock>>)
-{
+               mut def_sites: Vec<BitSet<BasicBlock>>,
+               a_orig: IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
     let doms = mir.dominators();
     let df = DominatorFrontiers::new(mir, &doms);
     let num_tir_vars = def_sites.len();
-
-    // We first need a mapping from block to the variables it defines. Appel calls this
-    // `A_{orig}`. We can derive this from our definition sites.
-    let (a_orig, num_tir_blks) = {
-        let num_tir_blks = blocks.len();
-
-        let mut a_orig: IndexVec<BasicBlock, BitSet<TirLocal>> =
-            IndexVec::from_elem_n(BitSet::new_empty(num_tir_vars), num_tir_blks);
-        for (a, def_blks) in def_sites.iter().enumerate() {
-            for bb in def_blks.iter() {
-                // `def_sites` is guaranteed to have at most `u32::max_value()` items.
-                a_orig[bb].insert(a as u32);
-            }
-        }
-        (a_orig, num_tir_blks)
-    };
+    let num_tir_blks = a_orig.len();
 
     let mut a_phi: Vec<BitSet<TirLocal>> = Vec::with_capacity(num_tir_blks);
     a_phi.resize(num_tir_blks, BitSet::new_empty(num_tir_vars));
@@ -249,7 +244,7 @@ fn insert_phis(blocks: &mut Vec<ykpack::BasicBlock>, mir: &Mir,
                 let a_u32 = a as u32;
                 if !a_phi[y_usize].contains(a_u32) {
                     a_phi[y_usize].insert(a_u32);
-                    if !a_orig[y].contains(a_u32) {
+                    if !a_orig[y].contains(&a_u32) {
                         // The assertion in `tir_var()` has already checked the cast is safe.
                         insert_phi(&mut blocks[y_usize], a as u32, mir.predecessors_for(y).len());
                         w.insert(y);
