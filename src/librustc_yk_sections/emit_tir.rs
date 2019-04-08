@@ -10,7 +10,12 @@
 //! This module converts MIR into Yorick TIR (Tracing IR). TIR is more suitable for the run-time
 //! tracer: TIR (unlike MIR) is in SSA form (but it does preserve MIR's block structure).
 //!
-//! Serialisation itself is performed by an external library: ykpack.
+//! The conversion happens in stages:
+//!
+//! 1) The MIR is lowered into an initial TIR.
+//! 2) PHI nodes are inserted.
+//! 3) Variables are renamed and we arrive at SSA TIR.
+//! 4) The finalised SSA TIR is serialised using ykpack.
 
 use rustc::ty::TyCtxt;
 
@@ -29,15 +34,25 @@ use std::io::Write;
 use std::error::Error;
 use std::cell::{Cell, RefCell};
 use std::mem::size_of;
+use std::convert::TryFrom;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
-use rustc_data_structures::graph::dominators::DominatorFrontiers;
+use rustc_data_structures::graph::dominators::{Dominators, DominatorFrontiers};
+use rustc_data_structures::graph::WithSuccessors;
 use ykpack;
 use ykpack::LocalIndex as TirLocal;
+use ykpack::BasicBlockIndex as TirBasicBlockIndex;
 use rustc_data_structures::fx::FxHashSet;
 
 const SECTION_NAME: &'static str = ".yk_tir";
 const TMP_EXT: &'static str = ".yk_tir.tmp";
+
+/// The pre-SSA return value variable. In MIR, a return terminator implicitly returns variable
+/// zero. We can't do this in TIR because TIR is in SSA form and the variable we return depends
+/// upon which SSA variable reaches the terminator. So, during initial TIR lowering, we convert the
+/// implicit MIR terminator to an explicit TIR terminator returning variable index zero. During SSA
+/// conversion this is then re-written to the SSA variable that reaches the terminator.
+static PRE_SSA_RET_VAR: TirLocal = 0;
 
 /// Describes how to output MIR.
 pub enum TirMode {
@@ -48,7 +63,7 @@ pub enum TirMode {
     TextDump(PathBuf),
 }
 
-/// A conversion context holds the state needed to perform the conversion to (pre-SSA) TIR.
+/// A conversion context holds the state needed to perform the conversion to the intial TIR.
 struct ConvCx<'a, 'tcx, 'gcx> {
     /// The compiler's god struct. Needed for queries etc.
     tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
@@ -57,16 +72,20 @@ struct ConvCx<'a, 'tcx, 'gcx> {
     /// Maps each block to the variable it defines. This is what Appel calls `A_{orig}`.
     block_defines: RefCell<IndexVec<BasicBlock, FxHashSet<TirLocal>>>,
     /// Monotonically increasing number used to give TIR variables a unique ID.
+    /// Note that 0 is reserved for `PRE_SSA_RET_VAR`.
     next_tir_var: Cell<TirLocal>,
     /// A mapping from MIR variables to TIR variables.
     var_map: RefCell<IndexVec<Local, Option<TirLocal>>>,
     /// The number of blocks in the MIR (and therefore in the TIR).
     num_blks: usize,
+    /// The number of "predefined" variables at the entry point.
+    num_predefs: u32,
+    /// The MIR we are lowering.
+    mir: &'a Mir<'tcx>,
 }
 
 impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
-    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, mir: &Mir<'tcx>) -> Self {
-        let var_map = IndexVec::new();
+    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, mir: &'a Mir<'tcx>) -> Self {
         let num_blks = mir.basic_blocks().len();
 
         Self {
@@ -74,8 +93,33 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
             def_sites: RefCell::new(Vec::new()),
             block_defines: RefCell::new(IndexVec::from_elem_n(FxHashSet::default(), num_blks)),
             next_tir_var: Cell::new(0),
-            var_map: RefCell::new(var_map),
+            var_map: RefCell::new(IndexVec::new()),
             num_blks: num_blks,
+            num_predefs: 0,
+            mir,
+        }
+    }
+
+    /// Make a definition of all variables (before renaming) at the entry point. Call this
+    /// immediately after constructing a `RenameCx`.
+    ///
+    /// From the Appel book:
+    ///     "We consider the start node to contain an implicit definition of every variable,
+    ///     either because the variable may be a formal parameter or to represent the notion of
+    ///     `a ← uninitialized` without special cases"
+    ///
+    /// See also the insertion of SsaEntryDefs instructions elsewhere.
+    fn predefine_variables(&mut self) {
+        let mut return_var = vec![Local::new(0)];
+        // It's important that the implicit MIR return variable is processed first. See the comment
+        // above about PRE_SSA_RET_VAR.
+        for v in return_var.drain(..)
+            .chain(self.mir.args_iter())
+            .chain(self.mir.vars_iter())
+            .chain(self.mir.temps_iter())
+        {
+            self.push_def_site(BasicBlock::new(0), self.tir_var(v));
+            self.num_predefs += 1;
         }
     }
 
@@ -106,9 +150,13 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         })
     }
 
-    /// Finalise the conversion context, returning the definition sites and block defines mappings.
-    fn done(self) -> (Vec<BitSet<BasicBlock>>, IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
-        (self.def_sites.into_inner(), self.block_defines.into_inner())
+    /// Finalise the conversion context, returning a tuple of:
+    ///  - The definition sites.
+    ///  - The block defines mapping.
+    ///  - The next available TIR variable index.
+    fn done(self) -> (Vec<BitSet<BasicBlock>>, IndexVec<BasicBlock, FxHashSet<TirLocal>>, u32) {
+        (self.def_sites.into_inner(), self.block_defines.into_inner(),
+            self.next_tir_var.into_inner())
     }
 
     /// Add `bb` as a definition site of the TIR variable `var`.
@@ -187,19 +235,18 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
 
     for def_id in sorted_def_ids {
         if tcx.is_mir_available(*def_id) {
-            info!("generating TIR for {:?}", def_id);
-
             let mir = tcx.optimized_mir(*def_id);
-            let ccx = ConvCx::new(tcx, mir);
+            let doms = mir.dominators();
+            let mut ccx = ConvCx::new(tcx, mir);
+            ccx.predefine_variables();
 
             let mut pack = (&ccx, def_id, tcx.optimized_mir(*def_id)).to_pack();
             {
                 let ykpack::Pack::Mir(ykpack::Mir{ref mut blocks, ..}) = pack;
-                let (def_sites, block_defines) = ccx.done();
-                insert_phis(blocks, mir, def_sites, block_defines);
+                let (def_sites, block_defines, next_tir_var) = ccx.done();
+                insert_phis(blocks, &doms, mir, def_sites, block_defines);
+                RenameCx::new(next_tir_var).rename_all(&doms, &mir, blocks);
             }
-
-            // FIXME - rename variables with fresh SSA names.
 
             if let Some(ref mut e) = enc {
                 e.serialise(pack)?;
@@ -222,10 +269,9 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
 ///
 /// Algorithm reference:
 /// Bottom of p406 of 'Modern Compiler Implementation in Java (2nd ed.)' by Andrew Appel.
-fn insert_phis(blocks: &mut Vec<ykpack::BasicBlock>, mir: &Mir,
-               mut def_sites: Vec<BitSet<BasicBlock>>,
+fn insert_phis(blocks: &mut Vec<ykpack::BasicBlock>, doms: &Dominators<BasicBlock>,
+               mir: &Mir, mut def_sites: Vec<BitSet<BasicBlock>>,
                a_orig: IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
-    let doms = mir.dominators();
     let df = DominatorFrontiers::new(mir, &doms);
     let num_tir_vars = def_sites.len();
     let num_tir_blks = a_orig.len();
@@ -262,6 +308,107 @@ fn insert_phi(block: &mut ykpack::BasicBlock, var: TirLocal, arity: usize) {
     block.stmts.insert(0, ykpack::Statement::Assign(lhs, rhs));
 }
 
+/// A statement location.
+#[derive(Clone, Debug)]
+struct StmtLoc {
+    /// The block containing the statement.
+    bb: TirBasicBlockIndex,
+    /// The statement index.
+    si: usize,
+}
+
+/// SSA variable renaming. Algorithm reference:
+/// Bottom of p408 of 'Modern Compiler Implementation in Java (2nd ed.)' by Andrew Appel.
+struct RenameCx {
+    /// A counter used to give new TIR variables a unique identifier.
+    /// The original algorithm used one counter per original variable. This would mean storing each
+    /// SSA variable as a (name, version) pair. For added efficiency, we use a single counter and
+    /// represent our variables as plain old integers.
+    count: TirLocal,
+    /// Each variable has a stack of definitions.
+    stack: Vec<Vec<TirLocal>>,
+}
+
+impl RenameCx {
+    /// Make a new renaming context. To prevent variable naming clashes, the `next_fresh_var`
+    /// argument should be one more than the last variable the previous step of the conversion
+    /// created.
+    fn new(next_fresh_var: u32) -> Self {
+        // We start with space for the variables we know about so far. The vectors will grow as new
+        // SSA variables are instantiated.
+        let next_fresh_var_usize = usize::try_from(next_fresh_var).unwrap();
+        let mut stack = Vec::with_capacity(next_fresh_var_usize);
+        stack.resize(next_fresh_var_usize, Vec::new());
+        Self {
+            count: next_fresh_var,
+            stack,
+        }
+    }
+
+    /// Create a new SSA variable.
+    fn fresh_var(&mut self) -> TirLocal {
+        let ret = self.count;
+        self.count = self.count.checked_add(1).unwrap();
+        ret
+    }
+
+    /// Entry point for variable renaming.
+    fn rename_all(mut self, doms: &Dominators<BasicBlock>, mir: &Mir,
+        blks: &mut Vec<ykpack::BasicBlock>)
+    {
+        // We start renaming in the entry block and it ripples down the dominator tree.
+        self.rename(doms, mir, blks, 0);
+    }
+
+    // FIXME rename variables in terminators.
+    fn rename(&mut self, doms: &Dominators<BasicBlock>, mir: &Mir,
+        blks: &mut Vec<ykpack::BasicBlock>, n: TirBasicBlockIndex)
+    {
+        let n_usize = n as usize;
+        // We have to remember the variables whose stacks we must pop from when we come back from
+        // recursion. These must be the variables *before* they were renamed.
+        let mut pop_later = Vec::new();
+        {
+            let n_blk = &mut blks[n_usize];
+            for st in n_blk.stmts.iter_mut() {
+                if !st.is_phi() {
+                    for x in st.uses_vars_mut().iter_mut() {
+                        let i = self.stack[**x as usize].last().cloned().unwrap();
+                        **x = i;
+                    }
+                }
+                for a in st.defs_vars_mut().iter_mut() {
+                    let i = self.fresh_var();
+                    self.stack[**a as usize].push(i);
+                    pop_later.push(**a);
+                    **a = i;
+                }
+            }
+        }
+
+        let n_idx = BasicBlock::new(n_usize);
+        for y in mir.successors(n_idx) {
+            // "Suppose n is the jth predecessor of y".
+            let j = mir.predecessors_for(y).iter().position(|b| b == &n_idx).unwrap();
+            // "For each Phi function in y"
+            for st in &mut blks[y.as_usize()].stmts {
+                if let Some(ref mut a) = st.phi_arg_mut(j) {
+                    // We only get here if `st` was a Phi.
+                    let i = self.stack[**a as usize].last().cloned().unwrap();
+                    **a = i;
+                }
+            }
+        }
+
+        for x in doms.immediately_dominates(n_idx) {
+            self.rename(doms, mir, blks, x.as_u32());
+        }
+
+        for a in pop_later {
+            self.stack[usize::try_from(a).unwrap()].pop();
+         }
+    }
+}
 
 /// The trait for converting MIR data structures into a bytecode packs.
 trait ToPack<T> {
@@ -312,7 +459,7 @@ impl<'tcx> ToPack<ykpack::Terminator> for (&ConvCx<'_, 'tcx, '_>, &Terminator<'t
             },
             TerminatorKind::Resume => ykpack::Terminator::Resume,
             TerminatorKind::Abort => ykpack::Terminator::Abort,
-            TerminatorKind::Return => ykpack::Terminator::Return,
+            TerminatorKind::Return => ykpack::Terminator::Return(PRE_SSA_RET_VAR),
             TerminatorKind::Unreachable => ykpack::Terminator::Unreachable,
             TerminatorKind::Drop{target: target_bb, unwind: unwind_bb, ..} =>
                 ykpack::Terminator::Drop{
@@ -367,9 +514,16 @@ impl<'tcx> ToPack<ykpack::BasicBlock> for
 {
     fn to_pack(&mut self) -> ykpack::BasicBlock {
         let (ccx, bb, bb_data) = self;
-        let ser_stmts = bb_data.statements.iter().map(|stmt| (*ccx, *bb, stmt).to_pack());
-        ykpack::BasicBlock::new(ser_stmts.collect(),
-            (*ccx, bb_data.terminator.as_ref().unwrap()).to_pack())
+        let mut ser_stmts = Vec::new();
+
+        // If we are lowering the first block, we insert a special `SsaEntryDefs` instruction, which
+        // tells the SSA algorithms to make an initial definition of every TIR variable.
+        if bb.as_u32() == 0 {
+            ser_stmts.push(ykpack::Statement::SsaEntryDefs((0..ccx.num_predefs).collect()));
+        }
+
+        ser_stmts.extend(bb_data.statements.iter().map(|stmt| (*ccx, *bb, stmt).to_pack()));
+        ykpack::BasicBlock::new(ser_stmts, (*ccx, bb_data.terminator.as_ref().unwrap()).to_pack())
     }
 }
 
