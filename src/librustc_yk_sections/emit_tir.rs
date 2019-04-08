@@ -31,9 +31,10 @@ use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
-use rustc_data_structures::graph::dominators::Dominators;
+use rustc_data_structures::graph::dominators::DominatorFrontiers;
 use ykpack;
 use ykpack::LocalIndex as TirLocal;
+use rustc_data_structures::fx::FxHashSet;
 
 const SECTION_NAME: &'static str = ".yk_tir";
 const TMP_EXT: &'static str = ".yk_tir.tmp";
@@ -53,6 +54,8 @@ struct ConvCx<'a, 'tcx, 'gcx> {
     tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
     /// Maps TIR variables to their definition sites.
     def_sites: RefCell<Vec<BitSet<BasicBlock>>>,
+    /// Maps each block to the variable it defines. This is what Appel calls `A_{orig}`.
+    block_defines: RefCell<IndexVec<BasicBlock, FxHashSet<TirLocal>>>,
     /// Monotonically increasing number used to give TIR variables a unique ID.
     next_tir_var: Cell<TirLocal>,
     /// A mapping from MIR variables to TIR variables.
@@ -64,13 +67,15 @@ struct ConvCx<'a, 'tcx, 'gcx> {
 impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, mir: &Mir<'tcx>) -> Self {
         let var_map = IndexVec::new();
+        let num_blks = mir.basic_blocks().len();
 
         Self {
             tcx,
             def_sites: RefCell::new(Vec::new()),
+            block_defines: RefCell::new(IndexVec::from_elem_n(FxHashSet::default(), num_blks)),
             next_tir_var: Cell::new(0),
             var_map: RefCell::new(var_map),
-            num_blks: mir.basic_blocks().len(),
+            num_blks: num_blks,
         }
     }
 
@@ -101,8 +106,9 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         })
     }
 
-    fn def_sites(self) -> Vec<BitSet<BasicBlock>> {
-        self.def_sites.into_inner()
+    /// Finalise the conversion context, returning the definition sites and block defines mappings.
+    fn done(self) -> (Vec<BitSet<BasicBlock>>, IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
+        (self.def_sites.into_inner(), self.block_defines.into_inner())
     }
 
     /// Add `bb` as a definition site of the TIR variable `var`.
@@ -118,6 +124,9 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 BitSet::new_empty(self.num_blks));
         }
         sites[var_usize].insert(bb);
+
+        // Also push into the inverse mapping (blocks to defined vars).
+        self.block_defines.borrow_mut()[bb].insert(var);
     }
 }
 
@@ -183,18 +192,19 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
             let mir = tcx.optimized_mir(*def_id);
             let ccx = ConvCx::new(tcx, mir);
 
-            // Get an initial TIR (not yet in SSA form).
-            let pre_ssa_pack = (&ccx, def_id, tcx.optimized_mir(*def_id)).to_pack();
-
-            // Add PHI nodes.
-            let phied_pack = PhiInserter::new(mir, pre_ssa_pack, ccx.def_sites()).pack();
+            let mut pack = (&ccx, def_id, tcx.optimized_mir(*def_id)).to_pack();
+            {
+                let ykpack::Pack::Mir(ykpack::Mir{ref mut blocks, ..}) = pack;
+                let (def_sites, block_defines) = ccx.done();
+                insert_phis(blocks, mir, def_sites, block_defines);
+            }
 
             // FIXME - rename variables with fresh SSA names.
 
             if let Some(ref mut e) = enc {
-                e.serialise(phied_pack)?;
+                e.serialise(pack)?;
             } else {
-                write!(textdump_file.as_ref().unwrap(), "{}", phied_pack)?;
+                write!(textdump_file.as_ref().unwrap(), "{}", pack)?;
             }
         }
     }
@@ -208,160 +218,50 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
     Ok(tir_path)
 }
 
-/// Lazy computation of dominance frontiers.
+/// Insert PHI nodes into the initial pre-SSA TIR pack.
 ///
-/// See p404 of the 2nd edition of the Appel book mentioned above.
-///
-/// Since the frontier of one node may depend on the frontiers of other nodes (depending upon their
-/// relationships), we cache the frontiers so as to avoid computing things more than once.
-struct DominatorFrontiers<'a, 'tcx> {
-    /// The MIR we are working on.
-    mir: &'a Mir<'tcx>,
-    /// The dominators of the above MIR.
-    doms: Dominators<BasicBlock>,
-    /// The dominance frontier cache. Lazily computed. `None` means as-yet uncomputed.
-    df: IndexVec<BasicBlock, Option<BitSet<BasicBlock>>>,
-    /// The number of MIR (and thus TIR) blocks.
-    num_blks: usize,
-}
+/// Algorithm reference:
+/// Bottom of p406 of 'Modern Compiler Implementation in Java (2nd ed.)' by Andrew Appel.
+fn insert_phis(blocks: &mut Vec<ykpack::BasicBlock>, mir: &Mir,
+               mut def_sites: Vec<BitSet<BasicBlock>>,
+               a_orig: IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
+    let doms = mir.dominators();
+    let df = DominatorFrontiers::new(mir, &doms);
+    let num_tir_vars = def_sites.len();
+    let num_tir_blks = a_orig.len();
 
-impl<'a, 'tcx> DominatorFrontiers<'a, 'tcx> {
-    fn new(mir: &'a Mir<'tcx>) -> Self {
-        let num_blks = mir.basic_blocks().len();
-        let df = IndexVec::from_elem_n(None, num_blks);
+    let mut a_phi: Vec<BitSet<TirLocal>> = Vec::with_capacity(num_tir_blks);
+    a_phi.resize(num_tir_blks, BitSet::new_empty(num_tir_vars));
 
-        Self {
-            mir,
-            doms: mir.dominators(),
-            df,
-            num_blks: mir.basic_blocks().len(),
-        }
-    }
-
-    /// Get the dominance frontier of the given basic block, computing it if we have not already
-    /// done so. Since computing the frontiers for a full CFG requests the same frontiers
-    /// repeatedly, the requested frontier (and its dependencies) are inserted into a cache to
-    /// avoid duplicate computations.
-    fn frontier(&mut self, n: BasicBlock) -> &BitSet<BasicBlock> {
-        if self.df[n].is_none() {
-            // We haven't yet computed dominator frontiers for this node. Compute them.
-            let mut s: BitSet<BasicBlock> = BitSet::new_empty(self.num_blks);
-
-            // Append what Appel calls 'DF_{local}[n]'.
-            for y in self.mir.basic_blocks()[n].terminator().successors() {
-                if self.doms.immediate_dominator(*y) != n {
-                    s.insert(*y);
-                }
-            }
-
-            // The second stage of the algorithm needs the children nodes in the dominator tree.
-            let mut children = Vec::new();
-            for (b, _) in self.mir.basic_blocks().iter_enumerated() {
-                let b = BasicBlock::from_u32(b.as_u32());
-                if self.doms.is_dominated_by(b, n) && b != n {
-                    children.push(b);
-                    // Force the frontier of `b` into the cache (`self.df`). Doing this here avoids
-                    // a simultaneous mutable + immutable borrow of `self` in the final stage of
-                    // the algorithm.
-                    self.frontier(b);
-                }
-            }
-
-            // Append what Appel calls `DF_{up}[c]` for each dominator tree child `c` of `n`.
-            for c in children {
-                for w in self.df[c].as_ref().unwrap().iter() {
-                    if n == w || !self.doms.is_dominated_by(w, n) {
-                        s.insert(w);
-                    }
-                }
-            }
-            self.df[n] = Some(s);
-        }
-
-        self.df[n].as_ref().unwrap()
-    }
-}
-
-/// This struct deals with inserting PHI nodes into the initial pre-SSA TIR pack.
-///
-/// See the bottom of p406 of the 2nd edition of the Appel book mentioned above.
-struct PhiInserter<'a, 'tcx> {
-    mir: &'a Mir<'tcx>,
-    pack: ykpack::Pack,
-    def_sites: Vec<BitSet<BasicBlock>>,
-}
-
-impl<'a, 'tcx> PhiInserter<'a, 'tcx> {
-    fn new(mir: &'a Mir<'tcx>, pack: ykpack::Pack, def_sites: Vec<BitSet<BasicBlock>>) -> Self {
-        Self {
-            mir,
-            pack,
-            def_sites,
-        }
-    }
-
-    /// Insert PHI nodes, returning the mutated pack.
-    fn pack(mut self) -> ykpack::Pack {
-        let mut df = DominatorFrontiers::new(self.mir);
-        let num_tir_vars = self.def_sites.len();
-
-        // We first need a mapping from block to the variables it defines. Appel calls this
-        // `A_{orig}`. We can derive this from our definition sites.
-        let (a_orig, num_tir_blks) = {
-            let ykpack::Pack::Mir(ykpack::Mir{ref blocks, ..}) = self.pack;
-            let num_tir_blks = blocks.len();
-
-            let mut a_orig: IndexVec<BasicBlock, BitSet<TirLocal>> =
-                IndexVec::from_elem_n(BitSet::new_empty(num_tir_vars), num_tir_blks);
-            for (a, def_blks) in self.def_sites.iter().enumerate() {
-                for bb in def_blks.iter() {
-                    // `def_sites` is guaranteed to have at most `u32::max_value()` items.
-                    a_orig[bb].insert(a as u32);
-                }
-            }
-            (a_orig, num_tir_blks)
-        };
-
-        let mut a_phi: Vec<BitSet<TirLocal>> = Vec::with_capacity(num_tir_blks);
-        a_phi.resize(num_tir_blks, BitSet::new_empty(num_tir_vars));
-        // We don't need the elements of `def_sites` again past this point, so we can take them out
-        // of `def_sites` with a draining iterator and mutate in-place.
-        for (a, mut w) in self.def_sites.drain(..).enumerate() {
-            while !w.is_empty() {
-                let n = bitset_pop(&mut w);
-                for y in df.frontier(n).iter() {
-                    let y_usize = y.index();
-                    // `self.def_sites` is guaranteed to only contain indices expressible by `u32`.
-                    let a_u32 = a as u32;
-                    if !a_phi[y_usize].contains(a_u32) {
-                        // Appel would insert the Phi node here. We use a second pass to keep the
-                        // borrow checker happy (self is already borrowed in this loop).
-                        a_phi[y_usize].insert(a_u32);
-                        if !a_orig[y].contains(a_u32) {
-                            w.insert(y);
-                        }
+    // We don't need the elements of `def_sites` again past this point, so we can take them out
+    // of `def_sites` with a draining iterator and mutate in-place.
+    for (a, mut w) in def_sites.drain(..).enumerate() {
+        while !w.is_empty() {
+            let n = bitset_pop(&mut w);
+            for y in df.frontier(n).iter() {
+                let y_usize = y.index();
+                // `def_sites` is guaranteed to only contain indices expressible by `u32`.
+                let a_u32 = a as u32;
+                if !a_phi[y_usize].contains(a_u32) {
+                    a_phi[y_usize].insert(a_u32);
+                    if !a_orig[y].contains(&a_u32) {
+                        // The assertion in `tir_var()` has already checked the cast is safe.
+                        insert_phi(&mut blocks[y_usize], a as u32, mir.predecessors_for(y).len());
+                        w.insert(y);
                     }
                 }
             }
         }
-
-        // `a_phi` now tells use where to insert PHI nodes.
-        {
-            let ykpack::Pack::Mir(ykpack::Mir{ref mut blocks, ..}) = self.pack;
-            for (bb, mut bb_data) in blocks.iter_mut().enumerate() {
-                for a in a_phi[bb].iter() {
-                    let lhs = ykpack::Place::Local(a);
-                    let num_preds = self.mir.predecessors_for(BasicBlock::new(bb)).len();
-                    let rhs_vars = (0..num_preds).map(|_| lhs.clone()).collect();
-                    let rhs = ykpack::Rvalue::Phi(rhs_vars);
-                    bb_data.stmts.insert(0, ykpack::Statement::Assign(lhs, rhs));
-                }
-            }
-        }
-
-        self.pack
     }
 }
+
+fn insert_phi(block: &mut ykpack::BasicBlock, var: TirLocal, arity: usize) {
+    let lhs = ykpack::Place::Local(var);
+    let rhs_vars = (0..arity).map(|_| lhs.clone()).collect();
+    let rhs = ykpack::Rvalue::Phi(rhs_vars);
+    block.stmts.insert(0, ykpack::Statement::Assign(lhs, rhs));
+}
+
 
 /// The trait for converting MIR data structures into a bytecode packs.
 trait ToPack<T> {
