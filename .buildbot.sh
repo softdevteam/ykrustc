@@ -2,9 +2,6 @@
 #
 # Build script for continuous integration.
 
-./x.py clean  # We don't clone afresh to save time and bandwidth.
-git clean -dffx # If upstream removes a submodule, remove the files from disk.
-
 # Ensure the build fails if it uses excessive amounts of memory.
 ulimit -d $((1024 * 1024 * 8)) # 8 GiB
 
