@@ -4,5 +4,9 @@
 codegen-units = 0           # Use many compilation units.
 debug-assertions = true     # Turn on assertions in rustc.
 
+[build]
+extended = true
+tools = ["cargo", "rustfmt"]
+
 [llvm]
 assertions = true           # Turn on assertions in LLVM.
