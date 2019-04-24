@@ -5,8 +5,13 @@ codegen-units = 0           # Use many compilation units.
 debug-assertions = true     # Turn on assertions in rustc.
 
 [build]
+docs = false
 extended = true
-tools = ["cargo", "rustfmt"]
+tools = ["cargo", "rustfmt", "rustdoc"]
 
 [llvm]
 assertions = true           # Turn on assertions in LLVM.
+
+[install]
+prefix = "build/ykrustc-stage2-latest"
+sysconfdir = "etc"
