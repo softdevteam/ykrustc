@@ -459,7 +459,7 @@ impl<'tcx> ToPack<ykpack::Terminator> for (&ConvCx<'_, 'tcx, '_>, &Terminator<'t
             },
             TerminatorKind::Resume => ykpack::Terminator::Resume,
             TerminatorKind::Abort => ykpack::Terminator::Abort,
-            TerminatorKind::Return => ykpack::Terminator::Return(PRE_SSA_RET_VAR),
+            TerminatorKind::Return => ykpack::Terminator::Return { local: PRE_SSA_RET_VAR },
             TerminatorKind::Unreachable => ykpack::Terminator::Unreachable,
             TerminatorKind::Drop{target: target_bb, unwind: unwind_bb, ..} =>
                 ykpack::Terminator::Drop{
