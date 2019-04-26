@@ -22,6 +22,6 @@ fn main() {
 //     Assign(Local(0), Unimplemented)
 //     term: Goto { target_bb: 4 }
 // bb4:
-//     Assign(Local(0), Phi([Local(0), Local(0)]))
+//     Unimplemented
 // ...
 // [End TIR for main]

@@ -7,8 +7,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! This module converts MIR into Yorick TIR (Tracing IR). TIR is more suitable for the run-time
-//! tracer: TIR (unlike MIR) is in SSA form (but it does preserve MIR's block structure).
+//! This module converts MIR into Yorick TIR (Tracing IR).
+//! Note that we preserve the MIR block structure when lowering to TIR.
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
@@ -30,8 +30,7 @@ use std::error::Error;
 use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use rustc_data_structures::bit_set::BitSet;
-use rustc_data_structures::indexed_vec::{IndexVec, Idx};
-use rustc_data_structures::graph::dominators::DominatorFrontiers;
+use rustc_data_structures::indexed_vec::IndexVec;
 use ykpack;
 use ykpack::LocalIndex as TirLocal;
 use rustc_data_structures::fx::FxHashSet;
@@ -48,7 +47,7 @@ pub enum TirMode {
     TextDump(PathBuf),
 }
 
-/// A conversion context holds the state needed to perform the conversion to (pre-SSA) TIR.
+/// A conversion context holds the state needed to perform the TIR lowering.
 struct ConvCx<'a, 'tcx, 'gcx> {
     /// The compiler's god struct. Needed for queries etc.
     tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
@@ -104,11 +103,6 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
             var_map[local] = Some(var_idx);
             var_idx
         })
-    }
-
-    /// Finalise the conversion context, returning the definition sites and block defines mappings.
-    fn done(self) -> (Vec<BitSet<BasicBlock>>, IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
-        (self.def_sites.into_inner(), self.block_defines.into_inner())
     }
 
     /// Add `bb` as a definition site of the TIR variable `var`.
@@ -187,19 +181,9 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
 
     for def_id in sorted_def_ids {
         if tcx.is_mir_available(*def_id) {
-            info!("generating TIR for {:?}", def_id);
-
             let mir = tcx.optimized_mir(*def_id);
             let ccx = ConvCx::new(tcx, mir);
-
-            let mut pack = (&ccx, def_id, tcx.optimized_mir(*def_id)).to_pack();
-            {
-                let ykpack::Pack::Mir(ykpack::Mir{ref mut blocks, ..}) = pack;
-                let (def_sites, block_defines) = ccx.done();
-                insert_phis(blocks, mir, def_sites, block_defines);
-            }
-
-            // FIXME - rename variables with fresh SSA names.
+            let pack = (&ccx, def_id, tcx.optimized_mir(*def_id)).to_pack();
 
             if let Some(ref mut e) = enc {
                 e.serialise(pack)?;
@@ -217,51 +201,6 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
 
     Ok(tir_path)
 }
-
-/// Insert PHI nodes into the initial pre-SSA TIR pack.
-///
-/// Algorithm reference:
-/// Bottom of p406 of 'Modern Compiler Implementation in Java (2nd ed.)' by Andrew Appel.
-fn insert_phis(blocks: &mut Vec<ykpack::BasicBlock>, mir: &Mir,
-               mut def_sites: Vec<BitSet<BasicBlock>>,
-               a_orig: IndexVec<BasicBlock, FxHashSet<TirLocal>>) {
-    let doms = mir.dominators();
-    let df = DominatorFrontiers::new(mir, &doms);
-    let num_tir_vars = def_sites.len();
-    let num_tir_blks = a_orig.len();
-
-    let mut a_phi: Vec<BitSet<TirLocal>> = Vec::with_capacity(num_tir_blks);
-    a_phi.resize(num_tir_blks, BitSet::new_empty(num_tir_vars));
-
-    // We don't need the elements of `def_sites` again past this point, so we can take them out
-    // of `def_sites` with a draining iterator and mutate in-place.
-    for (a, mut w) in def_sites.drain(..).enumerate() {
-        while !w.is_empty() {
-            let n = bitset_pop(&mut w);
-            for y in df.frontier(n).iter() {
-                let y_usize = y.index();
-                // `def_sites` is guaranteed to only contain indices expressible by `u32`.
-                let a_u32 = a as u32;
-                if !a_phi[y_usize].contains(a_u32) {
-                    a_phi[y_usize].insert(a_u32);
-                    if !a_orig[y].contains(&a_u32) {
-                        // The assertion in `tir_var()` has already checked the cast is safe.
-                        insert_phi(&mut blocks[y_usize], a as u32, mir.predecessors_for(y).len());
-                        w.insert(y);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn insert_phi(block: &mut ykpack::BasicBlock, var: TirLocal, arity: usize) {
-    let lhs = ykpack::Place::Local(var);
-    let rhs_vars = (0..arity).map(|_| lhs.clone()).collect();
-    let rhs = ykpack::Rvalue::Phi(rhs_vars);
-    block.stmts.insert(0, ykpack::Statement::Assign(lhs, rhs));
-}
-
 
 /// The trait for converting MIR data structures into a bytecode packs.
 trait ToPack<T> {
@@ -414,12 +353,4 @@ impl<'tcx> ToPack<ykpack::Rvalue> for (&ConvCx<'_, 'tcx, '_>, &Rvalue<'tcx>) {
             _ => ykpack::Rvalue::Unimplemented, // FIXME
         }
     }
-}
-
-/// At the time of writing, you can't pop from a `BitSet`.
-fn bitset_pop<T>(s: &mut BitSet<T>) -> T where T: Eq + Idx + Clone {
-    let e = s.iter().next().unwrap().clone();
-    let removed = s.remove(e);
-    debug_assert!(removed);
-    e
 }
