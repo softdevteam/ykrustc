@@ -159,12 +159,12 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
             // same between builds for the reproducible build tests to pass.
             let mut tir_path = exe_path.clone();
             tir_path.set_extension(TMP_EXT);
-            let mut file = File::create(&tir_path)?;
+            let file = File::create(&tir_path)?;
             (tir_path, Some(file), None)
         },
         TirMode::TextDump(dump_path) => {
             // In text dump mode we just write lines to a file and we don't need an encoder.
-            let mut file = File::create(&dump_path)?;
+            let file = File::create(&dump_path)?;
             (dump_path.clone(), None, Some(file))
         },
     };
