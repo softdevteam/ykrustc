@@ -3062,12 +3062,11 @@ version = "0.0.0"
 name = "rustc_yk_sections"
 version = "0.0.0"
 dependencies = [
- "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc 0.0.0",
  "rustc_codegen_utils 0.0.0",
  "rustc_data_structures 0.0.0",
  "rustc_yk_link 0.0.0",
- "ykpack 0.1.0 (git+https://github.com/softdevteam/ykpack)",
+ "ykpack 0.1.0 (git+https://github.com/softdevteam/yk)",
 ]
 
 [[package]]
@@ -4046,7 +4045,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/ykpack#9c5542d9d556ce745f0b21983a009a1297f371e4"
+source = "git+https://github.com/softdevteam/yk#0c7016c47bff4b149a2bc1d304cf637f6d64719e"
 dependencies = [
  "fallible-iterator 0.1.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "rmp-serde 0.14.0 (git+https://github.com/3Hren/msgpack-rust?rev=40b3d480b20961e6eeceb416b32bcd0a3383846a)",
@@ -4390,4 +4389,4 @@ dependencies = [
 "checksum xattr 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "244c3741f4240ef46274860397c7c74e50eb23624996930e484c16679633a54c"
 "checksum xz2 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "df8bf41d3030c3577c9458fd6640a05afbf43b150d0b531b16bd77d3f794f27a"
 "checksum yaml-rust 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)" = "e66366e18dc58b46801afbf2ca7661a9f59cc8c5962c29892b6039b4f86fa992"
-"checksum ykpack 0.1.0 (git+https://github.com/softdevteam/ykpack)" = "<none>"
+"checksum ykpack 0.1.0 (git+https://github.com/softdevteam/yk)" = "<none>"
