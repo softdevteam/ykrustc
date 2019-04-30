@@ -19,9 +19,8 @@ fn main() {
 // ...
 //     term: SwitchInt { target_bbs: [4, 3] }
 // bb3:
-//     Assign(Local(0), Unimplemented)
+//     Assign(Base(Local(0)), Use(Unimplemented))
 //     term: Goto { target_bb: 4 }
 // bb4:
-//     Unimplemented
 // ...
 // [End TIR for main]
