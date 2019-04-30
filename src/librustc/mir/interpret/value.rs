@@ -332,6 +332,13 @@ impl<'tcx, Tag> Scalar<Tag> {
         Ok(b as u8)
     }
 
+    pub fn to_u16(self) -> EvalResult<'static, u16> {
+        let sz = Size::from_bits(16);
+        let b = self.to_bits(sz)?;
+        assert_eq!(b as u16 as u128, b);
+        Ok(b as u16)
+    }
+
     pub fn to_u32(self) -> EvalResult<'static, u32> {
         let sz = Size::from_bits(32);
         let b = self.to_bits(sz)?;
@@ -344,6 +351,11 @@ impl<'tcx, Tag> Scalar<Tag> {
         let b = self.to_bits(sz)?;
         assert_eq!(b as u64 as u128, b);
         Ok(b as u64)
+    }
+
+    pub fn to_u128(self) -> EvalResult<'static, u128> {
+        let sz = Size::from_bits(128);
+        Ok(self.to_bits(sz)?)
     }
 
     pub fn to_usize(self, cx: &impl HasDataLayout) -> EvalResult<'static, u64> {
@@ -360,6 +372,14 @@ impl<'tcx, Tag> Scalar<Tag> {
         Ok(b as i8)
     }
 
+    pub fn to_i16(self) -> EvalResult<'static, i16> {
+        let sz = Size::from_bits(16);
+        let b = self.to_bits(sz)?;
+        let b = sign_extend(b, sz) as i128;
+        assert_eq!(b as i16 as i128, b);
+        Ok(b as i16)
+    }
+
     pub fn to_i32(self) -> EvalResult<'static, i32> {
         let sz = Size::from_bits(32);
         let b = self.to_bits(sz)?;
@@ -374,6 +394,12 @@ impl<'tcx, Tag> Scalar<Tag> {
         let b = sign_extend(b, sz) as i128;
         assert_eq!(b as i64 as i128, b);
         Ok(b as i64)
+    }
+
+    pub fn to_i128(self) -> EvalResult<'static, i128> {
+        let sz = Size::from_bits(128);
+        let b = self.to_bits(sz)?;
+        Ok(sign_extend(b, sz) as i128)
     }
 
     pub fn to_isize(self, cx: &impl HasDataLayout) -> EvalResult<'static, i64> {

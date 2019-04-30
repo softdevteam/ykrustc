@@ -19,7 +19,7 @@ fn main() {
 // ...
 //     term: SwitchInt { target_bbs: [4, 3] }
 // bb3:
-//     Assign(Base(Local(0)), Use(Unimplemented))
+//     Assign(Base(Local(0)), Use(Constant(SignedInt(I32(100)))))
 //     term: Goto { target_bb: 4 }
 // bb4:
 // ...

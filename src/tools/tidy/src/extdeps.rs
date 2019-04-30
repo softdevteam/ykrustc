@@ -10,7 +10,7 @@ const WHITELISTED_SOURCES: &[&str] = &[
     // The following are needed for Yorick whilst we use an unreleased revision not on crates.io.
     "\"git+https://github.com/3Hren/msgpack-rust?\
         rev=40b3d480b20961e6eeceb416b32bcd0a3383846a#40b3d480b20961e6eeceb416b32bcd0a3383846a\"",
-    "\"git+https://github.com/softdevteam/yk#eac9ee05a85f5b7a2158bc5b01b63c8a34f5132f\"",
+    "\"git+https://github.com/softdevteam/yk#7d5dedfbc86677c81b99bf1e18a1259ac32829ff\"",
 ];
 
 /// Checks for external package sources.

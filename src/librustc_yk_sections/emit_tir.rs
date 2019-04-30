@@ -17,10 +17,11 @@ use rustc::hir::def_id::DefId;
 use rustc::mir::{
     Mir, TerminatorKind, Operand, Constant, StatementKind, BasicBlock, BasicBlockData, Terminator,
     Place, Rvalue, Statement, Local, PlaceBase, BorrowKind, BinOp, UnOp, NullOp, Projection,
-    AggregateKind
+    AggregateKind, ProjectionElem
 };
-use rustc::ty::{TyS, TyKind, Const, LazyConst};
+use rustc::ty::{TyS, TyKind, Const, LazyConst, Ty};
 use rustc::util::nodemap::DefIdSet;
+use syntax::ast::{IntTy, UintTy};
 use std::path::PathBuf;
 use std::fs::File;
 use rustc_yk_link::YkExtraLinkObject;
@@ -29,9 +30,10 @@ use std::io::Write;
 use std::error::Error;
 use std::cell::{Cell, RefCell};
 use std::mem::size_of;
-use std::marker::PhantomData;
+use std::convert::TryFrom;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::IndexVec;
+use rustc::mir::interpret::{Scalar, ConstValue};
 use ykpack;
 use ykpack::LocalIndex as TirLocal;
 use rustc_data_structures::fx::FxHashSet;
@@ -358,18 +360,50 @@ impl<'tcx> ToPack<ykpack::Place> for (&ConvCx<'_, 'tcx, '_>, &Place<'tcx>) {
 }
 
 /// Projection -> Pack
-/// In Rust, projections are parameterised, but there is only ever one concrete instantiation, so
-/// we lower to a concrete `PlaceProjection`.
-impl<'tcx, T> ToPack<ykpack::PlaceProjection>
+/// In MIR, projections are parameterised, but there is only ever one concrete instantiation, so we
+/// lower to a concrete struct.
+/// FIXME: type parameters will go away soon:
+/// https://github.com/rust-lang/rust/pull/60441
+impl<'tcx, T> ToPack<ykpack::Projection>
     for (&ConvCx<'_, 'tcx, '_>, &Projection<'tcx, Place<'tcx>, Local, T>)
 {
-    fn to_pack(&mut self) -> ykpack::PlaceProjection {
+    fn to_pack(&mut self) -> ykpack::Projection {
         let (ccx, pj) = self;
+        ykpack::Projection(Box::new((*ccx, &pj.base).to_pack()), (*ccx, &pj.elem).to_pack())
+    }
+}
 
-        ykpack::PlaceProjection {
-            base: Box::new((*ccx, &pj.base).to_pack()),
-            elem: ykpack::ProjectionElem::Unimplemented(PhantomData), // FIXME
+/// ProjectionElem -> Pack
+/// In MIR, ProjectionElem is paramterised to allow reuse of the struct for both concrete
+/// projections and for descriptions of the "kind" of projection (the latter being an instantiation
+/// of the struct with unit parameters). When lowering to TIR we convert to concrete structures.
+impl<'tcx, T> ToPack<ykpack::ProjectionElem>
+    for (&ConvCx<'_, 'tcx, '_>, &ProjectionElem<'tcx, Local, T>)
+{
+    fn to_pack(&mut self) -> ykpack::ProjectionElem {
+        let (ccx, pp) = self;
+
+        match pp {
+            ProjectionElem::Deref => ykpack::ProjectionElem::Deref,
+            ProjectionElem::Field(f, _) => ykpack::ProjectionElem::Field(f.as_u32()),
+            ProjectionElem::Index(v) => ykpack::ProjectionElem::Index((*ccx, v).to_pack()),
+            ProjectionElem::ConstantIndex{offset, min_length, from_end} =>
+                ykpack::ProjectionElem::ConstantIndex{
+                    offset: *offset, min_length: *min_length, from_end: *from_end
+                },
+            ProjectionElem::Subslice {from, to} =>
+                ykpack::ProjectionElem::Subslice{from: *from, to: *to},
+            ProjectionElem::Downcast(_, variant) =>
+                ykpack::ProjectionElem::Downcast(variant.as_u32()),
         }
+    }
+}
+
+/// Local -> Pack
+impl<'tcx> ToPack<ykpack::LocalIndex> for (&ConvCx<'_, 'tcx, '_>, &Local) {
+    fn to_pack(&mut self) -> ykpack::LocalIndex {
+        let (ccx, l) = self;
+        ccx.tir_var(**l)
     }
 }
 
@@ -379,7 +413,7 @@ impl<'tcx> ToPack<ykpack::PlaceBase> for (&ConvCx<'_, 'tcx, '_>, &PlaceBase<'tcx
         let (ccx, pb) = self;
 
         match pb {
-            PlaceBase::Local(local) => ykpack::PlaceBase::Local(ccx.tir_var(*local)),
+            PlaceBase::Local(local) => ykpack::PlaceBase::Local((*ccx, local).to_pack()),
             PlaceBase::Static(s) => ykpack::PlaceBase::Static((*ccx, &s.as_ref().def_id).to_pack()),
             PlaceBase::Promoted(bx) => ykpack::PlaceBase::Promoted(bx.0.as_u32()),
         }
@@ -394,7 +428,7 @@ impl<'tcx> ToPack<ykpack::Operand> for (&ConvCx<'_, 'tcx, '_>, &Operand<'tcx>) {
         match *op {
             Operand::Move(place) | Operand::Copy(place)
                 => ykpack::Operand::Place((*ccx, place).to_pack()),
-            _ => ykpack::Operand::Unimplemented, // FIXME
+            Operand::Constant(cst) => ykpack::Operand::Constant((*ccx, cst.as_ref()).to_pack()),
         }
     }
 }
@@ -505,6 +539,81 @@ impl<'tcx> ToPack<ykpack::UnOp> for (&ConvCx<'_, 'tcx, '_>, &UnOp) {
         match *op {
             UnOp::Not => ykpack::UnOp::Not,
             UnOp::Neg => ykpack::UnOp::Neg,
+        }
+    }
+}
+
+/// Constant -> Pack
+impl<'tcx> ToPack<ykpack::Constant> for (&ConvCx<'_, 'tcx, '_>, &Constant<'tcx>) {
+    fn to_pack(&mut self) -> ykpack::Constant {
+        let (ccx, cst) = self;
+        (*ccx, cst.ty, cst.literal).to_pack()
+    }
+}
+
+//fn bits_to_pack<T>(k
+
+/// Ty + LazyConst -> Pack
+impl<'tcx> ToPack<ykpack::Constant> for (&ConvCx<'_, 'tcx, '_>, Ty<'tcx>, &LazyConst<'tcx>) {
+    fn to_pack(&mut self) -> ykpack::Constant {
+        let (ccx, ty, lconst) = self;
+        match lconst {
+            LazyConst::Evaluated(cst) => (*ccx, *ty, cst).to_pack(),
+            _ => ykpack::Constant::Unimplemented,
+        }
+    }
+}
+
+/// Ty + Const -> Pack
+impl<'tcx> ToPack<ykpack::Constant> for (&ConvCx<'_, 'tcx, '_>, Ty<'tcx>, &Const<'tcx>) {
+    fn to_pack(&mut self) -> ykpack::Constant {
+        let (ccx, ty, cst) = self;
+        (*ccx, *ty, &cst.val).to_pack()
+    }
+}
+
+/// Ty + ConstValue -> Pack
+impl<'tcx> ToPack<ykpack::Constant> for (&ConvCx<'_, 'tcx, '_>, Ty<'tcx>, &ConstValue<'tcx>) {
+    fn to_pack(&mut self) -> ykpack::Constant {
+        let (ccx, ty, cv) = self;
+        match cv {
+            ConstValue::Scalar(s) => (*ccx, *ty, s).to_pack(),
+            _ => ykpack::Constant::Unimplemented,
+        }
+    }
+}
+
+/// Ty + Scalar -> Pack
+impl<'tcx> ToPack<ykpack::Constant> for (&ConvCx<'_, 'tcx, '_>, Ty<'tcx>, &Scalar) {
+    fn to_pack(&mut self) -> ykpack::Constant {
+        let (ccx, ty, sc) = self;
+        match ty.sty {
+            TyKind::Int(t) => {
+                let si = match t {
+                    // Oddly, to_isize() returns a i64 (same for to_usize() later).
+                    IntTy::Isize => ykpack::SignedInt::Isize(isize::try_from(
+                        sc.to_isize(&ccx.tcx.data_layout).unwrap()).unwrap()),
+                    IntTy::I128 => ykpack::SignedInt::from_i128(sc.to_i128().unwrap()),
+                    IntTy::I64 => ykpack::SignedInt::I64(sc.to_i64().unwrap()),
+                    IntTy::I32 => ykpack::SignedInt::I32(sc.to_i32().unwrap()),
+                    IntTy::I16 => ykpack::SignedInt::I16(sc.to_i16().unwrap()),
+                    IntTy::I8 => ykpack::SignedInt::I8(sc.to_i8().unwrap()),
+                };
+                ykpack::Constant::SignedInt(si)
+            },
+            TyKind::Uint(t) => {
+                let ui = match t {
+                    UintTy::Usize => ykpack::UnsignedInt::Usize(usize::try_from(
+                        sc.to_isize(&ccx.tcx.data_layout).unwrap()).unwrap()),
+                    UintTy::U128 => ykpack::UnsignedInt::from_u128(sc.to_u128().unwrap()),
+                    UintTy::U64 => ykpack::UnsignedInt::U64(sc.to_u64().unwrap()),
+                    UintTy::U32 => ykpack::UnsignedInt::U32(sc.to_u32().unwrap()),
+                    UintTy::U16 => ykpack::UnsignedInt::U16(sc.to_u16().unwrap()),
+                    UintTy::U8 => ykpack::UnsignedInt::U8(sc.to_u8().unwrap()),
+                };
+                ykpack::Constant::UnsignedInt(ui)
+            },
+            _ => ykpack::Constant::Unimplemented, // FIXME
         }
     }
 }
