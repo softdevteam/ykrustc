@@ -15,11 +15,11 @@ SNAP_DIR=/opt/ykrustc-bin-snapshots
 ulimit -d $((1024 * 1024 * 8)) # 8 GiB
 
 # Note that the gdb must be Python enabled.
-/usr/bin/time -v ./x.py test --config .buildbot.toml
+/usr/bin/time -v ./x.py test --config .buildbot.config.toml
 
 # Build extended tools and install into TARBALL_TOPDIR.
 mkdir -p ${TARBALL_TOPDIR}
-/usr/bin/time -v ./x.py install --config .buildbot.toml
+/usr/bin/time -v ./x.py install --config .buildbot.config.toml
 
 # Archive the build and put it in /opt
 git show -s HEAD > ${TARBALL_TOPDIR}/VERSION
