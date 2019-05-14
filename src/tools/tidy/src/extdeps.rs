@@ -10,7 +10,6 @@ const WHITELISTED_SOURCES: &[&str] = &[
     // The following are needed for Yorick whilst we use an unreleased revision not on crates.io.
     "\"git+https://github.com/3Hren/msgpack-rust?\
         rev=40b3d480b20961e6eeceb416b32bcd0a3383846a#40b3d480b20961e6eeceb416b32bcd0a3383846a\"",
-    "\"git+https://github.com/softdevteam/yk#eac9ee05a85f5b7a2158bc5b01b63c8a34f5132f\"",
 ];
 
 /// Checks for external package sources.
@@ -30,6 +29,11 @@ pub fn check(path: &Path, bad: &mut bool) {
 
         // Extract source value.
         let source = line.splitn(2, '=').nth(1).unwrap().trim();
+
+        // Allow all soft-dev repos.
+        if source.starts_with("\"git+https://github.com/softdevteam") {
+            continue;
+        }
 
         // Ensure source is whitelisted.
         if !WHITELISTED_SOURCES.contains(&&*source) {
