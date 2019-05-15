@@ -13,14 +13,6 @@ fn main() {
 }
 
 // END RUST SOURCE
-// [Begin TIR for main]
+// [Begin TIR for dummy]
 // ...
-// bb2:
-// ...
-//     term: SwitchInt { target_bbs: [4, 3] }
-// bb3:
-//     Assign(Base(Local(0)), Use(Unimplemented))
-//     term: Goto { target_bb: 4 }
-// bb4:
-// ...
-// [End TIR for main]
+// [End TIR for dummy]
