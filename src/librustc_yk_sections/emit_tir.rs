@@ -11,14 +11,12 @@
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
-// FIXME, just temporarily.
-#![allow(unused_variables)]
-#![allow(dead_code)]
-
 use rustc::ty::TyCtxt;
 
 use rustc::hir::def_id::DefId;
-use rustc::mir::{Mir, Local};
+use rustc::mir::{
+    Mir, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand
+};
 use rustc::util::nodemap::DefIdSet;
 use std::path::PathBuf;
 use std::fs::File;
@@ -26,11 +24,9 @@ use rustc_yk_link::YkExtraLinkObject;
 use std::fs;
 use std::io::Write;
 use std::error::Error;
-use std::cell::{Cell, RefCell};
 use std::mem::size_of;
 use rustc_data_structures::indexed_vec::IndexVec;
 use ykpack;
-use ykpack::LocalIndex as TirLocal;
 
 const SECTION_NAME: &'static str = ".yk_tir";
 const TMP_EXT: &'static str = ".yk_tir.tmp";
@@ -49,51 +45,123 @@ struct ConvCx<'a, 'tcx, 'gcx> {
     /// The compiler's god struct. Needed for queries etc.
     tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
     /// Monotonically increasing number used to give TIR variables a unique ID.
-    next_tir_var: Cell<TirLocal>,
+    next_tir_var: ykpack::LocalIndex,
     /// A mapping from MIR variables to TIR variables.
-    var_map: RefCell<IndexVec<Local, Option<TirLocal>>>,
-    /// The number of blocks in the MIR (and therefore in the TIR).
-    num_blks: usize,
+    var_map: IndexVec<Local, Option<ykpack::Local>>,
+    /// The MIR we are lowering.
+    mir: &'a Mir<'tcx>,
+    /// The DefId of the above MIR.
+    def_id: DefId,
 }
 
 impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
-    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, mir: &Mir<'tcx>) -> Self {
-        let var_map = IndexVec::new();
-        let num_blks = mir.basic_blocks().len();
-
+    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_id: DefId, mir: &'a Mir<'tcx>) -> Self {
         Self {
             tcx,
-            next_tir_var: Cell::new(0),
-            var_map: RefCell::new(var_map),
-            num_blks: num_blks,
+            next_tir_var: 0,
+            var_map: IndexVec::new(),
+            mir,
+            def_id,
         }
     }
 
     /// Returns a guaranteed unique TIR variable index.
-    fn new_tir_var(&self) -> TirLocal {
-        let var_idx = self.next_tir_var.get();
-        self.next_tir_var.set(var_idx + 1);
+    fn new_tir_var(&mut self) -> ykpack::LocalIndex {
+        let var_idx = self.next_tir_var;
+        self.next_tir_var += 1;
         var_idx
     }
 
     /// Get the TIR variable for the specified MIR variable, creating a fresh variable if needed.
-    fn tir_var(&self, local: Local) -> TirLocal {
+    fn tir_var(&mut self, local: Local) -> ykpack::Local {
         let local_u32 = local.as_u32();
-        let mut var_map = self.var_map.borrow_mut();
 
         // Resize the backing Vec if necessary.
         // Vector indices are `usize`, but variable indices are `u32`, so converting from a
         // variable index to a vector index is always safe if a `usize` can express all `u32`s.
         assert!(size_of::<usize>() >= size_of::<u32>());
-        if var_map.len() <= local_u32 as usize {
-            var_map.resize(local_u32.checked_add(1).unwrap() as usize, None);
+        if self.var_map.len() <= local_u32 as usize {
+            self.var_map.resize(local_u32.checked_add(1).unwrap() as usize, None);
         }
 
-        var_map[local].unwrap_or_else(|| {
-            let var_idx = self.new_tir_var();
-            var_map[local] = Some(var_idx);
-            var_idx
+        self.var_map[local].unwrap_or_else(|| {
+            let idx = self.new_tir_var();
+            let ty = 0; // FIXME notimplemented.
+            let tir_local = ykpack::Local::new(idx, ty);
+            self.var_map[local] = Some(tir_local);
+            tir_local
         })
+    }
+
+    /// Entry point for the lowering process.
+    fn lower(&mut self) -> ykpack::Tir {
+        let ips = self.tcx.item_path_str(self.def_id);
+        ykpack::Tir::new(self.lower_def_id(&self.def_id.to_owned()),
+            ips, self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect())
+    }
+
+    fn lower_def_id(&mut self, def_id: &DefId) -> ykpack::DefId {
+        ykpack::DefId {
+            crate_hash: self.tcx.crate_hash(def_id.krate).as_u64(),
+            def_idx: def_id.index.as_raw_u32(),
+        }
+    }
+
+    fn lower_block(&mut self, blk: &BasicBlockData) -> ykpack::BasicBlock {
+        ykpack::BasicBlock::new(
+            blk.statements.iter().map(|s| self.lower_stmt(s)).flatten().collect(),
+            ykpack::Terminator::Abort
+        )
+    }
+
+    fn lower_stmt(&mut self, stmt: &Statement) -> Vec<ykpack::Statement> {
+        match stmt.kind {
+            StatementKind::Assign(ref place, ref rval) => vec![self.lower_assign_stmt(place, rval)],
+            _ => vec![ykpack::Statement::Unimplemented],
+        }
+    }
+
+    fn lower_assign_stmt(&mut self, place: &Place, rval: &Rvalue) -> ykpack::Statement {
+        // FIXME Error checking will disappear once everything is implemented.
+        let lhs = match self.lower_place(place) {
+            Ok(v) => v,
+            Err(_) => return ykpack::Statement::Unimplemented,
+        };
+
+        let rhs = match self.lower_rval(rval) {
+            Ok(v) => v,
+            Err(_) => return ykpack::Statement::Unimplemented,
+        };
+
+        ykpack::Statement::Assign(lhs, rhs)
+    }
+
+    // FIXME No possibility of error once everything is implemented.
+    fn lower_place(&mut self, place: &Place) -> Result<ykpack::Local, ()> {
+        match place {
+            Place::Base(PlaceBase::Local(l)) => Ok(self.lower_local(*l)),
+            _  => Err(()),
+        }
+    }
+
+    // FIXME No possibility of error once everything is implemented.
+    fn lower_rval(&mut self, rval: &Rvalue) -> Result<ykpack::Rvalue, ()> {
+        match rval {
+            Rvalue::Use(ref oper) =>
+                Ok(ykpack::Rvalue::Operand(ykpack::Operand::Local(self.lower_operand(oper)?))),
+            _ => Err(()),
+        }
+    }
+
+    fn lower_operand(&mut self, oper: &Operand) -> Result<ykpack::Local, ()> {
+        match oper {
+            Operand::Copy(ref place) | Operand::Move(ref place) => self.lower_place(place),
+            _ => Err(()),
+        }
+    }
+
+    fn lower_local(&mut self, local: Local) -> ykpack::Local {
+        self.tir_var(local)
     }
 }
 
@@ -155,10 +223,8 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
     for def_id in sorted_def_ids {
         if tcx.is_mir_available(*def_id) {
             let mir = tcx.optimized_mir(*def_id);
-            // FIXME implement the lowering here. For now we are serialising dummy TIRs.
-            let _ccx = ConvCx::new(tcx, mir);
-            let pack = ykpack::Tir::new(ykpack::DefId{crate_hash: 0, def_idx: 0},
-                                        String::from("dummy"), Vec::new());
+            let mut ccx = ConvCx::new(tcx, *def_id, mir);
+            let pack = ccx.lower();
 
             if let Some(ref mut e) = enc {
                 e.serialise(ykpack::Pack::Tir(pack))?;
