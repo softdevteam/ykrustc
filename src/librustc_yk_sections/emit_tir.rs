@@ -11,12 +11,14 @@
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
-use rustc::ty::{TyCtxt, TyS, LazyConst, Const, TyKind};
+use rustc::ty::{TyCtxt, TyS, LazyConst, Const, TyKind, Ty};
+use syntax::ast::{UintTy, IntTy};
 use rustc::hir::def_id::DefId;
 use rustc::mir::{
     Mir, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
-    Terminator, TerminatorKind, Constant
+    Terminator, TerminatorKind, Constant, BinOp
 };
+use rustc::mir::interpret::{ConstValue, Scalar};
 use rustc::util::nodemap::DefIdSet;
 use std::path::PathBuf;
 use std::fs::File;
@@ -119,11 +121,11 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 ykpack::Terminator::Goto(u32::from(target_bb)),
             TerminatorKind::SwitchInt{ref discr, ref values, ref targets, ..} => {
                 match self.lower_operand(discr) {
-                    Ok(local) => ykpack::Terminator::SwitchInt{local,
+                    Ok(ykpack::Operand::Local(local)) => ykpack::Terminator::SwitchInt{local,
                         values: values.iter().map(|u| ykpack::SerU128::new(*u)).collect(),
                         target_bbs: targets.iter().map(|bb| u32::from(*bb)).collect()},
                     // FIXME dynamic call targets.
-                    Err(_) => ykpack::Terminator::Unimplemented,
+                    _ => ykpack::Terminator::Unimplemented,
                 }
             },
             TerminatorKind::Resume => ykpack::Terminator::Resume,
@@ -176,25 +178,23 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     fn lower_stmt(&mut self, stmt: &Statement) -> Vec<ykpack::Statement> {
+        let unimpl_stmt = |stmt| {
+            vec![ykpack::Statement::Unimplemented(format!("{:?}", stmt))]
+        };
+
         match stmt.kind {
-            StatementKind::Assign(ref place, ref rval) => vec![self.lower_assign_stmt(place, rval)],
-            _ => vec![ykpack::Statement::Unimplemented],
+            StatementKind::Assign(ref place, ref rval) => {
+                match self.lower_assign_stmt(place, rval) {
+                    Ok(t_st) => vec![t_st],
+                    _ => unimpl_stmt(stmt),
+                }
+            },
+            _ => unimpl_stmt(stmt),
         }
     }
 
-    fn lower_assign_stmt(&mut self, place: &Place, rval: &Rvalue) -> ykpack::Statement {
-        // FIXME Error checking will disappear once everything is implemented.
-        let lhs = match self.lower_place(place) {
-            Ok(v) => v,
-            Err(_) => return ykpack::Statement::Unimplemented,
-        };
-
-        let rhs = match self.lower_rval(rval) {
-            Ok(v) => v,
-            Err(_) => return ykpack::Statement::Unimplemented,
-        };
-
-        ykpack::Statement::Assign(lhs, rhs)
+    fn lower_assign_stmt(&mut self, place: &Place, rval: &Rvalue) -> Result<ykpack::Statement, ()> {
+        Ok(ykpack::Statement::Assign(self.lower_place(place)?, self.lower_rval(rval)?))
     }
 
     // FIXME No possibility of error once everything is implemented.
@@ -208,16 +208,103 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     // FIXME No possibility of error once everything is implemented.
     fn lower_rval(&mut self, rval: &Rvalue) -> Result<ykpack::Rvalue, ()> {
         match rval {
-            Rvalue::Use(ref oper) =>
-                Ok(ykpack::Rvalue::Operand(ykpack::Operand::Local(self.lower_operand(oper)?))),
+            Rvalue::Use(ref oper) => {
+                match self.lower_operand(oper) {
+                    Ok(ykpack::Operand::Local(l)) => Ok(ykpack::Rvalue::Local(l)),
+                    _ => Err(()),
+                }
+            },
+            Rvalue::BinaryOp(bin_op, o1, o2) =>
+                Ok(ykpack::Rvalue::BinaryOp(self.lower_binary_op(*bin_op), self.lower_operand(o1)?,
+                    self.lower_operand(o2)?)),
             _ => Err(()),
         }
     }
 
-    fn lower_operand(&mut self, oper: &Operand) -> Result<ykpack::Local, ()> {
+    fn lower_binary_op(&mut self, oper: BinOp) -> ykpack::BinOp {
         match oper {
-            Operand::Copy(ref place) | Operand::Move(ref place) => self.lower_place(place),
+            BinOp::Add => ykpack::BinOp::Add,
+            BinOp::Sub => ykpack::BinOp::Sub,
+            BinOp::Mul => ykpack::BinOp::Mul,
+            BinOp::Div => ykpack::BinOp::Div,
+            BinOp::Rem => ykpack::BinOp::Rem,
+            BinOp::BitXor => ykpack::BinOp::BitXor,
+            BinOp::BitAnd => ykpack::BinOp::BitAnd,
+            BinOp::BitOr => ykpack::BinOp::BitOr,
+            BinOp::Shl => ykpack::BinOp::Shl,
+            BinOp::Shr => ykpack::BinOp::Shr,
+            BinOp::Eq => ykpack::BinOp::Eq,
+            BinOp::Lt => ykpack::BinOp::Lt,
+            BinOp::Le => ykpack::BinOp::Le,
+            BinOp::Ne => ykpack::BinOp::Ne,
+            BinOp::Ge => ykpack::BinOp::Ge,
+            BinOp::Gt => ykpack::BinOp::Gt,
+            BinOp::Offset => ykpack::BinOp::Offset,
+        }
+    }
+
+    fn lower_operand(&mut self, oper: &Operand) -> Result<ykpack::Operand, ()> {
+        match oper {
+            Operand::Copy(ref place) | Operand::Move(ref place) =>
+                Ok(ykpack::Operand::Local(self.lower_place(place)?)),
+            Operand::Constant(ref cnst) =>
+                Ok(ykpack::Operand::Constant(self.lower_constant(cnst)?)),
+        }
+    }
+
+    fn lower_constant(&mut self, cnst: &Constant) -> Result<ykpack::Constant, ()> {
+        match cnst.literal {
+            LazyConst::Evaluated(c) => Ok(self.lower_const(c)?),
             _ => Err(()),
+        }
+    }
+
+    fn lower_const(&mut self, cnst: &Const) -> Result<ykpack::Constant, ()> {
+        match cnst.val {
+            ConstValue::Scalar(ref s) => Ok(self.lower_scalar(cnst.ty, s)?),
+            _ => Err(()),
+        }
+    }
+
+    fn lower_scalar(&mut self, ty: Ty, sclr: &Scalar) -> Result<ykpack::Constant, ()> {
+        match ty.sty {
+            TyKind::Uint(t) => Ok(ykpack::Constant::Int(self.lower_uint(t, sclr))),
+            TyKind::Int(t) => Ok(ykpack::Constant::Int(self.lower_int(t, sclr))),
+            _ => Err(()), // FIXME Not implemented.
+        }
+    }
+
+    fn lower_uint(&mut self, typ: UintTy, sclr: &Scalar) -> ykpack::ConstantInt {
+        match sclr {
+            Scalar::Bits{bits, ..} => {
+                // Here `size` is a u8, so upcasting is always OK.
+                match typ {
+                    UintTy::Usize => ykpack::ConstantInt::usize_from_bits(*bits),
+                    UintTy::U8 => ykpack::ConstantInt::u8_from_bits(*bits),
+                    UintTy::U16 => ykpack::ConstantInt::u16_from_bits(*bits),
+                    UintTy::U32 => ykpack::ConstantInt::u32_from_bits(*bits),
+                    UintTy::U64 => ykpack::ConstantInt::u64_from_bits(*bits),
+                    UintTy::U128 => ykpack::ConstantInt::u128_from_bits(*bits),
+                }
+            },
+            _ => panic!("non-bits encountered in lowering unsigned int"),
+        }
+    }
+
+    fn lower_int(&mut self, typ: IntTy, sclr: &Scalar) -> ykpack::ConstantInt {
+        match sclr {
+            Scalar::Bits{bits, ..} => {
+                // Here `size` is a u8, so upcasting is always OK.
+                match typ {
+                    IntTy::Isize => ykpack::ConstantInt::isize_from_bits(*bits),
+                    IntTy::I8 => ykpack::ConstantInt::i8_from_bits(*bits),
+                    IntTy::I16 => ykpack::ConstantInt::i16_from_bits(*bits),
+                    IntTy::I32 => ykpack::ConstantInt::i32_from_bits(*bits),
+                    IntTy::I64 => ykpack::ConstantInt::i64_from_bits(*bits),
+                    IntTy::I128 => ykpack::ConstantInt::i128_from_bits(*bits),
+                }
+            },
+            _ => panic!("non-bits encountered in lowering signed int"),
         }
     }
 
