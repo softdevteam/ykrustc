@@ -212,6 +212,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
             Rvalue::Use(ref oper) => {
                 match self.lower_operand(oper) {
                     Ok(ykpack::Operand::Local(l)) => Ok(ykpack::Rvalue::Local(l)),
+                    Ok(ykpack::Operand::Constant(c)) => Ok(ykpack::Rvalue::Constant(c)),
                     _ => Err(()),
                 }
             },
