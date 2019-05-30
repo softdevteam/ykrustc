@@ -189,6 +189,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                     _ => unimpl_stmt(stmt),
                 }
             },
+            StatementKind::StorageLive(_) | StatementKind::StorageDead(_) => Vec::new(),
             _ => unimpl_stmt(stmt),
         }
     }
