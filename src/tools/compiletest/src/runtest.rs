@@ -1524,7 +1524,7 @@ impl<'test> TestCx<'test> {
         let will_execute = match self.config.mode {
             RunPass | Ui => self.should_run_successfully(),
             Incremental => self.revision.unwrap().starts_with("r"),
-            RunFail | RunPassValgrind | MirOpt |
+            RunFail | RunPassValgrind | MirOpt | YkTir |
             DebugInfoCdb | DebugInfoGdbLldb | DebugInfoGdb | DebugInfoLldb => true,
             _ => false,
         };

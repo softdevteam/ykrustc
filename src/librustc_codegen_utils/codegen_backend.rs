@@ -10,7 +10,7 @@
 #![feature(box_syntax)]
 
 use std::any::Any;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use syntax::symbol::Symbol;
 use rustc::session::Session;
@@ -20,10 +20,7 @@ use rustc::ty::TyCtxt;
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::dep_graph::DepGraph;
-use rustc_target::spec::Target;
 use rustc::util::nodemap::DefIdSet;
-use rustc_mir::monomorphize::collector;
-use crate::link::out_filename;
 
 pub use rustc_data_structures::sync::MetadataRef;
 

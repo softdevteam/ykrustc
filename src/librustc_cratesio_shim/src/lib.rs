@@ -9,3 +9,4 @@ extern crate bitflags;
 extern crate log;
 extern crate proc_macro;
 extern crate unicode_width;
+extern crate serde;

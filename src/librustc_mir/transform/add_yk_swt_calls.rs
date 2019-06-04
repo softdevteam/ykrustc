@@ -9,9 +9,9 @@
 
 use rustc::ty::{self, TyCtxt, List};
 use rustc::mir::{Operand, LocalDecl, Place, SourceInfo, BasicBlock, Local, BasicBlockData,
-    TerminatorKind, Terminator, OUTERMOST_SOURCE_SCOPE, Constant, Mir, PlaceBase};
+    TerminatorKind, Terminator, OUTERMOST_SOURCE_SCOPE, Constant, Body, PlaceBase};
 use rustc_data_structures::indexed_vec::Idx;
-use syntax_pos::DUMMY_SP;
+use syntax_pos::{DUMMY_SP, sym};
 use syntax::attr;
 use crate::transform::{MirPass, MirSource};
 use rustc::hir;
@@ -46,7 +46,7 @@ impl MirPass for AddYkSWTCalls {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           src: MirSource<'_>,
-                          mir: &mut Mir<'tcx>) {
+                          mir: &mut Body<'tcx>) {
         if is_untraceable(tcx, src) {
             return;
         }
@@ -77,8 +77,7 @@ impl MirPass for AddYkSWTCalls {
                     Local::new(num_orig_local_decls + new_local_decls.len())));
             new_local_decls.push(ret_val);
 
-            let crate_hash_const = tcx.mk_lazy_const(
-                ty::LazyConst::Evaluated(ty::Const::from_u64(tcx, local_crate_hash)));
+            let crate_hash_const = ty::Const::from_u64(tcx, local_crate_hash);
             let crate_hash_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u64_ty,
@@ -86,8 +85,7 @@ impl MirPass for AddYkSWTCalls {
                 literal: crate_hash_const,
             });
 
-            let def_idx_const = tcx.mk_lazy_const(
-                ty::LazyConst::Evaluated(ty::Const::from_u32(tcx, self.0.as_raw_u32())));
+            let def_idx_const = ty::Const::from_u32(tcx, self.0.as_u32());
             let def_idx_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u32_ty,
@@ -95,8 +93,7 @@ impl MirPass for AddYkSWTCalls {
                 literal: def_idx_const,
             });
 
-            let bb_const = tcx.mk_lazy_const(
-                ty::LazyConst::Evaluated(ty::Const::from_u32(tcx, bb.index() as u32)));
+            let bb_const = ty::Const::from_u32(tcx, bb.index() as u32);
             let bb_oper = Operand::Constant(box Constant {
                 span: DUMMY_SP,
                 ty: u32_ty,
@@ -149,24 +146,24 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource<'_>) -> bool {
     // binary-level function epilogues and prologues, often using in-line assembler. We can't
     // automatically insert our calls into such code without breaking stuff.
     for attr in tcx.get_attrs(src.def_id()).iter() {
-        if attr.check_name("no_trace") {
+        if attr.check_name(sym::no_trace) {
             return true;
         }
-        if attr.check_name("naked") {
+        if attr.check_name(sym::naked) {
             return true;
        }
     }
 
     // Similar to `#[no_trace]`, don't transform anything inside a crate marked `#![no_trace]`.
     for attr in tcx.hir().krate_attrs() {
-        if attr.check_name("no_trace") {
+        if attr.check_name(sym::no_trace) {
             return true;
         }
     }
 
     // We can't call the software tracing function if the crate doesn't depend upon libcore because
     // that's where the entry point to the trace recorder function lives.
-    if attr::contains_name(tcx.hir().krate_attrs(), "no_core") {
+    if attr::contains_name(tcx.hir().krate_attrs(), sym::no_core) {
         return true;
     }
 

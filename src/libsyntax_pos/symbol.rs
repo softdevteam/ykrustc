@@ -406,6 +406,7 @@ symbols! {
         no_default_passes,
         no_implicit_prelude,
         no_inline,
+        no_trace,
         no_link,
         no_main,
         no_mangle,

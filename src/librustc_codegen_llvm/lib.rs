@@ -293,7 +293,7 @@ impl CodegenBackend for LlvmCodegenBackend {
         need_metadata_module: bool,
         rx: mpsc::Receiver<Box<dyn Any + Send>>
     ) -> (Box<dyn Any>, Arc<DefIdSet>) {
-        let (codegen, def_ids) = box rustc_codegen_ssa::base::codegen_crate(
+        let (codegen, def_ids) = rustc_codegen_ssa::base::codegen_crate(
             LlvmCodegenBackend(()), tcx, metadata, need_metadata_module, rx);
         (box codegen, def_ids)
     }

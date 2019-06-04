@@ -11,11 +11,11 @@
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
-use rustc::ty::{TyCtxt, TyS, LazyConst, Const, TyKind, Ty};
+use rustc::ty::{TyCtxt, TyS, Const, TyKind, Ty};
 use syntax::ast::{UintTy, IntTy};
 use rustc::hir::def_id::DefId;
 use rustc::mir::{
-    Mir, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
+    Body, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
     Terminator, TerminatorKind, Constant, BinOp
 };
 use rustc::mir::interpret::{ConstValue, Scalar};
@@ -51,13 +51,13 @@ struct ConvCx<'a, 'tcx, 'gcx> {
     /// A mapping from MIR variables to TIR variables.
     var_map: IndexVec<Local, Option<ykpack::Local>>,
     /// The MIR we are lowering.
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     /// The DefId of the above MIR.
     def_id: DefId,
 }
 
 impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
-    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_id: DefId, mir: &'a Mir<'tcx>) -> Self {
+    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_id: DefId, mir: &'a Body<'tcx>) -> Self {
         Self {
             tcx,
             next_tir_var: 0,
@@ -97,25 +97,25 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
 
     /// Entry point for the lowering process.
     fn lower(&mut self) -> ykpack::Tir {
-        let ips = self.tcx.item_path_str(self.def_id);
+        let dps = self.tcx.def_path_str(self.def_id);
         ykpack::Tir::new(self.lower_def_id(&self.def_id.to_owned()),
-            ips, self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect())
+            dps, self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect())
     }
 
     fn lower_def_id(&mut self, def_id: &DefId) -> ykpack::DefId {
         ykpack::DefId {
             crate_hash: self.tcx.crate_hash(def_id.krate).as_u64(),
-            def_idx: def_id.index.as_raw_u32(),
+            def_idx: def_id.index.as_u32(),
         }
     }
 
-    fn lower_block(&mut self, blk: &BasicBlockData) -> ykpack::BasicBlock {
+    fn lower_block(&mut self, blk: &BasicBlockData<'_>) -> ykpack::BasicBlock {
         ykpack::BasicBlock::new(
             blk.statements.iter().map(|s| self.lower_stmt(s)).flatten().collect(),
             self.lower_terminator(blk.terminator()))
     }
 
-    fn lower_terminator(&mut self, term: &Terminator) -> ykpack::Terminator {
+    fn lower_terminator(&mut self, term: &Terminator<'_>) -> ykpack::Terminator {
         match term.kind {
             TerminatorKind::Goto{target: target_bb} =>
                 ykpack::Terminator::Goto(u32::from(target_bb)),
@@ -144,11 +144,11 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 },
             TerminatorKind::Call{ref func, cleanup: cleanup_bb, ref destination, .. } => {
                 let ser_oper = if let Operand::Constant(box Constant {
-                    literal: LazyConst::Evaluated(Const {
+                    literal: Const {
                         ty: &TyS {
                             sty: TyKind::FnDef(ref target_def_id, ..), ..
                         }, ..
-                    }), ..
+                    }, ..
                 }, ..) = func {
                     // A statically known call target.
                     ykpack::CallOperand::Fn(self.lower_def_id(target_def_id))
@@ -177,7 +177,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         }
     }
 
-    fn lower_stmt(&mut self, stmt: &Statement) -> Vec<ykpack::Statement> {
+    fn lower_stmt(&mut self, stmt: &Statement<'_>) -> Vec<ykpack::Statement> {
         let unimpl_stmt = |stmt| {
             vec![ykpack::Statement::Unimplemented(format!("{:?}", stmt))]
         };
@@ -194,12 +194,14 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         }
     }
 
-    fn lower_assign_stmt(&mut self, place: &Place, rval: &Rvalue) -> Result<ykpack::Statement, ()> {
+    fn lower_assign_stmt(&mut self, place: &Place<'_>, rval: &Rvalue<'_>)
+        -> Result<ykpack::Statement, ()>
+    {
         Ok(ykpack::Statement::Assign(self.lower_place(place)?, self.lower_rval(rval)?))
     }
 
     // FIXME No possibility of error once everything is implemented.
-    fn lower_place(&mut self, place: &Place) -> Result<ykpack::Local, ()> {
+    fn lower_place(&mut self, place: &Place<'_>) -> Result<ykpack::Local, ()> {
         match place {
             Place::Base(PlaceBase::Local(l)) => Ok(self.lower_local(*l)),
             _  => Err(()),
@@ -207,7 +209,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     // FIXME No possibility of error once everything is implemented.
-    fn lower_rval(&mut self, rval: &Rvalue) -> Result<ykpack::Rvalue, ()> {
+    fn lower_rval(&mut self, rval: &Rvalue<'_>) -> Result<ykpack::Rvalue, ()> {
         match rval {
             Rvalue::Use(ref oper) => {
                 match self.lower_operand(oper) {
@@ -245,7 +247,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         }
     }
 
-    fn lower_operand(&mut self, oper: &Operand) -> Result<ykpack::Operand, ()> {
+    fn lower_operand(&mut self, oper: &Operand<'_>) -> Result<ykpack::Operand, ()> {
         match oper {
             Operand::Copy(ref place) | Operand::Move(ref place) =>
                 Ok(ykpack::Operand::Local(self.lower_place(place)?)),
@@ -254,21 +256,18 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         }
     }
 
-    fn lower_constant(&mut self, cnst: &Constant) -> Result<ykpack::Constant, ()> {
-        match cnst.literal {
-            LazyConst::Evaluated(c) => Ok(self.lower_const(c)?),
-            _ => Err(()),
-        }
+    fn lower_constant(&mut self, cnst: &Constant<'_>) -> Result<ykpack::Constant, ()> {
+        self.lower_const(cnst.literal)
     }
 
-    fn lower_const(&mut self, cnst: &Const) -> Result<ykpack::Constant, ()> {
+    fn lower_const(&mut self, cnst: &Const<'_>) -> Result<ykpack::Constant, ()> {
         match cnst.val {
             ConstValue::Scalar(ref s) => Ok(self.lower_scalar(cnst.ty, s)?),
             _ => Err(()),
         }
     }
 
-    fn lower_scalar(&mut self, ty: Ty, sclr: &Scalar) -> Result<ykpack::Constant, ()> {
+    fn lower_scalar(&mut self, ty: Ty<'_>, sclr: &Scalar) -> Result<ykpack::Constant, ()> {
         match ty.sty {
             TyKind::Uint(t) => Ok(ykpack::Constant::Int(self.lower_uint(t, sclr))),
             TyKind::Int(t) => Ok(ykpack::Constant::Int(self.lower_int(t, sclr))),
@@ -278,35 +277,35 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
 
     fn lower_uint(&mut self, typ: UintTy, sclr: &Scalar) -> ykpack::ConstantInt {
         match sclr {
-            Scalar::Bits{bits, ..} => {
+            Scalar::Raw{data, ..} => {
                 // Here `size` is a u8, so upcasting is always OK.
                 match typ {
-                    UintTy::Usize => ykpack::ConstantInt::usize_from_bits(*bits),
-                    UintTy::U8 => ykpack::ConstantInt::u8_from_bits(*bits),
-                    UintTy::U16 => ykpack::ConstantInt::u16_from_bits(*bits),
-                    UintTy::U32 => ykpack::ConstantInt::u32_from_bits(*bits),
-                    UintTy::U64 => ykpack::ConstantInt::u64_from_bits(*bits),
-                    UintTy::U128 => ykpack::ConstantInt::u128_from_bits(*bits),
+                    UintTy::Usize => ykpack::ConstantInt::usize_from_bits(*data),
+                    UintTy::U8 => ykpack::ConstantInt::u8_from_bits(*data),
+                    UintTy::U16 => ykpack::ConstantInt::u16_from_bits(*data),
+                    UintTy::U32 => ykpack::ConstantInt::u32_from_bits(*data),
+                    UintTy::U64 => ykpack::ConstantInt::u64_from_bits(*data),
+                    UintTy::U128 => ykpack::ConstantInt::u128_from_bits(*data),
                 }
             },
-            _ => panic!("non-bits encountered in lowering unsigned int"),
+            _ => panic!("non-raw scalar encountered in lowering unsigned int"),
         }
     }
 
     fn lower_int(&mut self, typ: IntTy, sclr: &Scalar) -> ykpack::ConstantInt {
         match sclr {
-            Scalar::Bits{bits, ..} => {
+            Scalar::Raw{data, ..} => {
                 // Here `size` is a u8, so upcasting is always OK.
                 match typ {
-                    IntTy::Isize => ykpack::ConstantInt::isize_from_bits(*bits),
-                    IntTy::I8 => ykpack::ConstantInt::i8_from_bits(*bits),
-                    IntTy::I16 => ykpack::ConstantInt::i16_from_bits(*bits),
-                    IntTy::I32 => ykpack::ConstantInt::i32_from_bits(*bits),
-                    IntTy::I64 => ykpack::ConstantInt::i64_from_bits(*bits),
-                    IntTy::I128 => ykpack::ConstantInt::i128_from_bits(*bits),
+                    IntTy::Isize => ykpack::ConstantInt::isize_from_bits(*data),
+                    IntTy::I8 => ykpack::ConstantInt::i8_from_bits(*data),
+                    IntTy::I16 => ykpack::ConstantInt::i16_from_bits(*data),
+                    IntTy::I32 => ykpack::ConstantInt::i32_from_bits(*data),
+                    IntTy::I64 => ykpack::ConstantInt::i64_from_bits(*data),
+                    IntTy::I128 => ykpack::ConstantInt::i128_from_bits(*data),
                 }
             },
-            _ => panic!("non-bits encountered in lowering signed int"),
+            _ => panic!("non-raw scalar encountered in lowering signed int"),
         }
     }
 

@@ -7,7 +7,6 @@
 use super::super::indexed_vec::{Idx, IndexVec};
 use super::iterate::reverse_post_order;
 use super::ControlFlowGraph;
-use crate::bit_set::BitSet;
 
 #[cfg(test)]
 mod test;
