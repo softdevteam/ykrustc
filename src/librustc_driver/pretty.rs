@@ -35,9 +35,9 @@ pub use self::UserIdentifiedItem::*;
 pub use self::PpSourceMode::*;
 pub use self::PpMode::*;
 use self::NodesMatchingUII::*;
-use abort_on_err;
+use crate::abort_on_err;
 
-use source_name;
+use crate::source_name;
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum PpSourceMode {
@@ -191,7 +191,7 @@ impl PpSourceMode {
         tcx: TyCtxt<'tcx, 'tcx, 'tcx>,
         f: F
     ) -> A
-        where F: FnOnce(&dyn HirPrinterSupport, &hir::Crate) -> A
+        where F: FnOnce(&dyn HirPrinterSupport<'_>, &hir::Crate) -> A
     {
         match *self {
             PpmNormal => {
@@ -255,7 +255,10 @@ trait HirPrinterSupport<'hir>: pprust_hir::PpAnn {
 
     /// Computes an user-readable representation of a path, if possible.
     fn node_path(&self, id: ast::NodeId) -> Option<String> {
-        self.hir_map().and_then(|map| map.def_path_from_id(id)).map(|path| {
+        self.hir_map().and_then(|map| {
+            let hir_id = map.node_to_hir_id(id);
+            map.def_path_from_hir_id(hir_id)
+        }).map(|path| {
             path.data
                 .into_iter()
                 .map(|elem| elem.data.to_string())
@@ -296,7 +299,7 @@ impl<'hir> HirPrinterSupport<'hir> for NoAnn<'hir> {
 
 impl<'hir> pprust::PpAnn for NoAnn<'hir> {}
 impl<'hir> pprust_hir::PpAnn for NoAnn<'hir> {
-    fn nested(&self, state: &mut pprust_hir::State, nested: pprust_hir::Nested)
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested)
               -> io::Result<()> {
         if let Some(tcx) = self.tcx {
             pprust_hir::PpAnn::nested(tcx.hir(), state, nested)
@@ -322,13 +325,13 @@ impl<'hir> PrinterSupport for IdentifiedAnnotation<'hir> {
 }
 
 impl<'hir> pprust::PpAnn for IdentifiedAnnotation<'hir> {
-    fn pre(&self, s: &mut pprust::State, node: pprust::AnnNode) -> io::Result<()> {
+    fn pre(&self, s: &mut pprust::State<'_>, node: pprust::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust::AnnNode::Expr(_) => s.popen(),
             _ => Ok(()),
         }
     }
-    fn post(&self, s: &mut pprust::State, node: pprust::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust::State<'_>, node: pprust::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust::AnnNode::Ident(_) |
             pprust::AnnNode::Name(_) => Ok(()),
@@ -373,7 +376,7 @@ impl<'hir> HirPrinterSupport<'hir> for IdentifiedAnnotation<'hir> {
 }
 
 impl<'hir> pprust_hir::PpAnn for IdentifiedAnnotation<'hir> {
-    fn nested(&self, state: &mut pprust_hir::State, nested: pprust_hir::Nested)
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested)
               -> io::Result<()> {
         if let Some(ref tcx) = self.tcx {
             pprust_hir::PpAnn::nested(tcx.hir(), state, nested)
@@ -381,13 +384,13 @@ impl<'hir> pprust_hir::PpAnn for IdentifiedAnnotation<'hir> {
             Ok(())
         }
     }
-    fn pre(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn pre(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Expr(_) => s.popen(),
             _ => Ok(()),
         }
     }
-    fn post(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Name(_) => Ok(()),
             pprust_hir::AnnNode::Item(item) => {
@@ -434,7 +437,7 @@ impl<'a> PrinterSupport for HygieneAnnotation<'a> {
 }
 
 impl<'a> pprust::PpAnn for HygieneAnnotation<'a> {
-    fn post(&self, s: &mut pprust::State, node: pprust::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust::State<'_>, node: pprust::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust::AnnNode::Ident(&ast::Ident { name, span }) => {
                 s.s.space()?;
@@ -471,12 +474,12 @@ impl<'b, 'tcx> HirPrinterSupport<'tcx> for TypedAnnotation<'b, 'tcx> {
     }
 
     fn node_path(&self, id: ast::NodeId) -> Option<String> {
-        Some(self.tcx.node_path_str(id))
+        Some(self.tcx.def_path_str(self.tcx.hir().local_def_id(id)))
     }
 }
 
 impl<'a, 'tcx> pprust_hir::PpAnn for TypedAnnotation<'a, 'tcx> {
-    fn nested(&self, state: &mut pprust_hir::State, nested: pprust_hir::Nested)
+    fn nested(&self, state: &mut pprust_hir::State<'_>, nested: pprust_hir::Nested)
               -> io::Result<()> {
         let old_tables = self.tables.get();
         if let pprust_hir::Nested::Body(id) = nested {
@@ -486,13 +489,13 @@ impl<'a, 'tcx> pprust_hir::PpAnn for TypedAnnotation<'a, 'tcx> {
         self.tables.set(old_tables);
         Ok(())
     }
-    fn pre(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn pre(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Expr(_) => s.popen(),
             _ => Ok(()),
         }
     }
-    fn post(&self, s: &mut pprust_hir::State, node: pprust_hir::AnnNode) -> io::Result<()> {
+    fn post(&self, s: &mut pprust_hir::State<'_>, node: pprust_hir::AnnNode<'_>) -> io::Result<()> {
         match node {
             pprust_hir::AnnNode::Expr(expr) => {
                 s.s.space()?;
@@ -540,12 +543,12 @@ impl FromStr for UserIdentifiedItem {
     }
 }
 
-enum NodesMatchingUII<'a, 'hir: 'a> {
+enum NodesMatchingUII<'a> {
     NodesMatchingDirect(option::IntoIter<ast::NodeId>),
-    NodesMatchingSuffix(hir_map::NodesMatchingSuffix<'a, 'hir>),
+    NodesMatchingSuffix(Box<dyn Iterator<Item = ast::NodeId> + 'a>),
 }
 
-impl<'a, 'hir> Iterator for NodesMatchingUII<'a, 'hir> {
+impl<'a> Iterator for NodesMatchingUII<'a> {
     type Item = ast::NodeId;
 
     fn next(&mut self) -> Option<ast::NodeId> {
@@ -573,14 +576,20 @@ impl UserIdentifiedItem {
 
     fn all_matching_node_ids<'a, 'hir>(&'a self,
                                        map: &'a hir_map::Map<'hir>)
-                                       -> NodesMatchingUII<'a, 'hir> {
+                                       -> NodesMatchingUII<'a> {
         match *self {
             ItemViaNode(node_id) => NodesMatchingDirect(Some(node_id).into_iter()),
-            ItemViaPath(ref parts) => NodesMatchingSuffix(map.nodes_matching_suffix(&parts)),
+            ItemViaPath(ref parts) => {
+                NodesMatchingSuffix(Box::new(map.nodes_matching_suffix(&parts)))
+            }
         }
     }
 
-    fn to_one_node_id(self, user_option: &str, sess: &Session, map: &hir_map::Map) -> ast::NodeId {
+    fn to_one_node_id(self,
+                      user_option: &str,
+                      sess: &Session,
+                      map: &hir_map::Map<'_>)
+                      -> ast::NodeId {
         let fail_because = |is_wrong_because| -> ast::NodeId {
             let message = format!("{} needs NodeId (int) or unique path suffix (b::c::d); got \
                                    {}, which {}",
@@ -633,10 +642,19 @@ fn print_flowgraph<'a, 'tcx, W: Write>(variants: Vec<borrowck_dot::Variant>,
     let body = tcx.hir().body(body_id);
     let cfg = cfg::CFG::new(tcx, &body);
     let labelled_edges = mode != PpFlowGraphMode::UnlabelledEdges;
+    let hir_id = code.id();
+    // We have to disassemble the hir_id because name must be ASCII
+    // alphanumeric. This does not appear in the rendered graph, so it does not
+    // have to be user friendly.
+    let name = format!(
+        "hir_id_{}_{}",
+        hir_id.owner.index(),
+        hir_id.local_id.index(),
+    );
     let lcfg = LabelledCFG {
         tcx,
         cfg: &cfg,
-        name: format!("node_{}", code.id()),
+        name,
         labelled_edges,
     };
 
@@ -787,8 +805,7 @@ pub fn print_after_hir_lowering<'tcx>(
                                             src_name,
                                             &mut rdr,
                                             box out,
-                                            annotation.pp_ann(),
-                                            true)
+                                            annotation.pp_ann())
                 })
             }
 
@@ -811,8 +828,7 @@ pub fn print_after_hir_lowering<'tcx>(
                                                                          src_name,
                                                                          &mut rdr,
                                                                          box out,
-                                                                         annotation.pp_ann(),
-                                                                         true);
+                                                                         annotation.pp_ann());
                     for node_id in uii.all_matching_node_ids(hir_map) {
                         let node = hir_map.get(node_id);
                         pp_state.print_node(node)?;

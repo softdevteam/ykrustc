@@ -22,4 +22,3 @@ pub mod x {
 
 #[cfg(cfail1)]
 pub fn bar() { } // remove this unrelated fn in cfail2, which should not affect `x::method`
-

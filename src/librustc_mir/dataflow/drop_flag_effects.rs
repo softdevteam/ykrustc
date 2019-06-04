@@ -1,4 +1,4 @@
-use rustc::mir::{self, Mir, Location};
+use rustc::mir::{self, Body, Location};
 use rustc::ty::{self, TyCtxt};
 use crate::util::elaborate_drops::DropFlagState;
 
@@ -10,7 +10,7 @@ pub fn move_path_children_matching<'tcx, F>(move_data: &MoveData<'tcx>,
                                         path: MovePathIndex,
                                         mut cond: F)
                                         -> Option<MovePathIndex>
-    where F: FnMut(&mir::PlaceProjection<'tcx>) -> bool
+    where F: FnMut(&mir::Projection<'tcx>) -> bool
 {
     let mut next_child = move_data.move_paths[path].first_child;
     while let Some(child_index) = next_child {
@@ -47,9 +47,9 @@ pub fn move_path_children_matching<'tcx, F>(move_data: &MoveData<'tcx>,
 //
 // FIXME: we have to do something for moving slice patterns.
 fn place_contents_drop_state_cannot_differ<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                                                            mir: &Mir<'tcx>,
+                                                            mir: &Body<'tcx>,
                                                             place: &mir::Place<'tcx>) -> bool {
-    let ty = place.ty(mir, tcx).to_ty(tcx);
+    let ty = place.ty(mir, tcx).ty;
     match ty.sty {
         ty::Array(..) => {
             debug!("place_contents_drop_state_cannot_differ place: {:?} ty: {:?} => false",
@@ -74,7 +74,7 @@ fn place_contents_drop_state_cannot_differ<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx,
 
 pub(crate) fn on_lookup_result_bits<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     move_data: &MoveData<'tcx>,
     lookup_result: LookupResult,
     each_child: F)
@@ -92,7 +92,7 @@ pub(crate) fn on_lookup_result_bits<'a, 'gcx, 'tcx, F>(
 
 pub(crate) fn on_all_children_bits<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     move_data: &MoveData<'tcx>,
     move_path_index: MovePathIndex,
     mut each_child: F)
@@ -100,7 +100,7 @@ pub(crate) fn on_all_children_bits<'a, 'gcx, 'tcx, F>(
 {
     fn is_terminal_path<'a, 'gcx, 'tcx>(
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
         move_data: &MoveData<'tcx>,
         path: MovePathIndex) -> bool
     {
@@ -110,7 +110,7 @@ pub(crate) fn on_all_children_bits<'a, 'gcx, 'tcx, F>(
 
     fn on_all_children_bits<'a, 'gcx, 'tcx, F>(
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
         move_data: &MoveData<'tcx>,
         move_path_index: MovePathIndex,
         each_child: &mut F)
@@ -133,7 +133,7 @@ pub(crate) fn on_all_children_bits<'a, 'gcx, 'tcx, F>(
 
 pub(crate) fn on_all_drop_children_bits<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     ctxt: &MoveDataParamEnv<'gcx, 'tcx>,
     path: MovePathIndex,
     mut each_child: F)
@@ -141,7 +141,7 @@ pub(crate) fn on_all_drop_children_bits<'a, 'gcx, 'tcx, F>(
 {
     on_all_children_bits(tcx, mir, &ctxt.move_data, path, |child| {
         let place = &ctxt.move_data.move_paths[path].place;
-        let ty = place.ty(mir, tcx).to_ty(tcx);
+        let ty = place.ty(mir, tcx).ty;
         debug!("on_all_drop_children_bits({:?}, {:?} : {:?})", path, place, ty);
 
         let gcx = tcx.global_tcx();
@@ -156,7 +156,7 @@ pub(crate) fn on_all_drop_children_bits<'a, 'gcx, 'tcx, F>(
 
 pub(crate) fn drop_flag_effects_for_function_entry<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     ctxt: &MoveDataParamEnv<'gcx, 'tcx>,
     mut callback: F)
     where F: FnMut(MovePathIndex, DropFlagState)
@@ -173,7 +173,7 @@ pub(crate) fn drop_flag_effects_for_function_entry<'a, 'gcx, 'tcx, F>(
 
 pub(crate) fn drop_flag_effects_for_location<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     ctxt: &MoveDataParamEnv<'gcx, 'tcx>,
     loc: Location,
     mut callback: F)
@@ -205,7 +205,7 @@ pub(crate) fn drop_flag_effects_for_location<'a, 'gcx, 'tcx, F>(
 
 pub(crate) fn for_location_inits<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     move_data: &MoveData<'tcx>,
     loc: Location,
     mut callback: F)

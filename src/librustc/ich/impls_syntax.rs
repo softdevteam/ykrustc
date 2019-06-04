@@ -121,6 +121,7 @@ impl_stable_hash_for!(struct ::syntax::attr::Stability {
     feature,
     rustc_depr,
     promotable,
+    allow_const_fn_ptr,
     const_stability
 });
 
@@ -161,7 +162,12 @@ impl_stable_hash_for!(enum ::syntax::ast::LitIntType {
     Unsuffixed
 });
 
-impl_stable_hash_for_spanned!(::syntax::ast::LitKind);
+impl_stable_hash_for!(struct ::syntax::ast::Lit {
+    node,
+    token,
+    span
+});
+
 impl_stable_hash_for!(enum ::syntax::ast::LitKind {
     Str(value, style),
     Err(value),
@@ -173,6 +179,8 @@ impl_stable_hash_for!(enum ::syntax::ast::LitKind {
     FloatUnsuffixed(value),
     Bool(value)
 });
+
+impl_stable_hash_for_spanned!(::syntax::ast::LitKind);
 
 impl_stable_hash_for!(enum ::syntax::ast::IntTy { Isize, I8, I16, I32, I64, I128 });
 impl_stable_hash_for!(enum ::syntax::ast::UintTy { Usize, U8, U16, U32, U64, U128 });
@@ -197,7 +205,8 @@ impl<'a> HashStable<StableHashingContext<'a>> for [ast::Attribute] {
         let filtered: SmallVec<[&ast::Attribute; 8]> = self
             .iter()
             .filter(|attr| {
-                !attr.is_sugared_doc && !hcx.is_ignored_attr(attr.name())
+                !attr.is_sugared_doc &&
+                !attr.ident().map_or(false, |ident| hcx.is_ignored_attr(ident.name))
             })
             .collect();
 
@@ -224,7 +233,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for ast::Attribute {
                                           hcx: &mut StableHashingContext<'a>,
                                           hasher: &mut StableHasher<W>) {
         // Make sure that these have been filtered out.
-        debug_assert!(!hcx.is_ignored_attr(self.name()));
+        debug_assert!(!self.ident().map_or(false, |ident| hcx.is_ignored_attr(ident.name)));
         debug_assert!(!self.is_sugared_doc);
 
         let ast::Attribute {
@@ -278,6 +287,25 @@ for tokenstream::TokenStream {
     }
 }
 
+impl_stable_hash_for!(enum token::LitKind {
+    Bool,
+    Byte,
+    Char,
+    Integer,
+    Float,
+    Str,
+    ByteStr,
+    StrRaw(n),
+    ByteStrRaw(n),
+    Err
+});
+
+impl_stable_hash_for!(struct token::Lit {
+    kind,
+    symbol,
+    suffix
+});
+
 fn hash_token<'a, 'gcx, W: StableHasherResult>(
     token: &token::Token,
     hcx: &mut StableHashingContext<'a>,
@@ -325,24 +353,7 @@ fn hash_token<'a, 'gcx, W: StableHasherResult>(
         token::Token::CloseDelim(delim_token) => {
             std_hash::Hash::hash(&delim_token, hasher);
         }
-        token::Token::Literal(ref lit, ref opt_name) => {
-            mem::discriminant(lit).hash_stable(hcx, hasher);
-            match *lit {
-                token::Lit::Byte(val) |
-                token::Lit::Char(val) |
-                token::Lit::Err(val) |
-                token::Lit::Integer(val) |
-                token::Lit::Float(val) |
-                token::Lit::Str_(val) |
-                token::Lit::ByteStr(val) => val.hash_stable(hcx, hasher),
-                token::Lit::StrRaw(val, n) |
-                token::Lit::ByteStrRaw(val, n) => {
-                    val.hash_stable(hcx, hasher);
-                    n.hash_stable(hcx, hasher);
-                }
-            };
-            opt_name.hash_stable(hcx, hasher);
-        }
+        token::Token::Literal(lit) => lit.hash_stable(hcx, hasher),
 
         token::Token::Ident(ident, is_raw) => {
             ident.name.hash_stable(hcx, hasher);
@@ -359,15 +370,13 @@ fn hash_token<'a, 'gcx, W: StableHasherResult>(
     }
 }
 
-impl_stable_hash_for_spanned!(::syntax::ast::NestedMetaItemKind);
-
-impl_stable_hash_for!(enum ::syntax::ast::NestedMetaItemKind {
+impl_stable_hash_for!(enum ::syntax::ast::NestedMetaItem {
     MetaItem(meta_item),
     Literal(lit)
 });
 
 impl_stable_hash_for!(struct ::syntax::ast::MetaItem {
-    ident,
+    path,
     node,
     span
 });
@@ -395,7 +404,9 @@ impl_stable_hash_for!(enum ::syntax_pos::hygiene::ExpnFormat {
 });
 
 impl_stable_hash_for!(enum ::syntax_pos::hygiene::CompilerDesugaringKind {
+    IfTemporary,
     Async,
+    Await,
     QuestionMark,
     ExistentialReturnType,
     ForLoop,

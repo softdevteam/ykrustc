@@ -12,11 +12,11 @@ use crate::ty;
 
 use std::mem;
 use std::fmt;
-use rustc_data_structures::sync::Lrc;
+use rustc_macros::HashStable;
 use syntax::source_map;
 use syntax::ast;
 use syntax_pos::{Span, DUMMY_SP};
-use crate::ty::TyCtxt;
+use crate::ty::{DefIdTree, TyCtxt};
 use crate::ty::query::Providers;
 
 use crate::hir;
@@ -90,7 +90,8 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
 // placate the same deriving in `ty::FreeRegion`, but we may want to
 // actually attach a more meaningful ordering to scopes than the one
 // generated via deriving here.
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Copy, RustcEncodable, RustcDecodable)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Copy,
+         RustcEncodable, RustcDecodable, HashStable)]
 pub struct Scope {
     pub id: hir::ItemLocalId,
     pub data: ScopeData,
@@ -113,22 +114,23 @@ impl fmt::Debug for Scope {
     }
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Debug, Copy, RustcEncodable, RustcDecodable)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Debug, Copy,
+         RustcEncodable, RustcDecodable, HashStable)]
 pub enum ScopeData {
     Node,
 
-    // Scope of the call-site for a function or closure
-    // (outlives the arguments as well as the body).
+    /// Scope of the call-site for a function or closure
+    /// (outlives the arguments as well as the body).
     CallSite,
 
-    // Scope of arguments passed to a function or closure
-    // (they outlive its body).
+    /// Scope of arguments passed to a function or closure
+    /// (they outlive its body).
     Arguments,
 
-    // Scope of destructors for temporaries of node-id.
+    /// Scope of destructors for temporaries of node-id.
     Destruction,
 
-    // Scope following a `let id = expr;` binding in a block.
+    /// Scope following a `let id = expr;` binding in a block.
     Remainder(FirstStatementIndex)
 }
 
@@ -150,13 +152,13 @@ newtype_index! {
     ///
     /// * The subscope with `first_statement_index == 1` is scope of `c`,
     ///   and thus does not include EXPR_2, but covers the `...`.
-    pub struct FirstStatementIndex { .. }
+    pub struct FirstStatementIndex {
+        derive [HashStable]
+    }
 }
 
-impl_stable_hash_for!(struct crate::middle::region::FirstStatementIndex { private });
-
 // compilation error if size of `ScopeData` is not the same as a `u32`
-static_assert!(ASSERT_SCOPE_DATA: mem::size_of::<ScopeData>() == 4);
+static_assert_size!(ScopeData, 4);
 
 impl Scope {
     /// Returns a item-local ID associated with this scope.
@@ -647,7 +649,7 @@ impl<'tcx> ScopeTree {
     pub fn early_free_scope<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                       br: &ty::EarlyBoundRegion)
                                       -> Scope {
-        let param_owner = tcx.parent_def_id(br.def_id).unwrap();
+        let param_owner = tcx.parent(br.def_id).unwrap();
 
         let param_owner_id = tcx.hir().as_local_hir_id(param_owner).unwrap();
         let scope = tcx.hir().maybe_body_owned_by_by_hir_id(param_owner_id).map(|body_id| {
@@ -656,12 +658,15 @@ impl<'tcx> ScopeTree {
             // The lifetime was defined on node that doesn't own a body,
             // which in practice can only mean a trait or an impl, that
             // is the parent of a method, and that is enforced below.
-            assert_eq!(Some(param_owner_id), self.root_parent,
-                       "free_scope: {:?} not recognized by the \
-                        region scope tree for {:?} / {:?}",
-                       param_owner,
-                       self.root_parent.map(|id| tcx.hir().local_def_id_from_hir_id(id)),
-                       self.root_body.map(|hir_id| DefId::local(hir_id.owner)));
+            if Some(param_owner_id) != self.root_parent {
+                tcx.sess.delay_span_bug(
+                    DUMMY_SP,
+                    &format!("free_scope: {:?} not recognized by the \
+                              region scope tree for {:?} / {:?}",
+                             param_owner,
+                             self.root_parent.map(|id| tcx.hir().local_def_id_from_hir_id(id)),
+                             self.root_body.map(|hir_id| DefId::local(hir_id.owner))));
+            }
 
             // The trait/impl lifetime is in scope for the method's body.
             self.root_body.unwrap().local_id
@@ -676,7 +681,7 @@ impl<'tcx> ScopeTree {
                                  -> Scope {
         let param_owner = match fr.bound_region {
             ty::BoundRegion::BrNamed(def_id, _) => {
-                tcx.parent_def_id(def_id).unwrap()
+                tcx.parent(def_id).unwrap()
             }
             _ => fr.scope
         };
@@ -812,6 +817,16 @@ fn resolve_block<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, blk:
 }
 
 fn resolve_arm<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, arm: &'tcx hir::Arm) {
+    let prev_cx = visitor.cx;
+
+    visitor.enter_scope(
+        Scope {
+            id: arm.hir_id.local_id,
+            data: ScopeData::Node,
+        }
+    );
+    visitor.cx.var_parent = visitor.cx.parent;
+
     visitor.terminating_scopes.insert(arm.body.hir_id.local_id);
 
     if let Some(hir::Guard::If(ref expr)) = arm.guard {
@@ -819,6 +834,8 @@ fn resolve_arm<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, arm: &
     }
 
     intravisit::walk_arm(visitor, arm);
+
+    visitor.cx = prev_cx;
 }
 
 fn resolve_pat<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, pat: &'tcx hir::Pat) {
@@ -882,17 +899,6 @@ fn resolve_expr<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, expr:
                     terminating(r.hir_id.local_id);
             }
 
-            hir::ExprKind::If(ref expr, ref then, Some(ref otherwise)) => {
-                terminating(expr.hir_id.local_id);
-                terminating(then.hir_id.local_id);
-                terminating(otherwise.hir_id.local_id);
-            }
-
-            hir::ExprKind::If(ref expr, ref then, None) => {
-                terminating(expr.hir_id.local_id);
-                terminating(then.hir_id.local_id);
-            }
-
             hir::ExprKind::Loop(ref body, _, _) => {
                 terminating(body.hir_id.local_id);
             }
@@ -902,8 +908,10 @@ fn resolve_expr<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, expr:
                 terminating(body.hir_id.local_id);
             }
 
-            hir::ExprKind::Match(..) => {
-                visitor.cx.var_parent = visitor.cx.parent;
+            hir::ExprKind::DropTemps(ref expr) => {
+                // `DropTemps(expr)` does not denote a conditional scope.
+                // Rather, we want to achieve the same behavior as `{ let _t = expr; _t }`.
+                terminating(expr.hir_id.local_id);
             }
 
             hir::ExprKind::AssignOp(..) | hir::ExprKind::Index(..) |
@@ -1320,7 +1328,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RegionResolutionVisitor<'a, 'tcx> {
 }
 
 fn region_scope_tree<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId)
-    -> Lrc<ScopeTree>
+    -> &'tcx ScopeTree
 {
     let closure_base_def_id = tcx.closure_base_def_id(def_id);
     if closure_base_def_id != def_id {
@@ -1362,7 +1370,7 @@ fn region_scope_tree<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId)
         ScopeTree::default()
     };
 
-    Lrc::new(scope_tree)
+    tcx.arena.alloc(scope_tree)
 }
 
 pub fn provide(providers: &mut Providers<'_>) {

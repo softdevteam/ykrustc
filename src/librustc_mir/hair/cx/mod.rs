@@ -6,7 +6,7 @@ use crate::hair::*;
 use crate::hair::util::UserAnnotatedTyHelpers;
 
 use rustc_data_structures::indexed_vec::Idx;
-use rustc::hir::def_id::{DefId, LOCAL_CRATE};
+use rustc::hir::def_id::DefId;
 use rustc::hir::Node;
 use rustc::middle::region;
 use rustc::infer::InferCtxt;
@@ -16,9 +16,8 @@ use rustc::ty::subst::{Kind, InternalSubsts};
 use rustc::ty::layout::VariantIdx;
 use syntax::ast;
 use syntax::attr;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use rustc::hir;
-use rustc_data_structures::sync::Lrc;
 use crate::hair::constant::{lit_to_const, LitToConstError};
 
 #[derive(Clone)]
@@ -32,12 +31,15 @@ pub struct Cx<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     /// Identity `InternalSubsts` for use with const-evaluation.
     pub identity_substs: &'gcx InternalSubsts<'gcx>,
 
-    pub region_scope_tree: Lrc<region::ScopeTree>,
+    pub region_scope_tree: &'gcx region::ScopeTree,
     pub tables: &'a ty::TypeckTables<'gcx>,
 
     /// This is `Constness::Const` if we are compiling a `static`,
     /// `const`, or the body of a `const fn`.
     constness: hir::Constness,
+
+    /// The `DefId` of the owner of this body.
+    body_owner: DefId,
 
     /// What kind of body is being compiled.
     pub body_owner_kind: hir::BodyOwnerKind,
@@ -45,7 +47,7 @@ pub struct Cx<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     /// Whether this constant/function needs overflow checks.
     check_overflow: bool,
 
-    /// See field with the same name on `Mir`.
+    /// See field with the same name on `mir::Body`.
     control_flow_destroyed: Vec<(Span, String)>,
 }
 
@@ -54,6 +56,7 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
                src_id: hir::HirId) -> Cx<'a, 'gcx, 'tcx> {
         let tcx = infcx.tcx;
         let src_def_id = tcx.hir().local_def_id_from_hir_id(src_id);
+        let tables = tcx.typeck_tables_of(src_def_id);
         let body_owner_kind = tcx.hir().body_owner_kind_by_hir_id(src_id);
 
         let constness = match body_owner_kind {
@@ -68,7 +71,7 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
         // Some functions always have overflow checks enabled,
         // however, they may not get codegen'd, depending on
         // the settings for the crate they are codegened in.
-        let mut check_overflow = attr::contains_name(attrs, "rustc_inherit_overflow_checks");
+        let mut check_overflow = attr::contains_name(attrs, sym::rustc_inherit_overflow_checks);
 
         // Respect -C overflow-checks.
         check_overflow |= tcx.sess.overflow_checks();
@@ -76,16 +79,16 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
         // Constants always need overflow checks.
         check_overflow |= constness == hir::Constness::Const;
 
-        let lint_level = lint_level_for_hir_id(tcx, src_id);
         Cx {
             tcx,
             infcx,
-            root_lint_level: lint_level,
+            root_lint_level: src_id,
             param_env: tcx.param_env(src_def_id),
             identity_substs: InternalSubsts::identity_for_item(tcx.global_tcx(), src_def_id),
             region_scope_tree: tcx.region_scope_tree(src_def_id),
-            tables: tcx.typeck_tables_of(src_def_id),
+            tables,
             constness,
+            body_owner: src_def_id,
             body_owner_kind,
             check_overflow,
             control_flow_destroyed: Vec::new(),
@@ -107,8 +110,8 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
         self.tcx.types.usize
     }
 
-    pub fn usize_literal(&mut self, value: u64) -> &'tcx ty::LazyConst<'tcx> {
-        self.tcx.mk_lazy_const(ty::LazyConst::Evaluated(ty::Const::from_usize(self.tcx, value)))
+    pub fn usize_literal(&mut self, value: u64) -> &'tcx ty::Const<'tcx> {
+        ty::Const::from_usize(self.tcx, value)
     }
 
     pub fn bool_ty(&mut self) -> Ty<'tcx> {
@@ -119,12 +122,12 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
         self.tcx.mk_unit()
     }
 
-    pub fn true_literal(&mut self) -> &'tcx ty::LazyConst<'tcx> {
-        self.tcx.mk_lazy_const(ty::LazyConst::Evaluated(ty::Const::from_bool(self.tcx, true)))
+    pub fn true_literal(&mut self) -> &'tcx ty::Const<'tcx> {
+        ty::Const::from_bool(self.tcx, true)
     }
 
-    pub fn false_literal(&mut self) -> &'tcx ty::LazyConst<'tcx> {
-        self.tcx.mk_lazy_const(ty::LazyConst::Evaluated(ty::Const::from_bool(self.tcx, false)))
+    pub fn false_literal(&mut self) -> &'tcx ty::Const<'tcx> {
+        ty::Const::from_bool(self.tcx, false)
     }
 
     pub fn const_eval_literal(
@@ -133,7 +136,7 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
         ty: Ty<'tcx>,
         sp: Span,
         neg: bool,
-    ) -> ty::Const<'tcx> {
+    ) -> &'tcx ty::Const<'tcx> {
         trace!("const_eval_literal: {:#?}, {:?}, {:?}, {:?}", lit, ty, sp, neg);
 
         match lit_to_const(lit, self.tcx, ty, neg) {
@@ -168,14 +171,14 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
                         method_name: &str,
                         self_ty: Ty<'tcx>,
                         params: &[Kind<'tcx>])
-                        -> (Ty<'tcx>, ty::Const<'tcx>) {
+                        -> (Ty<'tcx>, &'tcx ty::Const<'tcx>) {
         let method_name = Symbol::intern(method_name);
         let substs = self.tcx.mk_substs_trait(self_ty, params);
         for item in self.tcx.associated_items(trait_def_id) {
-            if item.kind == ty::AssociatedKind::Method && item.ident.name == method_name {
+            if item.kind == ty::AssocKind::Method && item.ident.name == method_name {
                 let method_ty = self.tcx.type_of(item.def_id);
                 let method_ty = method_ty.subst(self.tcx, substs);
-                return (method_ty, ty::Const::zero_sized(method_ty));
+                return (method_ty, ty::Const::zero_sized(self.tcx, method_ty));
             }
         }
 
@@ -195,18 +198,6 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
                  ty, self.param_env);
         });
         ty.needs_drop(self.tcx.global_tcx(), param_env)
-    }
-
-    fn lint_level_of(&self, hir_id: hir::HirId) -> LintLevel {
-        let has_lint_level = self.tcx.dep_graph.with_ignore(|| {
-            self.tcx.lint_levels(LOCAL_CRATE).lint_level_set(hir_id).is_some()
-        });
-
-        if has_lint_level {
-            LintLevel::Explicit(hir_id)
-        } else {
-            LintLevel::Inherited
-        }
     }
 
     pub fn tcx(&self) -> TyCtxt<'a, 'gcx, 'tcx> {
@@ -234,30 +225,6 @@ impl UserAnnotatedTyHelpers<'gcx, 'tcx> for Cx<'_, 'gcx, 'tcx> {
     fn tables(&self) -> &ty::TypeckTables<'tcx> {
         self.tables()
     }
-}
-
-fn lint_level_for_hir_id(tcx: TyCtxt<'_, '_, '_>, mut id: hir::HirId) -> hir::HirId {
-    // Right now we insert a `with_ignore` node in the dep graph here to
-    // ignore the fact that `lint_levels` below depends on the entire crate.
-    // For now this'll prevent false positives of recompiling too much when
-    // anything changes.
-    //
-    // Once red/green incremental compilation lands we should be able to
-    // remove this because while the crate changes often the lint level map
-    // will change rarely.
-    tcx.dep_graph.with_ignore(|| {
-        let sets = tcx.lint_levels(LOCAL_CRATE);
-        loop {
-            if sets.lint_level_set(id).is_some() {
-                return id
-            }
-            let next = tcx.hir().get_parent_node_by_hir_id(id);
-            if next == id {
-                bug!("lint traversal reached the root of the crate");
-            }
-            id = next;
-        }
-    })
 }
 
 mod block;

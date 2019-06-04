@@ -1,6 +1,7 @@
 use crate::borrow_check::nll::region_infer::RegionInferenceContext;
 use crate::borrow_check::nll::ToRegionVid;
-use rustc::mir::{Local, Mir};
+use crate::borrow_check::Upvar;
+use rustc::mir::{Local, Body};
 use rustc::ty::{RegionVid, TyCtxt};
 use rustc_data_structures::indexed_vec::Idx;
 use syntax::source_map::Span;
@@ -10,7 +11,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     crate fn get_var_name_and_span_for_region(
         &self,
         tcx: TyCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
+        upvars: &[Upvar],
         fr: RegionVid,
     ) -> Option<(Option<Symbol>, Span)> {
         debug!("get_var_name_and_span_for_region(fr={:?})", fr);
@@ -19,7 +21,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         debug!("get_var_name_and_span_for_region: attempting upvar");
         self.get_upvar_index_for_region(tcx, fr)
             .map(|index| {
-                let (name, span) = self.get_upvar_name_and_span_for_region(tcx, mir, index);
+                let (name, span) =
+                    self.get_upvar_name_and_span_for_region(tcx, upvars, index);
                 (Some(name), span)
             })
             .or_else(|| {
@@ -67,10 +70,10 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     crate fn get_upvar_name_and_span_for_region(
         &self,
         tcx: TyCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        upvars: &[Upvar],
         upvar_index: usize,
     ) -> (Symbol, Span) {
-        let upvar_hir_id = mir.upvar_decls[upvar_index].var_hir_id.assert_crate_local();
+        let upvar_hir_id = upvars[upvar_index].var_hir_id;
         debug!("get_upvar_name_and_span_for_region: upvar_hir_id={:?}", upvar_hir_id);
 
         let upvar_name = tcx.hir().name_by_hir_id(upvar_hir_id);
@@ -117,7 +120,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// declared.
     crate fn get_argument_name_and_span_for_region(
         &self,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
         argument_index: usize,
     ) -> (Option<Symbol>, Span) {
         let implicit_inputs = self.universal_regions.defining_ty.implicit_inputs();

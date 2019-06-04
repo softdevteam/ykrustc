@@ -1,5 +1,5 @@
 use syntax::ast;
-use rustc::ty::{self, Ty, TyCtxt, ParamEnv};
+use rustc::ty::{self, Ty, TyCtxt, ParamEnv, layout::Size};
 use syntax_pos::symbol::Symbol;
 use rustc::mir::interpret::{ConstValue, Scalar};
 
@@ -14,7 +14,7 @@ crate fn lit_to_const<'a, 'gcx, 'tcx>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     ty: Ty<'tcx>,
     neg: bool,
-) -> Result<ty::Const<'tcx>, LitToConstError> {
+) -> Result<&'tcx ty::Const<'tcx>, LitToConstError> {
     use syntax::ast::*;
 
     let trunc = |n| {
@@ -23,35 +23,31 @@ crate fn lit_to_const<'a, 'gcx, 'tcx>(
         trace!("trunc {} with size {} and shift {}", n, width.bits(), 128 - width.bits());
         let result = truncate(n, width);
         trace!("trunc result: {}", result);
-        Ok(ConstValue::Scalar(Scalar::Bits {
-            bits: result,
-            size: width.bytes() as u8,
-        }))
+        Ok(ConstValue::Scalar(Scalar::from_uint(result, width)))
     };
 
     use rustc::mir::interpret::*;
     let lit = match *lit {
         LitKind::Str(ref s, _) => {
             let s = s.as_str();
-            let id = tcx.allocate_bytes(s.as_bytes());
-            ConstValue::new_slice(Scalar::Ptr(id.into()), s.len() as u64)
+            let allocation = Allocation::from_byte_aligned_bytes(s.as_bytes());
+            let allocation = tcx.intern_const_alloc(allocation);
+            ConstValue::Slice { data: allocation, start: 0, end: s.len() }
         },
         LitKind::Err(ref s) => {
             let s = s.as_str();
-            let id = tcx.allocate_bytes(s.as_bytes());
-            return Ok(ty::Const {
-                val: ConstValue::new_slice(Scalar::Ptr(id.into()), s.len() as u64),
+            let allocation = Allocation::from_byte_aligned_bytes(s.as_bytes());
+            let allocation = tcx.intern_const_alloc(allocation);
+            return Ok(tcx.mk_const(ty::Const {
+                val: ConstValue::Slice{ data: allocation, start: 0, end: s.len() },
                 ty: tcx.types.err,
-            });
+            }));
         },
         LitKind::ByteStr(ref data) => {
             let id = tcx.allocate_bytes(data);
             ConstValue::Scalar(Scalar::Ptr(id.into()))
         },
-        LitKind::Byte(n) => ConstValue::Scalar(Scalar::Bits {
-            bits: n as u128,
-            size: 1,
-        }),
+        LitKind::Byte(n) => ConstValue::Scalar(Scalar::from_uint(n, Size::from_bytes(1))),
         LitKind::Int(n, _) if neg => {
             let n = n as i128;
             let n = n.overflowing_neg().0;
@@ -71,7 +67,7 @@ crate fn lit_to_const<'a, 'gcx, 'tcx>(
         LitKind::Bool(b) => ConstValue::Scalar(Scalar::from_bool(b)),
         LitKind::Char(c) => ConstValue::Scalar(Scalar::from_char(c)),
     };
-    Ok(ty::Const { val: lit, ty })
+    Ok(tcx.mk_const(ty::Const { val: lit, ty }))
 }
 
 fn parse_float<'tcx>(
@@ -82,7 +78,7 @@ fn parse_float<'tcx>(
     let num = num.as_str();
     use rustc_apfloat::ieee::{Single, Double};
     use rustc_apfloat::Float;
-    let (bits, size) = match fty {
+    let (data, size) = match fty {
         ast::FloatTy::F32 => {
             num.parse::<f32>().map_err(|_| ())?;
             let mut f = num.parse::<Single>().unwrap_or_else(|e| {
@@ -105,5 +101,5 @@ fn parse_float<'tcx>(
         }
     };
 
-    Ok(ConstValue::Scalar(Scalar::Bits { bits, size }))
+    Ok(ConstValue::Scalar(Scalar::from_uint(data, Size::from_bytes(size))))
 }

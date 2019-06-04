@@ -3,6 +3,7 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
 
 #![feature(in_band_lifetimes)]
 #![feature(proc_macro_diagnostic)]
@@ -16,7 +17,7 @@
 
 extern crate proc_macro;
 
-mod diagnostics;
+mod error_codes;
 
 mod asm;
 mod assert;
@@ -41,17 +42,17 @@ pub mod proc_macro_impl;
 use rustc_data_structures::sync::Lrc;
 use syntax::ast;
 use syntax::ext::base::{MacroExpanderFn, NormalTT, NamedSyntaxExtension, MultiModifier};
-use syntax::ext::hygiene;
-use syntax::symbol::Symbol;
+use syntax::edition::Edition;
+use syntax::symbol::{sym, Symbol};
 
 pub fn register_builtins(resolver: &mut dyn syntax::ext::base::Resolver,
-                         user_exts: Vec<NamedSyntaxExtension>) {
+                         user_exts: Vec<NamedSyntaxExtension>,
+                         edition: Edition) {
     deriving::register_builtin_derives(resolver);
 
     let mut register = |name, ext| {
         resolver.add_builtin(ast::Ident::with_empty_ctxt(name), Lrc::new(ext));
     };
-
     macro_rules! register {
         ($( $name:ident: $f:expr, )*) => { $(
             register(Symbol::intern(stringify!($name)),
@@ -62,7 +63,7 @@ pub fn register_builtins(resolver: &mut dyn syntax::ext::base::Resolver,
                         allow_internal_unsafe: false,
                         local_inner_macros: false,
                         unstable_feature: None,
-                        edition: hygiene::default_edition(),
+                        edition,
                     });
         )* }
     }
@@ -92,34 +93,30 @@ pub fn register_builtins(resolver: &mut dyn syntax::ext::base::Resolver,
         assert: assert::expand_assert,
     }
 
-    register(Symbol::intern("test_case"), MultiModifier(Box::new(test_case::expand)));
-    register(Symbol::intern("test"), MultiModifier(Box::new(test::expand_test)));
-    register(Symbol::intern("bench"), MultiModifier(Box::new(test::expand_bench)));
+    register(sym::test_case, MultiModifier(Box::new(test_case::expand)));
+    register(sym::test, MultiModifier(Box::new(test::expand_test)));
+    register(sym::bench, MultiModifier(Box::new(test::expand_bench)));
 
     // format_args uses `unstable` things internally.
     register(Symbol::intern("format_args"),
              NormalTT {
                 expander: Box::new(format::expand_format_args),
                 def_info: None,
-                allow_internal_unstable: Some(vec![
-                    Symbol::intern("fmt_internals"),
-                ].into()),
+                allow_internal_unstable: Some(vec![sym::fmt_internals].into()),
                 allow_internal_unsafe: false,
                 local_inner_macros: false,
                 unstable_feature: None,
-                edition: hygiene::default_edition(),
+                edition,
             });
-    register(Symbol::intern("format_args_nl"),
+    register(sym::format_args_nl,
              NormalTT {
                  expander: Box::new(format::expand_format_args_nl),
                  def_info: None,
-                 allow_internal_unstable: Some(vec![
-                     Symbol::intern("fmt_internals"),
-                 ].into()),
+                 allow_internal_unstable: Some(vec![sym::fmt_internals].into()),
                  allow_internal_unsafe: false,
                  local_inner_macros: false,
                  unstable_feature: None,
-                 edition: hygiene::default_edition(),
+                 edition,
              });
 
     for (name, ext) in user_exts {

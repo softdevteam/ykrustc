@@ -17,9 +17,11 @@ struct MarkAttrs<'a>(&'a [ast::Name]);
 
 impl<'a> Visitor<'a> for MarkAttrs<'a> {
     fn visit_attribute(&mut self, attr: &Attribute) {
-        if self.0.contains(&attr.name()) {
-            mark_used(attr);
-            mark_known(attr);
+        if let Some(ident) = attr.ident() {
+            if self.0.contains(&ident.name) {
+                mark_used(attr);
+                mark_known(attr);
+            }
         }
     }
 
@@ -87,7 +89,7 @@ impl MultiItemModifier for ProcMacroDerive {
         let error_count_before = ecx.parse_sess.span_diagnostic.err_count();
         let msg = "proc-macro derive produced unparseable tokens";
 
-        let mut parser = parse::stream_to_parser(ecx.parse_sess, stream);
+        let mut parser = parse::stream_to_parser(ecx.parse_sess, stream, Some("proc-macro derive"));
         let mut items = vec![];
 
         loop {

@@ -17,16 +17,14 @@ fn main() {
 // START rustc.main.mir_map.0.mir
 // fn main() -> (){
 //     let mut _0: ();
-//     scope 1 {
-//     }
-//     scope 2 {
-//         let _2: i32;
-//     }
 //     let mut _1: ();
+//     let _2: i32;
 //     let mut _3: bool;
 //     let mut _4: !;
 //     let mut _5: ();
 //     let mut _6: &i32;
+//     scope 1 {
+//     }
 //     bb0: {
 //         goto -> bb1;
 //     }
@@ -43,7 +41,7 @@ fn main() {
 //         FakeRead(ForMatchedPlace, _3);
 //         switchInt(_3) -> [false: bb9, otherwise: bb8];
 //     }
-//     bb4: {
+//     bb4 (cleanup): {
 //         resume;
 //     }
 //     bb5: {
@@ -88,7 +86,6 @@ fn main() {
 //         unreachable;
 //     }
 //     bb17: {
-//         StorageDead(_4);
 //         goto -> bb18;
 //     }
 //     bb18: {
@@ -96,7 +93,7 @@ fn main() {
 //         StorageDead(_3);
 //         StorageLive(_6);
 //         _6 = &_2;
-//         _5 = const std::mem::drop(move _6) -> [return: bb19, unwind: bb4];
+//         _5 = const std::mem::drop::<&i32>(move _6) -> [return: bb19, unwind: bb4];
 //     }
 //     bb19: {
 //         StorageDead(_6);

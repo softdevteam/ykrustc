@@ -29,7 +29,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 value,
             } => {
                 let value = this.hir.mirror(value);
-                this.in_scope((region_scope, source_info), lint_level, block, |this| {
+                this.in_scope((region_scope, source_info), lint_level, |this| {
                     this.stmt_expr(block, value, opt_stmt_span)
                 })
             }
@@ -188,11 +188,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     block,
                     Statement {
                         source_info,
-                        kind: StatementKind::InlineAsm {
-                            asm: box asm.clone(),
+                        kind: StatementKind::InlineAsm(box InlineAsm {
+                            asm: asm.clone(),
                             outputs,
                             inputs,
-                        },
+                        }),
                     },
                 );
                 this.block_context.pop();

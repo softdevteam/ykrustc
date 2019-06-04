@@ -12,12 +12,19 @@ use std::iter;
 use std::mem;
 use std::ops::Bound;
 
+use crate::hir;
 use crate::ich::StableHashingContext;
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
                                            StableHasherResult};
 
 pub use rustc_target::abi::*;
+use rustc_target::spec::{HasTargetSpec, abi::Abi as SpecAbi};
+use rustc_target::abi::call::{
+    ArgAttribute, ArgAttributes, ArgType, Conv, FnType, IgnoreMode, PassMode, Reg, RegKind
+};
+
+
 
 pub trait IntegerExt {
     fn to_ty<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, signed: bool) -> Ty<'tcx>;
@@ -542,8 +549,8 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     }
                 }
 
+                let count = count.assert_usize(tcx).ok_or(LayoutError::Unknown(ty))?;
                 let element = self.layout_of(element)?;
-                let count = count.unwrap_usize(tcx);
                 let size = element.size.checked_mul(count, dl)
                     .ok_or(LayoutError::SizeOverflow(ty))?;
 
@@ -604,12 +611,63 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 tcx.intern_layout(unit)
             }
 
-            // Tuples, generators and closures.
             ty::Generator(def_id, ref substs, _) => {
-                let tys = substs.field_tys(def_id, tcx);
-                univariant(&tys.map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
+                // FIXME(tmandry): For fields that are repeated in multiple
+                // variants in the GeneratorLayout, we need code to ensure that
+                // the offset of these fields never change. Right now this is
+                // not an issue since every variant has every field, but once we
+                // optimize this we have to be more careful.
+
+                let discr_index = substs.prefix_tys(def_id, tcx).count();
+                let prefix_tys = substs.prefix_tys(def_id, tcx)
+                    .chain(iter::once(substs.discr_ty(tcx)));
+                let prefix = univariant_uninterned(
+                    &prefix_tys.map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
                     &ReprOptions::default(),
-                    StructKind::AlwaysSized)?
+                    StructKind::AlwaysSized)?;
+
+                let mut size = prefix.size;
+                let mut align = prefix.align;
+                let variants_tys = substs.state_tys(def_id, tcx);
+                let variants = variants_tys.enumerate().map(|(i, variant_tys)| {
+                    let mut variant = univariant_uninterned(
+                        &variant_tys.map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
+                        &ReprOptions::default(),
+                        StructKind::Prefixed(prefix.size, prefix.align.abi))?;
+
+                    variant.variants = Variants::Single { index: VariantIdx::new(i) };
+
+                    size = size.max(variant.size);
+                    align = align.max(variant.align);
+
+                    Ok(variant)
+                }).collect::<Result<IndexVec<VariantIdx, _>, _>>()?;
+
+                let abi = if prefix.abi.is_uninhabited() ||
+                             variants.iter().all(|v| v.abi.is_uninhabited()) {
+                    Abi::Uninhabited
+                } else {
+                    Abi::Aggregate { sized: true }
+                };
+                let discr = match &self.layout_of(substs.discr_ty(tcx))?.abi {
+                    Abi::Scalar(s) => s.clone(),
+                    _ => bug!(),
+                };
+
+                let layout = tcx.intern_layout(LayoutDetails {
+                    variants: Variants::Multiple {
+                        discr,
+                        discr_kind: DiscriminantKind::Tag,
+                        discr_index,
+                        variants,
+                    },
+                    fields: prefix.fields,
+                    abi,
+                    size,
+                    align,
+                });
+                debug!("generator layout: {:#?}", layout);
+                layout
             }
 
             ty::Closure(def_id, ref substs) => {
@@ -626,8 +684,9 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     StructKind::MaybeUnsized
                 };
 
-                univariant(&tys.iter().map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
-                           &ReprOptions::default(), kind)?
+                univariant(&tys.iter().map(|k| {
+                    self.layout_of(k.expect_ty())
+                }).collect::<Result<Vec<_>, _>>()?, &ReprOptions::default(), kind)?
             }
 
             // SIMD vector types.
@@ -913,11 +972,14 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                             }
 
                             return Ok(tcx.intern_layout(LayoutDetails {
-                                variants: Variants::NicheFilling {
-                                    dataful_variant: i,
-                                    niche_variants,
-                                    niche: niche_scalar,
-                                    niche_start,
+                                variants: Variants::Multiple {
+                                    discr: niche_scalar,
+                                    discr_kind: DiscriminantKind::Niche {
+                                        dataful_variant: i,
+                                        niche_variants,
+                                        niche_start,
+                                    },
+                                    discr_index: 0,
                                     variants: st,
                                 },
                                 fields: FieldPlacement::Arbitrary {
@@ -1137,8 +1199,10 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 }
 
                 tcx.intern_layout(LayoutDetails {
-                    variants: Variants::Tagged {
-                        tag,
+                    variants: Variants::Multiple {
+                        discr: tag,
+                        discr_kind: DiscriminantKind::Tag,
+                        discr_index: 0,
                         variants: layout_variants,
                     },
                     fields: FieldPlacement::Arbitrary {
@@ -1293,8 +1357,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 }
             }
 
-            Variants::NicheFilling { .. } |
-            Variants::Tagged { .. } => {
+            Variants::Multiple { ref discr, ref discr_kind, .. } => {
                 debug!("print-type-size `{:#?}` adt general variants def {}",
                        layout.ty, adt_def.variants.len());
                 let variant_infos: Vec<_> =
@@ -1306,8 +1369,8 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                                            layout.for_variant(self, i))
                     })
                     .collect();
-                record(adt_kind.into(), adt_packed, match layout.variants {
-                    Variants::Tagged { ref tag, .. } => Some(tag.value.size(self)),
+                record(adt_kind.into(), adt_packed, match discr_kind {
+                    DiscriminantKind::Tag => Some(discr.value.size(self)),
                     _ => None
                 }, variant_infos);
             }
@@ -1462,6 +1525,10 @@ pub trait HasTyCtxt<'tcx>: HasDataLayout {
     fn tcx<'a>(&'a self) -> TyCtxt<'a, 'tcx, 'tcx>;
 }
 
+pub trait HasParamEnv<'tcx> {
+    fn param_env(&self) -> ty::ParamEnv<'tcx>;
+}
+
 impl<'a, 'gcx, 'tcx> HasDataLayout for TyCtxt<'a, 'gcx, 'tcx> {
     fn data_layout(&self) -> &TargetDataLayout {
         &self.data_layout
@@ -1471,6 +1538,12 @@ impl<'a, 'gcx, 'tcx> HasDataLayout for TyCtxt<'a, 'gcx, 'tcx> {
 impl<'a, 'gcx, 'tcx> HasTyCtxt<'gcx> for TyCtxt<'a, 'gcx, 'tcx> {
     fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'gcx> {
         self.global_tcx()
+    }
+}
+
+impl<'tcx, C> HasParamEnv<'tcx> for LayoutCx<'tcx, C> {
+    fn param_env(&self) -> ty::ParamEnv<'tcx> {
+        self.param_env
     }
 }
 
@@ -1487,25 +1560,32 @@ impl<'gcx, 'tcx, T: HasTyCtxt<'gcx>> HasTyCtxt<'gcx> for LayoutCx<'tcx, T> {
 }
 
 pub trait MaybeResult<T> {
-    fn from_ok(x: T) -> Self;
-    fn map_same<F: FnOnce(T) -> T>(self, f: F) -> Self;
+    type Error;
+
+    fn from(x: Result<T, Self::Error>) -> Self;
+    fn to_result(self) -> Result<T, Self::Error>;
 }
 
 impl<T> MaybeResult<T> for T {
-    fn from_ok(x: T) -> Self {
+    type Error = !;
+
+    fn from(x: Result<T, Self::Error>) -> Self {
+        let Ok(x) = x;
         x
     }
-    fn map_same<F: FnOnce(T) -> T>(self, f: F) -> Self {
-        f(self)
+    fn to_result(self) -> Result<T, Self::Error> {
+        Ok(self)
     }
 }
 
 impl<T, E> MaybeResult<T> for Result<T, E> {
-    fn from_ok(x: T) -> Self {
-        Ok(x)
+    type Error = E;
+
+    fn from(x: Result<T, Self::Error>) -> Self {
+        x
     }
-    fn map_same<F: FnOnce(T) -> T>(self, f: F) -> Self {
-        self.map(f)
+    fn to_result(self) -> Result<T, Self::Error> {
+        self
     }
 }
 
@@ -1600,7 +1680,8 @@ impl ty::query::TyCtxtAt<'a, 'tcx, '_> {
 
 impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
     where C: LayoutOf<Ty = Ty<'tcx>> + HasTyCtxt<'tcx>,
-          C::TyLayout: MaybeResult<TyLayout<'tcx>>
+          C::TyLayout: MaybeResult<TyLayout<'tcx>>,
+          C: HasParamEnv<'tcx>
 {
     fn for_variant(this: TyLayout<'tcx>, cx: &C, variant_index: VariantIdx) -> TyLayout<'tcx> {
         let details = match this.variants {
@@ -1608,10 +1689,9 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
 
             Variants::Single { index } => {
                 // Deny calling for_variant more than once for non-Single enums.
-                cx.layout_of(this.ty).map_same(|layout| {
+                if let Ok(layout) = cx.layout_of(this.ty).to_result() {
                     assert_eq!(layout.variants, Variants::Single { index });
-                    layout
-                });
+                }
 
                 let fields = match this.ty.sty {
                     ty::Adt(def, _) => def.variants[variant_index].fields.len(),
@@ -1627,8 +1707,7 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                 })
             }
 
-            Variants::NicheFilling { ref variants, .. } |
-            Variants::Tagged { ref variants, .. } => {
+            Variants::Multiple { ref variants, .. } => {
                 &variants[variant_index]
             }
         };
@@ -1643,6 +1722,14 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
 
     fn field(this: TyLayout<'tcx>, cx: &C, i: usize) -> C::TyLayout {
         let tcx = cx.tcx();
+        let discr_layout = |discr: &Scalar| -> C::TyLayout {
+            let layout = LayoutDetails::scalar(cx, discr.clone());
+            MaybeResult::from(Ok(TyLayout {
+                details: tcx.intern_layout(layout),
+                ty: discr.value.to_ty(tcx),
+            }))
+        };
+
         cx.layout_of(match this.ty.sty {
             ty::Bool |
             ty::Char |
@@ -1672,12 +1759,12 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                     let ptr_ty = if this.ty.is_unsafe_ptr() {
                         tcx.mk_mut_ptr(nil)
                     } else {
-                        tcx.mk_mut_ref(tcx.types.re_static, nil)
+                        tcx.mk_mut_ref(tcx.lifetimes.re_static, nil)
                     };
-                    return cx.layout_of(ptr_ty).map_same(|mut ptr_layout| {
+                    return MaybeResult::from(cx.layout_of(ptr_ty).to_result().map(|mut ptr_layout| {
                         ptr_layout.ty = this.ty;
                         ptr_layout
-                    });
+                    }));
                 }
 
                 match tcx.struct_tail(pointee).sty {
@@ -1685,7 +1772,7 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                     ty::Str => tcx.types.usize,
                     ty::Dynamic(_, _) => {
                         tcx.mk_imm_ref(
-                            tcx.types.re_static,
+                            tcx.lifetimes.re_static,
                             tcx.mk_array(tcx.types.usize, 3),
                         )
                         /* FIXME: use actual fn pointers
@@ -1717,10 +1804,22 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
             }
 
             ty::Generator(def_id, ref substs, _) => {
-                substs.field_tys(def_id, tcx).nth(i).unwrap()
+                match this.variants {
+                    Variants::Single { index } => {
+                        substs.state_tys(def_id, tcx)
+                            .nth(index.as_usize()).unwrap()
+                            .nth(i).unwrap()
+                    }
+                    Variants::Multiple { ref discr, discr_index, .. } => {
+                        if i == discr_index {
+                            return discr_layout(discr);
+                        }
+                        substs.prefix_tys(def_id, tcx).nth(i).unwrap()
+                    }
+                }
             }
 
-            ty::Tuple(tys) => tys[i],
+            ty::Tuple(tys) => tys[i].expect_ty(),
 
             // SIMD vector types.
             ty::Adt(def, ..) if def.repr.simd() => {
@@ -1735,14 +1834,9 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                     }
 
                     // Discriminant field for enums (where applicable).
-                    Variants::Tagged { tag: ref discr, .. } |
-                    Variants::NicheFilling { niche: ref discr, .. } => {
+                    Variants::Multiple { ref discr, .. } => {
                         assert_eq!(i, 0);
-                        let layout = LayoutDetails::scalar(cx, discr.clone());
-                        return MaybeResult::from_ok(TyLayout {
-                            details: tcx.intern_layout(layout),
-                            ty: discr.value.to_ty(tcx)
-                        });
+                        return discr_layout(discr);
                     }
                 }
             }
@@ -1753,6 +1847,130 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                 bug!("TyLayout::field_type: unexpected type `{}`", this.ty)
             }
         })
+    }
+
+    fn pointee_info_at(
+        this: TyLayout<'tcx>,
+        cx: &C,
+        offset: Size,
+    ) -> Option<PointeeInfo> {
+        match this.ty.sty {
+            ty::RawPtr(mt) if offset.bytes() == 0 => {
+                cx.layout_of(mt.ty).to_result().ok()
+                    .map(|layout| PointeeInfo {
+                        size: layout.size,
+                        align: layout.align.abi,
+                        safe: None,
+                    })
+            }
+
+            ty::Ref(_, ty, mt) if offset.bytes() == 0 => {
+                let tcx = cx.tcx();
+                let is_freeze = ty.is_freeze(tcx, cx.param_env(), DUMMY_SP);
+                let kind = match mt {
+                    hir::MutImmutable => if is_freeze {
+                        PointerKind::Frozen
+                    } else {
+                        PointerKind::Shared
+                    },
+                    hir::MutMutable => {
+                        // Previously we would only emit noalias annotations for LLVM >= 6 or in
+                        // panic=abort mode. That was deemed right, as prior versions had many bugs
+                        // in conjunction with unwinding, but later versions didn’t seem to have
+                        // said issues. See issue #31681.
+                        //
+                        // Alas, later on we encountered a case where noalias would generate wrong
+                        // code altogether even with recent versions of LLVM in *safe* code with no
+                        // unwinding involved. See #54462.
+                        //
+                        // For now, do not enable mutable_noalias by default at all, while the
+                        // issue is being figured out.
+                        let mutable_noalias = tcx.sess.opts.debugging_opts.mutable_noalias
+                            .unwrap_or(false);
+                        if mutable_noalias {
+                            PointerKind::UniqueBorrowed
+                        } else {
+                            PointerKind::Shared
+                        }
+                    }
+                };
+
+                cx.layout_of(ty).to_result().ok()
+                    .map(|layout| PointeeInfo {
+                        size: layout.size,
+                        align: layout.align.abi,
+                        safe: Some(kind),
+                    })
+            }
+
+            _ => {
+                let mut data_variant = match this.variants {
+                    // Within the discriminant field, only the niche itself is
+                    // always initialized, so we only check for a pointer at its
+                    // offset.
+                    //
+                    // If the niche is a pointer, it's either valid (according
+                    // to its type), or null (which the niche field's scalar
+                    // validity range encodes).  This allows using
+                    // `dereferenceable_or_null` for e.g., `Option<&T>`, and
+                    // this will continue to work as long as we don't start
+                    // using more niches than just null (e.g., the first page of
+                    // the address space, or unaligned pointers).
+                    Variants::Multiple {
+                        discr_kind: DiscriminantKind::Niche {
+                            dataful_variant,
+                            ..
+                        },
+                        discr_index,
+                        ..
+                    } if this.fields.offset(discr_index) == offset =>
+                        Some(this.for_variant(cx, dataful_variant)),
+                    _ => Some(this),
+                };
+
+                if let Some(variant) = data_variant {
+                    // We're not interested in any unions.
+                    if let FieldPlacement::Union(_) = variant.fields {
+                        data_variant = None;
+                    }
+                }
+
+                let mut result = None;
+
+                if let Some(variant) = data_variant {
+                    let ptr_end = offset + Pointer.size(cx);
+                    for i in 0..variant.fields.count() {
+                        let field_start = variant.fields.offset(i);
+                        if field_start <= offset {
+                            let field = variant.field(cx, i);
+                            result = field.to_result().ok()
+                                .and_then(|field| {
+                                    if ptr_end <= field_start + field.size {
+                                        // We found the right field, look inside it.
+                                        field.pointee_info_at(cx, offset - field_start)
+                                    } else {
+                                        None
+                                    }
+                                });
+                            if result.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // FIXME(eddyb) This should be for `ptr::Unique<T>`, not `Box<T>`.
+                if let Some(ref mut pointee) = result {
+                    if let ty::Adt(def, _) = this.ty.sty {
+                        if def.is_box() && offset.bytes() == 0 {
+                            pointee.safe = Some(PointerKind::UniqueOwned);
+                        }
+                    }
+                }
+
+                result
+            }
+        }
     }
 }
 
@@ -1881,26 +2099,39 @@ impl<'a> HashStable<StableHashingContext<'a>> for Variants {
             Single { index } => {
                 index.hash_stable(hcx, hasher);
             }
-            Tagged {
-                ref tag,
+            Multiple {
+                ref discr,
+                ref discr_kind,
+                discr_index,
                 ref variants,
             } => {
-                tag.hash_stable(hcx, hasher);
+                discr.hash_stable(hcx, hasher);
+                discr_kind.hash_stable(hcx, hasher);
+                discr_index.hash_stable(hcx, hasher);
                 variants.hash_stable(hcx, hasher);
             }
-            NicheFilling {
+        }
+    }
+}
+
+impl<'a> HashStable<StableHashingContext<'a>> for DiscriminantKind {
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          hcx: &mut StableHashingContext<'a>,
+                                          hasher: &mut StableHasher<W>) {
+        use crate::ty::layout::DiscriminantKind::*;
+        mem::discriminant(self).hash_stable(hcx, hasher);
+
+        match *self {
+            Tag => {}
+            Niche {
                 dataful_variant,
                 ref niche_variants,
-                ref niche,
                 niche_start,
-                ref variants,
             } => {
                 dataful_variant.hash_stable(hcx, hasher);
                 niche_variants.start().hash_stable(hcx, hasher);
                 niche_variants.end().hash_stable(hcx, hasher);
-                niche.hash_stable(hcx, hasher);
                 niche_start.hash_stable(hcx, hasher);
-                variants.hash_stable(hcx, hasher);
             }
         }
     }
@@ -2031,6 +2262,383 @@ impl<'a, 'gcx> HashStable<StableHashingContext<'a>> for LayoutError<'gcx>
         match *self {
             Unknown(t) |
             SizeOverflow(t) => t.hash_stable(hcx, hasher)
+        }
+    }
+}
+
+pub trait FnTypeExt<'tcx, C>
+where
+    C: LayoutOf<Ty = Ty<'tcx>, TyLayout = TyLayout<'tcx>>
+        + HasDataLayout
+        + HasTargetSpec
+        + HasTyCtxt<'tcx>
+        + HasParamEnv<'tcx>,
+{
+    fn of_instance(cx: &C, instance: &ty::Instance<'tcx>) -> Self;
+    fn new(cx: &C, sig: ty::FnSig<'tcx>, extra_args: &[Ty<'tcx>]) -> Self;
+    fn new_vtable(cx: &C, sig: ty::FnSig<'tcx>, extra_args: &[Ty<'tcx>]) -> Self;
+    fn new_internal(
+        cx: &C,
+        sig: ty::FnSig<'tcx>,
+        extra_args: &[Ty<'tcx>],
+        mk_arg_type: impl Fn(Ty<'tcx>, Option<usize>) -> ArgType<'tcx, Ty<'tcx>>,
+    ) -> Self;
+    fn adjust_for_abi(&mut self, cx: &C, abi: SpecAbi);
+}
+
+impl<'tcx, C> FnTypeExt<'tcx, C> for call::FnType<'tcx, Ty<'tcx>>
+where
+    C: LayoutOf<Ty = Ty<'tcx>, TyLayout = TyLayout<'tcx>>
+        + HasDataLayout
+        + HasTargetSpec
+        + HasTyCtxt<'tcx>
+        + HasParamEnv<'tcx>,
+{
+    fn of_instance(cx: &C, instance: &ty::Instance<'tcx>) -> Self {
+        let sig = instance.fn_sig(cx.tcx());
+        let sig = cx
+            .tcx()
+            .normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &sig);
+        call::FnType::new(cx, sig, &[])
+    }
+
+    fn new(cx: &C, sig: ty::FnSig<'tcx>, extra_args: &[Ty<'tcx>]) -> Self {
+        call::FnType::new_internal(cx, sig, extra_args, |ty, _| ArgType::new(cx.layout_of(ty)))
+    }
+
+    fn new_vtable(cx: &C, sig: ty::FnSig<'tcx>, extra_args: &[Ty<'tcx>]) -> Self {
+        FnTypeExt::new_internal(cx, sig, extra_args, |ty, arg_idx| {
+            let mut layout = cx.layout_of(ty);
+            // Don't pass the vtable, it's not an argument of the virtual fn.
+            // Instead, pass just the data pointer, but give it the type `*const/mut dyn Trait`
+            // or `&/&mut dyn Trait` because this is special-cased elsewhere in codegen
+            if arg_idx == Some(0) {
+                let fat_pointer_ty = if layout.is_unsized() {
+                    // unsized `self` is passed as a pointer to `self`
+                    // FIXME (mikeyhew) change this to use &own if it is ever added to the language
+                    cx.tcx().mk_mut_ptr(layout.ty)
+                } else {
+                    match layout.abi {
+                        Abi::ScalarPair(..) => (),
+                        _ => bug!("receiver type has unsupported layout: {:?}", layout),
+                    }
+
+                    // In the case of Rc<Self>, we need to explicitly pass a *mut RcBox<Self>
+                    // with a Scalar (not ScalarPair) ABI. This is a hack that is understood
+                    // elsewhere in the compiler as a method on a `dyn Trait`.
+                    // To get the type `*mut RcBox<Self>`, we just keep unwrapping newtypes until we
+                    // get a built-in pointer type
+                    let mut fat_pointer_layout = layout;
+                    'descend_newtypes: while !fat_pointer_layout.ty.is_unsafe_ptr()
+                        && !fat_pointer_layout.ty.is_region_ptr()
+                    {
+                        'iter_fields: for i in 0..fat_pointer_layout.fields.count() {
+                            let field_layout = fat_pointer_layout.field(cx, i);
+
+                            if !field_layout.is_zst() {
+                                fat_pointer_layout = field_layout;
+                                continue 'descend_newtypes;
+                            }
+                        }
+
+                        bug!(
+                            "receiver has no non-zero-sized fields {:?}",
+                            fat_pointer_layout
+                        );
+                    }
+
+                    fat_pointer_layout.ty
+                };
+
+                // we now have a type like `*mut RcBox<dyn Trait>`
+                // change its layout to that of `*mut ()`, a thin pointer, but keep the same type
+                // this is understood as a special case elsewhere in the compiler
+                let unit_pointer_ty = cx.tcx().mk_mut_ptr(cx.tcx().mk_unit());
+                layout = cx.layout_of(unit_pointer_ty);
+                layout.ty = fat_pointer_ty;
+            }
+            ArgType::new(layout)
+        })
+    }
+
+    fn new_internal(
+        cx: &C,
+        sig: ty::FnSig<'tcx>,
+        extra_args: &[Ty<'tcx>],
+        mk_arg_type: impl Fn(Ty<'tcx>, Option<usize>) -> ArgType<'tcx, Ty<'tcx>>,
+    ) -> Self {
+        debug!("FnType::new_internal({:?}, {:?})", sig, extra_args);
+
+        use rustc_target::spec::abi::Abi::*;
+        let conv = match cx.tcx().sess.target.target.adjust_abi(sig.abi) {
+            RustIntrinsic | PlatformIntrinsic | Rust | RustCall => Conv::C,
+
+            // It's the ABI's job to select this, not ours.
+            System => bug!("system abi should be selected elsewhere"),
+
+            Stdcall => Conv::X86Stdcall,
+            Fastcall => Conv::X86Fastcall,
+            Vectorcall => Conv::X86VectorCall,
+            Thiscall => Conv::X86ThisCall,
+            C => Conv::C,
+            Unadjusted => Conv::C,
+            Win64 => Conv::X86_64Win64,
+            SysV64 => Conv::X86_64SysV,
+            Aapcs => Conv::ArmAapcs,
+            PtxKernel => Conv::PtxKernel,
+            Msp430Interrupt => Conv::Msp430Intr,
+            X86Interrupt => Conv::X86Intr,
+            AmdGpuKernel => Conv::AmdGpuKernel,
+
+            // These API constants ought to be more specific...
+            Cdecl => Conv::C,
+        };
+
+        let mut inputs = sig.inputs();
+        let extra_args = if sig.abi == RustCall {
+            assert!(!sig.c_variadic && extra_args.is_empty());
+
+            match sig.inputs().last().unwrap().sty {
+                ty::Tuple(tupled_arguments) => {
+                    inputs = &sig.inputs()[0..sig.inputs().len() - 1];
+                    tupled_arguments.iter().map(|k| k.expect_ty()).collect()
+                }
+                _ => {
+                    bug!(
+                        "argument to function with \"rust-call\" ABI \
+                         is not a tuple"
+                    );
+                }
+            }
+        } else {
+            assert!(sig.c_variadic || extra_args.is_empty());
+            extra_args.to_vec()
+        };
+
+        let target = &cx.tcx().sess.target.target;
+        let win_x64_gnu =
+            target.target_os == "windows" && target.arch == "x86_64" && target.target_env == "gnu";
+        let linux_s390x =
+            target.target_os == "linux" && target.arch == "s390x" && target.target_env == "gnu";
+        let linux_sparc64 =
+            target.target_os == "linux" && target.arch == "sparc64" && target.target_env == "gnu";
+        let rust_abi = match sig.abi {
+            RustIntrinsic | PlatformIntrinsic | Rust | RustCall => true,
+            _ => false,
+        };
+
+        // Handle safe Rust thin and fat pointers.
+        let adjust_for_rust_scalar = |attrs: &mut ArgAttributes,
+                                      scalar: &Scalar,
+                                      layout: TyLayout<'tcx>,
+                                      offset: Size,
+                                      is_return: bool| {
+            // Booleans are always an i1 that needs to be zero-extended.
+            if scalar.is_bool() {
+                attrs.set(ArgAttribute::ZExt);
+                return;
+            }
+
+            // Only pointer types handled below.
+            if scalar.value != Pointer {
+                return;
+            }
+
+            if scalar.valid_range.start() < scalar.valid_range.end() {
+                if *scalar.valid_range.start() > 0 {
+                    attrs.set(ArgAttribute::NonNull);
+                }
+            }
+
+            if let Some(pointee) = layout.pointee_info_at(cx, offset) {
+                if let Some(kind) = pointee.safe {
+                    attrs.pointee_size = pointee.size;
+                    attrs.pointee_align = Some(pointee.align);
+
+                    // `Box` pointer parameters never alias because ownership is transferred
+                    // `&mut` pointer parameters never alias other parameters,
+                    // or mutable global data
+                    //
+                    // `&T` where `T` contains no `UnsafeCell<U>` is immutable,
+                    // and can be marked as both `readonly` and `noalias`, as
+                    // LLVM's definition of `noalias` is based solely on memory
+                    // dependencies rather than pointer equality
+                    let no_alias = match kind {
+                        PointerKind::Shared => false,
+                        PointerKind::UniqueOwned => true,
+                        PointerKind::Frozen | PointerKind::UniqueBorrowed => !is_return,
+                    };
+                    if no_alias {
+                        attrs.set(ArgAttribute::NoAlias);
+                    }
+
+                    if kind == PointerKind::Frozen && !is_return {
+                        attrs.set(ArgAttribute::ReadOnly);
+                    }
+                }
+            }
+        };
+
+        // Store the index of the last argument. This is useful for working with
+        // C-compatible variadic arguments.
+        let last_arg_idx = if sig.inputs().is_empty() {
+            None
+        } else {
+            Some(sig.inputs().len() - 1)
+        };
+
+        let arg_of = |ty: Ty<'tcx>, arg_idx: Option<usize>| {
+            let is_return = arg_idx.is_none();
+            let mut arg = mk_arg_type(ty, arg_idx);
+            if arg.layout.is_zst() {
+                // For some forsaken reason, x86_64-pc-windows-gnu
+                // doesn't ignore zero-sized struct arguments.
+                // The same is true for s390x-unknown-linux-gnu
+                // and sparc64-unknown-linux-gnu.
+                if is_return || rust_abi || (!win_x64_gnu && !linux_s390x && !linux_sparc64) {
+                    arg.mode = PassMode::Ignore(IgnoreMode::Zst);
+                }
+            }
+
+            // If this is a C-variadic function, this is not the return value,
+            // and there is one or more fixed arguments; ensure that the `VaList`
+            // is ignored as an argument.
+            if sig.c_variadic {
+                match (last_arg_idx, arg_idx) {
+                    (Some(last_idx), Some(cur_idx)) if last_idx == cur_idx => {
+                        let va_list_did = match cx.tcx().lang_items().va_list() {
+                            Some(did) => did,
+                            None => bug!("`va_list` lang item required for C-variadic functions"),
+                        };
+                        match ty.sty {
+                            ty::Adt(def, _) if def.did == va_list_did => {
+                                // This is the "spoofed" `VaList`. Set the arguments mode
+                                // so that it will be ignored.
+                                arg.mode = PassMode::Ignore(IgnoreMode::CVarArgs);
+                            }
+                            _ => (),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // FIXME(eddyb) other ABIs don't have logic for scalar pairs.
+            if !is_return && rust_abi {
+                if let Abi::ScalarPair(ref a, ref b) = arg.layout.abi {
+                    let mut a_attrs = ArgAttributes::new();
+                    let mut b_attrs = ArgAttributes::new();
+                    adjust_for_rust_scalar(&mut a_attrs, a, arg.layout, Size::ZERO, false);
+                    adjust_for_rust_scalar(
+                        &mut b_attrs,
+                        b,
+                        arg.layout,
+                        a.value.size(cx).align_to(b.value.align(cx).abi),
+                        false,
+                    );
+                    arg.mode = PassMode::Pair(a_attrs, b_attrs);
+                    return arg;
+                }
+            }
+
+            if let Abi::Scalar(ref scalar) = arg.layout.abi {
+                if let PassMode::Direct(ref mut attrs) = arg.mode {
+                    adjust_for_rust_scalar(attrs, scalar, arg.layout, Size::ZERO, is_return);
+                }
+            }
+
+            arg
+        };
+
+        let mut fn_ty = FnType {
+            ret: arg_of(sig.output(), None),
+            args: inputs
+                .iter()
+                .cloned()
+                .chain(extra_args)
+                .enumerate()
+                .map(|(i, ty)| arg_of(ty, Some(i)))
+                .collect(),
+            c_variadic: sig.c_variadic,
+            conv,
+        };
+        fn_ty.adjust_for_abi(cx, sig.abi);
+        fn_ty
+    }
+
+    fn adjust_for_abi(&mut self, cx: &C, abi: SpecAbi) {
+        if abi == SpecAbi::Unadjusted {
+            return;
+        }
+
+        if abi == SpecAbi::Rust
+            || abi == SpecAbi::RustCall
+            || abi == SpecAbi::RustIntrinsic
+            || abi == SpecAbi::PlatformIntrinsic
+        {
+            let fixup = |arg: &mut ArgType<'tcx, Ty<'tcx>>| {
+                if arg.is_ignore() {
+                    return;
+                }
+
+                match arg.layout.abi {
+                    Abi::Aggregate { .. } => {}
+
+                    // This is a fun case! The gist of what this is doing is
+                    // that we want callers and callees to always agree on the
+                    // ABI of how they pass SIMD arguments. If we were to *not*
+                    // make these arguments indirect then they'd be immediates
+                    // in LLVM, which means that they'd used whatever the
+                    // appropriate ABI is for the callee and the caller. That
+                    // means, for example, if the caller doesn't have AVX
+                    // enabled but the callee does, then passing an AVX argument
+                    // across this boundary would cause corrupt data to show up.
+                    //
+                    // This problem is fixed by unconditionally passing SIMD
+                    // arguments through memory between callers and callees
+                    // which should get them all to agree on ABI regardless of
+                    // target feature sets. Some more information about this
+                    // issue can be found in #44367.
+                    //
+                    // Note that the platform intrinsic ABI is exempt here as
+                    // that's how we connect up to LLVM and it's unstable
+                    // anyway, we control all calls to it in libstd.
+                    Abi::Vector { .. }
+                        if abi != SpecAbi::PlatformIntrinsic
+                            && cx.tcx().sess.target.target.options.simd_types_indirect =>
+                    {
+                        arg.make_indirect();
+                        return;
+                    }
+
+                    _ => return,
+                }
+
+                let size = arg.layout.size;
+                if arg.layout.is_unsized() || size > Pointer.size(cx) {
+                    arg.make_indirect();
+                } else {
+                    // We want to pass small aggregates as immediates, but using
+                    // a LLVM aggregate type for this leads to bad optimizations,
+                    // so we pick an appropriately sized integer type instead.
+                    arg.cast_to(Reg {
+                        kind: RegKind::Integer,
+                        size,
+                    });
+                }
+            };
+            fixup(&mut self.ret);
+            for arg in &mut self.args {
+                fixup(arg);
+            }
+            if let PassMode::Indirect(ref mut attrs, _) = self.ret.mode {
+                attrs.set(ArgAttribute::StructRet);
+            }
+            return;
+        }
+
+        if let Err(msg) = self.adjust_for_cabi(cx, abi) {
+            cx.tcx().sess.fatal(&msg);
         }
     }
 }

@@ -12,16 +12,16 @@ use crate::dataflow::BitDenotation;
 /// immovable generators.
 #[derive(Copy, Clone)]
 pub struct HaveBeenBorrowedLocals<'a, 'tcx: 'a> {
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
 }
 
 impl<'a, 'tcx: 'a> HaveBeenBorrowedLocals<'a, 'tcx> {
-    pub fn new(mir: &'a Mir<'tcx>)
+    pub fn new(mir: &'a Body<'tcx>)
                -> Self {
         HaveBeenBorrowedLocals { mir }
     }
 
-    pub fn mir(&self) -> &Mir<'tcx> {
+    pub fn mir(&self) -> &Body<'tcx> {
         self.mir
     }
 }
@@ -44,7 +44,7 @@ impl<'a, 'tcx> BitDenotation<'tcx> for HaveBeenBorrowedLocals<'a, 'tcx> {
 
         BorrowedLocalsVisitor {
             sets,
-        }.visit_statement(loc.block, stmt, loc);
+        }.visit_statement(stmt, loc);
 
         // StorageDead invalidates all borrows and raw pointers to a local
         match stmt.kind {
@@ -58,7 +58,7 @@ impl<'a, 'tcx> BitDenotation<'tcx> for HaveBeenBorrowedLocals<'a, 'tcx> {
                          loc: Location) {
         BorrowedLocalsVisitor {
             sets,
-        }.visit_terminator(loc.block, self.mir[loc.block].terminator(), loc);
+        }.visit_terminator(self.mir[loc.block].terminator(), loc);
     }
 
     fn propagate_call_return(
@@ -91,17 +91,19 @@ struct BorrowedLocalsVisitor<'b, 'c: 'b> {
 }
 
 fn find_local<'tcx>(place: &Place<'tcx>) -> Option<Local> {
-    match *place {
-        Place::Base(PlaceBase::Local(l)) => Some(l),
-        Place::Base(PlaceBase::Promoted(_)) |
-        Place::Base(PlaceBase::Static(..)) => None,
-        Place::Projection(ref proj) => {
-            match proj.elem {
-                ProjectionElem::Deref => None,
-                _ => find_local(&proj.base)
+    place.iterate(|place_base, place_projection| {
+        for proj in place_projection {
+            if proj.elem == ProjectionElem::Deref {
+                return None;
             }
         }
-    }
+
+        if let PlaceBase::Local(local) = place_base {
+            Some(*local)
+        } else {
+            None
+        }
+    })
 }
 
 impl<'tcx, 'b, 'c> Visitor<'tcx> for BorrowedLocalsVisitor<'b, 'c> {

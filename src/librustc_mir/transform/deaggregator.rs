@@ -1,5 +1,6 @@
-use rustc::ty::TyCtxt;
 use rustc::mir::*;
+use rustc::ty::TyCtxt;
+use rustc::ty::layout::VariantIdx;
 use rustc_data_structures::indexed_vec::Idx;
 use crate::transform::{MirPass, MirSource};
 
@@ -9,7 +10,7 @@ impl MirPass for Deaggregator {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           _source: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
+                          mir: &mut Body<'tcx>) {
         let (basic_blocks, local_decls) = mir.basic_blocks_and_local_decls_mut();
         let local_decls = &*local_decls;
         for bb in basic_blocks {
@@ -54,6 +55,23 @@ impl MirPass for Deaggregator {
                             lhs = lhs.downcast(adt_def, variant_index);
                         }
                         active_field_index
+                    }
+                    AggregateKind::Generator(..) => {
+                        // Right now we only support initializing generators to
+                        // variant 0 (Unresumed).
+                        let variant_index = VariantIdx::new(0);
+                        set_discriminant = Some(Statement {
+                            kind: StatementKind::SetDiscriminant {
+                                place: lhs.clone(),
+                                variant_index,
+                            },
+                            source_info,
+                        });
+
+                        // Operands are upvars stored on the base place, so no
+                        // downcast is necessary.
+
+                        None
                     }
                     _ => None
                 };

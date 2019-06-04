@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! Candidate selection. See the [rustc guide] for more information on how this works.
 //!
 //! [rustc guide]: https://rust-lang.github.io/rustc-guide/traits/resolution.html#selection
@@ -41,6 +43,7 @@ use crate::hir;
 use rustc_data_structures::bit_set::GrowableBitSet;
 use rustc_data_structures::sync::Lock;
 use rustc_target::spec::abi::Abi;
+use std::cell::Cell;
 use std::cmp;
 use std::fmt::{self, Display};
 use std::iter;
@@ -150,6 +153,36 @@ struct TraitObligationStack<'prev, 'tcx: 'prev> {
     /// Trait ref from `obligation` but "freshened" with the
     /// selection-context's freshener. Used to check for recursion.
     fresh_trait_ref: ty::PolyTraitRef<'tcx>,
+
+    /// Starts out as false -- if, during evaluation, we encounter a
+    /// cycle, then we will set this flag to true for all participants
+    /// in the cycle (apart from the "head" node). These participants
+    /// will then forego caching their results. This is not the most
+    /// efficient solution, but it addresses #60010. The problem we
+    /// are trying to prevent:
+    ///
+    /// - If you have `A: AutoTrait` requires `B: AutoTrait` and `C: NonAutoTrait`
+    /// - `B: AutoTrait` requires `A: AutoTrait` (coinductive cycle, ok)
+    /// - `C: NonAutoTrait` requires `A: AutoTrait` (non-coinductive cycle, not ok)
+    ///
+    /// you don't want to cache that `B: AutoTrait` or `A: AutoTrait`
+    /// is `EvaluatedToOk`; this is because they were only considered
+    /// ok on the premise that if `A: AutoTrait` held, but we indeed
+    /// encountered a problem (later on) with `A: AutoTrait. So we
+    /// currently set a flag on the stack node for `B: AutoTrait` (as
+    /// well as the second instance of `A: AutoTrait`) to supress
+    /// caching.
+    ///
+    /// This is a simple, targeted fix. A more-performant fix requires
+    /// deeper changes, but would permit more caching: we could
+    /// basically defer caching until we have fully evaluated the
+    /// tree, and then cache the entire tree at once. In any case, the
+    /// performance impact here shouldn't be so horrible: every time
+    /// this is hit, we do cache at least one trait, so we only
+    /// evaluate each member of a cycle up to N times, where N is the
+    /// length of the cycle. This means the performance impact is
+    /// bounded and we shouldn't have any terrible worst-cases.
+    in_cycle: Cell<bool>,
 
     previous: TraitObligationStackList<'prev, 'tcx>,
 }
@@ -838,8 +871,16 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         let (result, dep_node) = self.in_task(|this| this.evaluate_stack(&stack));
         let result = result?;
 
-        debug!("CACHE MISS: EVAL({:?})={:?}", fresh_trait_ref, result);
-        self.insert_evaluation_cache(obligation.param_env, fresh_trait_ref, dep_node, result);
+        if !stack.in_cycle.get() {
+            debug!("CACHE MISS: EVAL({:?})={:?}", fresh_trait_ref, result);
+            self.insert_evaluation_cache(obligation.param_env, fresh_trait_ref, dep_node, result);
+        } else {
+            debug!(
+                "evaluate_trait_predicate_recursively: skipping cache because {:?} \
+                 is a cycle participant",
+                fresh_trait_ref,
+            );
+        }
 
         Ok(result)
     }
@@ -945,6 +986,17 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                                   stack.fresh_trait_ref == prev.fresh_trait_ref)
         {
             debug!("evaluate_stack({:?}) --> recursive", stack.fresh_trait_ref);
+
+            // If we have a stack like `A B C D E A`, where the top of
+            // the stack is the final `A`, then this will iterate over
+            // `A, E, D, C, B` -- i.e., all the participants apart
+            // from the cycle head. We mark them as participating in a
+            // cycle. This suppresses caching for those nodes. See
+            // `in_cycle` field for more details.
+            for item in stack.iter().take(rec_index + 1) {
+                debug!("evaluate_stack: marking {:?} as cycle participant", item.fresh_trait_ref);
+                item.in_cycle.set(true);
+            }
 
             // Subtle: when checking for a coinductive cycle, we do
             // not compare using the "freshened trait refs" (which
@@ -1411,7 +1463,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
 
         let obligation = &stack.obligation;
         let predicate = self.infcx()
-            .resolve_type_vars_if_possible(&obligation.predicate);
+            .resolve_vars_if_possible(&obligation.predicate);
 
         // OK to skip binder because of the nature of the
         // trait-ref-is-knowable check, which does not care about
@@ -1569,7 +1621,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             cause: obligation.cause.clone(),
             recursion_depth: obligation.recursion_depth,
             predicate: self.infcx()
-                .resolve_type_vars_if_possible(&obligation.predicate),
+                .resolve_vars_if_possible(&obligation.predicate),
         };
 
         if obligation.predicate.skip_binder().self_ty().is_ty_var() {
@@ -1685,7 +1737,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         snapshot: &CombinedSnapshot<'_, 'tcx>,
     ) -> bool {
         let poly_trait_predicate = self.infcx()
-            .resolve_type_vars_if_possible(&obligation.predicate);
+            .resolve_vars_if_possible(&obligation.predicate);
         let (placeholder_trait_predicate, placeholder_map) = self.infcx()
             .replace_bound_vars_with_placeholders(&poly_trait_predicate);
         debug!(
@@ -1720,7 +1772,8 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
             bounds
         );
 
-        let matching_bound = util::elaborate_predicates(self.tcx(), bounds.predicates)
+        let elaborated_predicates = util::elaborate_predicates(self.tcx(), bounds.predicates);
+        let matching_bound = elaborated_predicates
             .filter_to_traits()
             .find(|bound| {
                 self.infcx.probe(|_| {
@@ -2427,7 +2480,9 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
 
             ty::Str | ty::Slice(_) | ty::Dynamic(..) | ty::Foreign(..) => None,
 
-            ty::Tuple(tys) => Where(ty::Binder::bind(tys.last().into_iter().cloned().collect())),
+            ty::Tuple(tys) => {
+                Where(ty::Binder::bind(tys.last().into_iter().map(|k| k.expect_ty()).collect()))
+            }
 
             ty::Adt(def, substs) => {
                 let sized_crit = def.sized_constraint(self.tcx());
@@ -2501,20 +2556,14 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
 
             ty::Tuple(tys) => {
                 // (*) binder moved here
-                Where(ty::Binder::bind(tys.to_vec()))
+                Where(ty::Binder::bind(tys.iter().map(|k| k.expect_ty()).collect()))
             }
 
             ty::Closure(def_id, substs) => {
-                let trait_id = obligation.predicate.def_id();
-                let is_copy_trait = Some(trait_id) == self.tcx().lang_items().copy_trait();
-                let is_clone_trait = Some(trait_id) == self.tcx().lang_items().clone_trait();
-                if is_copy_trait || is_clone_trait {
-                    Where(ty::Binder::bind(
-                        substs.upvar_tys(def_id, self.tcx()).collect(),
-                    ))
-                } else {
-                    None
-                }
+                // (*) binder moved here
+                Where(ty::Binder::bind(
+                    substs.upvar_tys(def_id, self.tcx()).collect(),
+                ))
             }
 
             ty::Adt(..) | ty::Projection(..) | ty::Param(..) | ty::Opaque(..) => {
@@ -2594,7 +2643,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
 
             ty::Tuple(ref tys) => {
                 // (T1, ..., Tn) -- meets any bound that all of T1...Tn meet
-                tys.to_vec()
+                tys.iter().map(|k| k.expect_ty()).collect()
             }
 
             ty::Closure(def_id, ref substs) => substs.upvar_tys(def_id, self.tcx()).collect(),
@@ -3126,8 +3175,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         // OK to skip binder because the substs on generator types never
         // touch bound regions, they just capture the in-scope
         // type/region parameters
-        let self_ty = self.infcx
-            .shallow_resolve(obligation.self_ty().skip_binder());
+        let self_ty = self.infcx.shallow_resolve(*obligation.self_ty().skip_binder());
         let (generator_def_id, substs) = match self_ty.sty {
             ty::Generator(id, substs, _) => (id, substs),
             _ => bug!("closure candidate for non-closure {:?}", obligation),
@@ -3184,8 +3232,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         // OK to skip binder because the substs on closure types never
         // touch bound regions, they just capture the in-scope
         // type/region parameters
-        let self_ty = self.infcx
-            .shallow_resolve(obligation.self_ty().skip_binder());
+        let self_ty = self.infcx.shallow_resolve(*obligation.self_ty().skip_binder());
         let (closure_def_id, substs) = match self_ty.sty {
             ty::Closure(id, substs) => (id, substs),
             _ => bug!("closure candidate for non-closure {:?}", obligation),
@@ -3428,7 +3475,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                 let mut found = false;
                 for ty in field.walk() {
                     if let ty::Param(p) = ty.sty {
-                        ty_params.insert(p.idx as usize);
+                        ty_params.insert(p.index as usize);
                         found = true;
                     }
                 }
@@ -3499,7 +3546,9 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
 
                 // Check that the source tuple with the target's
                 // last element is equal to the target.
-                let new_tuple = tcx.mk_tup(a_mid.iter().cloned().chain(iter::once(b_last)));
+                let new_tuple = tcx.mk_tup(
+                    a_mid.iter().map(|k| k.expect_ty()).chain(iter::once(b_last.expect_ty())),
+                );
                 let InferOk { obligations, .. } = self.infcx
                     .at(&obligation.cause, obligation.param_env)
                     .eq(target, new_tuple)
@@ -3512,7 +3561,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
                     obligation.cause.clone(),
                     obligation.predicate.def_id(),
                     obligation.recursion_depth + 1,
-                    a_last,
+                    a_last.expect_ty(),
                     &[b_last.into()],
                 ));
             }
@@ -3692,6 +3741,7 @@ impl<'cx, 'gcx, 'tcx> SelectionContext<'cx, 'gcx, 'tcx> {
         TraitObligationStack {
             obligation,
             fresh_trait_ref,
+            in_cycle: Cell::new(false),
             previous: previous_stack,
         }
     }

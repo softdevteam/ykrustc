@@ -47,7 +47,6 @@ mod android_base;
 mod apple_base;
 mod apple_ios_base;
 mod arm_base;
-mod bitrig_base;
 mod cloudabi_base;
 mod dragonfly_base;
 mod freebsd_base;
@@ -66,6 +65,7 @@ mod l4re_base;
 mod fuchsia_base;
 mod redox_base;
 mod riscv_base;
+mod wasm32_base;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
          RustcEncodable, RustcDecodable)]
@@ -335,6 +335,10 @@ supported_targets! {
     ("mips-unknown-linux-gnu", mips_unknown_linux_gnu),
     ("mips64-unknown-linux-gnuabi64", mips64_unknown_linux_gnuabi64),
     ("mips64el-unknown-linux-gnuabi64", mips64el_unknown_linux_gnuabi64),
+    ("mipsisa32r6-unknown-linux-gnu", mipsisa32r6_unknown_linux_gnu),
+    ("mipsisa32r6el-unknown-linux-gnu", mipsisa32r6el_unknown_linux_gnu),
+    ("mipsisa64r6-unknown-linux-gnuabi64", mipsisa64r6_unknown_linux_gnuabi64),
+    ("mipsisa64r6el-unknown-linux-gnuabi64", mipsisa64r6el_unknown_linux_gnuabi64),
     ("mipsel-unknown-linux-gnu", mipsel_unknown_linux_gnu),
     ("powerpc-unknown-linux-gnu", powerpc_unknown_linux_gnu),
     ("powerpc-unknown-linux-gnuspe", powerpc_unknown_linux_gnuspe),
@@ -384,8 +388,6 @@ supported_targets! {
 
     ("i686-unknown-dragonfly", i686_unknown_dragonfly),
     ("x86_64-unknown-dragonfly", x86_64_unknown_dragonfly),
-
-    ("x86_64-unknown-bitrig", x86_64_unknown_bitrig),
 
     ("aarch64-unknown-openbsd", aarch64_unknown_openbsd),
     ("i686-unknown-openbsd", i686_unknown_openbsd),
@@ -439,6 +441,7 @@ supported_targets! {
     ("asmjs-unknown-emscripten", asmjs_unknown_emscripten),
     ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
     ("wasm32-unknown-unknown", wasm32_unknown_unknown),
+    ("wasm32-wasi", wasm32_wasi),
     ("wasm32-experimental-emscripten", wasm32_experimental_emscripten),
 
     ("thumbv6m-none-eabi", thumbv6m_none_eabi),
@@ -755,7 +758,10 @@ pub struct TargetOptions {
     /// to opt out. The default is "aliases".
     ///
     /// Workaround for: https://github.com/rust-lang/rust/issues/57356
-    pub merge_functions: MergeFunctions
+    pub merge_functions: MergeFunctions,
+
+    /// Use platform dependent mcount function
+    pub target_mcount: String
 }
 
 impl Default for TargetOptions {
@@ -839,6 +845,7 @@ impl Default for TargetOptions {
             simd_types_indirect: true,
             override_export_symbols: None,
             merge_functions: MergeFunctions::Aliases,
+            target_mcount: "mcount".to_string(),
         }
     }
 }
@@ -1144,6 +1151,7 @@ impl Target {
         key!(simd_types_indirect, bool);
         key!(override_export_symbols, opt_list);
         key!(merge_functions, MergeFunctions)?;
+        key!(target_mcount);
 
         if let Some(array) = obj.find("abi-blacklist").and_then(Json::as_array) {
             for name in array.iter().filter_map(|abi| abi.as_string()) {
@@ -1358,6 +1366,7 @@ impl ToJson for Target {
         target_option_val!(simd_types_indirect);
         target_option_val!(override_export_symbols);
         target_option_val!(merge_functions);
+        target_option_val!(target_mcount);
 
         if default.abi_blacklist != self.options.abi_blacklist {
             d.insert("abi-blacklist".to_string(), self.options.abi_blacklist.iter()

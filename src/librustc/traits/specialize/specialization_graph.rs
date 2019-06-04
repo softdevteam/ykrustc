@@ -7,7 +7,6 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
 use crate::traits;
 use crate::ty::{self, TyCtxt, TypeFoldable};
 use crate::ty::fast_reject::{self, SimplifiedType};
-use rustc_data_structures::sync::Lrc;
 use syntax::ast::Ident;
 use crate::util::captures::Captures;
 use crate::util::nodemap::{DefIdMap, FxHashMap};
@@ -427,7 +426,7 @@ impl<'a, 'gcx, 'tcx> Node {
     pub fn items(
         &self,
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    ) -> ty::AssociatedItemsIterator<'a, 'gcx, 'tcx> {
+    ) -> ty::AssocItemsIterator<'a, 'gcx, 'tcx> {
         tcx.associated_items(self.def_id())
     }
 
@@ -439,13 +438,13 @@ impl<'a, 'gcx, 'tcx> Node {
     }
 }
 
-pub struct Ancestors {
+pub struct Ancestors<'tcx> {
     trait_def_id: DefId,
-    specialization_graph: Lrc<Graph>,
+    specialization_graph: &'tcx Graph,
     current_source: Option<Node>,
 }
 
-impl Iterator for Ancestors {
+impl Iterator for Ancestors<'_> {
     type Item = Node;
     fn next(&mut self) -> Option<Node> {
         let cur = self.current_source.take();
@@ -476,7 +475,7 @@ impl<T> NodeItem<T> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> Ancestors {
+impl<'a, 'gcx, 'tcx> Ancestors<'gcx> {
     /// Search the items from the given ancestors, returning each definition
     /// with the given name and the given kind.
     // FIXME(#35870): avoid closures being unexported due to `impl Trait`.
@@ -485,11 +484,11 @@ impl<'a, 'gcx, 'tcx> Ancestors {
         self,
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
         trait_item_name: Ident,
-        trait_item_kind: ty::AssociatedKind,
+        trait_item_kind: ty::AssocKind,
         trait_def_id: DefId,
-    ) -> impl Iterator<Item = NodeItem<ty::AssociatedItem>> + Captures<'gcx> + Captures<'tcx> + 'a {
+    ) -> impl Iterator<Item = NodeItem<ty::AssocItem>> + Captures<'gcx> + Captures<'tcx> + 'a {
         self.flat_map(move |node| {
-            use crate::ty::AssociatedKind::*;
+            use crate::ty::AssocKind::*;
             node.items(tcx).filter(move |impl_item| match (trait_item_kind, impl_item.kind) {
                 | (Const, Const)
                 | (Method, Method)
@@ -509,10 +508,10 @@ impl<'a, 'gcx, 'tcx> Ancestors {
 
 /// Walk up the specialization ancestors of a given impl, starting with that
 /// impl itself.
-pub fn ancestors(tcx: TyCtxt<'_, '_, '_>,
+pub fn ancestors(tcx: TyCtxt<'_, 'tcx, '_>,
                  trait_def_id: DefId,
                  start_from_impl: DefId)
-                 -> Ancestors {
+                 -> Ancestors<'tcx> {
     let specialization_graph = tcx.specialization_graph_of(trait_def_id);
     Ancestors {
         trait_def_id,

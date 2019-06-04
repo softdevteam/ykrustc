@@ -28,4 +28,3 @@ fn main() {
         assert_eq!(*foo, *bar);
     }
 }
-

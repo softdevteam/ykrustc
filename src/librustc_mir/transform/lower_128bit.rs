@@ -3,7 +3,7 @@
 use rustc::hir::def_id::DefId;
 use rustc::middle::lang_items::LangItem;
 use rustc::mir::*;
-use rustc::ty::{List, Ty, TyCtxt, TyKind};
+use rustc::ty::{self, List, Ty, TyCtxt};
 use rustc_data_structures::indexed_vec::{Idx};
 use crate::transform::{MirPass, MirSource};
 
@@ -13,7 +13,7 @@ impl MirPass for Lower128Bit {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           _src: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
+                          mir: &mut Body<'tcx>) {
         let debugging_override = tcx.sess.opts.debugging_opts.lower_128bit_ops;
         let target_default = tcx.sess.host.options.i128_lowering;
         if !debugging_override.unwrap_or(target_default) {
@@ -25,7 +25,7 @@ impl MirPass for Lower128Bit {
 }
 
 impl Lower128Bit {
-    fn lower_128bit_ops<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, mir: &mut Mir<'tcx>) {
+    fn lower_128bit_ops<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, mir: &mut Body<'tcx>) {
         let mut new_blocks = Vec::new();
         let cur_len = mir.basic_blocks().len();
 
@@ -135,10 +135,10 @@ fn check_lang_item_type<'a, 'tcx, D>(
     let sig = poly_sig.no_bound_vars().unwrap();
     let lhs_ty = lhs.ty(local_decls, tcx);
     let rhs_ty = rhs.ty(local_decls, tcx);
-    let place_ty = place.ty(local_decls, tcx).to_ty(tcx);
+    let place_ty = place.ty(local_decls, tcx).ty;
     let expected = [lhs_ty, rhs_ty, place_ty];
     assert_eq!(sig.inputs_and_output[..], expected,
-        "lang item {}", tcx.def_symbol_name(did));
+        "lang item `{}`", tcx.def_path_str(did));
     did
 }
 
@@ -183,8 +183,8 @@ impl RhsKind {
 
 fn sign_of_128bit(ty: Ty<'_>) -> Option<bool> {
     match ty.sty {
-        TyKind::Int(syntax::ast::IntTy::I128) => Some(true),
-        TyKind::Uint(syntax::ast::UintTy::U128) => Some(false),
+        ty::Int(syntax::ast::IntTy::I128) => Some(true),
+        ty::Uint(syntax::ast::UintTy::U128) => Some(false),
         _ => None,
     }
 }

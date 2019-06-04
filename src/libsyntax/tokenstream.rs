@@ -21,9 +21,10 @@ use crate::print::pprust;
 
 use syntax_pos::{BytePos, Mark, Span, DUMMY_SP};
 #[cfg(target_arch = "x86_64")]
-use rustc_data_structures::static_assert;
+use rustc_data_structures::static_assert_size;
 use rustc_data_structures::sync::Lrc;
 use serialize::{Decoder, Decodable, Encoder, Encodable};
+use smallvec::{SmallVec, smallvec};
 
 use std::borrow::Cow;
 use std::{fmt, iter, mem};
@@ -47,6 +48,28 @@ pub enum TokenTree {
     /// A delimited sequence of token trees
     Delimited(DelimSpan, DelimToken, TokenStream),
 }
+
+// Ensure all fields of `TokenTree` is `Send` and `Sync`.
+#[cfg(parallel_compiler)]
+fn _dummy()
+where
+    Span: Send + Sync,
+    token::Token: Send + Sync,
+    DelimSpan: Send + Sync,
+    DelimToken: Send + Sync,
+    TokenStream: Send + Sync,
+{}
+
+// These are safe since we ensure that they hold for all fields in the `_dummy` function.
+//
+// These impls are only here because the compiler takes forever to compute the Send and Sync
+// bounds without them.
+// FIXME: Remove these impls when the compiler can compute the bounds quickly again.
+// See https://github.com/rust-lang/rust/issues/60846
+#[cfg(parallel_compiler)]
+unsafe impl Send for TokenTree {}
+#[cfg(parallel_compiler)]
+unsafe impl Sync for TokenTree {}
 
 impl TokenTree {
     /// Use this token tree as a matcher to parse given tts.
@@ -157,7 +180,7 @@ pub type TreeAndJoint = (TokenTree, IsJoint);
 
 // `TokenStream` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_TOKEN_STREAM: mem::size_of::<TokenStream>() == 8);
+static_assert_size!(TokenStream, 8);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IsJoint {
@@ -178,9 +201,13 @@ impl TokenStream {
             while let Some((pos, ts)) = iter.next() {
                 if let Some((_, next)) = iter.peek() {
                     let sp = match (&ts, &next) {
-                        ((TokenTree::Token(_, token::Token::Comma), NonJoint), _) |
-                        (_, (TokenTree::Token(_, token::Token::Comma), NonJoint)) => continue,
-                        ((TokenTree::Token(sp, _), NonJoint), _) => *sp,
+                        (_, (TokenTree::Token(_, token::Token::Comma), _)) => continue,
+                        ((TokenTree::Token(sp, token_left), NonJoint),
+                         (TokenTree::Token(_, token_right), _))
+                        if ((token_left.is_ident() && !token_left.is_reserved_ident())
+                            || token_left.is_lit()) &&
+                            ((token_right.is_ident() && !token_right.is_reserved_ident())
+                            || token_right.is_lit()) => *sp,
                         ((TokenTree::Delimited(sp, ..), NonJoint), _) => sp.entire(),
                         _ => continue,
                     };
@@ -222,7 +249,7 @@ impl From<Token> for TokenStream {
 
 impl<T: Into<TokenStream>> iter::FromIterator<T> for TokenStream {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        TokenStream::from_streams(iter.into_iter().map(Into::into).collect::<Vec<_>>())
+        TokenStream::from_streams(iter.into_iter().map(Into::into).collect::<SmallVec<_>>())
     }
 }
 
@@ -254,7 +281,7 @@ impl TokenStream {
         }
     }
 
-    pub(crate) fn from_streams(mut streams: Vec<TokenStream>) -> TokenStream {
+    pub(crate) fn from_streams(mut streams: SmallVec<[TokenStream; 2]>) -> TokenStream {
         match streams.len() {
             0 => TokenStream::empty(),
             1 => streams.pop().unwrap(),
@@ -391,12 +418,13 @@ impl TokenStream {
     }
 }
 
+// 99.5%+ of the time we have 1 or 2 elements in this vector.
 #[derive(Clone)]
-pub struct TokenStreamBuilder(Vec<TokenStream>);
+pub struct TokenStreamBuilder(SmallVec<[TokenStream; 2]>);
 
 impl TokenStreamBuilder {
     pub fn new() -> TokenStreamBuilder {
-        TokenStreamBuilder(Vec::new())
+        TokenStreamBuilder(SmallVec::new())
     }
 
     pub fn push<T: Into<TokenStream>>(&mut self, stream: T) {
@@ -483,7 +511,7 @@ impl Cursor {
         }
         let index = self.index;
         let stream = mem::replace(&mut self.stream, TokenStream(None));
-        *self = TokenStream::from_streams(vec![stream, new_stream]).into_trees();
+        *self = TokenStream::from_streams(smallvec![stream, new_stream]).into_trees();
         self.index = index;
     }
 
@@ -551,7 +579,7 @@ impl DelimSpan {
 mod tests {
     use super::*;
     use crate::syntax::ast::Ident;
-    use crate::with_globals;
+    use crate::with_default_globals;
     use crate::parse::token::Token;
     use crate::util::parser_testing::string_to_stream;
     use syntax_pos::{Span, BytePos, NO_EXPANSION};
@@ -566,11 +594,11 @@ mod tests {
 
     #[test]
     fn test_concat() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_res = string_to_ts("foo::bar::baz");
             let test_fst = string_to_ts("foo::bar");
             let test_snd = string_to_ts("::baz");
-            let eq_res = TokenStream::from_streams(vec![test_fst, test_snd]);
+            let eq_res = TokenStream::from_streams(smallvec![test_fst, test_snd]);
             assert_eq!(test_res.trees().count(), 5);
             assert_eq!(eq_res.trees().count(), 5);
             assert_eq!(test_res.eq_unspanned(&eq_res), true);
@@ -579,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_to_from_bijection() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_start = string_to_ts("foo::bar(baz)");
             let test_end = test_start.trees().collect();
             assert_eq!(test_start, test_end)
@@ -588,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_eq_0() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_res = string_to_ts("foo");
             let test_eqs = string_to_ts("foo");
             assert_eq!(test_res, test_eqs)
@@ -597,7 +625,7 @@ mod tests {
 
     #[test]
     fn test_eq_1() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_res = string_to_ts("::bar::baz");
             let test_eqs = string_to_ts("::bar::baz");
             assert_eq!(test_res, test_eqs)
@@ -606,7 +634,7 @@ mod tests {
 
     #[test]
     fn test_eq_3() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_res = string_to_ts("");
             let test_eqs = string_to_ts("");
             assert_eq!(test_res, test_eqs)
@@ -615,7 +643,7 @@ mod tests {
 
     #[test]
     fn test_diseq_0() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_res = string_to_ts("::bar::baz");
             let test_eqs = string_to_ts("bar::baz");
             assert_eq!(test_res == test_eqs, false)
@@ -624,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_diseq_1() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test_res = string_to_ts("(bar,baz)");
             let test_eqs = string_to_ts("bar,baz");
             assert_eq!(test_res == test_eqs, false)
@@ -633,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_is_empty() {
-        with_globals(|| {
+        with_default_globals(|| {
             let test0: TokenStream = Vec::<TokenTree>::new().into_iter().collect();
             let test1: TokenStream =
                 TokenTree::Token(sp(0, 1), Token::Ident(Ident::from_str("a"), false)).into();
@@ -647,12 +675,14 @@ mod tests {
 
     #[test]
     fn test_dotdotdot() {
-        let mut builder = TokenStreamBuilder::new();
-        builder.push(TokenTree::Token(sp(0, 1), Token::Dot).joint());
-        builder.push(TokenTree::Token(sp(1, 2), Token::Dot).joint());
-        builder.push(TokenTree::Token(sp(2, 3), Token::Dot));
-        let stream = builder.build();
-        assert!(stream.eq_unspanned(&string_to_ts("...")));
-        assert_eq!(stream.trees().count(), 1);
+        with_default_globals(|| {
+            let mut builder = TokenStreamBuilder::new();
+            builder.push(TokenTree::Token(sp(0, 1), Token::Dot).joint());
+            builder.push(TokenTree::Token(sp(1, 2), Token::Dot).joint());
+            builder.push(TokenTree::Token(sp(2, 3), Token::Dot));
+            let stream = builder.build();
+            assert!(stream.eq_unspanned(&string_to_ts("...")));
+            assert_eq!(stream.trees().count(), 1);
+        })
     }
 }

@@ -2,8 +2,8 @@ use super::autoderef::Autoderef;
 use super::method::MethodCallee;
 use super::{Expectation, FnCtxt, Needs, TupleArgumentsFlag};
 
-use errors::Applicability;
-use hir::def::Def;
+use errors::{Applicability, DiagnosticBuilder};
+use hir::def::Res;
 use hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::ty::adjustment::{Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
 use rustc::ty::{self, Ty, TyCtxt, TypeFoldable};
@@ -232,6 +232,32 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         None
     }
 
+    /// Give appropriate suggestion when encountering `||{/* not callable */}()`, where the
+    /// likely intention is to call the closure, suggest `(||{})()`. (#55851)
+    fn identify_bad_closure_def_and_call(
+        &self,
+        err: &mut DiagnosticBuilder<'a>,
+        hir_id: hir::HirId,
+        callee_node: &hir::ExprKind,
+        callee_span: Span,
+    ) {
+        let hir_id = self.tcx.hir().get_parent_node_by_hir_id(hir_id);
+        let parent_node = self.tcx.hir().get_by_hir_id(hir_id);
+        if let (
+            hir::Node::Expr(hir::Expr { node: hir::ExprKind::Closure(_, _, _, sp, ..), .. }),
+            hir::ExprKind::Block(..),
+        ) = (parent_node, callee_node) {
+            let start = sp.shrink_to_lo();
+            let end = self.tcx.sess.source_map().next_point(callee_span);
+            err.multipart_suggestion(
+                "if you meant to create this closure and immediately call it, surround the \
+                closure with parenthesis",
+                vec![(start, "(".to_string()), (end, ")".to_string())],
+                Applicability::MaybeIncorrect,
+            );
+        }
+    }
+
     fn confirm_builtin_call(
         &self,
         call_expr: &hir::Expr,
@@ -268,6 +294,13 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         }
                     );
 
+                    self.identify_bad_closure_def_and_call(
+                        &mut err,
+                        call_expr.hir_id,
+                        &callee.node,
+                        callee.span,
+                    );
+
                     if let Some(ref path) = unit_variant {
                         err.span_suggestion(
                             call_expr.span,
@@ -284,7 +317,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     let mut inner_callee_path = None;
                     let def = match callee.node {
                         hir::ExprKind::Path(ref qpath) => {
-                            self.tables.borrow().qpath_def(qpath, callee.hir_id)
+                            self.tables.borrow().qpath_res(qpath, callee.hir_id)
                         }
                         hir::ExprKind::Call(ref inner_callee, _) => {
                             // If the call spans more than one line and the callee kind is
@@ -305,19 +338,21 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 inner_callee_path = Some(inner_qpath);
                                 self.tables
                                     .borrow()
-                                    .qpath_def(inner_qpath, inner_callee.hir_id)
+                                    .qpath_res(inner_qpath, inner_callee.hir_id)
                             } else {
-                                Def::Err
+                                Res::Err
                             }
                         }
-                        _ => Def::Err,
+                        _ => Res::Err,
                     };
 
                     err.span_label(call_expr.span, "call expression requires function");
 
                     let def_span = match def {
-                        Def::Err => None,
-                        Def::Local(id) | Def::Upvar(id, ..) => Some(self.tcx.hir().span(id)),
+                        Res::Err => None,
+                        Res::Local(id) => {
+                            Some(self.tcx.hir().span_by_hir_id(id))
+                        },
                         _ => def
                             .opt_def_id()
                             .and_then(|did| self.tcx.hir().span_if_local(did)),

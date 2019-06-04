@@ -1,12 +1,14 @@
 use rustc::hir;
 use rustc::hir::Node;
-use rustc::mir::{self, BindingForm, Constant, ClearCrossCrate, Local, Location, Mir};
-use rustc::mir::{Mutability, Operand, Place, PlaceBase, Projection, ProjectionElem, Static};
+use rustc::mir::{self, BindingForm, Constant, ClearCrossCrate, Local, Location, Body};
+use rustc::mir::{
+    Mutability, Operand, Place, PlaceBase, Projection, ProjectionElem, Static, StaticKind,
+};
 use rustc::mir::{Terminator, TerminatorKind};
-use rustc::ty::{self, Const, DefIdTree, TyS, TyKind, TyCtxt};
+use rustc::ty::{self, Const, DefIdTree, Ty, TyS, TyCtxt};
 use rustc_data_structures::indexed_vec::Idx;
 use syntax_pos::Span;
-use syntax_pos::symbol::keywords;
+use syntax_pos::symbol::kw;
 
 use crate::dataflow::move_paths::InitLocation;
 use crate::borrow_check::MirBorrowckCtxt;
@@ -62,14 +64,14 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 elem: ProjectionElem::Field(upvar_index, _),
             }) => {
                 debug_assert!(is_closure_or_generator(
-                    base.ty(self.mir, self.infcx.tcx).to_ty(self.infcx.tcx)
+                    base.ty(self.mir, self.infcx.tcx).ty
                 ));
 
                 item_msg = format!("`{}`", access_place_desc.unwrap());
-                if access_place.is_upvar_field_projection(self.mir, &self.infcx.tcx).is_some() {
+                if self.is_upvar_field_projection(access_place).is_some() {
                     reason = ", as it is not declared as mutable".to_string();
                 } else {
-                    let name = self.mir.upvar_decls[upvar_index.index()].debug_name;
+                    let name = self.upvars[upvar_index.index()].name;
                     reason = format!(", as `{}` is not declared as mutable", name);
                 }
             }
@@ -79,15 +81,14 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 elem: ProjectionElem::Deref,
             }) => {
                 if *base == Place::Base(PlaceBase::Local(Local::new(1))) &&
-                    !self.mir.upvar_decls.is_empty() {
+                    !self.upvars.is_empty() {
                     item_msg = format!("`{}`", access_place_desc.unwrap());
                     debug_assert!(self.mir.local_decls[Local::new(1)].ty.is_region_ptr());
                     debug_assert!(is_closure_or_generator(
-                        the_place_err.ty(self.mir, self.infcx.tcx).to_ty(self.infcx.tcx)
+                        the_place_err.ty(self.mir, self.infcx.tcx).ty
                     ));
 
-                    reason = if access_place.is_upvar_field_projection(self.mir,
-                                                                       &self.infcx.tcx).is_some() {
+                    reason = if self.is_upvar_field_projection(access_place).is_some() {
                         ", as it is a captured variable in a `Fn` closure".to_string()
                     } else {
                         ", as `Fn` closures cannot mutate their captured variables".to_string()
@@ -108,7 +109,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                     reason = ", as it is immutable for the pattern guard".to_string();
                 } else {
                     let pointer_type =
-                        if base.ty(self.mir, self.infcx.tcx).to_ty(self.infcx.tcx).is_region_ptr() {
+                        if base.ty(self.mir, self.infcx.tcx).ty.is_region_ptr() {
                             "`&` reference"
                         } else {
                             "`*const` pointer"
@@ -129,9 +130,10 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 }
             }
 
-            Place::Base(PlaceBase::Promoted(_)) => unreachable!(),
+            Place::Base(PlaceBase::Static(box Static { kind: StaticKind::Promoted(_), .. })) =>
+                unreachable!(),
 
-            Place::Base(PlaceBase::Static(box Static { def_id, ty: _ })) => {
+            Place::Base(PlaceBase::Static(box Static { kind: StaticKind::Static(def_id), .. })) => {
                 if let Place::Base(PlaceBase::Static(_)) = access_place {
                     item_msg = format!("immutable static item `{}`", access_place_desc.unwrap());
                     reason = String::new();
@@ -229,7 +231,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
 
                 if let Some((span, message)) = annotate_struct_field(
                     self.infcx.tcx,
-                    base.ty(self.mir, self.infcx.tcx).to_ty(self.infcx.tcx),
+                    base.ty(self.mir, self.infcx.tcx).ty,
                     field,
                 ) {
                     err.span_suggestion(
@@ -254,11 +256,11 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                             // Deliberately fall into this case for all implicit self types,
                             // so that we don't fall in to the next case with them.
                             *kind == mir::ImplicitSelfKind::MutRef
-                        } else if Some(keywords::SelfLower.name()) == local_decl.name {
+                        } else if Some(kw::SelfLower) == local_decl.name {
                             // Otherwise, check if the name is the self kewyord - in which case
                             // we have an explicit self. Do the same thing in this case and check
                             // for a `self: &mut Self` to suggest removing the `&mut`.
-                            if let ty::TyKind::Ref(
+                            if let ty::Ref(
                                 _, _, hir::Mutability::MutMutable
                             ) = local_decl.ty.sty {
                                 true
@@ -301,14 +303,12 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 elem: ProjectionElem::Field(upvar_index, _),
             }) => {
                 debug_assert!(is_closure_or_generator(
-                    base.ty(self.mir, self.infcx.tcx).to_ty(self.infcx.tcx)
+                    base.ty(self.mir, self.infcx.tcx).ty
                 ));
 
                 err.span_label(span, format!("cannot {ACT}", ACT = act));
 
-                let upvar_hir_id = self.mir.upvar_decls[upvar_index.index()]
-                    .var_hir_id
-                    .assert_crate_local();
+                let upvar_hir_id = self.upvars[upvar_index.index()].var_hir_id;
                 let upvar_node_id = self.infcx.tcx.hir().hir_to_node_id(upvar_hir_id);
                 if let Some(Node::Binding(pat)) = self.infcx.tcx.hir().find(upvar_node_id) {
                     if let hir::PatKind::Binding(
@@ -420,28 +420,31 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                     );
                 }
 
-                if let Some(name) = local_decl.name {
-                    err.span_label(
-                        span,
-                        format!(
-                            "`{NAME}` is a `{SIGIL}` {DESC}, \
-                             so the data it refers to cannot be {ACTED_ON}",
-                            NAME = name,
-                            SIGIL = pointer_sigil,
-                            DESC = pointer_desc,
-                            ACTED_ON = acted_on
-                        ),
-                    );
-                } else {
-                    err.span_label(
-                        span,
-                        format!(
-                            "cannot {ACT} through `{SIGIL}` {DESC}",
-                            ACT = act,
-                            SIGIL = pointer_sigil,
-                            DESC = pointer_desc
-                        ),
-                    );
+                match local_decl.name {
+                    Some(name) if !local_decl.from_compiler_desugaring() => {
+                        err.span_label(
+                            span,
+                            format!(
+                                "`{NAME}` is a `{SIGIL}` {DESC}, \
+                                so the data it refers to cannot be {ACTED_ON}",
+                                NAME = name,
+                                SIGIL = pointer_sigil,
+                                DESC = pointer_desc,
+                                ACTED_ON = acted_on
+                            ),
+                        );
+                    }
+                    _ => {
+                        err.span_label(
+                            span,
+                            format!(
+                                "cannot {ACT} through `{SIGIL}` {DESC}",
+                                ACT = act,
+                                SIGIL = pointer_sigil,
+                                DESC = pointer_desc
+                            ),
+                        );
+                    }
                 }
             }
 
@@ -449,7 +452,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 base,
                 elem: ProjectionElem::Deref,
             }) if *base == Place::Base(PlaceBase::Local(Local::new(1))) &&
-                  !self.mir.upvar_decls.is_empty() =>
+                  !self.upvars.is_empty() =>
             {
                 err.span_label(span, format!("cannot {ACT}", ACT = act));
                 err.span_help(
@@ -471,13 +474,13 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                             Terminator {
                                 kind: TerminatorKind::Call {
                                     func: Operand::Constant(box Constant {
-                                        literal: ty::LazyConst::Evaluated(Const {
+                                        literal: Const {
                                             ty: &TyS {
-                                                sty: TyKind::FnDef(id, substs),
+                                                sty: ty::FnDef(id, substs),
                                                 ..
                                             },
                                             ..
-                                        }),
+                                        },
                                         ..
                                     }),
                                     ..
@@ -559,7 +562,7 @@ fn suggest_ampmut_self<'cx, 'gcx, 'tcx>(
 // by trying (3.), then (2.) and finally falling back on (1.).
 fn suggest_ampmut<'cx, 'gcx, 'tcx>(
     tcx: TyCtxt<'cx, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     local: Local,
     local_decl: &mir::LocalDecl<'tcx>,
     opt_ty_info: Option<Span>,
@@ -613,7 +616,7 @@ fn suggest_ampmut<'cx, 'gcx, 'tcx>(
      })
 }
 
-fn is_closure_or_generator(ty: ty::Ty<'_>) -> bool {
+fn is_closure_or_generator(ty: Ty<'_>) -> bool {
     ty.is_closure() || ty.is_generator()
 }
 
@@ -626,12 +629,12 @@ fn is_closure_or_generator(ty: ty::Ty<'_>) -> bool {
 /// ```
 fn annotate_struct_field(
     tcx: TyCtxt<'cx, 'gcx, 'tcx>,
-    ty: ty::Ty<'tcx>,
+    ty: Ty<'tcx>,
     field: &mir::Field,
 ) -> Option<(Span, String)> {
     // Expect our local to be a reference to a struct of some kind.
-    if let ty::TyKind::Ref(_, ty, _) = ty.sty {
-        if let ty::TyKind::Adt(def, _) = ty.sty {
+    if let ty::Ref(_, ty, _) = ty.sty {
+        if let ty::Adt(def, _) = ty.sty {
             let field = def.all_fields().nth(field.index())?;
             // Use the HIR types to construct the diagnostic message.
             let hir_id = tcx.hir().as_local_hir_id(field.did)?;

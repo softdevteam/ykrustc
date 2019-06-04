@@ -7,12 +7,21 @@
 //! * Library features have at most one stability level.
 //! * Library features have at most one `since` value.
 //! * All unstable lang features have tests to ensure they are actually unstable.
+//! * Language features in a group are sorted by `since` value.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::path::Path;
+
+use regex::{Regex, escape};
+
+mod version;
+use version::Version;
+
+const FEATURE_GROUP_START_PREFIX: &str = "// feature-group-start";
+const FEATURE_GROUP_END_PREFIX: &str = "// feature-group-end";
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Status {
@@ -35,7 +44,7 @@ impl fmt::Display for Status {
 #[derive(Debug, Clone)]
 pub struct Feature {
     pub level: Status,
-    pub since: String,
+    pub since: Option<Version>,
     pub has_gate_test: bool,
     pub tracking_issue: Option<u32>,
 }
@@ -129,20 +138,8 @@ pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
     }
 
     let mut lines = Vec::new();
-    for (name, feature) in features.iter() {
-        lines.push(format!("{:<32} {:<8} {:<12} {:<8}",
-                           name,
-                           "lang",
-                           feature.level,
-                           feature.since));
-    }
-    for (name, feature) in lib_features {
-        lines.push(format!("{:<32} {:<8} {:<12} {:<8}",
-                           name,
-                           "lib",
-                           feature.level,
-                           feature.since));
-    }
+    lines.extend(format_features(&features, "lang"));
+    lines.extend(format_features(&lib_features, "lib"));
 
     lines.sort();
     for line in lines {
@@ -150,11 +147,31 @@ pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
     }
 }
 
+fn format_features<'a>(features: &'a Features, family: &'a str) -> impl Iterator<Item = String> + 'a {
+    features.iter().map(move |(name, feature)| {
+        format!("{:<32} {:<8} {:<12} {:<8}",
+                name,
+                family,
+                feature.level,
+                feature.since.map_or("None".to_owned(),
+                                     |since| since.to_string()))
+    })
+}
+
 fn find_attr_val<'a>(line: &'a str, attr: &str) -> Option<&'a str> {
-    line.find(attr)
-        .and_then(|i| line[i..].find('"').map(|j| i + j + 1))
-        .and_then(|i| line[i..].find('"').map(|j| (i, i + j)))
-        .map(|(i, j)| &line[i..j])
+    let r = Regex::new(&format!(r#"{}\s*=\s*"([^"]*)""#, escape(attr)))
+        .expect("malformed regex for find_attr_val");
+    r.captures(line)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+}
+
+#[test]
+fn test_find_attr_val() {
+    let s = r#"#[unstable(feature = "checked_duration_since", issue = "58402")]"#;
+    assert_eq!(find_attr_val(s, "feature"), Some("checked_duration_since"));
+    assert_eq!(find_attr_val(s, "issue"), Some("58402"));
+    assert_eq!(find_attr_val(s, "since"), None);
 }
 
 fn test_filen_gate(filen_underscore: &str, features: &mut Features) -> bool {
@@ -173,17 +190,46 @@ pub fn collect_lang_features(base_src_path: &Path, bad: &mut bool) -> Features {
     let contents = t!(fs::read_to_string(base_src_path.join("libsyntax/feature_gate.rs")));
 
     // We allow rustc-internal features to omit a tracking issue.
-    // These features must be marked with a `// rustc internal` in its own group.
-    let mut next_feature_is_rustc_internal = false;
+    // To make tidy accept omitting a tracking issue, group the list of features
+    // without one inside `// no-tracking-issue` and `// no-tracking-issue-end`.
+    let mut next_feature_omits_tracking_issue = false;
+
+    let mut in_feature_group = false;
+    let mut prev_since = None;
 
     contents.lines().zip(1..)
         .filter_map(|(line, line_number)| {
             let line = line.trim();
-            if line.starts_with("// rustc internal") {
-                next_feature_is_rustc_internal = true;
+
+            // Within -start and -end, the tracking issue can be omitted.
+            match line {
+                "// no-tracking-issue-start" => {
+                    next_feature_omits_tracking_issue = true;
+                    return None;
+                }
+                "// no-tracking-issue-end" => {
+                    next_feature_omits_tracking_issue = false;
+                    return None;
+                }
+                _ => {}
+            }
+
+            if line.starts_with(FEATURE_GROUP_START_PREFIX) {
+                if in_feature_group {
+                    tidy_error!(
+                        bad,
+                        // ignore-tidy-linelength
+                        "libsyntax/feature_gate.rs:{}: new feature group is started without ending the previous one",
+                        line_number,
+                    );
+                }
+
+                in_feature_group = true;
+                prev_since = None;
                 return None;
-            } else if line.is_empty() {
-                next_feature_is_rustc_internal = false;
+            } else if line.starts_with(FEATURE_GROUP_END_PREFIX) {
+                in_feature_group = false;
+                prev_since = None;
                 return None;
             }
 
@@ -195,10 +241,36 @@ pub fn collect_lang_features(base_src_path: &Path, bad: &mut bool) -> Features {
                 _ => return None,
             };
             let name = parts.next().unwrap().trim();
-            let since = parts.next().unwrap().trim().trim_matches('"');
+
+            let since_str = parts.next().unwrap().trim().trim_matches('"');
+            let since = match since_str.parse() {
+                Ok(since) => Some(since),
+                Err(err) => {
+                    tidy_error!(
+                        bad,
+                        "libsyntax/feature_gate.rs:{}: failed to parse since: {} ({:?})",
+                        line_number,
+                        since_str,
+                        err,
+                    );
+                    None
+                }
+            };
+            if in_feature_group {
+                if prev_since > since {
+                    tidy_error!(
+                        bad,
+                        "libsyntax/feature_gate.rs:{}: feature {} is not sorted by since",
+                        line_number,
+                        name,
+                    );
+                }
+                prev_since = since;
+            }
+
             let issue_str = parts.next().unwrap().trim();
             let tracking_issue = if issue_str.starts_with("None") {
-                if level == Status::Unstable && !next_feature_is_rustc_internal {
+                if level == Status::Unstable && !next_feature_omits_tracking_issue {
                     *bad = true;
                     tidy_error!(
                         bad,
@@ -209,14 +281,13 @@ pub fn collect_lang_features(base_src_path: &Path, bad: &mut bool) -> Features {
                 }
                 None
             } else {
-                next_feature_is_rustc_internal = false;
                 let s = issue_str.split('(').nth(1).unwrap().split(')').nth(0).unwrap();
                 Some(s.parse().unwrap())
             };
             Some((name.to_owned(),
                 Feature {
                     level,
-                    since: since.to_owned(),
+                    since,
                     has_gate_test: false,
                     tracking_issue,
                 }))
@@ -233,7 +304,7 @@ pub fn collect_lib_features(base_src_path: &Path) -> Features {
     // add it to the set of known library features so we can still generate docs.
     lib_features.insert("compiler_builtins_lib".to_owned(), Feature {
         level: Status::Unstable,
-        since: String::new(),
+        since: None,
         has_gate_test: false,
         tracking_issue: None,
     });
@@ -330,11 +401,11 @@ fn map_lib_features(base_src_path: &Path,
                 // `const fn` features are handled specially.
                 let feature_name = match find_attr_val(line, "feature") {
                     Some(name) => name,
-                    None => err!("malformed stability attribute"),
+                    None => err!("malformed stability attribute: missing `feature` key"),
                 };
                 let feature = Feature {
                     level: Status::Unstable,
-                    since: "None".to_owned(),
+                    since: None,
                     has_gate_test: false,
                     // FIXME(#57563): #57563 is now used as a common tracking issue,
                     // although we would like to have specific tracking issues for each
@@ -353,20 +424,23 @@ fn map_lib_features(base_src_path: &Path,
             };
             let feature_name = match find_attr_val(line, "feature") {
                 Some(name) => name,
-                None => err!("malformed stability attribute"),
+                None => err!("malformed stability attribute: missing `feature` key"),
             };
-            let since = match find_attr_val(line, "since") {
-                Some(name) => name,
+            let since = match find_attr_val(line, "since").map(|x| x.parse()) {
+                Some(Ok(since)) => Some(since),
+                Some(Err(_err)) => {
+                    err!("malformed stability attribute: can't parse `since` key");
+                },
                 None if level == Status::Stable => {
-                    err!("malformed stability attribute");
+                    err!("malformed stability attribute: missing the `since` key");
                 }
-                None => "None",
+                None => None,
             };
             let tracking_issue = find_attr_val(line, "issue").map(|s| s.parse().unwrap());
 
             let feature = Feature {
                 level,
-                since: since.to_owned(),
+                since,
                 has_gate_test: false,
                 tracking_issue,
             };

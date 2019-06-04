@@ -12,6 +12,7 @@ use crate::build::{GuardFrame, GuardFrameLocal, LocalsForNode};
 use crate::hair::{self, *};
 use rustc::hir::HirId;
 use rustc::mir::*;
+use rustc::middle::region;
 use rustc::ty::{self, CanonicalUserTypeAnnotation, Ty};
 use rustc::ty::layout::VariantIdx;
 use rustc_data_structures::bit_set::BitSet;
@@ -251,37 +252,39 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         // Step 5. Create everything else: the guards and the arms.
 
-        let outer_source_info = self.source_info(span);
         let arm_end_blocks: Vec<_> = arm_candidates.into_iter().map(|(arm, candidates)| {
-            let mut arm_block = self.cfg.start_new_block();
+            let arm_source_info = self.source_info(arm.span);
+            let region_scope = (arm.scope, arm_source_info);
+            self.in_scope(region_scope, arm.lint_level, |this| {
+                let arm_block = this.cfg.start_new_block();
 
-            let body = self.hir.mirror(arm.body.clone());
-            let scope = self.declare_bindings(
-                None,
-                body.span,
-                LintLevel::Inherited,
-                &arm.patterns[0],
-                ArmHasGuard(arm.guard.is_some()),
-                Some((Some(&scrutinee_place), scrutinee_span)),
-            );
-
-            for candidate in candidates {
-                self.bind_and_guard_matched_candidate(
-                    candidate,
-                    arm.guard.clone(),
-                    arm_block,
-                    &fake_borrow_temps,
-                    scrutinee_span,
+                let body = this.hir.mirror(arm.body.clone());
+                let scope = this.declare_bindings(
+                    None,
+                    arm.span,
+                    &arm.patterns[0],
+                    ArmHasGuard(arm.guard.is_some()),
+                    Some((Some(&scrutinee_place), scrutinee_span)),
                 );
-            }
 
-            if let Some(source_scope) = scope {
-                self.source_scope = source_scope;
-            }
+                if let Some(source_scope) = scope {
+                    this.source_scope = source_scope;
+                }
 
-            unpack!(arm_block = self.into(destination, arm_block, body));
+                for candidate in candidates {
+                    this.clear_top_scope(arm.scope);
+                    this.bind_and_guard_matched_candidate(
+                        candidate,
+                        arm.guard.clone(),
+                        arm_block,
+                        &fake_borrow_temps,
+                        scrutinee_span,
+                        region_scope,
+                    );
+                }
 
-            arm_block
+                this.into(destination, arm_block, body)
+            })
         }).collect();
 
         // all the arm blocks will rejoin here
@@ -289,7 +292,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         for arm_block in arm_end_blocks {
             self.cfg.terminate(
-                arm_block,
+                unpack!(arm_block),
                 outer_source_info,
                 TerminatorKind::Goto { target: end_block },
             );
@@ -374,7 +377,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 let ty_source_info = self.source_info(user_ty_span);
                 let user_ty = box pat_ascription_ty.user_ty(
                     &mut self.canonical_user_type_annotations,
-                    place.ty(&self.local_decls, self.hir.tcx()).to_ty(self.hir.tcx()),
+                    place.ty(&self.local_decls, self.hir.tcx()).ty,
                     ty_source_info.span,
                 );
                 self.cfg.push(
@@ -439,11 +442,17 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         self.simplify_candidate(&mut candidate);
 
         if !candidate.match_pairs.is_empty() {
-            span_bug!(
+            // ICE if no other errors have been emitted. This used to be a hard error that wouldn't
+            // be reached because `hair::pattern::check_match::check_match` wouldn't have let the
+            // compiler continue. In our tests this is only ever hit by
+            // `ui/consts/const-match-check.rs` with `--cfg eval1`, and that file already generates
+            // a different error before hand.
+            self.hir.tcx().sess.delay_span_bug(
                 candidate.match_pairs[0].pattern.span,
-                "match pairs {:?} remaining after simplifying \
-                 irrefutable pattern",
-                candidate.match_pairs
+                &format!(
+                    "match pairs {:?} remaining after simplifying irrefutable pattern",
+                    candidate.match_pairs,
+                ),
             );
         }
 
@@ -483,16 +492,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         &mut self,
         mut visibility_scope: Option<SourceScope>,
         scope_span: Span,
-        lint_level: LintLevel,
         pattern: &Pattern<'tcx>,
         has_guard: ArmHasGuard,
         opt_match_place: Option<(Option<&Place<'tcx>>, Span)>,
     ) -> Option<SourceScope> {
-        assert!(
-            !(visibility_scope.is_some() && lint_level.is_explicit()),
-            "can't have both a visibility and a lint scope at the same time"
-        );
-        let mut scope = self.source_scope;
         debug!("declare_bindings: pattern={:?}", pattern);
         self.visit_bindings(
             &pattern,
@@ -501,14 +504,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 if visibility_scope.is_none() {
                     visibility_scope =
                         Some(this.new_source_scope(scope_span, LintLevel::Inherited, None));
-                    // If we have lints, create a new source scope
-                    // that marks the lints for the locals. See the comment
-                    // on the `source_info` field for why this is needed.
-                    if lint_level.is_explicit() {
-                        scope = this.new_source_scope(scope_span, lint_level, None);
-                    }
                 }
-                let source_info = SourceInfo { span, scope };
+                let source_info = SourceInfo { span, scope: this.source_scope };
                 let visibility_scope = visibility_scope.unwrap();
                 this.declare_binding(
                     source_info,
@@ -569,7 +566,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     pub(super) fn visit_bindings(
         &mut self,
         pattern: &Pattern<'tcx>,
-        pattern_user_ty: UserTypeProjections<'tcx>,
+        pattern_user_ty: UserTypeProjections,
         f: &mut impl FnMut(
             &mut Self,
             Mutability,
@@ -578,7 +575,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             HirId,
             Span,
             Ty<'tcx>,
-            UserTypeProjections<'tcx>,
+            UserTypeProjections,
         ),
     ) {
         debug!("visit_bindings: pattern={:?} pattern_user_ty={:?}", pattern, pattern_user_ty);
@@ -740,12 +737,12 @@ enum TestKind<'tcx> {
     SwitchInt {
         switch_ty: Ty<'tcx>,
         options: Vec<u128>,
-        indices: FxHashMap<ty::Const<'tcx>, usize>,
+        indices: FxHashMap<&'tcx ty::Const<'tcx>, usize>,
     },
 
     // test for equality
     Eq {
-        value: ty::Const<'tcx>,
+        value: &'tcx ty::Const<'tcx>,
         ty: Ty<'tcx>,
     },
 
@@ -873,7 +870,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             span,
             untested_candidates,
             join_block,
-            &mut None,
+            fake_borrows,
         )
     }
 
@@ -1287,8 +1284,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         debug!("add_fake_borrows all_fake_borrows = {:?}", all_fake_borrows);
 
         all_fake_borrows.into_iter().map(|matched_place| {
-            let fake_borrow_deref_ty = matched_place.ty(&self.local_decls, tcx).to_ty(tcx);
-            let fake_borrow_ty = tcx.mk_imm_ref(tcx.types.re_erased, fake_borrow_deref_ty);
+            let fake_borrow_deref_ty = matched_place.ty(&self.local_decls, tcx).ty;
+            let fake_borrow_ty = tcx.mk_imm_ref(tcx.lifetimes.re_erased, fake_borrow_deref_ty);
             let fake_borrow_temp = self.local_decls.push(
                 LocalDecl::new_temp(fake_borrow_ty, temp_span)
             );
@@ -1321,6 +1318,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         arm_block: BasicBlock,
         fake_borrows: &Vec<(&Place<'tcx>, Local)>,
         scrutinee_span: Span,
+        region_scope: (region::Scope, SourceInfo),
     ) {
         debug!("bind_and_guard_matched_candidate(candidate={:?})", candidate);
 
@@ -1419,28 +1417,24 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         //      the reference that we create for the arm.
         //    * So we eagerly create the reference for the arm and then take a
         //      reference to that.
-        let tcx = self.hir.tcx();
-        let autoref = tcx.all_pat_vars_are_implicit_refs_within_guards();
         if let Some(guard) = guard {
-            if autoref {
-                self.bind_matched_candidate_for_guard(
-                    block,
-                    &candidate.bindings,
-                );
-                let guard_frame = GuardFrame {
-                    locals: candidate
-                        .bindings
-                        .iter()
-                        .map(|b| GuardFrameLocal::new(b.var_id, b.binding_mode))
-                        .collect(),
-                };
-                debug!("Entering guard building context: {:?}", guard_frame);
-                self.guard_context.push(guard_frame);
-            } else {
-                self.bind_matched_candidate_for_arm_body(block, &candidate.bindings);
-            }
+            let tcx = self.hir.tcx();
 
-            let re_erased = tcx.types.re_erased;
+            self.bind_matched_candidate_for_guard(
+                block,
+                &candidate.bindings,
+            );
+            let guard_frame = GuardFrame {
+                locals: candidate
+                    .bindings
+                    .iter()
+                    .map(|b| GuardFrameLocal::new(b.var_id, b.binding_mode))
+                    .collect(),
+            };
+            debug!("Entering guard building context: {:?}", guard_frame);
+            self.guard_context.push(guard_frame);
+
+            let re_erased = tcx.lifetimes.re_erased;
             let scrutinee_source_info = self.source_info(scrutinee_span);
             for &(place, temp) in fake_borrows {
                 let borrow = Rvalue::Ref(
@@ -1464,13 +1458,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             let source_info = self.source_info(guard.span);
             let guard_end = self.source_info(tcx.sess.source_map().end_point(guard.span));
             let cond = unpack!(block = self.as_local_operand(block, guard));
-            if autoref {
-                let guard_frame = self.guard_context.pop().unwrap();
-                debug!(
-                    "Exiting guard building context with locals: {:?}",
-                    guard_frame
-                );
-            }
+            let guard_frame = self.guard_context.pop().unwrap();
+            debug!(
+                "Exiting guard building context with locals: {:?}",
+                guard_frame
+            );
 
             for &(_, temp) in fake_borrows {
                 self.cfg.push(block, Statement {
@@ -1509,39 +1501,60 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             //
             // and that is clearly not correct.
             let post_guard_block = self.cfg.start_new_block();
+            let otherwise_post_guard_block = self.cfg.start_new_block();
             self.cfg.terminate(
                 block,
                 source_info,
                 TerminatorKind::if_(
                     self.hir.tcx(),
-                    cond,
+                    cond.clone(),
                     post_guard_block,
-                    candidate.otherwise_block.unwrap()
+                    otherwise_post_guard_block,
                 ),
             );
 
-            if autoref {
-                let by_value_bindings = candidate.bindings.iter().filter(|binding| {
-                    if let BindingMode::ByValue = binding.binding_mode { true } else { false }
-                });
-                // Read all of the by reference bindings to ensure that the
-                // place they refer to can't be modified by the guard.
-                for binding in by_value_bindings.clone() {
-                    let local_id = self.var_local_id(binding.var_id, RefWithinGuard);
-                    let place = Place::Base(PlaceBase::Local(local_id));
-                    self.cfg.push(
-                        block,
-                        Statement {
-                            source_info: guard_end,
-                            kind: StatementKind::FakeRead(FakeReadCause::ForGuardBinding, place),
-                        },
+            self.exit_scope(
+                source_info.span,
+                region_scope,
+                otherwise_post_guard_block,
+                candidate.otherwise_block.unwrap(),
+            );
+
+            if let Operand::Copy(cond_place) | Operand::Move(cond_place) = cond {
+                if let Place::Base(PlaceBase::Local(cond_temp)) = cond_place {
+                    // We will call `clear_top_scope` if there's another guard. So
+                    // we have to drop this variable now or it will be "storage
+                    // leaked".
+                    self.pop_variable(
+                        post_guard_block,
+                        region_scope.0,
+                        cond_temp
                     );
+                } else {
+                    bug!("Expected as_local_operand to produce a temporary");
                 }
-                self.bind_matched_candidate_for_arm_body(
-                    post_guard_block,
-                    by_value_bindings,
+            }
+
+            let by_value_bindings = candidate.bindings.iter().filter(|binding| {
+                if let BindingMode::ByValue = binding.binding_mode { true } else { false }
+            });
+            // Read all of the by reference bindings to ensure that the
+            // place they refer to can't be modified by the guard.
+            for binding in by_value_bindings.clone() {
+                let local_id = self.var_local_id(binding.var_id, RefWithinGuard);
+                    let place = Place::Base(PlaceBase::Local(local_id));
+                self.cfg.push(
+                    block,
+                    Statement {
+                        source_info: guard_end,
+                        kind: StatementKind::FakeRead(FakeReadCause::ForGuardBinding, place),
+                    },
                 );
             }
+            self.bind_matched_candidate_for_arm_body(
+                post_guard_block,
+                by_value_bindings,
+            );
 
             self.cfg.terminate(
                 post_guard_block,
@@ -1581,7 +1594,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
             let user_ty = box ascription.user_ty.clone().user_ty(
                 &mut self.canonical_user_type_annotations,
-                ascription.source.ty(&self.local_decls, self.hir.tcx()).to_ty(self.hir.tcx()),
+                ascription.source.ty(&self.local_decls, self.hir.tcx()).ty,
                 source_info.span
             );
             self.cfg.push(
@@ -1598,8 +1611,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         }
     }
 
-    // Only called when all_pat_vars_are_implicit_refs_within_guards,
-    // and thus all code/comments assume we are in that context.
     fn bind_matched_candidate_for_guard(
         &mut self,
         block: BasicBlock,
@@ -1610,7 +1621,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // Assign each of the bindings. Since we are binding for a
         // guard expression, this will never trigger moves out of the
         // candidate.
-        let re_erased = self.hir.tcx().types.re_erased;
+        let re_erased = self.hir.tcx().lifetimes.re_erased;
         for binding in bindings {
             let source_info = self.source_info(binding.span);
 
@@ -1662,7 +1673,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     ) where 'tcx: 'b {
         debug!("bind_matched_candidate_for_arm_body(block={:?})", block);
 
-        let re_erased = self.hir.tcx().types.re_erased;
+        let re_erased = self.hir.tcx().lifetimes.re_erased;
         // Assign each of the bindings. This may trigger moves out of the candidate.
         for binding in bindings {
             let source_info = self.source_info(binding.span);
@@ -1695,7 +1706,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         mode: BindingMode,
         var_id: HirId,
         var_ty: Ty<'tcx>,
-        user_ty: UserTypeProjections<'tcx>,
+        user_ty: UserTypeProjections,
         has_guard: ArmHasGuard,
         opt_match_place: Option<(Option<Place<'tcx>>, Span)>,
         pat_span: Span,
@@ -1733,12 +1744,12 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             }))),
         };
         let for_arm_body = self.local_decls.push(local.clone());
-        let locals = if has_guard.0 && tcx.all_pat_vars_are_implicit_refs_within_guards() {
+        let locals = if has_guard.0 {
             let ref_for_guard = self.local_decls.push(LocalDecl::<'tcx> {
                 // This variable isn't mutated but has a name, so has to be
                 // immutable to avoid the unused mut lint.
                 mutability: Mutability::Not,
-                ty: tcx.mk_imm_ref(tcx.types.re_erased, var_ty),
+                ty: tcx.mk_imm_ref(tcx.lifetimes.re_erased, var_ty),
                 user_ty: UserTypeProjections::none(),
                 name: Some(name),
                 source_info,

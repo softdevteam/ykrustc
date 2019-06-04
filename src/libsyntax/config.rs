@@ -12,6 +12,7 @@ use crate::edition::Edition;
 use crate::mut_visit::*;
 use crate::parse::{token, ParseSess};
 use crate::ptr::P;
+use crate::symbol::sym;
 use crate::util::map_in_place::MapInPlace;
 
 use errors::Applicability;
@@ -24,8 +25,8 @@ pub struct StripUnconfigured<'a> {
 }
 
 // `cfg_attr`-process the crate's attributes and compute the crate's features.
-pub fn features(mut krate: ast::Crate, sess: &ParseSess, edition: Edition)
-                -> (ast::Crate, Features) {
+pub fn features(mut krate: ast::Crate, sess: &ParseSess, edition: Edition,
+                allow_features: &Option<Vec<String>>) -> (ast::Crate, Features) {
     let features;
     {
         let mut strip_unconfigured = StripUnconfigured {
@@ -43,7 +44,7 @@ pub fn features(mut krate: ast::Crate, sess: &ParseSess, edition: Edition)
             return (krate, Features::new());
         }
 
-        features = get_features(&sess.span_diagnostic, &krate.attrs, edition);
+        features = get_features(&sess.span_diagnostic, &krate.attrs, edition, allow_features);
 
         // Avoid reconfiguring malformed `cfg_attr`s
         if err_count == sess.span_diagnostic.err_count() {
@@ -90,8 +91,24 @@ impl<'a> StripUnconfigured<'a> {
     /// is in the original source file. Gives a compiler error if the syntax of
     /// the attribute is incorrect.
     fn process_cfg_attr(&mut self, attr: ast::Attribute) -> Vec<ast::Attribute> {
-        if !attr.check_name("cfg_attr") {
+        if !attr.check_name(sym::cfg_attr) {
             return vec![attr];
+        }
+        if attr.tokens.len() == 0 {
+            self.sess.span_diagnostic
+                .struct_span_err(
+                    attr.span,
+                    "malformed `cfg_attr` attribute input",
+                ).span_suggestion(
+                    attr.span,
+                    "missing condition and attribute",
+                    "#[cfg_attr(condition, attribute, other_attribute, ...)]".to_owned(),
+                    Applicability::HasPlaceholders,
+                ).note("for more information, visit \
+                       <https://doc.rust-lang.org/reference/conditional-compilation.html\
+                       #the-cfg_attr-attribute>")
+                .emit();
+            return Vec::new();
         }
 
         let (cfg_predicate, expanded_attrs) = match attr.parse(self.sess, |parser| {
@@ -181,13 +198,13 @@ impl<'a> StripUnconfigured<'a> {
             if nested_meta_items.is_empty() {
                 return error(meta_item.span, "`cfg` predicate is not specified", "");
             } else if nested_meta_items.len() > 1 {
-                return error(nested_meta_items.last().unwrap().span,
+                return error(nested_meta_items.last().unwrap().span(),
                              "multiple `cfg` predicates are specified", "");
             }
 
             match nested_meta_items[0].meta_item() {
                 Some(meta_item) => attr::cfg_matches(meta_item, self.sess, self.features),
-                None => error(nested_meta_items[0].span,
+                None => error(nested_meta_items[0].span(),
                               "`cfg` predicate key cannot be a literal", ""),
             }
         })
@@ -205,7 +222,7 @@ impl<'a> StripUnconfigured<'a> {
     pub fn maybe_emit_expr_attr_err(&self, attr: &ast::Attribute) {
         if !self.features.map(|features| features.stmt_expr_attributes).unwrap_or(true) {
             let mut err = feature_err(self.sess,
-                                      "stmt_expr_attributes",
+                                      sym::stmt_expr_attributes,
                                       attr.span,
                                       GateIssue::Language,
                                       EXPLAIN_STMT_ATTR_SYNTAX);
@@ -225,10 +242,9 @@ impl<'a> StripUnconfigured<'a> {
 
     fn configure_variant_data(&mut self, vdata: &mut ast::VariantData) {
         match vdata {
-            ast::VariantData::Struct(fields, _id) |
-            ast::VariantData::Tuple(fields, _id) =>
+            ast::VariantData::Struct(fields, ..) | ast::VariantData::Tuple(fields, _) =>
                 fields.flat_map_in_place(|field| self.configure(field)),
-            ast::VariantData::Unit(_id) => {}
+            ast::VariantData::Unit(_) => {}
         }
     }
 
@@ -286,9 +302,9 @@ impl<'a> StripUnconfigured<'a> {
     /// See issue #51279.
     pub fn disallow_cfg_on_generic_param(&mut self, param: &ast::GenericParam) {
         for attr in param.attrs() {
-            let offending_attr = if attr.check_name("cfg") {
+            let offending_attr = if attr.check_name(sym::cfg) {
                 "cfg"
-            } else if attr.check_name("cfg_attr") {
+            } else if attr.check_name(sym::cfg_attr) {
                 "cfg_attr"
             } else {
                 continue;
@@ -351,5 +367,5 @@ impl<'a> MutVisitor for StripUnconfigured<'a> {
 }
 
 fn is_cfg(attr: &ast::Attribute) -> bool {
-    attr.check_name("cfg")
+    attr.check_name(sym::cfg)
 }

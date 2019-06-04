@@ -2,7 +2,7 @@ use crate::os::windows::prelude::*;
 
 use crate::ffi::OsString;
 use crate::fmt;
-use crate::io::{self, Error, SeekFrom};
+use crate::io::{self, Error, SeekFrom, IoSlice, IoSliceMut};
 use crate::mem;
 use crate::path::{Path, PathBuf};
 use crate::ptr;
@@ -74,7 +74,7 @@ pub struct FilePermissions { attrs: c::DWORD }
 pub struct DirBuilder;
 
 impl fmt::Debug for ReadDir {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // This will only be called from std::fs::ReadDir, which will add a "ReadDir()" frame.
         // Thus the result will be e g 'ReadDir("C:\")'
         fmt::Debug::fmt(&*self.root, f)
@@ -314,12 +314,20 @@ impl File {
         self.handle.read(buf)
     }
 
+    pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        self.handle.read_vectored(bufs)
+    }
+
     pub fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         self.handle.read_at(buf, offset)
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         self.handle.write(buf)
+    }
+
+    pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        self.handle.write_vectored(bufs)
     }
 
     pub fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<usize> {
@@ -435,7 +443,7 @@ impl FromInner<c::HANDLE> for File {
 }
 
 impl fmt::Debug for File {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // FIXME(#24570): add more info here (e.g., mode)
         let mut b = f.debug_struct("File");
         b.field("handle", &self.handle.raw());

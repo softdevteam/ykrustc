@@ -6,7 +6,7 @@ use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension, Resolver};
 use syntax::ext::build::AstBuilder;
 use syntax::ext::hygiene::{Mark, SyntaxContext};
 use syntax::ptr::P;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax_pos::Span;
 
 macro path_local($x:ident) {
@@ -139,18 +139,18 @@ fn call_intrinsic(cx: &ExtCtxt<'_>,
     let intrinsic_allowed_via_allow_internal_unstable = cx
         .current_expansion.mark.expn_info().unwrap()
         .allow_internal_unstable.map_or(false, |features| features.iter().any(|&s|
-            s == "core_intrinsics"
+            s == sym::core_intrinsics
         ));
     if intrinsic_allowed_via_allow_internal_unstable {
         span = span.with_ctxt(cx.backtrace());
     } else { // Avoid instability errors with user defined curstom derives, cc #36316
         let mut info = cx.current_expansion.mark.expn_info().unwrap();
-        info.allow_internal_unstable = Some(vec![Symbol::intern("core_intrinsics")].into());
+        info.allow_internal_unstable = Some(vec![sym::core_intrinsics].into());
         let mark = Mark::fresh(Mark::root());
         mark.set_expn_info(info);
         span = span.with_ctxt(SyntaxContext::empty().apply_mark(mark));
     }
-    let path = cx.std_path(&["intrinsics", intrinsic]);
+    let path = cx.std_path(&[sym::intrinsics, Symbol::intern(intrinsic)]);
     let call = cx.expr_call_global(span, path, args);
 
     cx.expr_block(P(ast::Block {

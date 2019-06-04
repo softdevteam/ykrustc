@@ -7,8 +7,8 @@
 
 use crate::GLOBALS;
 use crate::Span;
-use crate::edition::{Edition, DEFAULT_EDITION};
-use crate::symbol::{keywords, Symbol};
+use crate::edition::Edition;
+use crate::symbol::{kw, Symbol};
 
 use serialize::{Encodable, Decodable, Encoder, Decoder};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -24,11 +24,11 @@ struct SyntaxContextData {
     outer_mark: Mark,
     transparency: Transparency,
     prev_ctxt: SyntaxContext,
-    // This context, but with all transparent and semi-transparent marks filtered away.
+    /// This context, but with all transparent and semi-transparent marks filtered away.
     opaque: SyntaxContext,
-    // This context, but with all transparent marks filtered away.
+    /// This context, but with all transparent marks filtered away.
     opaque_and_semitransparent: SyntaxContext,
-    // Name of the crate to which `$crate` with this context would resolve.
+    /// Name of the crate to which `$crate` with this context would resolve.
     dollar_crate_name: Symbol,
 }
 
@@ -112,16 +112,14 @@ impl Mark {
         HygieneData::with(|data| data.marks[self.0 as usize].default_transparency = transparency)
     }
 
-    pub fn is_descendant_of(mut self, ancestor: Mark) -> bool {
-        HygieneData::with(|data| {
-            while self != ancestor {
-                if self == Mark::root() {
-                    return false;
-                }
-                self = data.marks[self.0 as usize].parent;
-            }
-            true
-        })
+    pub fn is_descendant_of(self, ancestor: Mark) -> bool {
+        HygieneData::with(|data| data.is_descendant_of(self, ancestor))
+    }
+
+    /// `mark.outer_is_descendant_of(ctxt)` is equivalent to but faster than
+    /// `mark.is_descendant_of(ctxt.outer())`.
+    pub fn outer_is_descendant_of(self, ctxt: SyntaxContext) -> bool {
+        HygieneData::with(|data| data.is_descendant_of(self, data.outer(ctxt)))
     }
 
     /// Computes a mark such that both input marks are descendants of (or equal to) the returned
@@ -174,7 +172,6 @@ crate struct HygieneData {
     marks: Vec<MarkData>,
     syntax_contexts: Vec<SyntaxContextData>,
     markings: FxHashMap<(SyntaxContext, Mark, Transparency), SyntaxContext>,
-    default_edition: Edition,
 }
 
 impl HygieneData {
@@ -193,24 +190,33 @@ impl HygieneData {
                 prev_ctxt: SyntaxContext(0),
                 opaque: SyntaxContext(0),
                 opaque_and_semitransparent: SyntaxContext(0),
-                dollar_crate_name: keywords::DollarCrate.name(),
+                dollar_crate_name: kw::DollarCrate,
             }],
             markings: FxHashMap::default(),
-            default_edition: DEFAULT_EDITION,
         }
     }
 
     fn with<T, F: FnOnce(&mut HygieneData) -> T>(f: F) -> T {
         GLOBALS.with(|globals| f(&mut *globals.hygiene_data.borrow_mut()))
     }
-}
 
-pub fn default_edition() -> Edition {
-    HygieneData::with(|data| data.default_edition)
-}
+    fn outer(&self, ctxt: SyntaxContext) -> Mark {
+        self.syntax_contexts[ctxt.0 as usize].outer_mark
+    }
 
-pub fn set_default_edition(edition: Edition) {
-    HygieneData::with(|data| data.default_edition = edition);
+    fn expn_info(&self, mark: Mark) -> Option<ExpnInfo> {
+        self.marks[mark.0 as usize].expn_info.clone()
+    }
+
+    fn is_descendant_of(&self, mut mark: Mark, ancestor: Mark) -> bool {
+        while mark != ancestor {
+            if mark == Mark::root() {
+                return false;
+            }
+            mark = self.marks[mark.0 as usize].parent;
+        }
+        true
+    }
 }
 
 pub fn clear_markings() {
@@ -218,14 +224,17 @@ pub fn clear_markings() {
 }
 
 impl SyntaxContext {
+    #[inline]
     pub const fn empty() -> Self {
         SyntaxContext(0)
     }
 
+    #[inline]
     crate fn as_u32(self) -> u32 {
         self.0
     }
 
+    #[inline]
     crate fn from_u32(raw: u32) -> SyntaxContext {
         SyntaxContext(raw)
     }
@@ -252,7 +261,7 @@ impl SyntaxContext {
                 prev_ctxt: SyntaxContext::empty(),
                 opaque: SyntaxContext::empty(),
                 opaque_and_semitransparent: SyntaxContext::empty(),
-                dollar_crate_name: keywords::DollarCrate.name(),
+                dollar_crate_name: kw::DollarCrate,
             });
             SyntaxContext(data.syntax_contexts.len() as u32 - 1)
         })
@@ -319,7 +328,7 @@ impl SyntaxContext {
                         prev_ctxt,
                         opaque: new_opaque,
                         opaque_and_semitransparent: new_opaque,
-                        dollar_crate_name: keywords::DollarCrate.name(),
+                        dollar_crate_name: kw::DollarCrate,
                     });
                     new_opaque
                 });
@@ -337,7 +346,7 @@ impl SyntaxContext {
                         prev_ctxt,
                         opaque,
                         opaque_and_semitransparent: new_opaque_and_semitransparent,
-                        dollar_crate_name: keywords::DollarCrate.name(),
+                        dollar_crate_name: kw::DollarCrate,
                     });
                     new_opaque_and_semitransparent
                 });
@@ -353,7 +362,7 @@ impl SyntaxContext {
                     prev_ctxt,
                     opaque,
                     opaque_and_semitransparent,
-                    dollar_crate_name: keywords::DollarCrate.name(),
+                    dollar_crate_name: kw::DollarCrate,
                 });
                 new_opaque_and_semitransparent_and_transparent
             })
@@ -423,7 +432,7 @@ impl SyntaxContext {
     /// or `None` if we privacy check as usual (i.e., not w.r.t. a macro definition scope).
     pub fn adjust(&mut self, expansion: Mark) -> Option<Mark> {
         let mut scope = None;
-        while !expansion.is_descendant_of(self.outer()) {
+        while !expansion.outer_is_descendant_of(*self) {
             scope = Some(self.remove_mark());
         }
         scope
@@ -457,7 +466,7 @@ impl SyntaxContext {
     pub fn glob_adjust(&mut self, expansion: Mark, mut glob_ctxt: SyntaxContext)
                        -> Option<Option<Mark>> {
         let mut scope = None;
-        while !expansion.is_descendant_of(glob_ctxt.outer()) {
+        while !expansion.outer_is_descendant_of(glob_ctxt) {
             scope = Some(glob_ctxt.remove_mark());
             if self.remove_mark() != scope.unwrap() {
                 return None;
@@ -483,7 +492,7 @@ impl SyntaxContext {
         }
 
         let mut marks = Vec::new();
-        while !expansion.is_descendant_of(glob_ctxt.outer()) {
+        while !expansion.outer_is_descendant_of(glob_ctxt) {
             marks.push(glob_ctxt.remove_mark());
         }
 
@@ -506,7 +515,14 @@ impl SyntaxContext {
 
     #[inline]
     pub fn outer(self) -> Mark {
-        HygieneData::with(|data| data.syntax_contexts[self.0 as usize].outer_mark)
+        HygieneData::with(|data| data.outer(self))
+    }
+
+    /// `ctxt.outer_expn_info()` is equivalent to but faster than
+    /// `ctxt.outer().expn_info()`.
+    #[inline]
+    pub fn outer_expn_info(self) -> Option<ExpnInfo> {
+        HygieneData::with(|data| data.expn_info(data.outer(self)))
     }
 
     pub fn dollar_crate_name(self) -> Symbol {
@@ -519,7 +535,7 @@ impl SyntaxContext {
                 &mut data.syntax_contexts[self.0 as usize].dollar_crate_name, dollar_crate_name
             );
             assert!(dollar_crate_name == prev_dollar_crate_name ||
-                    prev_dollar_crate_name == keywords::DollarCrate.name(),
+                    prev_dollar_crate_name == kw::DollarCrate,
                     "$crate name is reset for a syntax context");
         })
     }
@@ -588,6 +604,10 @@ impl ExpnFormat {
 /// The kind of compiler desugaring.
 #[derive(Clone, Copy, Hash, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable)]
 pub enum CompilerDesugaringKind {
+    /// We desugar `if c { i } else { e }` to `match $ExprKind::Use(c) { true => i, _ => e }`.
+    /// However, we do not want to blame `c` for unreachability but rather say that `i`
+    /// is unreachable. This desugaring kind allows us to avoid blaming `c`.
+    IfTemporary,
     QuestionMark,
     TryBlock,
     /// Desugaring of an `impl Trait` in return type position
@@ -595,13 +615,16 @@ pub enum CompilerDesugaringKind {
     /// `impl Trait` with `Foo`.
     ExistentialReturnType,
     Async,
+    Await,
     ForLoop,
 }
 
 impl CompilerDesugaringKind {
     pub fn name(self) -> Symbol {
         Symbol::intern(match self {
+            CompilerDesugaringKind::IfTemporary => "if",
             CompilerDesugaringKind::Async => "async",
+            CompilerDesugaringKind::Await => "await",
             CompilerDesugaringKind::QuestionMark => "?",
             CompilerDesugaringKind::TryBlock => "try block",
             CompilerDesugaringKind::ExistentialReturnType => "existential type",

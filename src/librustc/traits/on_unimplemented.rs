@@ -7,6 +7,7 @@ use crate::util::nodemap::FxHashMap;
 
 use syntax::ast::{MetaItem, NestedMetaItem};
 use syntax::attr;
+use syntax::symbol::sym;
 use syntax_pos::Span;
 use syntax_pos::symbol::LocalInternedString;
 
@@ -84,30 +85,30 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedDirective {
         let mut note = None;
         let mut subcommands = vec![];
         for item in item_iter {
-            if item.check_name("message") && message.is_none() {
+            if item.check_name(sym::message) && message.is_none() {
                 if let Some(message_) = item.value_str() {
                     message = Some(OnUnimplementedFormatString::try_parse(
                         tcx, trait_def_id, message_.as_str(), span)?);
                     continue;
                 }
-            } else if item.check_name("label") && label.is_none() {
+            } else if item.check_name(sym::label) && label.is_none() {
                 if let Some(label_) = item.value_str() {
                     label = Some(OnUnimplementedFormatString::try_parse(
                         tcx, trait_def_id, label_.as_str(), span)?);
                     continue;
                 }
-            } else if item.check_name("note") && note.is_none() {
+            } else if item.check_name(sym::note) && note.is_none() {
                 if let Some(note_) = item.value_str() {
                     note = Some(OnUnimplementedFormatString::try_parse(
                         tcx, trait_def_id, note_.as_str(), span)?);
                     continue;
                 }
-            } else if item.check_name("on") && is_root &&
+            } else if item.check_name(sym::on) && is_root &&
                 message.is_none() && label.is_none() && note.is_none()
             {
                 if let Some(items) = item.meta_item_list() {
                     if let Ok(subcommand) =
-                        Self::parse(tcx, trait_def_id, &items, item.span, false)
+                        Self::parse(tcx, trait_def_id, &items, item.span(), false)
                     {
                         subcommands.push(subcommand);
                     } else {
@@ -118,7 +119,7 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedDirective {
             }
 
             // nothing found
-            parse_error(tcx, item.span,
+            parse_error(tcx, item.span(),
                         "this attribute must have a valid value",
                         "expected value here",
                         Some(r#"eg `#[rustc_on_unimplemented(message="foo")]`"#));
@@ -139,7 +140,7 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedDirective {
     {
         let attrs = tcx.get_attrs(impl_def_id);
 
-        let attr = if let Some(item) = attr::find_by_name(&attrs, "rustc_on_unimplemented") {
+        let attr = if let Some(item) = attr::find_by_name(&attrs, sym::rustc_on_unimplemented) {
             item
         } else {
             return Ok(None);
@@ -177,10 +178,12 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedDirective {
         for command in self.subcommands.iter().chain(Some(self)).rev() {
             if let Some(ref condition) = command.condition {
                 if !attr::eval_condition(condition, &tcx.sess.parse_sess, &mut |c| {
-                    options.contains(&(
-                        c.name().as_str().to_string(),
-                        c.value_str().map(|s| s.as_str().to_string())
-                    ))
+                    c.ident().map_or(false, |ident| {
+                        options.contains(&(
+                            ident.to_string(),
+                            c.value_str().map(|s| s.as_str().to_string())
+                        ))
+                    })
                 }) {
                     debug!("evaluate: skipping {:?} due to condition", command);
                     continue
@@ -223,12 +226,12 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
         Ok(result)
     }
 
-    fn verify(&self,
-              tcx: TyCtxt<'a, 'gcx, 'tcx>,
-              trait_def_id: DefId,
-              span: Span)
-              -> Result<(), ErrorReported>
-    {
+    fn verify(
+        &self,
+        tcx: TyCtxt<'a, 'gcx, 'tcx>,
+        trait_def_id: DefId,
+        span: Span,
+    ) -> Result<(), ErrorReported> {
         let name = tcx.item_name(trait_def_id);
         let generics = tcx.generics_of(trait_def_id);
         let parser = Parser::new(&self.0, None, vec![], false);
@@ -240,15 +243,15 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
                     // `{Self}` is allowed
                     Position::ArgumentNamed(s) if s == "Self" => (),
                     // `{ThisTraitsName}` is allowed
-                    Position::ArgumentNamed(s) if s == name => (),
+                    Position::ArgumentNamed(s) if s == name.as_str() => (),
                     // `{from_method}` is allowed
                     Position::ArgumentNamed(s) if s == "from_method" => (),
                     // `{from_desugaring}` is allowed
                     Position::ArgumentNamed(s) if s == "from_desugaring" => (),
                     // So is `{A}` if A is a type parameter
-                    Position::ArgumentNamed(s) => match generics.params.iter().find(|param|
-                        param.name == s
-                    ) {
+                    Position::ArgumentNamed(s) => match generics.params.iter().find(|param| {
+                        param.name.as_str() == s
+                    }) {
                         Some(_) => (),
                         None => {
                             span_err!(tcx.sess, span, E0230,
@@ -269,14 +272,14 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
         result
     }
 
-    pub fn format(&self,
-                  tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                  trait_ref: ty::TraitRef<'tcx>,
-                  options: &FxHashMap<String, String>)
-                  -> String
-    {
+    pub fn format(
+        &self,
+        tcx: TyCtxt<'a, 'gcx, 'tcx>,
+        trait_ref: ty::TraitRef<'tcx>,
+        options: &FxHashMap<String, String>,
+    ) -> String {
         let name = tcx.item_name(trait_ref.def_id);
-        let trait_str = tcx.item_path_str(trait_ref.def_id);
+        let trait_str = tcx.def_path_str(trait_ref.def_id);
         let generics = tcx.generics_of(trait_ref.def_id);
         let generic_map = generics.params.iter().filter_map(|param| {
             let value = match param.kind {
@@ -298,7 +301,7 @@ impl<'a, 'gcx, 'tcx> OnUnimplementedFormatString {
                 Piece::NextArgument(a) => match a.position {
                     Position::ArgumentNamed(s) => match generic_map.get(s) {
                         Some(val) => val,
-                        None if s == name => {
+                        None if s == name.as_str() => {
                             &trait_str
                         }
                         None => {

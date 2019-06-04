@@ -1,14 +1,14 @@
-error: attribute must be of the form `#[repr(C, packed, ...)]`
+error: malformed `repr` attribute input
   --> $DIR/issue-43988.rs:24:5
    |
 LL |     #[repr]
-   |     ^^^^^^^
+   |     ^^^^^^^ help: must be of the form: `#[repr(C, packed, ...)]`
 
-error: attribute must be of the form `#[repr(C, packed, ...)]`
+error: malformed `repr` attribute input
   --> $DIR/issue-43988.rs:35:14
    |
 LL |     let _z = #[repr] 1;
-   |              ^^^^^^^
+   |              ^^^^^^^ help: must be of the form: `#[repr(C, packed, ...)]`
 
 error[E0518]: attribute should be applied to function or closure
   --> $DIR/issue-43988.rs:5:5
@@ -68,5 +68,5 @@ LL |     let _z = #[repr] 1;
 
 error: aborting due to 9 previous errors
 
-Some errors occurred: E0517, E0518.
+Some errors have detailed explanations: E0517, E0518.
 For more information about an error, try `rustc --explain E0517`.

@@ -15,9 +15,11 @@ use super::util;
 use crate::hir::def_id::DefId;
 use crate::infer::{InferCtxt, InferOk, LateBoundRegionConversionTime};
 use crate::infer::type_variable::TypeVariableOrigin;
-use crate::mir::interpret::{GlobalId};
+use crate::mir::interpret::{GlobalId, ConstValue};
 use rustc_data_structures::snapshot_map::{Snapshot, SnapshotMap};
+use rustc_macros::HashStable;
 use syntax::ast::Ident;
+use syntax::symbol::sym;
 use crate::ty::subst::{Subst, InternalSubsts};
 use crate::ty::{self, ToPredicate, ToPolyTraitRef, Ty, TyCtxt};
 use crate::ty::fold::{TypeFoldable, TypeFolder};
@@ -25,7 +27,7 @@ use crate::util::common::FN_OUTPUT_NAME;
 
 /// Depending on the stage of compilation, we want projection to be
 /// more or less conservative.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, HashStable)]
 pub enum Reveal {
     /// At type-checking time, we refuse to project any associated
     /// type that is marked `default`. Non-`default` ("final") types
@@ -273,7 +275,7 @@ pub fn normalize_with_depth<'a, 'b, 'gcx, 'tcx, T>(
     where T : TypeFoldable<'tcx>
 {
     debug!("normalize_with_depth(depth={}, value={:?})", depth, value);
-    let mut normalizer = AssociatedTypeNormalizer::new(selcx, param_env, cause, depth);
+    let mut normalizer = AssocTypeNormalizer::new(selcx, param_env, cause, depth);
     let result = normalizer.fold(value);
     debug!("normalize_with_depth: depth={} result={:?} with {} obligations",
            depth, result, normalizer.obligations.len());
@@ -285,7 +287,7 @@ pub fn normalize_with_depth<'a, 'b, 'gcx, 'tcx, T>(
     }
 }
 
-struct AssociatedTypeNormalizer<'a, 'b: 'a, 'gcx: 'b+'tcx, 'tcx: 'b> {
+struct AssocTypeNormalizer<'a, 'b: 'a, 'gcx: 'b+'tcx, 'tcx: 'b> {
     selcx: &'a mut SelectionContext<'b, 'gcx, 'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     cause: ObligationCause<'tcx>,
@@ -293,14 +295,14 @@ struct AssociatedTypeNormalizer<'a, 'b: 'a, 'gcx: 'b+'tcx, 'tcx: 'b> {
     depth: usize,
 }
 
-impl<'a, 'b, 'gcx, 'tcx> AssociatedTypeNormalizer<'a, 'b, 'gcx, 'tcx> {
+impl<'a, 'b, 'gcx, 'tcx> AssocTypeNormalizer<'a, 'b, 'gcx, 'tcx> {
     fn new(selcx: &'a mut SelectionContext<'b, 'gcx, 'tcx>,
            param_env: ty::ParamEnv<'tcx>,
            cause: ObligationCause<'tcx>,
            depth: usize)
-           -> AssociatedTypeNormalizer<'a, 'b, 'gcx, 'tcx>
+           -> AssocTypeNormalizer<'a, 'b, 'gcx, 'tcx>
     {
-        AssociatedTypeNormalizer {
+        AssocTypeNormalizer {
             selcx,
             param_env,
             cause,
@@ -310,7 +312,7 @@ impl<'a, 'b, 'gcx, 'tcx> AssociatedTypeNormalizer<'a, 'b, 'gcx, 'tcx> {
     }
 
     fn fold<T:TypeFoldable<'tcx>>(&mut self, value: &T) -> T {
-        let value = self.selcx.infcx().resolve_type_vars_if_possible(value);
+        let value = self.selcx.infcx().resolve_vars_if_possible(value);
 
         if !value.has_projections() {
             value
@@ -320,7 +322,7 @@ impl<'a, 'b, 'gcx, 'tcx> AssociatedTypeNormalizer<'a, 'b, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a, 'b, 'gcx, 'tcx> {
+impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssocTypeNormalizer<'a, 'b, 'gcx, 'tcx> {
     fn tcx<'c>(&'c self) -> TyCtxt<'c, 'gcx, 'tcx> {
         self.selcx.tcx()
     }
@@ -386,7 +388,7 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
                                                               self.cause.clone(),
                                                               self.depth,
                                                               &mut self.obligations);
-                debug!("AssociatedTypeNormalizer: depth={} normalized {:?} to {:?}, \
+                debug!("AssocTypeNormalizer: depth={} normalized {:?} to {:?}, \
                         now with {} obligations",
                        self.depth, ty, normalized_ty, self.obligations.len());
                 normalized_ty
@@ -396,8 +398,8 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
         }
     }
 
-    fn fold_const(&mut self, constant: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
-        if let ty::LazyConst::Unevaluated(def_id, substs) = *constant {
+    fn fold_const(&mut self, constant: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+        if let ConstValue::Unevaluated(def_id, substs) = constant.val {
             let tcx = self.selcx.tcx().global_tcx();
             if let Some(param_env) = self.tcx().lift_to_global(&self.param_env) {
                 if substs.needs_infer() || substs.has_placeholders() {
@@ -411,7 +413,7 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
                         if let Ok(evaluated) = tcx.const_eval(param_env.and(cid)) {
                             let substs = tcx.lift_to_global(&substs).unwrap();
                             let evaluated = evaluated.subst(tcx, substs);
-                            return tcx.mk_lazy_const(ty::LazyConst::Evaluated(evaluated));
+                            return evaluated;
                         }
                     }
                 } else {
@@ -423,7 +425,7 @@ impl<'a, 'b, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for AssociatedTypeNormalizer<'a,
                                 promoted: None
                             };
                             if let Ok(evaluated) = tcx.const_eval(param_env.and(cid)) {
-                                return tcx.mk_lazy_const(ty::LazyConst::Evaluated(evaluated));
+                                return evaluated;
                             }
                         }
                     }
@@ -506,7 +508,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
 {
     let infcx = selcx.infcx();
 
-    let projection_ty = infcx.resolve_type_vars_if_possible(&projection_ty);
+    let projection_ty = infcx.resolve_vars_if_possible(&projection_ty);
     let cache_key = ProjectionCacheKey { ty: projection_ty };
 
     debug!("opt_normalize_projection_type(\
@@ -592,7 +594,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
 
             // Once we have inferred everything we need to know, we
             // can ignore the `obligations` from that point on.
-            if !infcx.any_unresolved_type_vars(&ty.value) {
+            if infcx.unresolved_type_vars(&ty.value).is_none() {
                 infcx.projection_cache.borrow_mut().complete_normalized(cache_key, &ty);
                 // No need to extend `obligations`.
             } else {
@@ -633,7 +635,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
                    projected_obligations);
 
             let result = if projected_ty.has_projections() {
-                let mut normalizer = AssociatedTypeNormalizer::new(selcx,
+                let mut normalizer = AssocTypeNormalizer::new(selcx,
                                                                    param_env,
                                                                    cause,
                                                                    depth+1);
@@ -702,7 +704,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
 fn prune_cache_value_obligations<'a, 'gcx, 'tcx>(infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
                                                  result: &NormalizedTy<'tcx>)
                                                  -> NormalizedTy<'tcx> {
-    if !infcx.any_unresolved_type_vars(&result.value) {
+    if infcx.unresolved_type_vars(&result.value).is_none() {
         return NormalizedTy { value: result.value, obligations: vec![] };
     }
 
@@ -720,7 +722,7 @@ fn prune_cache_value_obligations<'a, 'gcx, 'tcx>(infcx: &'a InferCtxt<'a, 'gcx, 
                   // but we have `T: Foo<X = ?1>` and `?1: Bar<X =
                   // ?0>`).
                   ty::Predicate::Projection(ref data) =>
-                      infcx.any_unresolved_type_vars(&data.ty()),
+                      infcx.unresolved_type_vars(&data.ty()).is_some(),
 
                   // We are only interested in `T: Foo<X = U>` predicates, whre
                   // `U` references one of `unresolved_type_vars`. =)
@@ -1316,9 +1318,9 @@ fn confirm_generator_candidate<'cx, 'gcx, 'tcx>(
                                             gen_sig)
         .map_bound(|(trait_ref, yield_ty, return_ty)| {
             let name = tcx.associated_item(obligation.predicate.item_def_id).ident.name;
-            let ty = if name == "Return" {
+            let ty = if name == sym::Return {
                 return_ty
-            } else if name == "Yield" {
+            } else if name == sym::Yield {
                 yield_ty
             } else {
                 bug!()
@@ -1369,7 +1371,7 @@ fn confirm_closure_candidate<'cx, 'gcx, 'tcx>(
     let tcx = selcx.tcx();
     let infcx = selcx.infcx();
     let closure_sig_ty = vtable.substs.closure_sig_ty(vtable.closure_def_id, tcx);
-    let closure_sig = infcx.shallow_resolve(&closure_sig_ty).fn_sig(tcx);
+    let closure_sig = infcx.shallow_resolve(closure_sig_ty).fn_sig(tcx);
     let Normalized {
         value: closure_sig,
         obligations
@@ -1418,7 +1420,7 @@ fn confirm_callable_candidate<'cx, 'gcx, 'tcx>(
                 projection_ty: ty::ProjectionTy::from_ref_and_name(
                     tcx,
                     trait_ref,
-                    Ident::from_str(FN_OUTPUT_NAME),
+                    Ident::with_empty_ctxt(FN_OUTPUT_NAME),
                 ),
                 ty: ret_type
             }
@@ -1452,13 +1454,18 @@ fn confirm_param_env_candidate<'cx, 'gcx, 'tcx>(
             }
         }
         Err(e) => {
-            span_bug!(
-                obligation.cause.span,
-                "Failed to unify obligation `{:?}` \
-                 with poly_projection `{:?}`: {:?}",
+            let msg = format!(
+                "Failed to unify obligation `{:?}` with poly_projection `{:?}`: {:?}",
                 obligation,
                 poly_cache_entry,
-                e);
+                e,
+            );
+            debug!("confirm_param_env_candidate: {}", msg);
+            infcx.tcx.sess.delay_span_bug(obligation.cause.span, &msg);
+            Progress {
+                ty: infcx.tcx.types.err,
+                obligations: vec![],
+            }
         }
     }
 }
@@ -1489,7 +1496,7 @@ fn confirm_impl_candidate<'cx, 'gcx, 'tcx>(
         };
     }
     let substs = translate_substs(selcx.infcx(), param_env, impl_def_id, substs, assoc_ty.node);
-    let ty = if let ty::AssociatedKind::Existential = assoc_ty.item.kind {
+    let ty = if let ty::AssocKind::Existential = assoc_ty.item.kind {
         let item_substs = InternalSubsts::identity_for_item(tcx, assoc_ty.item.def_id);
         tcx.mk_opaque(assoc_ty.item.def_id, item_substs)
     } else {
@@ -1510,7 +1517,7 @@ fn assoc_ty_def<'cx, 'gcx, 'tcx>(
     selcx: &SelectionContext<'cx, 'gcx, 'tcx>,
     impl_def_id: DefId,
     assoc_ty_def_id: DefId)
-    -> specialization_graph::NodeItem<ty::AssociatedItem>
+    -> specialization_graph::NodeItem<ty::AssocItem>
 {
     let tcx = selcx.tcx();
     let assoc_ty_name = tcx.associated_item(assoc_ty_def_id).ident;
@@ -1525,7 +1532,7 @@ fn assoc_ty_def<'cx, 'gcx, 'tcx>(
     // cycle error if the specialization graph is currently being built.
     let impl_node = specialization_graph::Node::Impl(impl_def_id);
     for item in impl_node.items(tcx) {
-        if item.kind == ty::AssociatedKind::Type &&
+        if item.kind == ty::AssocKind::Type &&
                 tcx.hygienic_eq(item.ident, assoc_ty_name, trait_def_id) {
             return specialization_graph::NodeItem {
                 node: specialization_graph::Node::Impl(impl_def_id),
@@ -1536,7 +1543,7 @@ fn assoc_ty_def<'cx, 'gcx, 'tcx>(
 
     if let Some(assoc_item) = trait_def
         .ancestors(tcx, impl_def_id)
-        .defs(tcx, assoc_ty_name, ty::AssociatedKind::Type, trait_def_id)
+        .defs(tcx, assoc_ty_name, ty::AssocKind::Type, trait_def_id)
         .next() {
         assoc_item
     } else {
@@ -1548,7 +1555,7 @@ fn assoc_ty_def<'cx, 'gcx, 'tcx>(
         // should have failed in astconv.
         bug!("No associated type `{}` for {}",
              assoc_ty_name,
-             tcx.item_path_str(impl_def_id))
+             tcx.def_path_str(impl_def_id))
     }
 }
 
@@ -1607,7 +1614,7 @@ impl<'cx, 'gcx, 'tcx> ProjectionCacheKey<'tcx> {
                 // from a specific call to `opt_normalize_projection_type` - if
                 // there's no precise match, the original cache entry is "stranded"
                 // anyway.
-                ty: infcx.resolve_type_vars_if_possible(&predicate.projection_ty)
+                ty: infcx.resolve_vars_if_possible(&predicate.projection_ty)
             })
     }
 }

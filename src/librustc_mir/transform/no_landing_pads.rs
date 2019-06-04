@@ -12,25 +12,24 @@ impl MirPass for NoLandingPads {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           _: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
+                          mir: &mut Body<'tcx>) {
         no_landing_pads(tcx, mir)
     }
 }
 
-pub fn no_landing_pads<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, mir: &mut Mir<'tcx>) {
+pub fn no_landing_pads<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, mir: &mut Body<'tcx>) {
     if tcx.sess.no_landing_pads() {
-        NoLandingPads.visit_mir(mir);
+        NoLandingPads.visit_body(mir);
     }
 }
 
 impl<'tcx> MutVisitor<'tcx> for NoLandingPads {
-    fn visit_terminator(&mut self,
-                        bb: BasicBlock,
-                        terminator: &mut Terminator<'tcx>,
+    fn visit_terminator_kind(&mut self,
+                        kind: &mut TerminatorKind<'tcx>,
                         location: Location) {
-        if let Some(unwind) = terminator.kind.unwind_mut() {
+        if let Some(unwind) = kind.unwind_mut() {
             unwind.take();
         }
-        self.super_terminator(bb, terminator, location);
+        self.super_terminator_kind(kind, location);
     }
 }

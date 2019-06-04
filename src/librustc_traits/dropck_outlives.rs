@@ -7,7 +7,6 @@ use rustc::ty::query::Providers;
 use rustc::ty::subst::{Subst, InternalSubsts};
 use rustc::ty::{self, ParamEnvAnd, Ty, TyCtxt};
 use rustc::util::nodemap::FxHashSet;
-use rustc_data_structures::sync::Lrc;
 use syntax::source_map::{Span, DUMMY_SP};
 
 crate fn provide(p: &mut Providers<'_>) {
@@ -21,7 +20,7 @@ crate fn provide(p: &mut Providers<'_>) {
 fn dropck_outlives<'tcx>(
     tcx: TyCtxt<'_, 'tcx, 'tcx>,
     canonical_goal: CanonicalTyGoal<'tcx>,
-) -> Result<Lrc<Canonical<'tcx, QueryResponse<'tcx, DropckOutlivesResult<'tcx>>>>, NoSolution> {
+) -> Result<&'tcx Canonical<'tcx, QueryResponse<'tcx, DropckOutlivesResult<'tcx>>>, NoSolution> {
     debug!("dropck_outlives(goal={:#?})", canonical_goal);
 
     tcx.infer_ctxt().enter_with_canonical(
@@ -191,7 +190,7 @@ fn dtorck_constraint_for_ty<'a, 'gcx, 'tcx>(
         }
 
         ty::Tuple(tys) => tys.iter()
-            .map(|ty| dtorck_constraint_for_ty(tcx, span, for_ty, depth + 1, ty))
+            .map(|ty| dtorck_constraint_for_ty(tcx, span, for_ty, depth + 1, ty.expect_ty()))
             .collect(),
 
         ty::Closure(def_id, substs) => substs

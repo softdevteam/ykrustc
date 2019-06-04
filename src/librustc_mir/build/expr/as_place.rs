@@ -4,7 +4,7 @@ use crate::build::expr::category::Category;
 use crate::build::ForGuard::{OutsideGuard, RefWithinGuard};
 use crate::build::{BlockAnd, BlockAndExtension, Builder};
 use crate::hair::*;
-use rustc::mir::interpret::EvalErrorKind::BoundsCheck;
+use rustc::mir::interpret::InterpError::BoundsCheck;
 use rustc::mir::*;
 use rustc::ty::{CanonicalUserTypeAnnotation, Variance};
 
@@ -52,7 +52,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 region_scope,
                 lint_level,
                 value,
-            } => this.in_scope((region_scope, source_info), lint_level, block, |this| {
+            } => this.in_scope((region_scope, source_info), lint_level, |this| {
                 if mutability == Mutability::Not {
                     this.as_read_only_place(block, value)
                 } else {
@@ -112,11 +112,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             }
             ExprKind::SelfRef => block.and(Place::Base(PlaceBase::Local(Local::new(1)))),
             ExprKind::VarRef { id } => {
-                let place = if this.is_bound_var_in_guard(id) && this
-                    .hir
-                    .tcx()
-                    .all_pat_vars_are_implicit_refs_within_guards()
-                {
+                let place = if this.is_bound_var_in_guard(id) {
                     let index = this.var_local_id(id, RefWithinGuard);
                     Place::Base(PlaceBase::Local(index)).deref()
                 } else {
@@ -126,8 +122,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 block.and(place)
             }
             ExprKind::StaticRef { id } => block.and(Place::Base(PlaceBase::Static(Box::new(Static {
-                def_id: id,
                 ty: expr.ty,
+                kind: StaticKind::Static(id),
             })))),
 
             ExprKind::PlaceTypeAscription { source, user_ty } => {
@@ -193,14 +189,9 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             | ExprKind::Cast { .. }
             | ExprKind::Use { .. }
             | ExprKind::NeverToAny { .. }
-            | ExprKind::ReifyFnPointer { .. }
-            | ExprKind::ClosureFnPointer { .. }
-            | ExprKind::UnsafeFnPointer { .. }
-            | ExprKind::MutToConstPointer { .. }
-            | ExprKind::Unsize { .. }
+            | ExprKind::Pointer { .. }
             | ExprKind::Repeat { .. }
             | ExprKind::Borrow { .. }
-            | ExprKind::If { .. }
             | ExprKind::Match { .. }
             | ExprKind::Loop { .. }
             | ExprKind::Block { .. }

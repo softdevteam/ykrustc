@@ -1,10 +1,11 @@
 use crate::borrow_check::place_ext::PlaceExt;
 use crate::borrow_check::nll::ToRegionVid;
+use crate::borrow_check::path_utils::allow_two_phase_borrow;
 use crate::dataflow::indexes::BorrowIndex;
 use crate::dataflow::move_paths::MoveData;
 use rustc::mir::traversal;
 use rustc::mir::visit::{PlaceContext, Visitor, NonUseContext, MutatingUseContext};
-use rustc::mir::{self, Location, Mir, Local};
+use rustc::mir::{self, Location, Body, Local};
 use rustc::ty::{RegionVid, TyCtxt};
 use rustc::util::nodemap::{FxHashMap, FxHashSet};
 use rustc_data_structures::indexed_vec::IndexVec;
@@ -52,7 +53,7 @@ crate enum TwoPhaseActivation {
     ActivatedAt(Location),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 crate struct BorrowData<'tcx> {
     /// Location where the borrow reservation starts.
     /// In many cases, this will be equal to the activation location but not always.
@@ -89,13 +90,13 @@ crate enum LocalsStateAtExit {
 impl LocalsStateAtExit {
     fn build(
         locals_are_invalidated_at_exit: bool,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
         move_data: &MoveData<'tcx>
     ) -> Self {
         struct HasStorageDead(BitSet<Local>);
 
         impl<'tcx> Visitor<'tcx> for HasStorageDead {
-            fn visit_local(&mut self, local: &Local, ctx: PlaceContext<'tcx>, _: Location) {
+            fn visit_local(&mut self, local: &Local, ctx: PlaceContext, _: Location) {
                 if ctx == PlaceContext::NonUse(NonUseContext::StorageDead) {
                     self.0.insert(*local);
                 }
@@ -106,7 +107,7 @@ impl LocalsStateAtExit {
             LocalsStateAtExit::AllAreInvalidated
         } else {
             let mut has_storage_dead = HasStorageDead(BitSet::new_empty(mir.local_decls.len()));
-            has_storage_dead.visit_mir(mir);
+            has_storage_dead.visit_body(mir);
             let mut has_storage_dead_or_moved = has_storage_dead.0;
             for move_out in &move_data.moves {
                 if let Some(index) = move_data.base_local(move_out.path) {
@@ -122,7 +123,7 @@ impl LocalsStateAtExit {
 impl<'tcx> BorrowSet<'tcx> {
     pub fn build(
         tcx: TyCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
         locals_are_invalidated_at_exit: bool,
         move_data: &MoveData<'tcx>
     ) -> Self {
@@ -162,7 +163,7 @@ impl<'tcx> BorrowSet<'tcx> {
 
 struct GatherBorrows<'a, 'gcx: 'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     idx_vec: IndexVec<BorrowIndex, BorrowData<'tcx>>,
     location_map: FxHashMap<Location, BorrowIndex>,
     activation_map: FxHashMap<Location, Vec<BorrowIndex>>,
@@ -184,7 +185,6 @@ struct GatherBorrows<'a, 'gcx: 'tcx, 'tcx: 'a> {
 impl<'a, 'gcx, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'gcx, 'tcx> {
     fn visit_assign(
         &mut self,
-        block: mir::BasicBlock,
         assigned_place: &mir::Place<'tcx>,
         rvalue: &mir::Rvalue<'tcx>,
         location: mir::Location,
@@ -210,18 +210,18 @@ impl<'a, 'gcx, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'gcx, 'tcx> {
 
             self.insert_as_pending_if_two_phase(location, &assigned_place, kind, idx);
 
-            if let Some(local) = borrowed_place.root_local() {
+            if let Some(local) = borrowed_place.base_local() {
                 self.local_map.entry(local).or_default().insert(idx);
             }
         }
 
-        self.super_assign(block, assigned_place, rvalue, location)
+        self.super_assign(assigned_place, rvalue, location)
     }
 
     fn visit_local(
         &mut self,
         temp: &Local,
-        context: PlaceContext<'tcx>,
+        context: PlaceContext,
         location: Location,
     ) {
         if !context.is_use() {
@@ -287,26 +287,9 @@ impl<'a, 'gcx, 'tcx> Visitor<'tcx> for GatherBorrows<'a, 'gcx, 'tcx> {
 
         return self.super_rvalue(rvalue, location);
     }
-
-    fn visit_statement(
-        &mut self,
-        block: mir::BasicBlock,
-        statement: &mir::Statement<'tcx>,
-        location: Location,
-    ) {
-        return self.super_statement(block, statement, location);
-    }
 }
 
 impl<'a, 'gcx, 'tcx> GatherBorrows<'a, 'gcx, 'tcx> {
-    /// Returns `true` if the borrow represented by `kind` is
-    /// allowed to be split into separate Reservation and
-    /// Activation phases.
-    fn allow_two_phase_borrow(&self, kind: mir::BorrowKind) -> bool {
-        self.tcx.two_phase_borrows()
-            && (kind.allows_two_phase_borrow()
-                || self.tcx.sess.opts.debugging_opts.two_phase_beyond_autoref)
-    }
 
     /// If this is a two-phase borrow, then we will record it
     /// as "pending" until we find the activating use.
@@ -322,7 +305,7 @@ impl<'a, 'gcx, 'tcx> GatherBorrows<'a, 'gcx, 'tcx> {
             start_location, assigned_place, borrow_index,
         );
 
-        if !self.allow_two_phase_borrow(kind) {
+        if !allow_two_phase_borrow(kind) {
             debug!("  -> {:?}", start_location);
             return;
         }

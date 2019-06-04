@@ -2,7 +2,6 @@ use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::*;
 use rustc::mir::visit::Visitor;
 use rustc::ty::{self, TyCtxt};
-use rustc::ty::item_path;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 use std::fmt::Display;
@@ -69,7 +68,7 @@ pub fn dump_mir<'a, 'gcx, 'tcx, F>(
     pass_name: &str,
     disambiguator: &dyn Display,
     source: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     extra_data: F,
 ) where
     F: FnMut(PassWhere, &mut dyn Write) -> io::Result<()>,
@@ -78,9 +77,9 @@ pub fn dump_mir<'a, 'gcx, 'tcx, F>(
         return;
     }
 
-    let node_path = item_path::with_forced_impl_filename_line(|| {
+    let node_path = ty::print::with_forced_impl_filename_line(|| {
         // see notes on #41697 below
-        tcx.item_path_str(source.def_id())
+        tcx.def_path_str(source.def_id())
     });
     dump_matched_mir_node(
         tcx,
@@ -103,9 +102,9 @@ pub fn dump_enabled<'a, 'gcx, 'tcx>(
         None => return false,
         Some(ref filters) => filters,
     };
-    let node_path = item_path::with_forced_impl_filename_line(|| {
+    let node_path = ty::print::with_forced_impl_filename_line(|| {
         // see notes on #41697 below
-        tcx.item_path_str(source.def_id())
+        tcx.def_path_str(source.def_id())
     });
     filters.split('|').any(|or_filter| {
         or_filter.split('&').all(|and_filter| {
@@ -115,7 +114,7 @@ pub fn dump_enabled<'a, 'gcx, 'tcx>(
 }
 
 // #41697 -- we use `with_forced_impl_filename_line()` because
-// `item_path_str()` would otherwise trigger `type_of`, and this can
+// `def_path_str()` would otherwise trigger `type_of`, and this can
 // run while we are already attempting to evaluate `type_of`.
 
 fn dump_matched_mir_node<'a, 'gcx, 'tcx, F>(
@@ -125,7 +124,7 @@ fn dump_matched_mir_node<'a, 'gcx, 'tcx, F>(
     node_path: &str,
     disambiguator: &dyn Display,
     source: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     mut extra_data: F,
 ) where
     F: FnMut(PassWhere, &mut dyn Write) -> io::Result<()>,
@@ -283,7 +282,7 @@ pub fn write_mir_pretty<'a, 'gcx, 'tcx>(
 pub fn write_mir_fn<'a, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     src: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     extra_data: &mut F,
     w: &mut dyn Write,
 ) -> io::Result<()>
@@ -307,7 +306,7 @@ where
 pub fn write_basic_block<'cx, 'gcx, 'tcx, F>(
     tcx: TyCtxt<'cx, 'gcx, 'tcx>,
     block: BasicBlock,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     extra_data: &mut F,
     w: &mut dyn Write,
 ) -> io::Result<()>
@@ -317,9 +316,8 @@ where
     let data = &mir[block];
 
     // Basic block label at the top.
-    let cleanup_text = if data.is_cleanup { " // cleanup" } else { "" };
-    let lbl = format!("{}{:?}: {{", INDENT, block);
-    writeln!(w, "{0:1$}{2}", lbl, ALIGN, cleanup_text)?;
+    let cleanup_text = if data.is_cleanup { " (cleanup)" } else { "" };
+    writeln!(w, "{}{:?}{}: {{", INDENT, block, cleanup_text)?;
 
     // List of statements in the middle.
     let mut current_location = Location {
@@ -339,7 +337,7 @@ where
         )?;
 
         write_extra(tcx, w, |visitor| {
-            visitor.visit_statement(current_location.block, statement, current_location);
+            visitor.visit_statement(statement, current_location);
         })?;
 
         extra_data(PassWhere::AfterLocation(current_location), w)?;
@@ -360,7 +358,7 @@ where
     )?;
 
     write_extra(tcx, w, |visitor| {
-        visitor.visit_terminator(current_location.block, data.terminator(), current_location);
+        visitor.visit_terminator(data.terminator(), current_location);
     })?;
 
     extra_data(PassWhere::AfterLocation(current_location), w)?;
@@ -417,21 +415,12 @@ impl<'cx, 'gcx, 'tcx> Visitor<'tcx> for ExtraComments<'cx, 'gcx, 'tcx> {
         self.push(&format!("+ literal: {:?}", literal));
     }
 
-    fn visit_const(&mut self, constant: &&'tcx ty::LazyConst<'tcx>, _: Location) {
+    fn visit_const(&mut self, constant: &&'tcx ty::Const<'tcx>, _: Location) {
         self.super_const(constant);
-        match constant {
-            ty::LazyConst::Evaluated(constant) => {
-                let ty::Const { ty, val, .. } = constant;
-                self.push("ty::Const");
-                self.push(&format!("+ ty: {:?}", ty));
-                self.push(&format!("+ val: {:?}", val));
-            },
-            ty::LazyConst::Unevaluated(did, substs) => {
-                self.push("ty::LazyConst::Unevaluated");
-                self.push(&format!("+ did: {:?}", did));
-                self.push(&format!("+ substs: {:?}", substs));
-            },
-        }
+        let ty::Const { ty, val, .. } = constant;
+        self.push("ty::Const");
+        self.push(&format!("+ ty: {:?}", ty));
+        self.push(&format!("+ val: {:?}", val));
     }
 
     fn visit_rvalue(&mut self, rvalue: &Rvalue<'tcx>, location: Location) {
@@ -472,12 +461,10 @@ fn comment(tcx: TyCtxt<'_, '_, '_>, SourceInfo { span, scope }: SourceInfo) -> S
     )
 }
 
-/// Prints user-defined variables in a scope tree.
-///
-/// Returns the total number of variables printed.
+/// Prints local variables in a scope tree.
 fn write_scope_tree(
     tcx: TyCtxt<'_, '_, '_>,
-    mir: &Mir<'_>,
+    mir: &Body<'_>,
     scope_tree: &FxHashMap<SourceScope, Vec<SourceScope>>,
     w: &mut dyn Write,
     parent: SourceScope,
@@ -485,57 +472,64 @@ fn write_scope_tree(
 ) -> io::Result<()> {
     let indent = depth * INDENT.len();
 
+    // Local variable types (including the user's name in a comment).
+    for (local, local_decl) in mir.local_decls.iter_enumerated() {
+        if (1..mir.arg_count+1).contains(&local.index()) {
+            // Skip over argument locals, they're printed in the signature.
+            continue;
+        }
+
+        if local_decl.source_info.scope != parent {
+            // Not declared in this scope.
+            continue;
+        }
+
+        let mut_str = if local_decl.mutability == Mutability::Mut {
+            "mut "
+        } else {
+            ""
+        };
+
+        let mut indented_decl = format!(
+            "{0:1$}let {2}{3:?}: {4:?}",
+            INDENT,
+            indent,
+            mut_str,
+            local,
+            local_decl.ty
+        );
+        for user_ty in local_decl.user_ty.projections() {
+            write!(indented_decl, " as {:?}", user_ty).unwrap();
+        }
+        indented_decl.push_str(";");
+
+        let local_name = if local == RETURN_PLACE {
+            format!(" return place")
+        } else if let Some(name) = local_decl.name {
+            format!(" \"{}\"", name)
+        } else {
+            String::new()
+        };
+
+        writeln!(
+            w,
+            "{0:1$} //{2} in {3}",
+            indented_decl,
+            ALIGN,
+            local_name,
+            comment(tcx, local_decl.source_info),
+        )?;
+    }
+
     let children = match scope_tree.get(&parent) {
-        Some(children) => children,
+        Some(childs) => childs,
         None => return Ok(()),
     };
 
     for &child in children {
-        let data = &mir.source_scopes[child];
-        assert_eq!(data.parent_scope, Some(parent));
+        assert_eq!(mir.source_scopes[child].parent_scope, Some(parent));
         writeln!(w, "{0:1$}scope {2} {{", "", indent, child.index())?;
-
-        // User variable types (including the user's name in a comment).
-        for local in mir.vars_iter() {
-            let var = &mir.local_decls[local];
-            let (name, source_info) = if var.source_info.scope == child {
-                (var.name.unwrap(), var.source_info)
-            } else {
-                // Not a variable or not declared in this scope.
-                continue;
-            };
-
-            let mut_str = if var.mutability == Mutability::Mut {
-                "mut "
-            } else {
-                ""
-            };
-
-            let indent = indent + INDENT.len();
-            let mut indented_var = format!(
-                "{0:1$}let {2}{3:?}: {4:?}",
-                INDENT,
-                indent,
-                mut_str,
-                local,
-                var.ty
-            );
-            for user_ty in var.user_ty.projections() {
-                write!(indented_var, " as {:?}", user_ty).unwrap();
-            }
-            indented_var.push_str(";");
-            writeln!(
-                w,
-                "{0:1$} // \"{2}\" in {3}",
-                indented_var,
-                ALIGN,
-                name,
-                comment(tcx, source_info)
-            )?;
-        }
-
         write_scope_tree(tcx, mir, scope_tree, w, child, depth + 1)?;
-
         writeln!(w, "{0:1$}}}", "", depth * INDENT.len())?;
     }
 
@@ -547,7 +541,7 @@ fn write_scope_tree(
 pub fn write_mir_intro<'a, 'gcx, 'tcx>(
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     src: MirSource<'tcx>,
-    mir: &Mir<'_>,
+    mir: &Body<'_>,
     w: &mut dyn Write,
 ) -> io::Result<()> {
     write_mir_sig(tcx, src, mir, w)?;
@@ -567,18 +561,7 @@ pub fn write_mir_intro<'a, 'gcx, 'tcx>(
         }
     }
 
-    // Print return place
-    let indented_retptr = format!("{}let mut {:?}: {};",
-                                  INDENT,
-                                  RETURN_PLACE,
-                                  mir.local_decls[RETURN_PLACE].ty);
-    writeln!(w, "{0:1$} // return place",
-             indented_retptr,
-             ALIGN)?;
-
     write_scope_tree(tcx, mir, &scope_tree, w, OUTERMOST_SOURCE_SCOPE, 1)?;
-
-    write_temp_decls(mir, w)?;
 
     // Add an empty line before the first block is printed.
     writeln!(w, "")?;
@@ -589,32 +572,33 @@ pub fn write_mir_intro<'a, 'gcx, 'tcx>(
 fn write_mir_sig(
     tcx: TyCtxt<'_, '_, '_>,
     src: MirSource<'tcx>,
-    mir: &Mir<'_>,
+    mir: &Body<'_>,
     w: &mut dyn Write,
 ) -> io::Result<()> {
-    use rustc::hir::def::Def;
+    use rustc::hir::def::DefKind;
 
     trace!("write_mir_sig: {:?}", src.instance);
-    let descr = tcx.describe_def(src.def_id());
-    let is_function = match descr {
-        Some(Def::Fn(_)) | Some(Def::Method(_)) | Some(Def::StructCtor(..)) => true,
+    let kind = tcx.def_kind(src.def_id());
+    let is_function = match kind {
+        Some(DefKind::Fn)
+        | Some(DefKind::Method)
+        | Some(DefKind::Ctor(..)) => true,
         _ => tcx.is_closure(src.def_id()),
     };
-    match (descr, src.promoted) {
+    match (kind, src.promoted) {
         (_, Some(i)) => write!(w, "{:?} in ", i)?,
-        (Some(Def::StructCtor(..)), _) => write!(w, "struct ")?,
-        (Some(Def::Const(_)), _)
-        | (Some(Def::AssociatedConst(_)), _) => write!(w, "const ")?,
-        (Some(Def::Static(_, /*is_mutbl*/false)), _) => write!(w, "static ")?,
-        (Some(Def::Static(_, /*is_mutbl*/true)), _) => write!(w, "static mut ")?,
+        (Some(DefKind::Const), _)
+        | (Some(DefKind::AssocConst), _) => write!(w, "const ")?,
+        (Some(DefKind::Static), _) =>
+            write!(w, "static {}", if tcx.is_mutable_static(src.def_id()) { "mut " } else { "" })?,
         (_, _) if is_function => write!(w, "fn ")?,
         (None, _) => {}, // things like anon const, not an item
-        _ => bug!("Unexpected def description {:?}", descr),
+        _ => bug!("Unexpected def kind {:?}", kind),
     }
 
-    item_path::with_forced_impl_filename_line(|| {
+    ty::print::with_forced_impl_filename_line(|| {
         // see notes on #41697 elsewhere
-        write!(w, "{}", tcx.item_path_str(src.def_id()))
+        write!(w, " {}", tcx.def_path_str(src.def_id()))
     })?;
 
     if src.promoted.is_none() && is_function {
@@ -645,23 +629,7 @@ fn write_mir_sig(
     Ok(())
 }
 
-fn write_temp_decls(mir: &Mir<'_>, w: &mut dyn Write) -> io::Result<()> {
-    // Compiler-introduced temporary types.
-    for temp in mir.temps_iter() {
-        writeln!(
-            w,
-            "{}let {}{:?}: {};",
-            INDENT,
-            if mir.local_decls[temp].mutability == Mutability::Mut {"mut "} else {""},
-            temp,
-            mir.local_decls[temp].ty
-        )?;
-    }
-
-    Ok(())
-}
-
-fn write_user_type_annotations(mir: &Mir<'_>, w: &mut dyn Write) -> io::Result<()> {
+fn write_user_type_annotations(mir: &Body<'_>, w: &mut dyn Write) -> io::Result<()> {
     if !mir.user_type_annotations.is_empty() {
         writeln!(w, "| User Type Annotations")?;
     }

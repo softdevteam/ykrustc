@@ -2,23 +2,46 @@
 
 use super::{
     Pointer, EvalResult, AllocId, ScalarMaybeUndef, write_target_uint, read_target_uint, Scalar,
-    truncate,
 };
 
 use crate::ty::layout::{Size, Align};
 use syntax::ast::Mutability;
-use std::iter;
+use std::{iter, fmt::{self, Display}};
 use crate::mir;
 use std::ops::{Deref, DerefMut};
 use rustc_data_structures::sorted_map::SortedMap;
+use rustc_macros::HashStable;
 use rustc_target::abi::HasDataLayout;
+use std::borrow::Cow;
 
 /// Used by `check_bounds` to indicate whether the pointer needs to be just inbounds
 /// or also inbounds of a *live* allocation.
-#[derive(Debug, Copy, Clone, RustcEncodable, RustcDecodable)]
+#[derive(Debug, Copy, Clone, RustcEncodable, RustcDecodable, HashStable)]
 pub enum InboundsCheck {
     Live,
     MaybeDead,
+}
+
+/// Used by `check_in_alloc` to indicate context of check
+#[derive(Debug, Copy, Clone, RustcEncodable, RustcDecodable, HashStable)]
+pub enum CheckInAllocMsg {
+    MemoryAccessTest,
+    NullPointerTest,
+    PointerArithmeticTest,
+    InboundsTest,
+}
+
+impl Display for CheckInAllocMsg {
+    /// When this is printed as an error the context looks like this
+    /// "{test name} failed: pointer must be in-bounds at offset..."
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", match *self {
+            CheckInAllocMsg::MemoryAccessTest => "Memory access",
+            CheckInAllocMsg::NullPointerTest => "Null pointer test",
+            CheckInAllocMsg::PointerArithmeticTest => "Pointer arithmetic",
+            CheckInAllocMsg::InboundsTest => "Inbounds test",
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
@@ -44,12 +67,10 @@ pub struct Allocation<Tag=(),Extra=()> {
 }
 
 
-pub trait AllocationExtra<Tag, MemoryExtra>: ::std::fmt::Debug + Clone {
-    /// Hook to initialize the extra data when an allocation gets created.
-    fn memory_allocated(
-        _size: Size,
-        _memory_extra: &MemoryExtra
-    ) -> Self;
+pub trait AllocationExtra<Tag>: ::std::fmt::Debug + Clone {
+    // There is no constructor in here because the constructor's type depends
+    // on `MemoryKind`, and making things sufficiently generic leads to painful
+    // inference failure.
 
     /// Hook for performing extra checks on a memory read access.
     ///
@@ -87,44 +108,38 @@ pub trait AllocationExtra<Tag, MemoryExtra>: ::std::fmt::Debug + Clone {
     }
 }
 
-impl AllocationExtra<(), ()> for () {
-    #[inline(always)]
-    fn memory_allocated(
-        _size: Size,
-        _memory_extra: &()
-    ) -> Self {
-        ()
-    }
-}
+// For Tag=() and no extra state, we have is a trivial implementation.
+impl AllocationExtra<()> for () { }
 
-impl<Tag, Extra> Allocation<Tag, Extra> {
+// The constructors are all without extra; the extra gets added by a machine hook later.
+impl<Tag> Allocation<Tag> {
     /// Creates a read-only allocation initialized by the given bytes
-    pub fn from_bytes(slice: &[u8], align: Align, extra: Extra) -> Self {
-        let mut undef_mask = UndefMask::new(Size::ZERO);
-        undef_mask.grow(Size::from_bytes(slice.len() as u64), true);
+    pub fn from_bytes<'a>(slice: impl Into<Cow<'a, [u8]>>, align: Align) -> Self {
+        let bytes = slice.into().into_owned();
+        let undef_mask = UndefMask::new(Size::from_bytes(bytes.len() as u64), true);
         Self {
-            bytes: slice.to_owned(),
+            bytes,
             relocations: Relocations::new(),
             undef_mask,
             align,
             mutability: Mutability::Immutable,
-            extra,
+            extra: (),
         }
     }
 
-    pub fn from_byte_aligned_bytes(slice: &[u8], extra: Extra) -> Self {
-        Allocation::from_bytes(slice, Align::from_bytes(1).unwrap(), extra)
+    pub fn from_byte_aligned_bytes<'a>(slice: impl Into<Cow<'a, [u8]>>) -> Self {
+        Allocation::from_bytes(slice, Align::from_bytes(1).unwrap())
     }
 
-    pub fn undef(size: Size, align: Align, extra: Extra) -> Self {
+    pub fn undef(size: Size, align: Align) -> Self {
         assert_eq!(size.bytes() as usize as u64, size.bytes());
         Allocation {
             bytes: vec![0; size.bytes() as usize],
             relocations: Relocations::new(),
-            undef_mask: UndefMask::new(size),
+            undef_mask: UndefMask::new(size, false),
             align,
             mutability: Mutability::Mutable,
-            extra,
+            extra: (),
         }
     }
 }
@@ -140,9 +155,10 @@ impl<'tcx, Tag, Extra> Allocation<Tag, Extra> {
     fn check_bounds_ptr(
         &self,
         ptr: Pointer<Tag>,
+        msg: CheckInAllocMsg,
     ) -> EvalResult<'tcx> {
         let allocation_size = self.bytes.len() as u64;
-        ptr.check_in_alloc(Size::from_bytes(allocation_size), InboundsCheck::Live)
+        ptr.check_in_alloc(Size::from_bytes(allocation_size), msg)
     }
 
     /// Checks if the memory range beginning at `ptr` and of size `Size` is "in-bounds".
@@ -152,14 +168,15 @@ impl<'tcx, Tag, Extra> Allocation<Tag, Extra> {
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size,
+        msg: CheckInAllocMsg,
     ) -> EvalResult<'tcx> {
         // if ptr.offset is in bounds, then so is ptr (because offset checks for overflow)
-        self.check_bounds_ptr(ptr.offset(size, cx)?)
+        self.check_bounds_ptr(ptr.offset(size, cx)?, msg)
     }
 }
 
 /// Byte accessors
-impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
+impl<'tcx, Tag: Copy, Extra: AllocationExtra<Tag>> Allocation<Tag, Extra> {
     /// The last argument controls whether we error out when there are undefined
     /// or pointer bytes. You should never call this, call `get_bytes` or
     /// `get_bytes_with_undef_and_ptr` instead,
@@ -167,17 +184,16 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// This function also guarantees that the resulting pointer will remain stable
     /// even when new allocations are pushed to the `HashMap`. `copy_repeatedly` relies
     /// on that.
-    fn get_bytes_internal<MemoryExtra>(
+    fn get_bytes_internal(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size,
         check_defined_and_ptr: bool,
+        msg: CheckInAllocMsg,
     ) -> EvalResult<'tcx, &[u8]>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
-        self.check_bounds(cx, ptr, size)?;
+        self.check_bounds(cx, ptr, size, msg)?;
 
         if check_defined_and_ptr {
             self.check_defined(ptr, size)?;
@@ -196,46 +212,40 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     }
 
     #[inline]
-    pub fn get_bytes<MemoryExtra>(
+    pub fn get_bytes(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size,
     ) -> EvalResult<'tcx, &[u8]>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
-        self.get_bytes_internal(cx, ptr, size, true)
+        self.get_bytes_internal(cx, ptr, size, true, CheckInAllocMsg::MemoryAccessTest)
     }
 
     /// It is the caller's responsibility to handle undefined and pointer bytes.
     /// However, this still checks that there are no relocations on the *edges*.
     #[inline]
-    pub fn get_bytes_with_undef_and_ptr<MemoryExtra>(
+    pub fn get_bytes_with_undef_and_ptr(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size,
     ) -> EvalResult<'tcx, &[u8]>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
-        self.get_bytes_internal(cx, ptr, size, false)
+        self.get_bytes_internal(cx, ptr, size, false, CheckInAllocMsg::MemoryAccessTest)
     }
 
     /// Just calling this already marks everything as defined and removes relocations,
     /// so be sure to actually put data there!
-    pub fn get_bytes_mut<MemoryExtra>(
+    pub fn get_bytes_mut(
         &mut self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size,
     ) -> EvalResult<'tcx, &mut [u8]>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         assert_ne!(size.bytes(), 0, "0-sized accesses should never even get a `Pointer`");
-        self.check_bounds(cx, ptr, size)?;
+        self.check_bounds(cx, ptr, size, CheckInAllocMsg::MemoryAccessTest)?;
 
         self.mark_definedness(ptr, size, true)?;
         self.clear_relocations(cx, ptr, size)?;
@@ -250,16 +260,14 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
 }
 
 /// Reading and writing
-impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
+impl<'tcx, Tag: Copy, Extra: AllocationExtra<Tag>> Allocation<Tag, Extra> {
     /// Reads bytes until a `0` is encountered. Will error if the end of the allocation is reached
     /// before a `0` is found.
-    pub fn read_c_str<MemoryExtra>(
+    pub fn read_c_str(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
     ) -> EvalResult<'tcx, &[u8]>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         assert_eq!(ptr.offset.bytes() as usize as u64, ptr.offset.bytes());
         let offset = ptr.offset.bytes() as usize;
@@ -278,15 +286,13 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// Validates that `ptr.offset` and `ptr.offset + size` do not point to the middle of a
     /// relocation. If `allow_ptr_and_undef` is `false`, also enforces that the memory in the
     /// given range contains neither relocations nor undef bytes.
-    pub fn check_bytes<MemoryExtra>(
+    pub fn check_bytes(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size,
         allow_ptr_and_undef: bool,
     ) -> EvalResult<'tcx>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         // Check bounds and relocations on the edges
         self.get_bytes_with_undef_and_ptr(cx, ptr, size)?;
@@ -301,14 +307,12 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     /// Writes `src` to the memory starting at `ptr.offset`.
     ///
     /// Will do bounds checks on the allocation.
-    pub fn write_bytes<MemoryExtra>(
+    pub fn write_bytes(
         &mut self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         src: &[u8],
     ) -> EvalResult<'tcx>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         let bytes = self.get_bytes_mut(cx, ptr, Size::from_bytes(src.len() as u64))?;
         bytes.clone_from_slice(src);
@@ -316,15 +320,13 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     }
 
     /// Sets `count` bytes starting at `ptr.offset` with `val`. Basically `memset`.
-    pub fn write_repeat<MemoryExtra>(
+    pub fn write_repeat(
         &mut self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         val: u8,
         count: Size
     ) -> EvalResult<'tcx>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         let bytes = self.get_bytes_mut(cx, ptr, count)?;
         for b in bytes {
@@ -341,14 +343,12 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     ///   being valid for ZSTs
     ///
     /// Note: This function does not do *any* alignment checks, you need to do these before calling
-    pub fn read_scalar<MemoryExtra>(
+    pub fn read_scalar(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         size: Size
     ) -> EvalResult<'tcx, ScalarMaybeUndef<Tag>>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         // get_bytes_unchecked tests relocation edges
         let bytes = self.get_bytes_with_undef_and_ptr(cx, ptr, size)?;
@@ -379,13 +379,11 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     }
 
     /// Note: This function does not do *any* alignment checks, you need to do these before calling
-    pub fn read_ptr_sized<MemoryExtra>(
+    pub fn read_ptr_sized(
         &self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
     ) -> EvalResult<'tcx, ScalarMaybeUndef<Tag>>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         self.read_scalar(cx, ptr, cx.data_layout().pointer_size)
     }
@@ -398,33 +396,22 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     ///   being valid for ZSTs
     ///
     /// Note: This function does not do *any* alignment checks, you need to do these before calling
-    pub fn write_scalar<MemoryExtra>(
+    pub fn write_scalar(
         &mut self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         val: ScalarMaybeUndef<Tag>,
         type_size: Size,
     ) -> EvalResult<'tcx>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         let val = match val {
             ScalarMaybeUndef::Scalar(scalar) => scalar,
             ScalarMaybeUndef::Undef => return self.mark_definedness(ptr, type_size, false),
         };
 
-        let bytes = match val {
-            Scalar::Ptr(val) => {
-                assert_eq!(type_size, cx.data_layout().pointer_size);
-                val.offset.bytes() as u128
-            }
-
-            Scalar::Bits { bits, size } => {
-                assert_eq!(size as u64, type_size.bytes());
-                debug_assert_eq!(truncate(bits, Size::from_bytes(size.into())), bits,
-                    "Unexpected value of size {} when writing to memory", size);
-                bits
-            },
+        let bytes = match val.to_bits_or_ptr(type_size, cx) {
+            Err(val) => val.offset.bytes() as u128,
+            Ok(data) => data,
         };
 
         let endian = cx.data_layout().endian;
@@ -446,14 +433,12 @@ impl<'tcx, Tag: Copy, Extra> Allocation<Tag, Extra> {
     }
 
     /// Note: This function does not do *any* alignment checks, you need to do these before calling
-    pub fn write_ptr_sized<MemoryExtra>(
+    pub fn write_ptr_sized(
         &mut self,
         cx: &impl HasDataLayout,
         ptr: Pointer<Tag>,
         val: ScalarMaybeUndef<Tag>
     ) -> EvalResult<'tcx>
-        // FIXME: Working around https://github.com/rust-lang/rust/issues/56209
-        where Extra: AllocationExtra<Tag, MemoryExtra>
     {
         let ptr_size = cx.data_layout().pointer_size;
         self.write_scalar(cx, ptr.into(), val, ptr_size)
@@ -613,8 +598,9 @@ impl<Tag> DerefMut for Relocations<Tag> {
 ////////////////////////////////////////////////////////////////////////////////
 
 type Block = u64;
-const BLOCK_SIZE: u64 = 64;
 
+/// A bitmask where each bit refers to the byte with the same index. If the bit is `true`, the byte
+/// is defined. If it is `false` the byte is undefined.
 #[derive(Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
 pub struct UndefMask {
     blocks: Vec<Block>,
@@ -624,12 +610,14 @@ pub struct UndefMask {
 impl_stable_hash_for!(struct mir::interpret::UndefMask{blocks, len});
 
 impl UndefMask {
-    pub fn new(size: Size) -> Self {
+    pub const BLOCK_SIZE: u64 = 64;
+
+    pub fn new(size: Size, state: bool) -> Self {
         let mut m = UndefMask {
             blocks: vec![],
             len: Size::ZERO,
         };
-        m.grow(size, false);
+        m.grow(size, state);
         m
     }
 
@@ -643,6 +631,7 @@ impl UndefMask {
             return Err(self.len);
         }
 
+        // FIXME(oli-obk): optimize this for allocations larger than a block.
         let idx = (start.bytes()..end.bytes())
             .map(|i| Size::from_bytes(i))
             .find(|&i| !self.get(i));
@@ -662,20 +651,63 @@ impl UndefMask {
     }
 
     pub fn set_range_inbounds(&mut self, start: Size, end: Size, new_state: bool) {
-        for i in start.bytes()..end.bytes() {
-            self.set(Size::from_bytes(i), new_state);
+        let (blocka, bita) = bit_index(start);
+        let (blockb, bitb) = bit_index(end);
+        if blocka == blockb {
+            // first set all bits but the first `bita`
+            // then unset the last `64 - bitb` bits
+            let range = if bitb == 0 {
+                u64::max_value() << bita
+            } else {
+                (u64::max_value() << bita) & (u64::max_value() >> (64 - bitb))
+            };
+            if new_state {
+                self.blocks[blocka] |= range;
+            } else {
+                self.blocks[blocka] &= !range;
+            }
+            return;
+        }
+        // across block boundaries
+        if new_state {
+            // set bita..64 to 1
+            self.blocks[blocka] |= u64::max_value() << bita;
+            // set 0..bitb to 1
+            if bitb != 0 {
+                self.blocks[blockb] |= u64::max_value() >> (64 - bitb);
+            }
+            // fill in all the other blocks (much faster than one bit at a time)
+            for block in (blocka + 1) .. blockb {
+                self.blocks[block] = u64::max_value();
+            }
+        } else {
+            // set bita..64 to 0
+            self.blocks[blocka] &= !(u64::max_value() << bita);
+            // set 0..bitb to 0
+            if bitb != 0 {
+                self.blocks[blockb] &= !(u64::max_value() >> (64 - bitb));
+            }
+            // fill in all the other blocks (much faster than one bit at a time)
+            for block in (blocka + 1) .. blockb {
+                self.blocks[block] = 0;
+            }
         }
     }
 
     #[inline]
     pub fn get(&self, i: Size) -> bool {
         let (block, bit) = bit_index(i);
-        (self.blocks[block] & 1 << bit) != 0
+        (self.blocks[block] & (1 << bit)) != 0
     }
 
     #[inline]
     pub fn set(&mut self, i: Size, new_state: bool) {
         let (block, bit) = bit_index(i);
+        self.set_bit(block, bit, new_state);
+    }
+
+    #[inline]
+    fn set_bit(&mut self, block: usize, bit: usize, new_state: bool) {
         if new_state {
             self.blocks[block] |= 1 << bit;
         } else {
@@ -684,11 +716,15 @@ impl UndefMask {
     }
 
     pub fn grow(&mut self, amount: Size, new_state: bool) {
-        let unused_trailing_bits = self.blocks.len() as u64 * BLOCK_SIZE - self.len.bytes();
+        if amount.bytes() == 0 {
+            return;
+        }
+        let unused_trailing_bits = self.blocks.len() as u64 * Self::BLOCK_SIZE - self.len.bytes();
         if amount.bytes() > unused_trailing_bits {
-            let additional_blocks = amount.bytes() / BLOCK_SIZE + 1;
+            let additional_blocks = amount.bytes() / Self::BLOCK_SIZE + 1;
             assert_eq!(additional_blocks as usize as u64, additional_blocks);
             self.blocks.extend(
+                // FIXME(oli-obk): optimize this by repeating `new_state as Block`
                 iter::repeat(0).take(additional_blocks as usize),
             );
         }
@@ -701,8 +737,8 @@ impl UndefMask {
 #[inline]
 fn bit_index(bits: Size) -> (usize, usize) {
     let bits = bits.bytes();
-    let a = bits / BLOCK_SIZE;
-    let b = bits % BLOCK_SIZE;
+    let a = bits / UndefMask::BLOCK_SIZE;
+    let b = bits % UndefMask::BLOCK_SIZE;
     assert_eq!(a as usize as u64, a);
     assert_eq!(b as usize as u64, b);
     (a as usize, b as usize)

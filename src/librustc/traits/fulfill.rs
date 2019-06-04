@@ -1,4 +1,4 @@
-use crate::infer::InferCtxt;
+use crate::infer::{InferCtxt, ShallowResolver};
 use crate::mir::interpret::{GlobalId, ErrorHandled};
 use crate::ty::{self, Ty, TypeFoldable, ToPolyTraitRef};
 use crate::ty::error::ExpectedFound;
@@ -178,7 +178,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
     {
         // this helps to reduce duplicate errors, as well as making
         // debug output much nicer to read and so on.
-        let obligation = infcx.resolve_type_vars_if_possible(&obligation);
+        let obligation = infcx.resolve_vars_if_possible(&obligation);
 
         debug!("register_predicate_obligation(obligation={:?})", obligation);
 
@@ -256,12 +256,12 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
         if !pending_obligation.stalled_on.is_empty() {
             if pending_obligation.stalled_on.iter().all(|&ty| {
                 // Use the force-inlined variant of shallow_resolve() because this code is hot.
-                let resolved_ty = self.selcx.infcx().inlined_shallow_resolve(&ty);
-                resolved_ty == ty // nothing changed here
+                let resolved = ShallowResolver::new(self.selcx.infcx()).inlined_shallow_resolve(ty);
+                resolved == ty // nothing changed here
             }) {
                 debug!("process_predicate: pending obligation {:?} still stalled on {:?}",
                        self.selcx.infcx()
-                           .resolve_type_vars_if_possible(&pending_obligation.obligation),
+                           .resolve_vars_if_possible(&pending_obligation.obligation),
                        pending_obligation.stalled_on);
                 return ProcessResult::Unchanged;
             }
@@ -272,8 +272,10 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
 
         if obligation.predicate.has_infer_types() {
             obligation.predicate =
-                self.selcx.infcx().resolve_type_vars_if_possible(&obligation.predicate);
+                self.selcx.infcx().resolve_vars_if_possible(&obligation.predicate);
         }
+
+        debug!("process_obligation: obligation = {:?}", obligation);
 
         match obligation.predicate {
             ty::Predicate::Trait(ref data) => {
@@ -316,7 +318,7 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
                             trait_ref_type_vars(self.selcx, data.to_poly_trait_ref());
 
                         debug!("process_predicate: pending obligation {:?} now stalled on {:?}",
-                               self.selcx.infcx().resolve_type_vars_if_possible(obligation),
+                               self.selcx.infcx().resolve_vars_if_possible(obligation),
                                pending_obligation.stalled_on);
 
                         ProcessResult::Unchanged
@@ -357,7 +359,7 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
                             // `for<'a> T: 'a where 'a not in T`, which we can treat as
                             // `T: 'static`.
                             Some(t_a) => {
-                                let r_static = self.selcx.tcx().types.re_static;
+                                let r_static = self.selcx.tcx().lifetimes.re_static;
                                 if self.register_region_obligations {
                                     self.selcx.infcx().register_region_obligation_with_cause(
                                         t_a,
@@ -517,7 +519,7 @@ fn trait_ref_type_vars<'a, 'gcx, 'tcx>(selcx: &mut SelectionContext<'a, 'gcx, 't
 {
     t.skip_binder() // ok b/c this check doesn't care about regions
      .input_types()
-     .map(|t| selcx.infcx().resolve_type_vars_if_possible(&t))
+     .map(|t| selcx.infcx().resolve_vars_if_possible(&t))
      .filter(|t| t.has_infer_types())
      .flat_map(|t| t.walk())
      .filter(|t| match t.sty { ty::Infer(_) => true, _ => false })

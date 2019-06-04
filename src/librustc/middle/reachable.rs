@@ -7,7 +7,7 @@
 
 use crate::hir::{CodegenFnAttrs, CodegenFnAttrFlags};
 use crate::hir::Node;
-use crate::hir::def::Def;
+use crate::hir::def::{Res, DefKind};
 use crate::hir::def_id::{DefId, CrateNum};
 use rustc_data_structures::sync::Lrc;
 use crate::ty::{self, TyCtxt};
@@ -17,6 +17,7 @@ use crate::session::config;
 use crate::util::nodemap::{HirIdSet, FxHashSet};
 
 use rustc_target::spec::abi::Abi;
+use rustc_macros::HashStable;
 use crate::hir;
 use crate::hir::def_id::LOCAL_CRATE;
 use crate::hir::intravisit::{Visitor, NestedVisitorMap};
@@ -91,33 +92,33 @@ impl<'a, 'tcx> Visitor<'tcx> for ReachableContext<'a, 'tcx> {
     }
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
-        let def = match expr.node {
+        let res = match expr.node {
             hir::ExprKind::Path(ref qpath) => {
-                Some(self.tables.qpath_def(qpath, expr.hir_id))
+                Some(self.tables.qpath_res(qpath, expr.hir_id))
             }
             hir::ExprKind::MethodCall(..) => {
-                self.tables.type_dependent_defs().get(expr.hir_id).cloned()
+                self.tables.type_dependent_def(expr.hir_id)
+                    .map(|(kind, def_id)| Res::Def(kind, def_id))
             }
             _ => None
         };
 
-        match def {
-            Some(Def::Local(node_id)) | Some(Def::Upvar(node_id, ..)) => {
-                let hir_id = self.tcx.hir().node_to_hir_id(node_id);
+        match res {
+            Some(Res::Local(hir_id)) => {
                 self.reachable_symbols.insert(hir_id);
             }
-            Some(def) => {
-                if let Some((hir_id, def_id)) = def.opt_def_id().and_then(|def_id| {
+            Some(res) => {
+                if let Some((hir_id, def_id)) = res.opt_def_id().and_then(|def_id| {
                     self.tcx.hir().as_local_hir_id(def_id).map(|hir_id| (hir_id, def_id))
                 }) {
                     if self.def_id_represents_local_inlined_item(def_id) {
                         self.worklist.push(hir_id);
                     } else {
-                        match def {
+                        match res {
                             // If this path leads to a constant, then we need to
                             // recurse into the constant to continue finding
                             // items that are reachable.
-                            Def::Const(..) | Def::AssociatedConst(..) => {
+                            Res::Def(DefKind::Const, _) | Res::Def(DefKind::AssocConst, _) => {
                                 self.worklist.push(hir_id);
                             }
 
@@ -310,7 +311,7 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
             // Nothing to recurse on for these
             Node::ForeignItem(_) |
             Node::Variant(_) |
-            Node::StructCtor(_) |
+            Node::Ctor(..) |
             Node::Field(_) |
             Node::Ty(_) |
             Node::MacroDef(_) => {}
@@ -353,12 +354,11 @@ impl<'a, 'tcx: 'a> ItemLikeVisitor<'tcx> for CollectPrivateImplItemsVisitor<'a, 
 
         // We need only trait impls here, not inherent impls, and only non-exported ones
         if let hir::ItemKind::Impl(.., Some(ref trait_ref), _, ref impl_item_refs) = item.node {
-            let node_id = self.tcx.hir().hir_to_node_id(item.hir_id);
-            if !self.access_levels.is_reachable(node_id) {
+            if !self.access_levels.is_reachable(item.hir_id) {
                 self.worklist.extend(impl_item_refs.iter().map(|ii_ref| ii_ref.id.hir_id));
 
-                let trait_def_id = match trait_ref.path.def {
-                    Def::Trait(def_id) => def_id,
+                let trait_def_id = match trait_ref.path.res {
+                    Res::Def(DefKind::Trait, def_id) => def_id,
                     _ => unreachable!()
                 };
 
@@ -388,7 +388,7 @@ impl<'a, 'tcx: 'a> ItemLikeVisitor<'tcx> for CollectPrivateImplItemsVisitor<'a, 
 
 // We introduce a new-type here, so we can have a specialized HashStable
 // implementation for it.
-#[derive(Clone)]
+#[derive(Clone, HashStable)]
 pub struct ReachableSet(pub Lrc<HirIdSet>);
 
 fn reachable_set<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, crate_num: CrateNum) -> ReachableSet {
@@ -414,7 +414,7 @@ fn reachable_set<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, crate_num: CrateNum) -> 
     //         use the lang items, so we need to be sure to mark them as
     //         exported.
     reachable_context.worklist.extend(
-        access_levels.map.iter().map(|(id, _)| tcx.hir().node_to_hir_id(*id)));
+        access_levels.map.iter().map(|(id, _)| *id));
     for item in tcx.lang_items().items().iter() {
         if let Some(did) = *item {
             if let Some(hir_id) = tcx.hir().as_local_hir_id(did) {

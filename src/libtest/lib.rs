@@ -22,7 +22,6 @@
 #![unstable(feature = "test", issue = "27812")]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
 #![feature(asm)]
-#![feature(fnbox)]
 #![cfg_attr(any(unix, target_os = "cloudabi"), feature(libc, rustc_private))]
 #![feature(nll)]
 #![feature(set_stdio)]
@@ -37,12 +36,13 @@ extern crate libc;
 use term;
 
 // FIXME(#54291): rustc and/or LLVM don't yet support building with panic-unwind
-//                on aarch64-pc-windows-msvc, so we don't link libtest against
-//                libunwind (for the time being), even though it means that
-//                libtest won't be fully functional on this platform.
+//                on aarch64-pc-windows-msvc, or thumbv7a-pc-windows-msvc
+//                so we don't link libtest against libunwind (for the time being)
+//                even though it means that libtest won't be fully functional on
+//                these platforms.
 //
 // See also: https://github.com/rust-lang/rust/issues/54190#issuecomment-422904437
-#[cfg(not(all(windows, target_arch = "aarch64")))]
+#[cfg(not(all(windows, any(target_arch = "aarch64", target_arch = "arm"))))]
 extern crate panic_unwind;
 
 pub use self::ColorConfig::*;
@@ -55,7 +55,6 @@ pub use self::TestResult::*;
 
 use std::any::Any;
 use std::borrow::Cow;
-use std::boxed::FnBox;
 use std::cmp;
 use std::collections::BTreeMap;
 use std::env;
@@ -173,7 +172,7 @@ pub trait TDynBenchFn: Send {
 pub enum TestFn {
     StaticTestFn(fn()),
     StaticBenchFn(fn(&mut Bencher)),
-    DynTestFn(Box<dyn FnBox() + Send>),
+    DynTestFn(Box<dyn FnOnce() + Send>),
     DynBenchFn(Box<dyn TDynBenchFn + 'static>),
 }
 
@@ -1289,7 +1288,6 @@ fn get_concurrency() -> usize {
     #[cfg(any(
         target_os = "freebsd",
         target_os = "dragonfly",
-        target_os = "bitrig",
         target_os = "netbsd"
     ))]
     fn num_cpus() -> usize {
@@ -1447,7 +1445,7 @@ pub fn run_test(
         desc: TestDesc,
         monitor_ch: Sender<MonitorMsg>,
         nocapture: bool,
-        testfn: Box<dyn FnBox() + Send>,
+        testfn: Box<dyn FnOnce() + Send>,
         concurrency: Concurrent,
     ) {
         // Buffer for capturing standard I/O
@@ -1538,7 +1536,7 @@ fn calc_result(desc: &TestDesc, task_result: Result<(), Box<dyn Any + Send>>) ->
                 if desc.allow_fail {
                     TrAllowedFail
                 } else {
-                    TrFailedMsg(format!("Panic did not include expected string '{}'", msg))
+                    TrFailedMsg(format!("panic did not include expected string '{}'", msg))
                 }
             }
         }
@@ -1585,23 +1583,7 @@ impl MetricMap {
 
 // Benchmarking
 
-/// A function that is opaque to the optimizer, to allow benchmarks to
-/// pretend to use outputs to assist in avoiding dead-code
-/// elimination.
-///
-/// This function is a no-op, and does not even read from `dummy`.
-#[cfg(not(any(target_arch = "asmjs", target_arch = "wasm32")))]
-pub fn black_box<T>(dummy: T) -> T {
-    // we need to "use" the argument in some way LLVM can't
-    // introspect.
-    unsafe { asm!("" : : "r"(&dummy)) }
-    dummy
-}
-#[cfg(any(target_arch = "asmjs", target_arch = "wasm32"))]
-#[inline(never)]
-pub fn black_box<T>(dummy: T) -> T {
-    dummy
-}
+pub use std::hint::black_box;
 
 impl Bencher {
     /// Callback for benchmark functions to run in their body.
@@ -1908,7 +1890,7 @@ mod tests {
             panic!("an error message");
         }
         let expected = "foobar";
-        let failed_msg = "Panic did not include expected string";
+        let failed_msg = "panic did not include expected string";
         let desc = TestDescAndFn {
             desc: TestDesc {
                 name: StaticTestName("whatever"),

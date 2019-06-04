@@ -5,10 +5,10 @@ use rustc_apfloat::ieee::{Double, Single};
 use rustc_apfloat::Float;
 use rustc::mir::interpret::{EvalResult, Scalar};
 
-use super::{EvalContext, PlaceTy, Immediate, Machine, ImmTy};
+use super::{InterpretCx, PlaceTy, Immediate, Machine, ImmTy};
 
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
+impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
     /// Applies the binary operation `op` to the two operands and writes a tuple of the result
     /// and a boolean signifying the potential overflow to the destination.
     pub fn binop_with_overflow(
@@ -37,7 +37,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
+impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
     fn binary_char_op(
         &self,
         bin_op: mir::BinOp,
@@ -331,12 +331,10 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         val: ImmTy<'tcx, M::PointerTag>,
     ) -> EvalResult<'tcx, Scalar<M::PointerTag>> {
         use rustc::mir::UnOp::*;
-        use rustc_apfloat::ieee::{Single, Double};
-        use rustc_apfloat::Float;
 
         let layout = val.layout;
         let val = val.to_scalar()?;
-        trace!("Running unary op {:?}: {:?} ({:?})", un_op, val, layout.ty.sty);
+        trace!("Running unary op {:?}: {:?} ({:?})", un_op, val, layout.ty);
 
         match layout.ty.sty {
             ty::Bool => {

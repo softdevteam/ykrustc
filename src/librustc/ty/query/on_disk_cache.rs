@@ -9,10 +9,10 @@ use crate::rustc_serialize::{Decodable, Decoder, Encodable, Encoder, opaque,
                       SpecializedDecoder, SpecializedEncoder,
                       UseSpecializedDecodable, UseSpecializedEncodable};
 use crate::session::{CrateDisambiguator, Session};
-use crate::ty;
+use crate::ty::{self, Ty};
 use crate::ty::codec::{self as ty_codec, TyDecoder, TyEncoder};
 use crate::ty::context::TyCtxt;
-use crate::util::common::time;
+use crate::util::common::{time, time_ext};
 
 use errors::Diagnostic;
 use rustc_data_structures::fx::FxHashMap;
@@ -218,7 +218,6 @@ impl<'sess> OnDiskCache<'sess> {
                 encode_query_results::<borrowck<'_>, _>(tcx, enc, qri)?;
                 encode_query_results::<mir_borrowck<'_>, _>(tcx, enc, qri)?;
                 encode_query_results::<mir_const_qualif<'_>, _>(tcx, enc, qri)?;
-                encode_query_results::<def_symbol_name<'_>, _>(tcx, enc, qri)?;
                 encode_query_results::<const_is_rvalue_promotable_to_static<'_>, _>(tcx, enc, qri)?;
                 encode_query_results::<symbol_name<'_>, _>(tcx, enc, qri)?;
                 encode_query_results::<check_match<'_>, _>(tcx, enc, qri)?;
@@ -546,8 +545,8 @@ impl<'a, 'tcx: 'a, 'x> ty_codec::TyDecoder<'a, 'tcx> for CacheDecoder<'a, 'tcx, 
     fn cached_ty_for_shorthand<F>(&mut self,
                                   shorthand: usize,
                                   or_insert_with: F)
-                                  -> Result<ty::Ty<'tcx>, Self::Error>
-        where F: FnOnce(&mut Self) -> Result<ty::Ty<'tcx>, Self::Error>
+                                  -> Result<Ty<'tcx>, Self::Error>
+        where F: FnOnce(&mut Self) -> Result<Ty<'tcx>, Self::Error>
     {
         let tcx = self.tcx();
 
@@ -752,7 +751,7 @@ struct CacheEncoder<'enc, 'a, 'tcx, E>
 {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     encoder: &'enc mut E,
-    type_shorthands: FxHashMap<ty::Ty<'tcx>, usize>,
+    type_shorthands: FxHashMap<Ty<'tcx>, usize>,
     predicate_shorthands: FxHashMap<ty::Predicate<'tcx>, usize>,
     expn_info_shorthands: FxHashMap<Mark, AbsoluteBytePos>,
     interpret_allocs: FxHashMap<interpret::AllocId, usize>,
@@ -778,7 +777,6 @@ impl<'enc, 'a, 'tcx, E> CacheEncoder<'enc, 'a, 'tcx, E>
                                                  value: &V)
                                                  -> Result<(), E::Error>
     {
-        use crate::ty::codec::TyEncoder;
         let start_pos = self.position();
 
         tag.encode(self)?;
@@ -883,11 +881,11 @@ impl<'enc, 'a, 'tcx, E> SpecializedEncoder<CrateNum> for CacheEncoder<'enc, 'a, 
     }
 }
 
-impl<'enc, 'a, 'tcx, E> SpecializedEncoder<ty::Ty<'tcx>> for CacheEncoder<'enc, 'a, 'tcx, E>
+impl<'enc, 'a, 'tcx, E> SpecializedEncoder<Ty<'tcx>> for CacheEncoder<'enc, 'a, 'tcx, E>
     where E: 'enc + ty_codec::TyEncoder
 {
     #[inline]
-    fn specialized_encode(&mut self, ty: &ty::Ty<'tcx>) -> Result<(), Self::Error> {
+    fn specialized_encode(&mut self, ty: &Ty<'tcx>) -> Result<(), Self::Error> {
         ty_codec::encode_with_shorthand(self, ty,
             |encoder| &mut encoder.type_shorthands)
     }
@@ -1082,23 +1080,22 @@ fn encode_query_results<'enc, 'a, 'tcx, Q, E>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let desc = &format!("encode_query_results for {}",
         unsafe { ::std::intrinsics::type_name::<Q>() });
 
-    time(tcx.sess, desc, || {
+    time_ext(tcx.sess.time_extended(), Some(tcx.sess), desc, || {
+        let map = Q::query_cache(tcx).borrow();
+        assert!(map.active.is_empty());
+        for (key, entry) in map.results.iter() {
+            if Q::cache_on_disk(tcx, key.clone()) {
+                let dep_node = SerializedDepNodeIndex::new(entry.index.index());
 
-    let map = Q::query_cache(tcx).borrow();
-    assert!(map.active.is_empty());
-    for (key, entry) in map.results.iter() {
-        if Q::cache_on_disk(tcx, key.clone()) {
-            let dep_node = SerializedDepNodeIndex::new(entry.index.index());
+                // Record position of the cache entry
+                query_result_index.push((dep_node, AbsoluteBytePos::new(encoder.position())));
 
-            // Record position of the cache entry
-            query_result_index.push((dep_node, AbsoluteBytePos::new(encoder.position())));
-
-            // Encode the type check tables with the SerializedDepNodeIndex
-            // as tag.
-            encoder.encode_tagged(dep_node, &entry.value)?;
+                // Encode the type check tables with the SerializedDepNodeIndex
+                // as tag.
+                encoder.encode_tagged(dep_node, &entry.value)?;
+            }
         }
-    }
 
-    Ok(())
+        Ok(())
     })
 }

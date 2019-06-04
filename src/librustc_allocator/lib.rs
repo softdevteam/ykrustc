@@ -2,6 +2,7 @@
 #![feature(rustc_private)]
 
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
 
 pub mod expand;
 

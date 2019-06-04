@@ -6,16 +6,17 @@ pub use crate::symbol::{Ident, Symbol as Name};
 pub use crate::util::parser::ExprPrecedence;
 
 use crate::ext::hygiene::{Mark, SyntaxContext};
+use crate::parse::token;
 use crate::print::pprust;
 use crate::ptr::P;
 use crate::source_map::{dummy_spanned, respan, Spanned};
-use crate::symbol::{keywords, Symbol};
+use crate::symbol::{kw, sym, Symbol};
 use crate::tokenstream::TokenStream;
 use crate::ThinVec;
 
 use rustc_data_structures::indexed_vec::Idx;
 #[cfg(target_arch = "x86_64")]
-use rustc_data_structures::static_assert;
+use rustc_data_structures::static_assert_size;
 use rustc_target::spec::abi::Abi;
 use syntax_pos::{Span, DUMMY_SP};
 
@@ -64,13 +65,15 @@ impl fmt::Debug for Lifetime {
 pub struct Path {
     pub span: Span,
     /// The segments in the path: the things separated by `::`.
-    /// Global paths begin with `keywords::PathRoot`.
+    /// Global paths begin with `kw::PathRoot`.
     pub segments: Vec<PathSegment>,
 }
 
-impl<'a> PartialEq<&'a str> for Path {
-    fn eq(&self, string: &&'a str) -> bool {
-        self.segments.len() == 1 && self.segments[0].ident.name == *string
+impl PartialEq<Symbol> for Path {
+    fn eq(&self, symbol: &Symbol) -> bool {
+        self.segments.len() == 1 && {
+            self.segments[0].ident.name == *symbol
+        }
     }
 }
 
@@ -97,7 +100,7 @@ impl Path {
     }
 
     pub fn is_global(&self) -> bool {
-        !self.segments.is_empty() && self.segments[0].ident.name == keywords::PathRoot.name()
+        !self.segments.is_empty() && self.segments[0].ident.name == kw::PathRoot
     }
 }
 
@@ -125,7 +128,7 @@ impl PathSegment {
         PathSegment { ident, id: DUMMY_NODE_ID, args: None }
     }
     pub fn path_root(span: Span) -> Self {
-        PathSegment::from_ident(Ident::new(keywords::PathRoot.name(), span))
+        PathSegment::from_ident(Ident::new(kw::PathRoot, span))
     }
 }
 
@@ -443,14 +446,11 @@ pub struct Crate {
     pub span: Span,
 }
 
-/// A spanned compile-time attribute list item.
-pub type NestedMetaItem = Spanned<NestedMetaItemKind>;
-
 /// Possible values inside of compile-time attribute lists.
 ///
 /// E.g., the '..' in `#[name(..)]`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub enum NestedMetaItemKind {
+pub enum NestedMetaItem {
     /// A full MetaItem, for recursive meta items.
     MetaItem(MetaItem),
     /// A literal.
@@ -464,7 +464,7 @@ pub enum NestedMetaItemKind {
 /// E.g., `#[test]`, `#[derive(..)]`, `#[rustfmt::skip]` or `#[feature = "foo"]`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct MetaItem {
-    pub ident: Path,
+    pub path: Path,
     pub node: MetaItemKind,
     pub span: Span,
 }
@@ -623,7 +623,7 @@ pub enum PatKind {
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     /// The `bool` is `true` in the presence of a `..`.
-    Struct(Path, Vec<Spanned<FieldPat>>, bool),
+    Struct(Path, Vec<Spanned<FieldPat>>, /* recovered */ bool),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
     /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
@@ -897,6 +897,7 @@ pub struct Arm {
     pub pats: Vec<P<Pat>>,
     pub guard: Option<Guard>,
     pub body: P<Expr>,
+    pub span: Span,
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
@@ -949,7 +950,7 @@ pub struct Expr {
 
 // `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_EXPR: std::mem::size_of::<Expr>() == 88);
+static_assert_size!(Expr, 96);
 
 impl Expr {
     /// Whether this expression would be valid somewhere that expects a value; for example, an `if`
@@ -1025,7 +1026,6 @@ impl Expr {
     pub fn precedence(&self) -> ExprPrecedence {
         match self.node {
             ExprKind::Box(_) => ExprPrecedence::Box,
-            ExprKind::ObsoleteInPlace(..) => ExprPrecedence::ObsoleteInPlace,
             ExprKind::Array(_) => ExprPrecedence::Array,
             ExprKind::Call(..) => ExprPrecedence::Call,
             ExprKind::MethodCall(..) => ExprPrecedence::MethodCall,
@@ -1045,6 +1045,7 @@ impl Expr {
             ExprKind::Block(..) => ExprPrecedence::Block,
             ExprKind::TryBlock(..) => ExprPrecedence::TryBlock,
             ExprKind::Async(..) => ExprPrecedence::Async,
+            ExprKind::Await(..) => ExprPrecedence::Await,
             ExprKind::Assign(..) => ExprPrecedence::Assign,
             ExprKind::AssignOp(..) => ExprPrecedence::AssignOp,
             ExprKind::Field(..) => ExprPrecedence::Field,
@@ -1086,8 +1087,6 @@ pub enum RangeLimits {
 pub enum ExprKind {
     /// A `box x` expression.
     Box(P<Expr>),
-    /// First expr is the place; second expr is the value.
-    ObsoleteInPlace(P<Expr>, P<Expr>),
     /// An array (`[a, b, c, d]`)
     Array(Vec<P<Expr>>),
     /// A function call
@@ -1117,6 +1116,7 @@ pub enum ExprKind {
     Lit(Lit),
     /// A cast (e.g., `foo as f64`).
     Cast(P<Expr>, P<Ty>),
+    /// A type ascription (e.g., `42: usize`).
     Type(P<Expr>, P<Ty>),
     /// An `if` block, with an optional `else` block.
     ///
@@ -1165,6 +1165,9 @@ pub enum ExprKind {
     /// created during lowering cannot be made the parent of any other
     /// preexisting defs.
     Async(CaptureBy, NodeId, P<Block>),
+    /// An await expression (`my_future.await`).
+    Await(AwaitOrigin, P<Expr>),
+
     /// A try block (`try { ... }`).
     TryBlock(P<Block>),
 
@@ -1266,6 +1269,15 @@ pub enum Movability {
     Movable,
 }
 
+/// Whether an `await` comes from `await!` or `.await` syntax.
+/// FIXME: this should be removed when support for legacy `await!` is removed.
+/// https://github.com/rust-lang/rust/issues/60610
+#[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, Copy)]
+pub enum AwaitOrigin {
+    FieldLike,
+    MacroLike,
+}
+
 pub type Mac = Spanned<Mac_>;
 
 /// Represents a macro invocation. The `Path` indicates which macro
@@ -1316,8 +1328,17 @@ pub enum StrStyle {
     Raw(u16),
 }
 
-/// A literal.
-pub type Lit = Spanned<LitKind>;
+/// An AST literal.
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+pub struct Lit {
+    /// The original literal token as written in source code.
+    pub token: token::Lit,
+    /// The "semantic" representation of the literal lowered from the original tokens.
+    /// Strings are unescaped, hexadecimal forms are eliminated, etc.
+    /// FIXME: Remove this and only create the semantic representation during lowering to HIR.
+    pub node: LitKind,
+    pub span: Span,
+}
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, Copy, Hash, PartialEq)]
 pub enum LitIntType {
@@ -1499,6 +1520,17 @@ impl IntTy {
         }
     }
 
+    pub fn to_symbol(&self) -> Symbol {
+        match *self {
+            IntTy::Isize => sym::isize,
+            IntTy::I8 => sym::i8,
+            IntTy::I16 => sym::i16,
+            IntTy::I32 => sym::i32,
+            IntTy::I64 => sym::i64,
+            IntTy::I128 => sym::i128,
+        }
+    }
+
     pub fn val_to_string(&self, val: i128) -> String {
         // Cast to a `u128` so we can correctly print `INT128_MIN`. All integral types
         // are parsed as `u128`, so we wouldn't want to print an extra negative
@@ -1537,6 +1569,17 @@ impl UintTy {
             UintTy::U32 => "u32",
             UintTy::U64 => "u64",
             UintTy::U128 => "u128",
+        }
+    }
+
+    pub fn to_symbol(&self) -> Symbol {
+        match *self {
+            UintTy::Usize => sym::usize,
+            UintTy::U8 => sym::u8,
+            UintTy::U16 => sym::u16,
+            UintTy::U32 => sym::u32,
+            UintTy::U64 => sym::u64,
+            UintTy::U128 => sym::u128,
         }
     }
 
@@ -1736,7 +1779,7 @@ pub type ExplicitSelf = Spanned<SelfKind>;
 impl Arg {
     pub fn to_self(&self) -> Option<ExplicitSelf> {
         if let PatKind::Ident(BindingMode::ByValue(mutbl), ident, _) = self.pat.node {
-            if ident.name == keywords::SelfLower.name() {
+            if ident.name == kw::SelfLower {
                 return match self.ty.node {
                     TyKind::ImplicitSelf => Some(respan(self.pat.span, SelfKind::Value(mutbl))),
                     TyKind::Rptr(lt, MutTy { ref ty, mutbl }) if ty.node.is_implicit_self() => {
@@ -1754,7 +1797,7 @@ impl Arg {
 
     pub fn is_self(&self) -> bool {
         if let PatKind::Ident(_, ident, _) = self.pat.node {
-            ident.name == keywords::SelfLower.name()
+            ident.name == kw::SelfLower
         } else {
             false
         }
@@ -1959,8 +2002,13 @@ pub struct EnumDef {
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct Variant_ {
+    /// Name of the variant.
     pub ident: Ident,
+    /// Attributes of the variant.
     pub attrs: Vec<Attribute>,
+    /// Id of the variant (not the constructor, see `VariantData::ctor_id()`).
+    pub id: NodeId,
+    /// Fields and constructor id of the variant.
     pub data: VariantData,
     /// Explicit discriminant, e.g., `Foo = 1`.
     pub disr_expr: Option<AnonConst>,
@@ -2056,10 +2104,10 @@ pub struct TraitRef {
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct PolyTraitRef {
-    /// The `'a` in `<'a> Foo<&'a T>`
+    /// The `'a` in `<'a> Foo<&'a T>`.
     pub bound_generic_params: Vec<GenericParam>,
 
-    /// The `Foo<&'a T>` in `<'a> Foo<&'a T>`
+    /// The `Foo<&'a T>` in `<'a> Foo<&'a T>`.
     pub trait_ref: TraitRef,
 
     pub span: Span,
@@ -2120,23 +2168,13 @@ pub struct StructField {
     pub attrs: Vec<Attribute>,
 }
 
-/// Fields and Ids of enum variants and structs
-///
-/// For enum variants: `NodeId` represents both an Id of the variant itself (relevant for all
-/// variant kinds) and an Id of the variant's constructor (not relevant for `Struct`-variants).
-/// One shared Id can be successfully used for these two purposes.
-/// Id of the whole enum lives in `Item`.
-///
-/// For structs: `NodeId` represents an Id of the structure's constructor, so it is not actually
-/// used for `Struct`-structs (but still presents). Structures don't have an analogue of "Id of
-/// the variant itself" from enum variants.
-/// Id of the whole struct lives in `Item`.
+/// Fields and constructor ids of enum variants and structs.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum VariantData {
     /// Struct variant.
     ///
     /// E.g., `Bar { .. }` as in `enum Foo { Bar { .. } }`.
-    Struct(Vec<StructField>, NodeId),
+    Struct(Vec<StructField>, bool),
     /// Tuple variant.
     ///
     /// E.g., `Bar(..)` as in `enum Foo { Bar(..) }`.
@@ -2148,36 +2186,19 @@ pub enum VariantData {
 }
 
 impl VariantData {
+    /// Return the fields of this variant.
     pub fn fields(&self) -> &[StructField] {
         match *self {
-            VariantData::Struct(ref fields, _) | VariantData::Tuple(ref fields, _) => fields,
+            VariantData::Struct(ref fields, ..) | VariantData::Tuple(ref fields, _) => fields,
             _ => &[],
         }
     }
-    pub fn id(&self) -> NodeId {
+
+    /// Return the `NodeId` of this variant's constructor, if it has one.
+    pub fn ctor_id(&self) -> Option<NodeId> {
         match *self {
-            VariantData::Struct(_, id) | VariantData::Tuple(_, id) | VariantData::Unit(id) => id,
-        }
-    }
-    pub fn is_struct(&self) -> bool {
-        if let VariantData::Struct(..) = *self {
-            true
-        } else {
-            false
-        }
-    }
-    pub fn is_tuple(&self) -> bool {
-        if let VariantData::Tuple(..) = *self {
-            true
-        } else {
-            false
-        }
-    }
-    pub fn is_unit(&self) -> bool {
-        if let VariantData::Unit(..) = *self {
-            true
-        } else {
-            false
+            VariantData::Struct(..) => None,
+            VariantData::Tuple(_, id) | VariantData::Unit(id) => Some(id),
         }
     }
 }
@@ -2207,7 +2228,7 @@ pub struct Item {
 impl Item {
     /// Return the span that encompasses the attributes.
     pub fn span_with_attributes(&self) -> Span {
-        self.attrs.iter().fold(self.span, |acc, attr| acc.to(attr.span()))
+        self.attrs.iter().fold(self.span, |acc, attr| acc.to(attr.span))
     }
 }
 
@@ -2353,9 +2374,8 @@ pub struct ForeignItem {
 pub enum ForeignItemKind {
     /// A foreign function.
     Fn(P<FnDecl>, Generics),
-    /// A foreign static item (`static ext: u8`), with optional mutability.
-    /// (The boolean is `true` for mutable items).
-    Static(P<Ty>, bool),
+    /// A foreign static item (`static ext: u8`).
+    Static(P<Ty>, Mutability),
     /// A foreign type.
     Ty,
     /// A macro invocation.

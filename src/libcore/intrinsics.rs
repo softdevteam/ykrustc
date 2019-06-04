@@ -39,7 +39,7 @@
 #[stable(feature = "drop_in_place", since = "1.8.0")]
 #[rustc_deprecated(reason = "no longer an intrinsic - use `ptr::drop_in_place` directly",
                    since = "1.18.0")]
-pub use ptr::drop_in_place;
+pub use crate::ptr::drop_in_place;
 
 extern "rust-intrinsic" {
     // N.B., these intrinsics take raw pointers because they mutate aliased
@@ -737,16 +737,6 @@ extern "rust-intrinsic" {
     ///
     /// There are a few things that `transmute` is really useful for.
     ///
-    /// Getting the bitpattern of a floating point type (or, more generally,
-    /// type punning, when `T` and `U` aren't pointers):
-    ///
-    /// ```
-    /// let bitpattern = unsafe {
-    ///     std::mem::transmute::<f32, u32>(1.0)
-    /// };
-    /// assert_eq!(bitpattern, 0x3F800000);
-    /// ```
-    ///
     /// Turning a pointer into a function pointer. This is *not* portable to
     /// machines where function pointers and data pointers have different sizes.
     ///
@@ -1250,6 +1240,21 @@ extern "rust-intrinsic" {
     /// y < 0 or y >= N, where N is the width of T in bits.
     pub fn unchecked_shr<T>(x: T, y: T) -> T;
 
+    /// Returns the result of an unchecked addition, resulting in
+    /// undefined behavior when `x + y > T::max_value()` or `x + y < T::min_value()`.
+    #[cfg(not(stage0))]
+    pub fn unchecked_add<T>(x: T, y: T) -> T;
+
+    /// Returns the result of an unchecked substraction, resulting in
+    /// undefined behavior when `x - y > T::max_value()` or `x - y < T::min_value()`.
+    #[cfg(not(stage0))]
+    pub fn unchecked_sub<T>(x: T, y: T) -> T;
+
+    /// Returns the result of an unchecked multiplication, resulting in
+    /// undefined behavior when `x * y > T::max_value()` or `x * y < T::min_value()`.
+    #[cfg(not(stage0))]
+    pub fn unchecked_mul<T>(x: T, y: T) -> T;
+
     /// Performs rotate left.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `rotate_left` method. For example,
@@ -1301,7 +1306,7 @@ extern "rust-intrinsic" {
     /// platforms this is a `*mut *mut T` which is filled in by the compiler and
     /// on MSVC it's `*mut [usize; 2]`. For more information see the compiler's
     /// source as well as std's catch implementation.
-    pub fn try(f: fn(*mut u8), data: *mut u8, local_ptr: *mut u8) -> i32;
+    pub fn r#try(f: fn(*mut u8), data: *mut u8, local_ptr: *mut u8) -> i32;
 
     /// Emits a `!nontemporal` store according to LLVM (see their docs).
     /// Probably will never become stable.

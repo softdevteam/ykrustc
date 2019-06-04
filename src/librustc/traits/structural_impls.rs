@@ -3,7 +3,7 @@ use smallvec::SmallVec;
 use crate::traits;
 use crate::traits::project::Normalized;
 use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
-use crate::ty::{self, Lift, TyCtxt};
+use crate::ty::{self, Lift, Ty, TyCtxt};
 use syntax::symbol::InternedString;
 
 use std::fmt;
@@ -165,7 +165,8 @@ impl<'tcx> fmt::Display for traits::WhereClause<'tcx> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         use crate::traits::WhereClause::*;
 
-        // Bypass ppaux because it does not print out anonymous regions.
+        // Bypass `ty::print` because it does not print out anonymous regions.
+        // FIXME(eddyb) implement a custom `PrettyPrinter`, or move this to `ty::print`.
         fn write_region_name<'tcx>(
             r: ty::Region<'tcx>,
             fmt: &mut fmt::Formatter<'_>
@@ -256,7 +257,7 @@ impl fmt::Display for traits::QuantifierKind {
 }
 
 /// Collect names for regions / types bound by a quantified goal / clause.
-/// This collector does not try to do anything clever like in ppaux, it's just used
+/// This collector does not try to do anything clever like in `ty::print`, it's just used
 /// for debug output in tests anyway.
 struct BoundNamesCollector {
     // Just sort by name because `BoundRegion::BrNamed` does not have a `BoundVar` index anyway.
@@ -310,18 +311,16 @@ impl<'tcx> TypeVisitor<'tcx> for BoundNamesCollector {
         result
     }
 
-    fn visit_ty(&mut self, t: ty::Ty<'tcx>) -> bool {
-        use syntax::symbol::Symbol;
-
+    fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
         match t.sty {
             ty::Bound(debruijn, bound_ty) if debruijn == self.binder_index => {
                 self.types.insert(
                     bound_ty.var.as_u32(),
                     match bound_ty.kind {
                         ty::BoundTyKind::Param(name) => name,
-                        ty::BoundTyKind::Anon => Symbol::intern(
-                            &format!("^{}", bound_ty.var.as_u32())
-                        ).as_interned_str(),
+                        ty::BoundTyKind::Anon =>
+                            InternedString::intern(&format!("^{}", bound_ty.var.as_u32()),
+                        ),
                     }
                 );
             }
@@ -333,8 +332,6 @@ impl<'tcx> TypeVisitor<'tcx> for BoundNamesCollector {
     }
 
     fn visit_region(&mut self, r: ty::Region<'tcx>) -> bool {
-        use syntax::symbol::Symbol;
-
         match r {
             ty::ReLateBound(index, br) if *index == self.binder_index => {
                 match br {
@@ -343,9 +340,7 @@ impl<'tcx> TypeVisitor<'tcx> for BoundNamesCollector {
                     }
 
                     ty::BoundRegion::BrAnon(var) => {
-                        self.regions.insert(Symbol::intern(
-                            &format!("'^{}", var)
-                        ).as_interned_str());
+                        self.regions.insert(InternedString::intern(&format!("'^{}", var)));
                     }
 
                     _ => (),
@@ -518,6 +513,7 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
                 source,
                 ref prior_arms,
                 last_ty,
+                discrim_hir_id,
             } => {
                 tcx.lift(&last_ty).map(|last_ty| {
                     super::MatchExpressionArm {
@@ -525,6 +521,7 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
                         source,
                         prior_arms: prior_arms.clone(),
                         last_ty,
+                        discrim_hir_id,
                     }
                 })
             }

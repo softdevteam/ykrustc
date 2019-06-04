@@ -86,7 +86,6 @@ use rustc::ty::{self, Ty};
 
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc::hir::{self, PatKind};
-use rustc_data_structures::sync::Lrc;
 use std::mem;
 use std::ops::Deref;
 use std::rc::Rc;
@@ -195,12 +194,13 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 pub struct RegionCtxt<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     pub fcx: &'a FnCtxt<'a, 'gcx, 'tcx>,
 
-    pub region_scope_tree: Lrc<region::ScopeTree>,
+    pub region_scope_tree: &'gcx region::ScopeTree,
 
     outlives_environment: OutlivesEnvironment<'tcx>,
 
     // id of innermost fn body id
     body_id: hir::HirId,
+    body_owner: DefId,
 
     // call_site scope of innermost fn
     call_site_scope: Option<region::Scope>,
@@ -237,6 +237,7 @@ impl<'a, 'gcx, 'tcx> RegionCtxt<'a, 'gcx, 'tcx> {
             region_scope_tree,
             repeating_scope: initial_repeating_scope,
             body_id: initial_body_id,
+            body_owner: subject,
             call_site_scope: None,
             subject_def_id: subject,
             outlives_environment,
@@ -271,7 +272,7 @@ impl<'a, 'gcx, 'tcx> RegionCtxt<'a, 'gcx, 'tcx> {
     /// of b will be `&<R0>.i32` and then `*b` will require that `<R0>` be bigger than the let and
     /// the `*b` expression, so we will effectively resolve `<R0>` to be the block B.
     pub fn resolve_type(&self, unresolved_ty: Ty<'tcx>) -> Ty<'tcx> {
-        self.resolve_type_vars_if_possible(&unresolved_ty)
+        self.resolve_vars_if_possible(&unresolved_ty)
     }
 
     /// Try to resolve the type for the given node.
@@ -309,6 +310,7 @@ impl<'a, 'gcx, 'tcx> RegionCtxt<'a, 'gcx, 'tcx> {
 
         let body_id = body.id();
         self.body_id = body_id.hir_id;
+        self.body_owner = self.tcx.hir().body_owner_def_id(body_id);
 
         let call_site = region::Scope {
             id: body.value.hir_id.local_id,
@@ -467,6 +469,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for RegionCtxt<'a, 'gcx, 'tcx> {
         // Save state of current function before invoking
         // `visit_fn_body`.  We will restore afterwards.
         let old_body_id = self.body_id;
+        let old_body_owner = self.body_owner;
         let old_call_site_scope = self.call_site_scope;
         let env_snapshot = self.outlives_environment.push_snapshot_pre_closure();
 
@@ -478,6 +481,7 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for RegionCtxt<'a, 'gcx, 'tcx> {
             .pop_snapshot_post_closure(env_snapshot);
         self.call_site_scope = old_call_site_scope;
         self.body_id = old_body_id;
+        self.body_owner = old_body_owner;
     }
 
     //visit_pat: visit_pat, // (..) see above
@@ -830,6 +834,7 @@ impl<'a, 'gcx, 'tcx> RegionCtxt<'a, 'gcx, 'tcx> {
     {
         f(mc::MemCategorizationContext::with_infer(
             &self.infcx,
+            self.body_owner,
             &self.region_scope_tree,
             &self.tables.borrow(),
         ))

@@ -11,7 +11,7 @@ use crate::hair::*;
 use crate::hair::pattern::compare_const_vals;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::fx::FxHashMap;
-use rustc::ty::{self, Ty};
+use rustc::ty::{self, Ty, adjustment::{PointerCast}};
 use rustc::ty::util::IntTypeExt;
 use rustc::ty::layout::VariantIdx;
 use rustc::mir::*;
@@ -98,7 +98,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                                      candidate: &Candidate<'pat, 'tcx>,
                                      switch_ty: Ty<'tcx>,
                                      options: &mut Vec<u128>,
-                                     indices: &mut FxHashMap<ty::Const<'tcx>, usize>)
+                                     indices: &mut FxHashMap<&'tcx ty::Const<'tcx>, usize>)
                                      -> bool
     {
         let match_pair = match candidate.match_pairs.iter().find(|mp| mp.place == *test_place) {
@@ -280,8 +280,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                             ty = tcx.mk_imm_ref(region, tcx.mk_slice(elem_ty));
                             if opt_ref_ty.is_some() {
                                 place = self.temp(ty, test.span);
-                                self.cfg.push_assign(block, source_info, &place,
-                                                    Rvalue::Cast(CastKind::Unsize, val, ty));
+                                self.cfg.push_assign(
+                                    block, source_info, &place, Rvalue::Cast(
+                                        CastKind::Pointer(PointerCast::Unsize), val, ty
+                                    )
+                                );
                             }
                             if opt_ref_test_ty.is_some() {
                                 let array = self.literal_operand(
@@ -291,17 +294,19 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                                 );
 
                                 let slice = self.temp(ty, test.span);
-                                self.cfg.push_assign(block, source_info, &slice,
-                                                    Rvalue::Cast(CastKind::Unsize, array, ty));
+                                self.cfg.push_assign(
+                                    block, source_info, &slice, Rvalue::Cast(
+                                        CastKind::Pointer(PointerCast::Unsize), array, ty
+                                    )
+                                );
                                 expect = Operand::Move(slice);
                             }
                         },
                     }
                     let eq_def_id = self.hir.tcx().lang_items().eq_trait().unwrap();
                     let (mty, method) = self.hir.trait_method(eq_def_id, "eq", ty, &[ty.into()]);
-                    let method = self.hir.tcx().mk_lazy_const(ty::LazyConst::Evaluated(method));
 
-                    let re_erased = self.hir.tcx().types.re_erased;
+                    let re_erased = self.hir.tcx().lifetimes.re_erased;
                     // take the argument by reference
                     let tam = ty::TypeAndMut {
                         ty,
@@ -365,8 +370,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
             TestKind::Range(PatternRange { ref lo, ref hi, ty, ref end }) => {
                 // Test `val` by computing `lo <= val && val <= hi`, using primitive comparisons.
-                let lo = self.literal_operand(test.span, ty.clone(), lo.clone());
-                let hi = self.literal_operand(test.span, ty.clone(), hi.clone());
+                let lo = self.literal_operand(test.span, ty, lo);
+                let hi = self.literal_operand(test.span, ty, hi);
                 let val = Operand::Copy(place.clone());
 
                 let fail = self.cfg.start_new_block();
@@ -693,7 +698,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         // So, if we have a match-pattern like `x @ Enum::Variant(P1, P2)`,
         // we want to create a set of derived match-patterns like
         // `(x as Variant).0 @ P1` and `(x as Variant).1 @ P1`.
-        let elem = ProjectionElem::Downcast(adt_def, variant_index);
+        let elem = ProjectionElem::Downcast(
+            Some(adt_def.variants[variant_index].ident.name), variant_index);
         let downcast_place = match_pair.place.elem(elem); // `(x as Variant)`
         let consequent_match_pairs =
             subpatterns.iter()
@@ -717,7 +723,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     fn const_range_contains(
         &self,
         range: PatternRange<'tcx>,
-        value: ty::Const<'tcx>,
+        value: &'tcx ty::Const<'tcx>,
     ) -> Option<bool> {
         use std::cmp::Ordering::*;
 
@@ -737,7 +743,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     fn values_not_contained_in_range(
         &self,
         range: PatternRange<'tcx>,
-        indices: &FxHashMap<ty::Const<'tcx>, usize>,
+        indices: &FxHashMap<&'tcx ty::Const<'tcx>, usize>,
     ) -> Option<bool> {
         for &val in indices.keys() {
             if self.const_range_contains(range, val)? {

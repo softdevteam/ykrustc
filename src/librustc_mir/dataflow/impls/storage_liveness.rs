@@ -5,16 +5,16 @@ use crate::dataflow::BitDenotation;
 
 #[derive(Copy, Clone)]
 pub struct MaybeStorageLive<'a, 'tcx: 'a> {
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
 }
 
 impl<'a, 'tcx: 'a> MaybeStorageLive<'a, 'tcx> {
-    pub fn new(mir: &'a Mir<'tcx>)
+    pub fn new(mir: &'a Body<'tcx>)
                -> Self {
         MaybeStorageLive { mir }
     }
 
-    pub fn mir(&self) -> &Mir<'tcx> {
+    pub fn mir(&self) -> &Body<'tcx> {
         self.mir
     }
 }
@@ -43,9 +43,16 @@ impl<'a, 'tcx> BitDenotation<'tcx> for MaybeStorageLive<'a, 'tcx> {
     }
 
     fn terminator_effect(&self,
-                         _sets: &mut BlockSets<'_, Local>,
-                         _loc: Location) {
-        // Terminators have no effect
+                         sets: &mut BlockSets<'_, Local>,
+                         loc: Location) {
+        match &self.mir[loc.block].terminator().kind {
+            TerminatorKind::Drop { location, .. } => {
+                if let Some(l) = location.local_or_deref_local() {
+                    sets.kill(l);
+                }
+            }
+            _ => (),
+        }
     }
 
     fn propagate_call_return(

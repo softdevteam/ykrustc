@@ -1,12 +1,12 @@
 use crate::attr;
 use crate::ast;
-use crate::source_map::respan;
 use crate::parse::{SeqSep, PResult};
 use crate::parse::token::{self, Nonterminal, DelimToken};
 use crate::parse::parser::{Parser, TokenType, PathStyle};
 use crate::tokenstream::{TokenStream, TokenTree};
 
 use log::debug;
+use smallvec::smallvec;
 
 #[derive(Debug)]
 enum InnerAttributeParsePolicy<'a> {
@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
         };
         Ok(if let Some(meta) = meta {
             self.bump();
-            (meta.ident, meta.node.tokens(meta.span))
+            (meta.path, meta.node.tokens(meta.span))
         } else {
             let path = self.parse_path(PathStyle::Mod)?;
             let tokens = if self.check(&token::OpenDelim(DelimToken::Paren)) ||
@@ -172,7 +172,7 @@ impl<'a> Parser<'a> {
                 } else {
                     self.parse_unsuffixed_lit()?.tokens()
                 };
-                TokenStream::from_streams(vec![eq.into(), tokens])
+                TokenStream::from_streams(smallvec![eq.into(), tokens])
             } else {
                 TokenStream::empty()
             };
@@ -250,10 +250,10 @@ impl<'a> Parser<'a> {
         }
 
         let lo = self.span;
-        let ident = self.parse_path(PathStyle::Mod)?;
+        let path = self.parse_path(PathStyle::Mod)?;
         let node = self.parse_meta_item_kind()?;
         let span = lo.to(self.prev_span);
-        Ok(ast::MetaItem { ident, node, span })
+        Ok(ast::MetaItem { path, node, span })
     }
 
     crate fn parse_meta_item_kind(&mut self) -> PResult<'a, ast::MetaItemKind> {
@@ -268,18 +268,16 @@ impl<'a> Parser<'a> {
 
     /// matches meta_item_inner : (meta_item | UNSUFFIXED_LIT) ;
     fn parse_meta_item_inner(&mut self) -> PResult<'a, ast::NestedMetaItem> {
-        let lo = self.span;
-
         match self.parse_unsuffixed_lit() {
             Ok(lit) => {
-                return Ok(respan(lo.to(self.prev_span), ast::NestedMetaItemKind::Literal(lit)))
+                return Ok(ast::NestedMetaItem::Literal(lit))
             }
             Err(ref mut err) => self.diagnostic().cancel(err)
         }
 
         match self.parse_meta_item() {
             Ok(mi) => {
-                return Ok(respan(lo.to(self.prev_span), ast::NestedMetaItemKind::MetaItem(mi)))
+                return Ok(ast::NestedMetaItem::MetaItem(mi))
             }
             Err(ref mut err) => self.diagnostic().cancel(err)
         }

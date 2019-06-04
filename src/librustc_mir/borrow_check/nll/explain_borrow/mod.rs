@@ -4,12 +4,13 @@ use crate::borrow_check::borrow_set::BorrowData;
 use crate::borrow_check::error_reporting::UseSpans;
 use crate::borrow_check::nll::region_infer::{Cause, RegionName};
 use crate::borrow_check::nll::ConstraintDescription;
-use crate::borrow_check::{Context, MirBorrowckCtxt, WriteKind};
+use crate::borrow_check::{MirBorrowckCtxt, WriteKind};
 use rustc::mir::{
-    CastKind, ConstraintCategory, FakeReadCause, Local, Location, Mir, Operand, Place, PlaceBase,
+    CastKind, ConstraintCategory, FakeReadCause, Local, Location, Body, Operand, Place, PlaceBase,
     Projection, ProjectionElem, Rvalue, Statement, StatementKind, TerminatorKind,
 };
 use rustc::ty::{self, TyCtxt};
+use rustc::ty::adjustment::{PointerCast};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::DiagnosticBuilder;
 use syntax_pos::Span;
@@ -53,20 +54,26 @@ impl BorrowExplanation {
     pub(in crate::borrow_check) fn add_explanation_to_diagnostic<'cx, 'gcx, 'tcx>(
         &self,
         tcx: TyCtxt<'cx, 'gcx, 'tcx>,
-        mir: &Mir<'tcx>,
+        mir: &Body<'tcx>,
         err: &mut DiagnosticBuilder<'_>,
         borrow_desc: &str,
+        borrow_span: Option<Span>,
     ) {
         match *self {
             BorrowExplanation::UsedLater(later_use_kind, var_or_use_span) => {
                 let message = match later_use_kind {
-                    LaterUseKind::TraitCapture => "borrow later captured here by trait object",
-                    LaterUseKind::ClosureCapture => "borrow later captured here by closure",
-                    LaterUseKind::Call => "borrow later used by call",
-                    LaterUseKind::FakeLetRead => "borrow later stored here",
-                    LaterUseKind::Other => "borrow later used here",
+                    LaterUseKind::TraitCapture => "captured here by trait object",
+                    LaterUseKind::ClosureCapture => "captured here by closure",
+                    LaterUseKind::Call => "used by call",
+                    LaterUseKind::FakeLetRead => "stored here",
+                    LaterUseKind::Other => "used here",
                 };
-                err.span_label(var_or_use_span, format!("{}{}", borrow_desc, message));
+                if !borrow_span.map(|sp| sp.overlaps(var_or_use_span)).unwrap_or(false) {
+                    err.span_label(
+                        var_or_use_span,
+                        format!("{}borrow later {}", borrow_desc, message),
+                    );
+                }
             }
             BorrowExplanation::UsedLaterInLoop(later_use_kind, var_or_use_span) => {
                 let message = match later_use_kind {
@@ -93,7 +100,7 @@ impl BorrowExplanation {
                     // simplify output by reporting just the ADT name.
                     ty::Adt(adt, _substs) if adt.has_dtor(tcx) && !adt.is_box() => (
                         "`Drop` code",
-                        format!("type `{}`", tcx.item_path_str(adt.did)),
+                        format!("type `{}`", tcx.def_path_str(adt.did)),
                     ),
 
                     // Otherwise, just report the whole type (and use
@@ -105,7 +112,7 @@ impl BorrowExplanation {
                 };
 
                 match local_decl.name {
-                    Some(local_name) => {
+                    Some(local_name) if !local_decl.from_compiler_desugaring() => {
                         let message = format!(
                             "{B}borrow might be used here, when `{LOC}` is dropped \
                              and runs the {DTOR} for {TYPE}",
@@ -123,7 +130,7 @@ impl BorrowExplanation {
                             );
                         }
                     }
-                    None => {
+                    _ => {
                         err.span_label(
                             local_decl.source_info.span,
                             format!(
@@ -202,13 +209,13 @@ impl BorrowExplanation {
 
 impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
     /// Returns structured explanation for *why* the borrow contains the
-    /// point from `context`. This is key for the "3-point errors"
+    /// point from `location`. This is key for the "3-point errors"
     /// [described in the NLL RFC][d].
     ///
     /// # Parameters
     ///
     /// - `borrow`: the borrow in question
-    /// - `context`: where the borrow occurs
+    /// - `location`: where the borrow occurs
     /// - `kind_place`: if Some, this describes the statement that triggered the error.
     ///   - first half is the kind of write, if any, being performed
     ///   - second half is the place being accessed
@@ -216,13 +223,13 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
     /// [d]: https://rust-lang.github.io/rfcs/2094-nll.html#leveraging-intuition-framing-errors-in-terms-of-points
     pub(in crate::borrow_check) fn explain_why_borrow_contains_point(
         &self,
-        context: Context,
+        location: Location,
         borrow: &BorrowData<'tcx>,
         kind_place: Option<(WriteKind, &Place<'tcx>)>,
     ) -> BorrowExplanation {
         debug!(
-            "explain_why_borrow_contains_point(context={:?}, borrow={:?}, kind_place={:?})",
-            context, borrow, kind_place
+            "explain_why_borrow_contains_point(location={:?}, borrow={:?}, kind_place={:?})",
+            location, borrow, kind_place
         );
 
         let regioncx = &self.nonlexical_regioncx;
@@ -235,20 +242,20 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             borrow_region_vid
         );
 
-        let region_sub = regioncx.find_sub_region_live_at(borrow_region_vid, context.loc);
+        let region_sub = regioncx.find_sub_region_live_at(borrow_region_vid, location);
         debug!(
             "explain_why_borrow_contains_point: region_sub={:?}",
             region_sub
         );
 
-        match find_use::find(mir, regioncx, tcx, region_sub, context.loc) {
+        match find_use::find(mir, regioncx, tcx, region_sub, location) {
             Some(Cause::LiveVar(local, location)) => {
                 let span = mir.source_info(location).span;
                 let spans = self
                     .move_spans(&Place::Base(PlaceBase::Local(local)), location)
                     .or_else(|| self.borrow_spans(span, location));
 
-                let borrow_location = context.loc;
+                let borrow_location = location;
                 if self.is_use_in_later_iteration_of_loop(borrow_location, location) {
                     let later_use = self.later_use_kind(borrow, spans, location);
                     BorrowExplanation::UsedLaterInLoop(later_use.0, later_use.1)
@@ -266,11 +273,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                 if mir.local_decls[local].name.is_some() {
                     if let Some((WriteKind::StorageDeadOrDrop, place)) = kind_place {
                         if let Place::Base(PlaceBase::Local(borrowed_local)) = place {
-                            let dropped_local_scope = mir.local_decls[local].visibility_scope;
-                            let borrowed_local_scope =
-                                mir.local_decls[*borrowed_local].visibility_scope;
-
-                            if mir.is_sub_scope(borrowed_local_scope, dropped_local_scope)
+                             if mir.local_decls[*borrowed_local].name.is_some()
                                 && local != *borrowed_local
                             {
                                 should_note_order = true;
@@ -291,6 +294,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                     let (category, from_closure, span, region_name) =
                         self.nonlexical_regioncx.free_region_constraint_info(
                             self.mir,
+                        &self.upvars,
                             self.mir_def_id,
                             self.infcx,
                             borrow_region_vid,
@@ -306,9 +310,13 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                             opt_place_desc,
                         }
                     } else {
+                        debug!("explain_why_borrow_contains_point: \
+                                Could not generate a region name");
                         BorrowExplanation::Unexplained
                     }
                 } else {
+                    debug!("explain_why_borrow_contains_point: \
+                            Could not generate an error region vid");
                     BorrowExplanation::Unexplained
                 }
             }
@@ -574,7 +582,9 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                         },
                         // If we see a unsized cast, then if it is our data we should check
                         // whether it is being cast to a trait object.
-                        Rvalue::Cast(CastKind::Unsize, operand, ty) => match operand {
+                        Rvalue::Cast(
+                            CastKind::Pointer(PointerCast::Unsize), operand, ty
+                        ) => match operand {
                             Operand::Copy(Place::Base(PlaceBase::Local(from)))
                             | Operand::Move(Place::Base(PlaceBase::Local(from)))
                                 if *from == target =>
@@ -583,7 +593,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                                 // Check the type for a trait object.
                                 return match ty.sty {
                                     // `&dyn Trait`
-                                    ty::TyKind::Ref(_, ty, _) if ty.is_trait() => true,
+                                    ty::Ref(_, ty, _) if ty.is_trait() => true,
                                     // `Box<dyn Trait>`
                                     _ if ty.is_box() && ty.boxed_ty().is_trait() => true,
                                     // `dyn Trait`

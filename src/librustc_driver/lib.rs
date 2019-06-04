@@ -16,40 +16,14 @@
 
 #![recursion_limit="256"]
 
-extern crate arena;
+#![deny(rust_2018_idioms)]
+#![deny(internal)]
+
 pub extern crate getopts;
-extern crate graphviz;
-extern crate env_logger;
 #[cfg(unix)]
 extern crate libc;
-extern crate rustc_rayon as rayon;
-extern crate rustc;
-extern crate rustc_allocator;
-extern crate rustc_target;
-extern crate rustc_borrowck;
-extern crate rustc_data_structures;
-extern crate rustc_errors as errors;
-extern crate rustc_passes;
-extern crate rustc_lint;
-extern crate rustc_plugin;
-extern crate rustc_privacy;
-extern crate rustc_incremental;
-extern crate rustc_metadata;
-extern crate rustc_mir;
-extern crate rustc_resolve;
-extern crate rustc_save_analysis;
-extern crate rustc_traits;
-extern crate rustc_codegen_utils;
-extern crate rustc_typeck;
-extern crate rustc_interface;
-extern crate scoped_tls;
-extern crate serialize;
-extern crate smallvec;
 #[macro_use]
 extern crate log;
-extern crate syntax;
-extern crate syntax_ext;
-extern crate syntax_pos;
 
 use pretty::{PpMode, UserIdentifiedItem};
 
@@ -89,10 +63,8 @@ use syntax::ast;
 use syntax::source_map::FileLoader;
 use syntax::feature_gate::{GatedCfg, UnstableFeatures};
 use syntax::parse::{self, PResult};
+use syntax::symbol::sym;
 use syntax_pos::{DUMMY_SP, MultiSpan, FileName};
-
-#[cfg(test)]
-mod test;
 
 pub mod pretty;
 
@@ -342,14 +314,12 @@ pub fn run_compiler(
         }
 
         if sess.opts.debugging_opts.save_analysis {
-            let expanded_crate = compiler.expansion()?.take().0;
-
+            let expanded_crate = &compiler.expansion()?.peek().0;
             let crate_name = compiler.crate_name()?.peek().clone();
             compiler.global_ctxt()?.peek_mut().enter(|tcx| {
                 let result = tcx.analysis(LOCAL_CRATE);
 
                 time(sess, "save analysis", || {
-                    // FIXME: Should this run even with analysis errors?
                     save::process_crate(
                         tcx,
                         &expanded_crate,
@@ -361,15 +331,22 @@ pub fn run_compiler(
                 });
 
                 result
+                // AST will be dropped *after* the `after_analysis` callback
+                // (needed by the RLS)
             })?;
         } else {
             // Drop AST after creating GlobalCtxt to free memory
             mem::drop(compiler.expansion()?.take());
         }
+
         compiler.global_ctxt()?.peek_mut().enter(|tcx| tcx.analysis(LOCAL_CRATE))?;
 
         if !callbacks.after_analysis(compiler) {
             return sess.compile_status();
+        }
+
+        if sess.opts.debugging_opts.save_analysis {
+            mem::drop(compiler.expansion()?.take());
         }
 
         compiler.ongoing_codegen()?;
@@ -678,7 +655,7 @@ impl RustcDefaultCalls {
 
                     let mut cfgs = sess.parse_sess.config.iter().filter_map(|&(name, ref value)| {
                         let gated_cfg = GatedCfg::gate(&ast::MetaItem {
-                            ident: ast::Path::from_ident(ast::Ident::with_empty_ctxt(name)),
+                            path: ast::Path::from_ident(ast::Ident::with_empty_ctxt(name)),
                             node: ast::MetaItemKind::Word,
                             span: DUMMY_SP,
                         });
@@ -693,7 +670,7 @@ impl RustcDefaultCalls {
                         // through to build scripts.
                         let value = value.as_ref().map(|s| s.as_str());
                         let value = value.as_ref().map(|s| s.as_ref());
-                        if name != "target_feature" || value != Some("crt-static") {
+                        if name != sym::target_feature || value != Some("crt-static") {
                             if !allow_unstable_cfg && gated_cfg.is_some() {
                                 return None
                             }
@@ -768,7 +745,7 @@ fn usage(verbose: bool, include_unstable_options: bool) {
     }
     let message = "Usage: rustc [OPTIONS] INPUT";
     let nightly_help = if nightly_options::is_nightly_build() {
-        "\n    -Z help             Print internal options for debugging rustc"
+        "\n    -Z help             Print unstable compiler options"
     } else {
         ""
     };
@@ -916,7 +893,7 @@ Available lint options:
 }
 
 fn describe_debug_flags() {
-    println!("\nAvailable debug options:\n");
+    println!("\nAvailable options:\n");
     print_flag_list("-Z", config::DB_OPTIONS);
 }
 
@@ -1187,7 +1164,7 @@ pub fn report_ices_to_stderr_if_any<F: FnOnce() -> R, R>(f: F) -> Result<R, Erro
 /// This allows tools to enable rust logging without having to magically match rustc's
 /// log crate version
 pub fn init_rustc_env_logger() {
-    env_logger::init();
+    env_logger::init_from_env("RUSTC_LOG");
 }
 
 pub fn main() {

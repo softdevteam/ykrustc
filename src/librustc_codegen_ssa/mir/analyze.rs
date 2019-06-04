@@ -18,7 +18,7 @@ pub fn non_ssa_locals<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     let mir = fx.mir;
     let mut analyzer = LocalAnalyzer::new(fx);
 
-    analyzer.visit_mir(mir);
+    analyzer.visit_body(mir);
 
     for (index, ty) in mir.local_decls.iter().map(|l| l.ty).enumerate() {
         let ty = fx.monomorphize(&ty);
@@ -97,11 +97,10 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
 impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
     for LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
     fn visit_assign(&mut self,
-                    block: mir::BasicBlock,
                     place: &mir::Place<'tcx>,
                     rvalue: &mir::Rvalue<'tcx>,
                     location: Location) {
-        debug!("visit_assign(block={:?}, place={:?}, rvalue={:?})", block, place, rvalue);
+        debug!("visit_assign(place={:?}, rvalue={:?})", place, rvalue);
 
         if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
             self.assign(index, location);
@@ -120,7 +119,6 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
     }
 
     fn visit_terminator_kind(&mut self,
-                             block: mir::BasicBlock,
                              kind: &mir::TerminatorKind<'tcx>,
                              location: Location) {
         let check = match *kind {
@@ -148,12 +146,12 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
             }
         }
 
-        self.super_terminator_kind(block, kind, location);
+        self.super_terminator_kind(kind, location);
     }
 
     fn visit_place(&mut self,
                    place: &mir::Place<'tcx>,
-                   context: PlaceContext<'tcx>,
+                   context: PlaceContext,
                    location: Location) {
         debug!("visit_place(place={:?}, context={:?})", place, context);
         let cx = self.fx.cx;
@@ -172,14 +170,14 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
                 // ZSTs don't require any actual memory access.
                 let elem_ty = base_ty
                     .projection_ty(cx.tcx(), &proj.elem)
-                    .to_ty(cx.tcx());
+                    .ty;
                 let elem_ty = self.fx.monomorphize(&elem_ty);
                 if cx.layout_of(elem_ty).is_zst() {
                     return;
                 }
 
                 if let mir::ProjectionElem::Field(..) = proj.elem {
-                    let layout = cx.layout_of(base_ty.to_ty(cx.tcx()));
+                    let layout = cx.layout_of(base_ty.ty);
                     if cx.is_backend_immediate(layout) || cx.is_backend_scalar_pair(layout) {
                         // Recurse with the same context, instead of `Projection`,
                         // potentially stopping at non-operand projections,
@@ -205,7 +203,7 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
 
     fn visit_local(&mut self,
                    &local: &mir::Local,
-                   context: PlaceContext<'tcx>,
+                   context: PlaceContext,
                    location: Location) {
         match context {
             PlaceContext::MutatingUse(MutatingUseContext::Call) => {
@@ -235,19 +233,18 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
             PlaceContext::NonMutatingUse(NonMutatingUseContext::Inspect) |
             PlaceContext::MutatingUse(MutatingUseContext::Store) |
             PlaceContext::MutatingUse(MutatingUseContext::AsmOutput) |
-            PlaceContext::MutatingUse(MutatingUseContext::Borrow(..)) |
+            PlaceContext::MutatingUse(MutatingUseContext::Borrow) |
             PlaceContext::MutatingUse(MutatingUseContext::Projection) |
-            PlaceContext::NonMutatingUse(NonMutatingUseContext::SharedBorrow(..)) |
-            PlaceContext::NonMutatingUse(NonMutatingUseContext::UniqueBorrow(..)) |
-            PlaceContext::NonMutatingUse(NonMutatingUseContext::ShallowBorrow(..)) |
+            PlaceContext::NonMutatingUse(NonMutatingUseContext::SharedBorrow) |
+            PlaceContext::NonMutatingUse(NonMutatingUseContext::UniqueBorrow) |
+            PlaceContext::NonMutatingUse(NonMutatingUseContext::ShallowBorrow) |
             PlaceContext::NonMutatingUse(NonMutatingUseContext::Projection) => {
                 self.not_ssa(local);
             }
 
             PlaceContext::MutatingUse(MutatingUseContext::Drop) => {
-                let ty = mir::Place::Base(mir::PlaceBase::Local(local)).ty(self.fx.mir,
-                                                                           self.fx.cx.tcx());
-                let ty = self.fx.monomorphize(&ty.to_ty(self.fx.cx.tcx()));
+                let ty = self.fx.mir.local_decls[local].ty;
+                let ty = self.fx.monomorphize(&ty);
 
                 // Only need the place if we're actually dropping it.
                 if self.fx.cx.type_needs_drop(ty) {
@@ -275,9 +272,9 @@ impl CleanupKind {
     }
 }
 
-pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock, CleanupKind> {
+pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Body<'tcx>) -> IndexVec<mir::BasicBlock, CleanupKind> {
     fn discover_masters<'tcx>(result: &mut IndexVec<mir::BasicBlock, CleanupKind>,
-                              mir: &mir::Mir<'tcx>) {
+                              mir: &mir::Body<'tcx>) {
         for (bb, data) in mir.basic_blocks().iter_enumerated() {
             match data.terminator().kind {
                 TerminatorKind::Goto { .. } |
@@ -307,7 +304,7 @@ pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock
     }
 
     fn propagate<'tcx>(result: &mut IndexVec<mir::BasicBlock, CleanupKind>,
-                       mir: &mir::Mir<'tcx>) {
+                       mir: &mir::Body<'tcx>) {
         let mut funclet_succs = IndexVec::from_elem(None, mir.basic_blocks());
 
         let mut set_successor = |funclet: mir::BasicBlock, succ| {

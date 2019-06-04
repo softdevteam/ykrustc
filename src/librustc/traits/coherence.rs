@@ -4,17 +4,16 @@
 //! [trait-resolution]: https://rust-lang.github.io/rustc-guide/traits/resolution.html
 //! [trait-specialization]: https://rust-lang.github.io/rustc-guide/traits/specialization.html
 
-use crate::infer::CombinedSnapshot;
+use crate::infer::{CombinedSnapshot, InferOk};
 use crate::hir::def_id::{DefId, LOCAL_CRATE};
-use syntax_pos::DUMMY_SP;
 use crate::traits::{self, Normalized, SelectionContext, Obligation, ObligationCause};
 use crate::traits::IntercrateMode;
 use crate::traits::select::IntercrateAmbiguityCause;
 use crate::ty::{self, Ty, TyCtxt};
 use crate::ty::fold::TypeFoldable;
 use crate::ty::subst::Subst;
-
-use crate::infer::{InferOk};
+use syntax::symbol::sym;
+use syntax_pos::DUMMY_SP;
 
 /// Whether we do the orphan check relative to this crate or
 /// to some remote crate.
@@ -156,7 +155,7 @@ fn overlap_within_probe(
         a_impl_header.predicates
                      .iter()
                      .chain(&b_impl_header.predicates)
-                     .map(|p| infcx.resolve_type_vars_if_possible(p))
+                     .map(|p| infcx.resolve_vars_if_possible(p))
                      .map(|p| Obligation { cause: ObligationCause::dummy(),
                                            param_env,
                                            recursion_depth: 0,
@@ -172,7 +171,7 @@ fn overlap_within_probe(
         return None
     }
 
-    let impl_header = selcx.infcx().resolve_type_vars_if_possible(&a_impl_header);
+    let impl_header = selcx.infcx().resolve_vars_if_possible(&a_impl_header);
     let intercrate_ambiguity_causes = selcx.take_intercrate_ambiguity_causes();
     debug!("overlap: intercrate_ambiguity_causes={:#?}", intercrate_ambiguity_causes);
 
@@ -233,7 +232,7 @@ pub fn trait_ref_is_knowable<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
 pub fn trait_ref_is_local_or_fundamental<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                                          trait_ref: ty::TraitRef<'tcx>)
                                                          -> bool {
-    trait_ref.def_id.krate == LOCAL_CRATE || tcx.has_attr(trait_ref.def_id, "fundamental")
+    trait_ref.def_id.krate == LOCAL_CRATE || tcx.has_attr(trait_ref.def_id, sym::fundamental)
 }
 
 pub enum OrphanCheckErr<'tcx> {
