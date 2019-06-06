@@ -70,8 +70,6 @@
 #![link()]
 #![link_name = "1900"]
 #![link_section = "1800"]
-#![no_builtins] // Yikes, dupe'd on BUILTIN_ATTRIBUTES list (see "0300")
-#![no_mangle] // Yikes, dupe'd on BUILTIN_ATTRIBUTES list (see "3500")
 // see issue-43106-gating-of-rustc_deprecated.rs
 #![must_use]
 // see issue-43106-gating-of-stable.rs

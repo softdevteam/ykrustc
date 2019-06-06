@@ -17,25 +17,20 @@ use crate::{ModuleCodegen, ModuleKind, CachedModuleCodegen};
 
 use rustc::dep_graph::cgu_reuse_tracker::CguReuse;
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
+use rustc::middle::cstore::EncodedMetadata;
 use rustc::middle::lang_items::StartFnLangItem;
 use rustc::middle::weak_lang_items;
-use rustc::mir::mono::{Stats, CodegenUnitNameBuilder};
-use rustc::ty::{self, Ty, TyCtxt};
+use rustc::mir::mono::{CodegenUnitNameBuilder, CodegenUnit, MonoItem};
+use rustc::ty::{self, Ty, TyCtxt, Instance};
 use rustc::ty::layout::{self, Align, TyLayout, LayoutOf, VariantIdx, HasTyCtxt};
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{self, LinkagePreference};
 use rustc::util::common::{time, print_time_passes_entry};
-use rustc::util::profiling::ProfileCategory;
 use rustc::session::config::{self, EntryFnType, Lto};
 use rustc::session::Session;
-use rustc_mir::monomorphize::item::DefPathBasedNames;
-use rustc::util::time_graph;
 use rustc::util::nodemap::DefIdSet;
-use rustc_mir::monomorphize::Instance;
-use rustc_mir::monomorphize::partitioning::{CodegenUnit, CodegenUnitExt};
 use rustc::util::nodemap::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
-use rustc_data_structures::sync::Lrc;
 use rustc_codegen_utils::{symbol_names_test, check_for_rustc_errors_attr};
 use rustc::ty::layout::{FAT_PTR_ADDR, FAT_PTR_EXTRA};
 use crate::mir::place::PlaceRef;
@@ -46,7 +41,6 @@ use crate::callee;
 use crate::common::{RealPredicate, TypeKind, IntPredicate};
 use crate::meth;
 use crate::mir;
-use crate::mono_item::MonoItem;
 
 use crate::traits::*;
 
@@ -60,40 +54,6 @@ use syntax::attr;
 use rustc::hir;
 
 use crate::mir::operand::OperandValue;
-
-use std::marker::PhantomData;
-
-pub struct StatRecorder<'a, 'tcx, Cx: 'a + CodegenMethods<'tcx>> {
-    cx: &'a Cx,
-    name: Option<String>,
-    istart: usize,
-    _marker: PhantomData<&'tcx ()>,
-}
-
-impl<'a, 'tcx, Cx: CodegenMethods<'tcx>> StatRecorder<'a, 'tcx, Cx> {
-    pub fn new(cx: &'a Cx, name: String) -> Self {
-        let istart = cx.stats().borrow().n_llvm_insns;
-        StatRecorder {
-            cx,
-            name: Some(name),
-            istart,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<'a, 'tcx, Cx: CodegenMethods<'tcx>> Drop for StatRecorder<'a, 'tcx, Cx> {
-    fn drop(&mut self) {
-        if self.cx.sess().codegen_stats() {
-            let mut stats = self.cx.stats().borrow_mut();
-            let iend = stats.n_llvm_insns;
-            stats.fn_stats.push((self.name.take().unwrap(), iend - self.istart));
-            stats.n_fns += 1;
-            // Reset LLVM insn count to avoid compound costs.
-            stats.n_llvm_insns = self.istart;
-        }
-    }
-}
 
 pub fn bin_op_to_icmp_predicate(op: hir::BinOpKind,
                                 signed: bool)
@@ -411,15 +371,6 @@ pub fn codegen_instance<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     cx: &'a Bx::CodegenCx,
     instance: Instance<'tcx>,
 ) {
-    let _s = if cx.sess().codegen_stats() {
-        let mut instance_name = String::new();
-        DefPathBasedNames::new(cx.tcx(), true, true)
-            .push_def_path(instance.def_id(), &mut instance_name);
-        Some(StatRecorder::new(cx, instance_name))
-    } else {
-        None
-    };
-
     // this is an info! to allow collecting monomorphization statistics
     // and to allow finding the last function before LLVM aborts from
     // release builds.
@@ -430,8 +381,6 @@ pub fn codegen_instance<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 
     let lldecl = cx.instances().borrow().get(&instance).cloned().unwrap_or_else(||
         bug!("Instance `{:?}` not already declared", instance));
-
-    cx.stats().borrow_mut().n_closures += 1;
 
     let mir = cx.tcx().instance_mir(instance.def);
     mir::codegen_mir::<Bx>(cx, lldecl, &mir, instance, sig);
@@ -503,8 +452,8 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
         bx.insert_reference_to_gdb_debug_scripts_section_global();
 
         // Params from native main() used as args for rust start function
-        let param_argc = cx.get_param(llfn, 0);
-        let param_argv = cx.get_param(llfn, 1);
+        let param_argc = bx.get_param(0);
+        let param_argv = bx.get_param(1);
         let arg_argc = bx.intcast(param_argc, cx.type_isize(), true);
         let arg_argv = param_argv;
 
@@ -529,46 +478,16 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
 }
 
 pub const CODEGEN_WORKER_ID: usize = ::std::usize::MAX;
-pub const CODEGEN_WORKER_TIMELINE: time_graph::TimelineId =
-    time_graph::TimelineId(CODEGEN_WORKER_ID);
-pub const CODEGEN_WORK_PACKAGE_KIND: time_graph::WorkPackageKind =
-    time_graph::WorkPackageKind(&["#DE9597", "#FED1D3", "#FDC5C7", "#B46668", "#88494B"]);
-
 
 pub fn codegen_crate<B: ExtraBackendMethods>(
     backend: B,
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    metadata: EncodedMetadata,
+    need_metadata_module: bool,
     rx: mpsc::Receiver<Box<dyn Any + Send>>
 ) -> (OngoingCodegen<B>, Arc<DefIdSet>) {
 
     check_for_rustc_errors_attr(tcx);
-
-    let cgu_name_builder = &mut CodegenUnitNameBuilder::new(tcx);
-
-    // Codegen the metadata.
-    tcx.sess.profiler(|p| p.start_activity(ProfileCategory::Codegen));
-
-    let metadata_cgu_name = cgu_name_builder.build_cgu_name(LOCAL_CRATE,
-                                                            &["crate"],
-                                                            Some("metadata")).as_str()
-                                                                             .to_string();
-    let mut metadata_llvm_module = backend.new_metadata(tcx, &metadata_cgu_name);
-    let metadata = time(tcx.sess, "write metadata", || {
-        backend.write_metadata(tcx, &mut metadata_llvm_module)
-    });
-    tcx.sess.profiler(|p| p.end_activity(ProfileCategory::Codegen));
-
-    let metadata_module = ModuleCodegen {
-        name: metadata_cgu_name,
-        module_llvm: metadata_llvm_module,
-        kind: ModuleKind::Metadata,
-    };
-
-    let time_graph = if tcx.sess.opts.debugging_opts.codegen_time_graph {
-        Some(time_graph::TimeGraph::new())
-    } else {
-        None
-    };
 
     // Skip crate items and just output metadata in -Z no-codegen mode.
     if tcx.sess.opts.debugging_opts.no_codegen ||
@@ -576,12 +495,10 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
         let ongoing_codegen = start_async_codegen(
             backend,
             tcx,
-            time_graph,
             metadata,
             rx,
             1);
 
-        ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, metadata_module);
         ongoing_codegen.codegen_finished(tcx);
 
         assert_and_save_dep_graph(tcx);
@@ -590,6 +507,8 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
         return (ongoing_codegen, Arc::new(DefIdSet::default()));
     }
+
+    let cgu_name_builder = &mut CodegenUnitNameBuilder::new(tcx);
 
     // Run the monomorphization collector and partition the collected items into
     // codegen units.
@@ -610,7 +529,6 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     let ongoing_codegen = start_async_codegen(
         backend.clone(),
         tcx,
-        time_graph.clone(),
         metadata,
         rx,
         codegen_units.len());
@@ -655,7 +573,28 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
         ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, allocator_module);
     }
 
-    ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, metadata_module);
+    if need_metadata_module {
+        // Codegen the encoded metadata.
+        tcx.sess.profiler(|p| p.start_activity("codegen crate metadata"));
+
+        let metadata_cgu_name = cgu_name_builder.build_cgu_name(LOCAL_CRATE,
+                                                                &["crate"],
+                                                                Some("metadata")).as_str()
+                                                                                 .to_string();
+        let mut metadata_llvm_module = backend.new_metadata(tcx, &metadata_cgu_name);
+        time(tcx.sess, "write compressed metadata", || {
+            backend.write_compressed_metadata(tcx, &ongoing_codegen.metadata,
+                                              &mut metadata_llvm_module);
+        });
+        tcx.sess.profiler(|p| p.end_activity("codegen crate metadata"));
+
+        let metadata_module = ModuleCodegen {
+            name: metadata_cgu_name,
+            module_llvm: metadata_llvm_module,
+            kind: ModuleKind::Metadata,
+        };
+        ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, metadata_module);
+    }
 
     // We sort the codegen units by size. This way we can schedule work for LLVM
     // a bit more efficiently.
@@ -666,7 +605,6 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     };
 
     let mut total_codegen_time = Duration::new(0, 0);
-    let mut all_stats = Stats::default();
 
     for cgu in codegen_units.into_iter() {
         ongoing_codegen.wait_for_signal_to_codegen_item();
@@ -677,15 +615,11 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
         match cgu_reuse {
             CguReuse::No => {
-                let _timing_guard = time_graph.as_ref().map(|time_graph| {
-                    time_graph.start(CODEGEN_WORKER_TIMELINE,
-                                     CODEGEN_WORK_PACKAGE_KIND,
-                                     &format!("codegen {}", cgu.name()))
-                });
+                tcx.sess.profiler(|p| p.start_activity(format!("codegen {}", cgu.name())));
                 let start_time = Instant::now();
-                let stats = backend.compile_codegen_unit(tcx, *cgu.name());
-                all_stats.extend(stats);
+                backend.compile_codegen_unit(tcx, *cgu.name());
                 total_codegen_time += start_time.elapsed();
+                tcx.sess.profiler(|p| p.end_activity(format!("codegen {}", cgu.name())));
                 false
             }
             CguReuse::PreLto => {
@@ -716,28 +650,6 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     ::rustc_incremental::assert_module_sources::assert_module_sources(tcx);
 
     symbol_names_test::report_symbol_names(tcx);
-
-    if tcx.sess.codegen_stats() {
-        println!("--- codegen stats ---");
-        println!("n_glues_created: {}", all_stats.n_glues_created);
-        println!("n_null_glues: {}", all_stats.n_null_glues);
-        println!("n_real_glues: {}", all_stats.n_real_glues);
-
-        println!("n_fns: {}", all_stats.n_fns);
-        println!("n_inlines: {}", all_stats.n_inlines);
-        println!("n_closures: {}", all_stats.n_closures);
-        println!("fn stats:");
-        all_stats.fn_stats.sort_by_key(|&(_, insns)| insns);
-        for &(ref name, insns) in all_stats.fn_stats.iter() {
-            println!("{} insns, {}", insns, *name);
-        }
-    }
-
-    if tcx.sess.count_llvm_insns() {
-        for (k, v) in all_stats.llvm_insns.iter() {
-            println!("{:7} {}", *v, *k);
-        }
-    }
 
     ongoing_codegen.check_for_errors(tcx.sess);
 
@@ -931,7 +843,7 @@ pub fn provide_both(providers: &mut Providers<'_>) {
             .map(|id| &module_map[&id])
             .flat_map(|module| module.foreign_items.iter().cloned())
             .collect();
-        Lrc::new(dllimports)
+        tcx.arena.alloc(dllimports)
     };
 
     providers.is_dllimport_foreign_item = |tcx, def_id| {

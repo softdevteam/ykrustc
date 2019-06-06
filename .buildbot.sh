@@ -4,7 +4,6 @@
 
 set -e
 
-export RUST_BACKTRACE=1
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
 
 TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest

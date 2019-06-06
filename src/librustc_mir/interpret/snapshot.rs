@@ -12,7 +12,7 @@ use rustc::mir;
 use rustc::mir::interpret::{
     AllocId, Pointer, Scalar,
     Relocations, Allocation, UndefMask,
-    EvalResult, EvalErrorKind,
+    EvalResult, InterpError,
 };
 
 use rustc::ty::{self, TyCtxt};
@@ -47,7 +47,7 @@ impl<'a, 'mir, 'tcx> InfiniteLoopDetector<'a, 'mir, 'tcx>
 {
     pub fn observe_and_analyze<'b>(
         &mut self,
-        tcx: &TyCtxt<'b, 'tcx, 'tcx>,
+        tcx: TyCtxt<'b, 'tcx, 'tcx>,
         span: Span,
         memory: &Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
         stack: &[Frame<'mir, 'tcx>],
@@ -78,7 +78,7 @@ impl<'a, 'mir, 'tcx> InfiniteLoopDetector<'a, 'mir, 'tcx>
         }
 
         // Second cycle
-        Err(EvalErrorKind::InfiniteLoop.into())
+        Err(InterpError::InfiniteLoop.into())
     }
 }
 
@@ -114,10 +114,11 @@ macro_rules! impl_snapshot_for {
             fn snapshot(&self, __ctx: &'a Ctx) -> Self::Item {
                 match *self {
                     $(
-                        $enum_name::$variant $( ( $(ref $field),* ) )? =>
+                        $enum_name::$variant $( ( $(ref $field),* ) )? => {
                             $enum_name::$variant $(
-                                ( $( __impl_snapshot_field!($field, __ctx $(, $delegate)?) ),* ),
+                                ( $( __impl_snapshot_field!($field, __ctx $(, $delegate)?) ),* )
                             )?
+                        }
                     )*
                 }
             }
@@ -185,9 +186,9 @@ impl<'a, Ctx> Snapshot<'a, Ctx> for Scalar
     fn snapshot(&self, ctx: &'a Ctx) -> Self::Item {
         match self {
             Scalar::Ptr(p) => Scalar::Ptr(p.snapshot(ctx)),
-            Scalar::Bits{ size, bits } => Scalar::Bits {
+            Scalar::Raw{ size, data } => Scalar::Raw {
+                data: *data,
                 size: *size,
-                bits: *bits,
             },
         }
     }
@@ -250,11 +251,13 @@ impl_snapshot_for!(enum Operand {
 
 impl_stable_hash_for!(enum crate::interpret::LocalValue {
     Dead,
+    Uninitialized,
     Live(x),
 });
 impl_snapshot_for!(enum LocalValue {
-    Live(v),
     Dead,
+    Uninitialized,
+    Live(v),
 });
 
 impl<'a, Ctx> Snapshot<'a, Ctx> for Relocations
@@ -360,13 +363,13 @@ impl<'a, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a LocalState<'tcx>
     type Item = LocalValue<(), AllocIdSnapshot<'a>>;
 
     fn snapshot(&self, ctx: &'a Ctx) -> Self::Item {
-        let LocalState { state, layout: _ } = self;
-        state.snapshot(ctx)
+        let LocalState { value, layout: _ } = self;
+        value.snapshot(ctx)
     }
 }
 
 impl_stable_hash_for!(struct LocalState<'tcx> {
-    state,
+    value,
     layout -> _,
 });
 
@@ -431,7 +434,7 @@ impl<'a, 'mir, 'tcx> Eq for EvalSnapshot<'a, 'mir, 'tcx>
 impl<'a, 'mir, 'tcx> PartialEq for EvalSnapshot<'a, 'mir, 'tcx>
 {
     fn eq(&self, other: &Self) -> bool {
-        // FIXME: This looks to be a *ridicolously expensive* comparison operation.
+        // FIXME: This looks to be a *ridiculously expensive* comparison operation.
         // Doesn't this make tons of copies?  Either `snapshot` is very badly named,
         // or it does!
         self.snapshot() == other.snapshot()

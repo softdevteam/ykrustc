@@ -1,10 +1,11 @@
 use crate::attr::HasAttrs;
 use crate::ast;
-use crate::source_map::{hygiene, ExpnInfo, ExpnFormat};
+use crate::source_map::{ExpnInfo, ExpnFormat};
 use crate::ext::base::ExtCtxt;
 use crate::ext::build::AstBuilder;
 use crate::parse::parser::PathStyle;
-use crate::symbol::Symbol;
+use crate::symbol::{Symbol, sym};
+use crate::errors::Applicability;
 
 use syntax_pos::Span;
 
@@ -13,12 +14,17 @@ use rustc_data_structures::fx::FxHashSet;
 pub fn collect_derives(cx: &mut ExtCtxt<'_>, attrs: &mut Vec<ast::Attribute>) -> Vec<ast::Path> {
     let mut result = Vec::new();
     attrs.retain(|attr| {
-        if attr.path != "derive" {
+        if attr.path != sym::derive {
             return true;
         }
         if !attr.is_meta_item_list() {
-            cx.span_err(attr.span,
-                        "attribute must be of the form `#[derive(Trait1, Trait2, ...)]`");
+            cx.struct_span_err(attr.span, "malformed `derive` attribute input")
+                .span_suggestion(
+                    attr.span,
+                    "missing traits to be derived",
+                    "#[derive(Trait1, Trait2, ...)]".to_owned(),
+                    Applicability::HasPlaceholders,
+                ).emit();
             return false;
         }
 
@@ -58,13 +64,10 @@ pub fn add_derived_markers<T>(cx: &mut ExtCtxt<'_>, span: Span, traits: &[ast::P
         call_site: span,
         def_site: None,
         format: ExpnFormat::MacroAttribute(Symbol::intern(&pretty_name)),
-        allow_internal_unstable: Some(vec![
-            Symbol::intern("rustc_attrs"),
-            Symbol::intern("structural_match"),
-        ].into()),
+        allow_internal_unstable: Some(vec![sym::rustc_attrs, sym::structural_match].into()),
         allow_internal_unsafe: false,
         local_inner_macros: false,
-        edition: hygiene::default_edition(),
+        edition: cx.parse_sess.edition,
     });
 
     let span = span.with_ctxt(cx.backtrace());
@@ -74,7 +77,7 @@ pub fn add_derived_markers<T>(cx: &mut ExtCtxt<'_>, span: Span, traits: &[ast::P
             attrs.push(cx.attribute(span, meta));
         }
         if names.contains(&Symbol::intern("Copy")) {
-            let meta = cx.meta_word(span, Symbol::intern("rustc_copy_clone_marker"));
+            let meta = cx.meta_word(span, sym::rustc_copy_clone_marker);
             attrs.push(cx.attribute(span, meta));
         }
     });

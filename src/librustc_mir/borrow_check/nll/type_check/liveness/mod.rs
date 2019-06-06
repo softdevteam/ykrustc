@@ -7,7 +7,7 @@ use crate::borrow_check::nll::ToRegionVid;
 use crate::dataflow::move_paths::MoveData;
 use crate::dataflow::FlowAtLocation;
 use crate::dataflow::MaybeInitializedPlaces;
-use rustc::mir::{Local, Mir};
+use rustc::mir::{Local, Body};
 use rustc::ty::{RegionVid, TyCtxt};
 use rustc_data_structures::fx::FxHashSet;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ mod trace;
 /// performed before
 pub(super) fn generate<'gcx, 'tcx>(
     typeck: &mut TypeChecker<'_, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     elements: &Rc<RegionValueElements>,
     flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'_, 'gcx, 'tcx>>,
     move_data: &MoveData<'tcx>,
@@ -47,11 +47,10 @@ pub(super) fn generate<'gcx, 'tcx>(
         mir.local_decls.indices().collect()
     } else {
         let free_regions = {
-            let borrowck_context = typeck.borrowck_context.as_ref().unwrap();
             regions_that_outlive_free_regions(
                 typeck.infcx.num_region_vars(),
-                &borrowck_context.universal_regions,
-                &borrowck_context.constraints.outlives_constraints,
+                &typeck.borrowck_context.universal_regions,
+                &typeck.borrowck_context.constraints.outlives_constraints,
             )
         };
         compute_live_locals(typeck.tcx(), &free_regions, mir)
@@ -78,7 +77,7 @@ pub(super) fn generate<'gcx, 'tcx>(
 fn compute_live_locals(
     tcx: TyCtxt<'_, '_, 'tcx>,
     free_regions: &FxHashSet<RegionVid>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
 ) -> Vec<Local> {
     let live_locals: Vec<Local> = mir
         .local_decls

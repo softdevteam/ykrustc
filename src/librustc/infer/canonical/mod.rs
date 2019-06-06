@@ -21,16 +21,17 @@
 //!
 //! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
-use crate::infer::{InferCtxt, RegionVariableOrigin, TypeVariableOrigin};
+use crate::infer::{InferCtxt, RegionVariableOrigin, TypeVariableOrigin, ConstVariableOrigin};
+use crate::mir::interpret::ConstValue;
 use rustc_data_structures::indexed_vec::IndexVec;
-use rustc_data_structures::sync::Lrc;
+use rustc_macros::HashStable;
 use serialize::UseSpecializedDecodable;
 use smallvec::SmallVec;
 use std::ops::Index;
 use syntax::source_map::Span;
 use crate::ty::fold::TypeFoldable;
 use crate::ty::subst::Kind;
-use crate::ty::{self, BoundVar, Lift, List, Region, TyCtxt};
+use crate::ty::{self, BoundVar, InferConst, Lift, List, Region, TyCtxt};
 
 mod canonicalizer;
 
@@ -41,7 +42,7 @@ mod substitute;
 /// A "canonicalized" type `V` is one where all free inference
 /// variables have been rewritten to "canonical vars". These are
 /// numbered starting from 0 in order of first appearance.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
 pub struct Canonical<'gcx, V> {
     pub max_universe: ty::UniverseIndex,
     pub variables: CanonicalVarInfos<'gcx>,
@@ -61,7 +62,7 @@ impl<'gcx> UseSpecializedDecodable for CanonicalVarInfos<'gcx> {}
 /// vectors with the original values that were replaced by canonical
 /// variables. You will need to supply it later to instantiate the
 /// canonicalized query response.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
 pub struct CanonicalVarValues<'tcx> {
     pub var_values: IndexVec<BoundVar, Kind<'tcx>>,
 }
@@ -99,7 +100,7 @@ impl Default for OriginalQueryValues<'tcx> {
 /// canonical value. This is sufficient information for code to create
 /// a copy of the canonical value in some other inference context,
 /// with fresh inference variables replacing the canonical values.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
 pub struct CanonicalVarInfo {
     pub kind: CanonicalVarKind,
 }
@@ -115,6 +116,8 @@ impl CanonicalVarInfo {
             CanonicalVarKind::PlaceholderTy(_) => false,
             CanonicalVarKind::Region(_) => true,
             CanonicalVarKind::PlaceholderRegion(..) => false,
+            CanonicalVarKind::Const(_) => true,
+            CanonicalVarKind::PlaceholderConst(_) => false,
         }
     }
 }
@@ -122,7 +125,7 @@ impl CanonicalVarInfo {
 /// Describes the "kind" of the canonical variable. This is a "kind"
 /// in the type-theory sense of the term -- i.e., a "meta" type system
 /// that analyzes type-like values.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
 pub enum CanonicalVarKind {
     /// Some kind of type inference variable.
     Ty(CanonicalTyVarKind),
@@ -137,6 +140,12 @@ pub enum CanonicalVarKind {
     /// are solving a goal like `for<'a> T: Foo<'a>` to represent the
     /// bound region `'a`.
     PlaceholderRegion(ty::PlaceholderRegion),
+
+    /// Some kind of const inference variable.
+    Const(ty::UniverseIndex),
+
+    /// A "placeholder" that represents "any const".
+    PlaceholderConst(ty::PlaceholderConst),
 }
 
 impl CanonicalVarKind {
@@ -150,6 +159,8 @@ impl CanonicalVarKind {
             CanonicalVarKind::PlaceholderTy(placeholder) => placeholder.universe,
             CanonicalVarKind::Region(ui) => ui,
             CanonicalVarKind::PlaceholderRegion(placeholder) => placeholder.universe,
+            CanonicalVarKind::Const(ui) => ui,
+            CanonicalVarKind::PlaceholderConst(placeholder) => placeholder.universe,
         }
     }
 }
@@ -159,7 +170,7 @@ impl CanonicalVarKind {
 /// 22.) can only be instantiated with integral/float types (e.g.,
 /// usize or f32). In order to faithfully reproduce a type, we need to
 /// know what set of types a given type variable can be unified with.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
 pub enum CanonicalTyVarKind {
     /// General type variable `?T` that can be unified with arbitrary types.
     General(ty::UniverseIndex),
@@ -174,7 +185,7 @@ pub enum CanonicalTyVarKind {
 /// After we execute a query with a canonicalized key, we get back a
 /// `Canonical<QueryResponse<..>>`. You can use
 /// `instantiate_query_result` to access the data in this result.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, HashStable)]
 pub struct QueryResponse<'tcx, R> {
     pub var_values: CanonicalVarValues<'tcx>,
     pub region_constraints: Vec<QueryRegionConstraint<'tcx>>,
@@ -185,11 +196,11 @@ pub struct QueryResponse<'tcx, R> {
 pub type Canonicalized<'gcx, V> = Canonical<'gcx, <V as Lift<'gcx>>::Lifted>;
 
 pub type CanonicalizedQueryResponse<'gcx, T> =
-    Lrc<Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>>;
+    &'gcx Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>;
 
 /// Indicates whether or not we were able to prove the query to be
 /// true.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, HashStable)]
 pub enum Certainty {
     /// The query is known to be true, presuming that you apply the
     /// given `var_values` and the region-constraints are satisfied.
@@ -359,9 +370,9 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                         )
                     }
 
-                    CanonicalTyVarKind::Int => self.tcx.mk_int_var(self.next_int_var_id()),
+                    CanonicalTyVarKind::Int => self.next_int_var(),
 
-                    CanonicalTyVarKind::Float => self.tcx.mk_float_var(self.next_float_var_id()),
+                    CanonicalTyVarKind::Float => self.next_float_var(),
                 };
                 ty.into()
             }
@@ -387,6 +398,33 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                     name,
                 };
                 self.tcx.mk_region(ty::RePlaceholder(placeholder_mapped)).into()
+            }
+
+            CanonicalVarKind::Const(ui) => {
+                self.next_const_var_in_universe(
+                    self.next_ty_var_in_universe(
+                        TypeVariableOrigin::MiscVariable(span),
+                        universe_map(ui),
+                    ),
+                    ConstVariableOrigin::MiscVariable(span),
+                    universe_map(ui),
+                ).into()
+            }
+
+            CanonicalVarKind::PlaceholderConst(
+                ty::PlaceholderConst { universe, name },
+            ) => {
+                let universe_mapped = universe_map(universe);
+                let placeholder_mapped = ty::PlaceholderConst {
+                    universe: universe_mapped,
+                    name,
+                };
+                self.tcx.mk_const(
+                    ty::Const {
+                        val: ConstValue::Placeholder(placeholder_mapped),
+                        ty: self.tcx.types.err, // FIXME(const_generics)
+                    }
+                ).into()
             }
         }
     }
@@ -443,8 +481,13 @@ impl<'tcx> CanonicalVarValues<'tcx> {
                     UnpackedKind::Lifetime(..) => tcx.mk_region(
                         ty::ReLateBound(ty::INNERMOST, ty::BoundRegion::BrAnon(i))
                     ).into(),
-                    UnpackedKind::Const(..) => {
-                        unimplemented!() // FIXME(const_generics)
+                    UnpackedKind::Const(ct) => {
+                        tcx.mk_const(ty::Const {
+                            ty: ct.ty,
+                            val: ConstValue::Infer(
+                                InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from_u32(i))
+                            ),
+                        }).into()
                     }
                 })
                 .collect()

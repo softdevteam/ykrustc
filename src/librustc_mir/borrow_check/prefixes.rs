@@ -11,7 +11,7 @@ use super::MirBorrowckCtxt;
 
 use rustc::hir;
 use rustc::ty::{self, TyCtxt};
-use rustc::mir::{Mir, Place, PlaceBase, ProjectionElem};
+use rustc::mir::{Body, Place, PlaceBase, ProjectionElem};
 
 pub trait IsPrefixOf<'tcx> {
     fn is_prefix_of(&self, other: &Place<'tcx>) -> bool;
@@ -26,7 +26,6 @@ impl<'tcx> IsPrefixOf<'tcx> for Place<'tcx> {
             }
 
             match *cursor {
-                Place::Base(PlaceBase::Promoted(_)) |
                 Place::Base(PlaceBase::Local(_)) |
                 Place::Base(PlaceBase::Static(_)) => return false,
                 Place::Projection(ref proj) => {
@@ -39,7 +38,7 @@ impl<'tcx> IsPrefixOf<'tcx> for Place<'tcx> {
 
 
 pub(super) struct Prefixes<'cx, 'gcx: 'tcx, 'tcx: 'cx> {
-    mir: &'cx Mir<'tcx>,
+    mir: &'cx Body<'tcx>,
     tcx: TyCtxt<'cx, 'gcx, 'tcx>,
     kind: PrefixSet,
     next: Option<&'cx Place<'tcx>>,
@@ -87,7 +86,6 @@ impl<'cx, 'gcx, 'tcx> Iterator for Prefixes<'cx, 'gcx, 'tcx> {
 
         'cursor: loop {
             let proj = match *cursor {
-                Place::Base(PlaceBase::Promoted(_)) |
                 Place::Base(PlaceBase::Local(_)) | // search yielded this leaf
                 Place::Base(PlaceBase::Static(_)) => {
                     self.next = None;
@@ -141,7 +139,7 @@ impl<'cx, 'gcx, 'tcx> Iterator for Prefixes<'cx, 'gcx, 'tcx> {
             // derefs, except we stop at the deref of a shared
             // reference.
 
-            let ty = proj.base.ty(self.mir, self.tcx).to_ty(self.tcx);
+            let ty = proj.base.ty(self.mir, self.tcx).ty;
             match ty.sty {
                 ty::RawPtr(_) |
                 ty::Ref(

@@ -42,6 +42,10 @@ const EXCEPTION_PATHS: &[&str] = &[
     "src/libpanic_abort",
     "src/libpanic_unwind",
     "src/libunwind",
+    // black_box implementation is LLVM-version specific and it uses
+    // target_os to tell targets with different LLVM-versions appart
+    // (e.g. `wasm32-unknown-emscripten` vs `wasm32-unknown-unknown`):
+    "src/libcore/hint.rs",
     "src/libstd/sys/", // Platform-specific code for std lives here.
                        // This has the trailing slash so that sys_common is not excepted.
     "src/libstd/os", // Platform-specific public interfaces
@@ -54,8 +58,10 @@ const EXCEPTION_PATHS: &[&str] = &[
     "src/libstd/f64.rs",
     // Integration test for platform-specific run-time feature detection:
     "src/libstd/tests/run-time-detect.rs" ,
+    "src/libstd/net/test.rs",
     "src/libstd/sys_common/mod.rs",
     "src/libstd/sys_common/net.rs",
+    "src/libstd/sys_common/backtrace.rs",
     "src/libterm", // Not sure how to make this crate portable, but test crate needs it.
     "src/libtest", // Probably should defer to unstable `std::sys` APIs.
     "src/libstd/sync/mpsc", // some tests are only run on non-emscripten
@@ -198,7 +204,7 @@ fn parse_cfgs<'a>(contents: &'a str) -> Vec<(usize, &'a str)> {
         succeeds_non_ident && preceeds_whitespace_and_paren
     });
 
-    cfgs.map(|i| {
+    cfgs.flat_map(|i| {
         let mut depth = 0;
         let contents_from = &contents[i..];
         for (j, byte) in contents_from.bytes().enumerate() {
@@ -209,13 +215,15 @@ fn parse_cfgs<'a>(contents: &'a str) -> Vec<(usize, &'a str)> {
                 b')' => {
                     depth -= 1;
                     if depth == 0 {
-                        return (i, &contents_from[..=j]);
+                        return Some((i, &contents_from[..=j]));
                     }
                 }
                 _ => { }
             }
         }
 
-        unreachable!()
+        // if the parentheses are unbalanced just ignore this cfg -- it'll be caught when attempting
+        // to run the compiler, and there's no real reason to lint it separately here
+        None
     }).collect()
 }

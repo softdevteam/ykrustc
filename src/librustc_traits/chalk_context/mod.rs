@@ -36,7 +36,6 @@ use rustc::ty::{self, TyCtxt, InferConst};
 use rustc::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 use rustc::ty::query::Providers;
 use rustc::ty::subst::{Kind, UnpackedKind};
-use rustc_data_structures::sync::Lrc;
 use rustc::mir::interpret::ConstValue;
 use syntax_pos::DUMMY_SP;
 
@@ -288,13 +287,10 @@ impl context::ContextOps<ChalkArenas<'gcx>> for ChalkContext<'cx, 'gcx> {
                     }
                     _ => false,
                 },
-                UnpackedKind::Const(ct) => match ct {
-                    ty::LazyConst::Evaluated(ty::Const {
-                        val: ConstValue::Infer(InferConst::Canonical(debruijn, bound_ct)),
-                        ..
-                    }) => {
-                        debug_assert_eq!(*debruijn, ty::INNERMOST);
-                        cvar == *bound_ct
+                UnpackedKind::Const(ct) => match ct.val {
+                    ConstValue::Infer(InferConst::Canonical(debruijn, bound_ct)) => {
+                        debug_assert_eq!(debruijn, ty::INNERMOST);
+                        cvar == bound_ct
                     }
                     _ => false,
                 }
@@ -415,7 +411,7 @@ impl context::UnificationOps<ChalkArenas<'gcx>, ChalkArenas<'tcx>>
     }
 
     fn debug_ex_clause(&mut self, value: &'v ChalkExClause<'tcx>) -> Box<dyn Debug + 'v> {
-        let string = format!("{:?}", self.infcx.resolve_type_vars_if_possible(value));
+        let string = format!("{:?}", self.infcx.resolve_vars_if_possible(value));
         Box::new(string)
     }
 
@@ -680,7 +676,7 @@ crate fn evaluate_goal<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     goal: ChalkCanonicalGoal<'tcx>
 ) -> Result<
-    Lrc<Canonical<'tcx, QueryResponse<'tcx, ()>>>,
+    &'tcx Canonical<'tcx, QueryResponse<'tcx, ()>>,
     traits::query::NoSolution
 > {
     use crate::lowering::Lower;
@@ -721,6 +717,6 @@ crate fn evaluate_goal<'a, 'tcx>(
 
     debug!("evaluate_goal: solution = {:?}", solution);
 
-    solution.map(|ok| Ok(Lrc::new(ok)))
-        .unwrap_or(Err(traits::query::NoSolution))
+    solution.map(|ok| Ok(&*tcx.arena.alloc(ok)))
+            .unwrap_or(Err(traits::query::NoSolution))
 }

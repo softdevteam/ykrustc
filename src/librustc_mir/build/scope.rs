@@ -19,12 +19,17 @@ paragraph). This is because region scopes are tied to
 them. Eventually, when we shift to non-lexical lifetimes, there should
 be no need to remember this mapping.
 
-There is one additional wrinkle, actually, that I wanted to hide from
-you but duty compels me to mention. In the course of building
-matches, it sometimes happen that certain code (namely guards) gets
-executed multiple times. This means that the scope lexical scope may
-in fact correspond to multiple, disjoint SEME regions. So in fact our
+### Not so SEME Regions
+
+In the course of building matches, it sometimes happens that certain code
+(namely guards) gets executed multiple times. This means that the scope lexical
+scope may in fact correspond to multiple, disjoint SEME regions. So in fact our
 mapping is from one scope to a vector of SEME regions.
+
+Also in matches, the scopes assigned to arms are not even SEME regions! Each
+arm has a single region with one entry for each pattern. We manually
+manipulate the scheduled drops in this scope to avoid dropping things multiple
+times, although drop elaboration would clean this up for value drops.
 
 ### Drops
 
@@ -82,11 +87,11 @@ use crate::hair::LintLevel;
 use rustc::middle::region;
 use rustc::ty::Ty;
 use rustc::hir;
-use rustc::hir::def_id::LOCAL_CRATE;
 use rustc::mir::*;
-use syntax_pos::{Span};
+use syntax_pos::{Span, DUMMY_SP};
 use rustc_data_structures::fx::FxHashMap;
 use std::collections::hash_map::Entry;
+use std::mem;
 
 #[derive(Debug)]
 pub struct Scope<'tcx> {
@@ -108,6 +113,8 @@ pub struct Scope<'tcx> {
     ///  * polluting the cleanup MIR with StorageDead creates
     ///    landing pads even though there's no actual destructors
     ///  * freeing up stack space has no effect during unwinding
+    /// Note that for generators we do emit StorageDeads, for the
+    /// use of optimizations in the MIR generator transform.
     needs_cleanup: bool,
 
     /// set of places to drop when exiting this scope. This starts
@@ -280,13 +287,13 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
     pub fn in_opt_scope<F, R>(&mut self,
                               opt_scope: Option<(region::Scope, SourceInfo)>,
-                              mut block: BasicBlock,
                               f: F)
                               -> BlockAnd<R>
         where F: FnOnce(&mut Builder<'a, 'gcx, 'tcx>) -> BlockAnd<R>
     {
-        debug!("in_opt_scope(opt_scope={:?}, block={:?})", opt_scope, block);
+        debug!("in_opt_scope(opt_scope={:?})", opt_scope);
         if let Some(region_scope) = opt_scope { self.push_scope(region_scope); }
+        let mut block;
         let rv = unpack!(block = f(self));
         if let Some(region_scope) = opt_scope {
             unpack!(block = self.pop_scope(region_scope, block));
@@ -300,28 +307,37 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     pub fn in_scope<F, R>(&mut self,
                           region_scope: (region::Scope, SourceInfo),
                           lint_level: LintLevel,
-                          mut block: BasicBlock,
                           f: F)
                           -> BlockAnd<R>
         where F: FnOnce(&mut Builder<'a, 'gcx, 'tcx>) -> BlockAnd<R>
     {
-        debug!("in_scope(region_scope={:?}, block={:?})", region_scope, block);
+        debug!("in_scope(region_scope={:?})", region_scope);
         let source_scope = self.source_scope;
         let tcx = self.hir.tcx();
         if let LintLevel::Explicit(current_hir_id) = lint_level {
-            let same_lint_scopes = tcx.dep_graph.with_ignore(|| {
-                let sets = tcx.lint_levels(LOCAL_CRATE);
-                let parent_hir_id = self.source_scope_local_data[source_scope].lint_root;
-                sets.lint_level_set(parent_hir_id) == sets.lint_level_set(current_hir_id)
-            });
+            // Use `maybe_lint_level_root_bounded` with `root_lint_level` as a bound
+            // to avoid adding Hir dependences on our parents.
+            // We estimate the true lint roots here to avoid creating a lot of source scopes.
 
-            if !same_lint_scopes {
-                self.source_scope =
-                    self.new_source_scope(region_scope.1.span, lint_level,
-                                          None);
+            let parent_root = tcx.maybe_lint_level_root_bounded(
+                self.source_scope_local_data[source_scope].lint_root,
+                self.hir.root_lint_level,
+            );
+            let current_root = tcx.maybe_lint_level_root_bounded(
+                current_hir_id,
+                self.hir.root_lint_level
+            );
+
+            if parent_root != current_root {
+                self.source_scope = self.new_source_scope(
+                    region_scope.1.span,
+                    LintLevel::Explicit(current_root),
+                    None
+                );
             }
         }
         self.push_scope(region_scope);
+        let mut block;
         let rv = unpack!(block = f(self));
         unpack!(block = self.pop_scope(region_scope, block));
         self.source_scope = source_scope;
@@ -458,10 +474,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     /// This path terminates in GeneratorDrop. Returns the start of the path.
     /// None indicates there’s no cleanup to do at this point.
     pub fn generator_drop_cleanup(&mut self) -> Option<BasicBlock> {
-        if !self.scopes.iter().any(|scope| scope.needs_cleanup) {
-            return None;
-        }
-
         // Fill in the cache for unwinds
         self.diverge_cleanup_gen(true);
 
@@ -472,7 +484,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         let result = block;
 
         while let Some(scope) = scopes.next() {
-            if !scope.needs_cleanup {
+            if !scope.needs_cleanup && !self.is_generator {
                 continue;
             }
 
@@ -723,7 +735,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             // Note that this code iterates scopes from the inner-most to the outer-most,
             // invalidating caches of each scope visited. This way bare minimum of the
             // caches gets invalidated. i.e., if a new drop is added into the middle scope, the
-            // cache of outer scpoe stays intact.
+            // cache of outer scope stays intact.
             scope.invalidate_cache(!needs_drop, this_scope);
             if this_scope {
                 if let DropKind::Value { .. } = drop_kind {
@@ -794,7 +806,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         for scope in self.scopes[first_uncached..].iter_mut() {
             target = build_diverge_scope(&mut self.cfg, scope.region_scope_span,
-                                         scope, target, generator_drop);
+                                         scope, target, generator_drop, self.is_generator);
         }
 
         target
@@ -865,6 +877,73 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         success_block
     }
+
+    // `match` arm scopes
+    // ==================
+    /// Unschedules any drops in the top scope.
+    ///
+    /// This is only needed for `match` arm scopes, because they have one
+    /// entrance per pattern, but only one exit.
+    pub fn clear_top_scope(&mut self, region_scope: region::Scope) {
+        let top_scope = self.scopes.last_mut().unwrap();
+
+        assert_eq!(top_scope.region_scope, region_scope);
+
+        top_scope.drops.clear();
+        top_scope.invalidate_cache(false, true);
+    }
+
+    /// Drops the single variable provided
+    ///
+    /// * The scope must be the top scope.
+    /// * The variable must be in that scope.
+    /// * The variable must be at the top of that scope: it's the next thing
+    ///   scheduled to drop.
+    /// * The drop must be of `DropKind::Storage`.
+    ///
+    /// This is used for the boolean holding the result of the match guard. We
+    /// do this because:
+    ///
+    /// * The boolean is different for each pattern
+    /// * There is only one exit for the arm scope
+    /// * The guard expression scope is too short, it ends just before the
+    ///   boolean is tested.
+    pub fn pop_variable(
+        &mut self,
+        block: BasicBlock,
+        region_scope: region::Scope,
+        variable: Local,
+    ) {
+        let top_scope = self.scopes.last_mut().unwrap();
+
+        assert_eq!(top_scope.region_scope, region_scope);
+
+        let top_drop_data = top_scope.drops.pop().unwrap();
+
+        match top_drop_data.kind {
+            DropKind::Value { .. } => {
+                bug!("Should not be calling pop_top_variable on non-copy type!")
+            }
+            DropKind::Storage => {
+                // Drop the storage for both value and storage drops.
+                // Only temps and vars need their storage dead.
+                match top_drop_data.location {
+                    Place::Base(PlaceBase::Local(index)) => {
+                        let source_info = top_scope.source_info(top_drop_data.span);
+                        assert_eq!(index, variable);
+                        self.cfg.push(block, Statement {
+                            source_info,
+                            kind: StatementKind::StorageDead(index)
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+
+        top_scope.invalidate_cache(true, true);
+    }
+
 }
 
 /// Builds drops for pop_scope and exit_scope.
@@ -892,12 +971,6 @@ fn build_scope_drops<'tcx>(
     // drops panic (panicking while unwinding will abort, so there's no need for
     // another set of arrows). The drops for the unwind path should have already
     // been generated by `diverge_cleanup_gen`.
-    //
-    // The code in this function reads from right to left.
-    // Storage dead drops have to be done left to right (since we can only push
-    // to the end of a Vec). So, we find the next drop and then call
-    // push_storage_deads which will iterate backwards through them so that
-    // they are added in the correct order.
 
     let mut unwind_blocks = scope.drops.iter().rev().filter_map(|drop_data| {
         if let DropKind::Value { cached_block } = drop_data.kind {
@@ -928,11 +1001,6 @@ fn build_scope_drops<'tcx>(
                 block = next;
             }
             DropKind::Storage => {
-                // We do not need to emit StorageDead for generator drops
-                if generator_drop {
-                    continue
-                }
-
                 // Drop the storage for both value and storage drops.
                 // Only temps and vars need their storage dead.
                 match drop_data.location {
@@ -954,7 +1022,8 @@ fn build_diverge_scope<'tcx>(cfg: &mut CFG<'tcx>,
                              span: Span,
                              scope: &mut Scope<'tcx>,
                              mut target: BasicBlock,
-                             generator_drop: bool)
+                             generator_drop: bool,
+                             is_generator: bool)
                              -> BasicBlock
 {
     // Build up the drops in **reverse** order. The end result will
@@ -973,41 +1042,90 @@ fn build_diverge_scope<'tcx>(cfg: &mut CFG<'tcx>,
         scope: source_scope
     };
 
-    // Next, build up the drops. Here we iterate the vector in
+    // We keep track of StorageDead statements to prepend to our current block
+    // and store them here, in reverse order.
+    let mut storage_deads = vec![];
+
+    let mut target_built_by_us = false;
+
+    // Build up the drops. Here we iterate the vector in
     // *forward* order, so that we generate drops[0] first (right to
     // left in diagram above).
     for (j, drop_data) in scope.drops.iter_mut().enumerate() {
         debug!("build_diverge_scope drop_data[{}]: {:?}", j, drop_data);
         // Only full value drops are emitted in the diverging path,
-        // not StorageDead.
+        // not StorageDead, except in the case of generators.
         //
         // Note: This may not actually be what we desire (are we
         // "freeing" stack storage as we unwind, or merely observing a
         // frozen stack)? In particular, the intent may have been to
         // match the behavior of clang, but on inspection eddyb says
         // this is not what clang does.
-        let cached_block = match drop_data.kind {
-            DropKind::Value { ref mut cached_block } => cached_block.ref_mut(generator_drop),
-            DropKind::Storage => continue
-        };
-        target = if let Some(cached_block) = *cached_block {
-            cached_block
-        } else {
-            let block = cfg.start_new_cleanup_block();
-            cfg.terminate(block, source_info(drop_data.span),
-                          TerminatorKind::Drop {
-                              location: drop_data.location.clone(),
-                              target,
-                              unwind: None
-                          });
-            *cached_block = Some(block);
-            block
+        match drop_data.kind {
+            DropKind::Storage if is_generator => {
+                // Only temps and vars need their storage dead.
+                match drop_data.location {
+                    Place::Base(PlaceBase::Local(index)) => {
+                        storage_deads.push(Statement {
+                            source_info: source_info(drop_data.span),
+                            kind: StatementKind::StorageDead(index)
+                        });
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            DropKind::Storage => {}
+            DropKind::Value { ref mut cached_block } => {
+                let cached_block = cached_block.ref_mut(generator_drop);
+                target = if let Some(cached_block) = *cached_block {
+                    storage_deads.clear();
+                    target_built_by_us = false;
+                    cached_block
+                } else {
+                    push_storage_deads(
+                        cfg, &mut target, &mut storage_deads, target_built_by_us, source_scope);
+                    let block = cfg.start_new_cleanup_block();
+                    cfg.terminate(block, source_info(drop_data.span),
+                                  TerminatorKind::Drop {
+                                      location: drop_data.location.clone(),
+                                      target,
+                                      unwind: None
+                                  });
+                    *cached_block = Some(block);
+                    target_built_by_us = true;
+                    block
+                };
+            }
         };
     }
-
+    push_storage_deads(cfg, &mut target, &mut storage_deads, target_built_by_us, source_scope);
     *scope.cached_unwind.ref_mut(generator_drop) = Some(target);
 
+    assert!(storage_deads.is_empty());
     debug!("build_diverge_scope({:?}, {:?}) = {:?}", scope, span, target);
 
     target
+}
+
+fn push_storage_deads(cfg: &mut CFG<'tcx>,
+                      target: &mut BasicBlock,
+                      storage_deads: &mut Vec<Statement<'tcx>>,
+                      target_built_by_us: bool,
+                      source_scope: SourceScope) {
+    if storage_deads.is_empty() { return; }
+    if !target_built_by_us {
+        // We cannot add statements to an existing block, so we create a new
+        // block for our StorageDead statements.
+        let block = cfg.start_new_cleanup_block();
+        let source_info = SourceInfo { span: DUMMY_SP, scope: source_scope };
+        cfg.terminate(block, source_info, TerminatorKind::Goto { target: *target });
+        *target = block;
+    }
+    let statements = &mut cfg.block_data_mut(*target).statements;
+    storage_deads.reverse();
+    debug!("push_storage_deads({:?}), storage_deads={:?}, statements={:?}",
+           *target, storage_deads, statements);
+    storage_deads.append(statements);
+    mem::swap(statements, storage_deads);
+    assert!(storage_deads.is_empty());
 }

@@ -7,9 +7,6 @@
 use super::super::indexed_vec::{Idx, IndexVec};
 use super::iterate::reverse_post_order;
 use super::ControlFlowGraph;
-use crate::bit_set::BitSet;
-
-use std::fmt;
 
 #[cfg(test)]
 mod test;
@@ -157,80 +154,5 @@ impl<'dom, Node: Idx> Iterator for Iter<'dom, Node> {
         } else {
             return None;
         }
-    }
-}
-
-pub struct DominatorFrontiers<G: ControlFlowGraph> {
-    dfs: IndexVec<G::Node, BitSet<G::Node>>,
-}
-
-impl<G: ControlFlowGraph> DominatorFrontiers<G> {
-    pub fn new(graph: &G, doms: &Dominators<G::Node>) -> Self {
-        let num_nodes = graph.num_nodes();
-        let mut dfs = IndexVec::from_elem_n(BitSet::new_empty(num_nodes), num_nodes);
-
-        for b in (0..num_nodes).map(|i| G::Node::new(i)) {
-            if graph.predecessors(b).take(2).count() > 1 {
-                // Iterator isn't clonable, so we have to make a new one.
-                let preds = graph.predecessors(b);
-                for p in preds {
-                    let mut runner = p; // Not strictly necessary, but for parity with the paper.
-                    while runner != doms.immediate_dominator(b) {
-                        dfs[runner].insert(b);
-                        runner = doms.immediate_dominator(runner);
-                    }
-                }
-            }
-        }
-       Self { dfs }
-    }
-
-    pub fn frontier(&self, n: G::Node) -> &BitSet<G::Node> {
-        &self.dfs[n]
-    }
-}
-
-pub struct DominatorTree<N: Idx> {
-    root: N,
-    children: IndexVec<N, Vec<N>>,
-}
-
-impl<Node: Idx> DominatorTree<Node> {
-    pub fn children(&self, node: Node) -> &[Node] {
-        &self.children[node]
-    }
-}
-
-impl<Node: Idx> fmt::Debug for DominatorTree<Node> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(
-            &DominatorTreeNode {
-                tree: self,
-                node: self.root,
-            },
-            fmt,
-        )
-    }
-}
-
-struct DominatorTreeNode<'tree, Node: Idx> {
-    tree: &'tree DominatorTree<Node>,
-    node: Node,
-}
-
-impl<'tree, Node: Idx> fmt::Debug for DominatorTreeNode<'tree, Node> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let subtrees: Vec<_> = self.tree
-            .children(self.node)
-            .iter()
-            .map(|&child| DominatorTreeNode {
-                tree: self.tree,
-                node: child,
-            })
-            .collect();
-        fmt.debug_tuple("")
-            .field(&self.node)
-            .field(&subtrees)
-            .finish()
     }
 }

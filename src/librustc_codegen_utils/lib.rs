@@ -4,9 +4,12 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
+#![feature(arbitrary_self_types)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
+#![feature(core_intrinsics)]
 #![feature(custom_attribute)]
+#![feature(never_type)]
 #![feature(nll)]
 #![allow(unused_attributes)]
 #![feature(rustc_diagnostic_macros)]
@@ -15,13 +18,14 @@
 #![recursion_limit="256"]
 
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
 
 #[macro_use]
 extern crate rustc;
-#[macro_use] extern crate rustc_data_structures;
 
 use rustc::ty::TyCtxt;
 use rustc::hir::def_id::LOCAL_CRATE;
+use syntax::symbol::sym;
 
 pub mod link;
 pub mod codegen_backend;
@@ -34,7 +38,7 @@ pub mod symbol_names_test;
 /// reporting an error.
 pub fn check_for_rustc_errors_attr(tcx: TyCtxt<'_, '_, '_>) {
     if let Some((def_id, _)) = tcx.entry_fn(LOCAL_CRATE) {
-        if tcx.has_attr(def_id, "rustc_error") {
+        if tcx.has_attr(def_id, sym::rustc_error) {
             tcx.sess.span_fatal(tcx.def_span(def_id), "compilation successful");
         }
     }

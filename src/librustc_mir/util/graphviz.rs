@@ -1,6 +1,7 @@
 use rustc::hir::def_id::DefId;
 use rustc::mir::*;
 use rustc::ty::TyCtxt;
+use rustc_data_structures::indexed_vec::Idx;
 use std::fmt::Debug;
 use std::io::{self, Write};
 
@@ -20,14 +21,24 @@ pub fn write_mir_graphviz<'tcx, W>(tcx: TyCtxt<'_, '_, 'tcx>,
     Ok(())
 }
 
+// Must match `[0-9A-Za-z_]*`. This does not appear in the rendered graph, so
+// it does not have to be user friendly.
+pub fn graphviz_safe_def_name(def_id: DefId) -> String {
+    format!(
+        "{}_{}",
+        def_id.krate.index(),
+        def_id.index.index(),
+    )
+}
+
 /// Write a graphviz DOT graph of the MIR.
 pub fn write_mir_fn_graphviz<'tcx, W>(tcx: TyCtxt<'_, '_, 'tcx>,
                                       def_id: DefId,
-                                      mir: &Mir<'_>,
+                                      mir: &Body<'_>,
                                       w: &mut W) -> io::Result<()>
     where W: Write
 {
-    writeln!(w, "digraph Mir_{} {{", tcx.hir().as_local_hir_id(def_id).unwrap())?;
+    writeln!(w, "digraph Mir_{} {{", graphviz_safe_def_name(def_id))?;
 
     // Global graph properties
     writeln!(w, r#"    graph [fontname="monospace"];"#)?;
@@ -57,7 +68,7 @@ pub fn write_mir_fn_graphviz<'tcx, W>(tcx: TyCtxt<'_, '_, 'tcx>,
 /// `init` and `fini` are callbacks for emitting additional rows of
 /// data (using HTML enclosed with `<tr>` in the emitted text).
 pub fn write_node_label<W: Write, INIT, FINI>(block: BasicBlock,
-                                              mir: &Mir<'_>,
+                                              mir: &Body<'_>,
                                               w: &mut W,
                                               num_cols: u32,
                                               init: INIT,
@@ -99,7 +110,7 @@ pub fn write_node_label<W: Write, INIT, FINI>(block: BasicBlock,
 }
 
 /// Write a graphviz DOT node for the given basic block.
-fn write_node<W: Write>(block: BasicBlock, mir: &Mir<'_>, w: &mut W) -> io::Result<()> {
+fn write_node<W: Write>(block: BasicBlock, mir: &Body<'_>, w: &mut W) -> io::Result<()> {
     // Start a new node with the label to follow, in one of DOT's pseudo-HTML tables.
     write!(w, r#"    {} [shape="none", label=<"#, node(block))?;
     write_node_label(block, mir, w, 1, |_| Ok(()), |_| Ok(()))?;
@@ -108,7 +119,7 @@ fn write_node<W: Write>(block: BasicBlock, mir: &Mir<'_>, w: &mut W) -> io::Resu
 }
 
 /// Write graphviz DOT edges with labels between the given basic block and all of its successors.
-fn write_edges<W: Write>(source: BasicBlock, mir: &Mir<'_>, w: &mut W) -> io::Result<()> {
+fn write_edges<W: Write>(source: BasicBlock, mir: &Body<'_>, w: &mut W) -> io::Result<()> {
     let terminator = mir[source].terminator();
     let labels = terminator.kind.fmt_successor_labels();
 
@@ -124,10 +135,10 @@ fn write_edges<W: Write>(source: BasicBlock, mir: &Mir<'_>, w: &mut W) -> io::Re
 /// all the variables and temporaries.
 fn write_graph_label<'a, 'gcx, 'tcx, W: Write>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                                def_id: DefId,
-                                               mir: &Mir<'_>,
+                                               mir: &Body<'_>,
                                                w: &mut W)
                                                -> io::Result<()> {
-    write!(w, "    label=<fn {}(", dot::escape_html(&tcx.item_path_str(def_id)))?;
+    write!(w, "    label=<fn {}(", dot::escape_html(&tcx.def_path_str(def_id)))?;
 
     // fn argument types.
     for (i, arg) in mir.args_iter().enumerate() {
@@ -141,7 +152,7 @@ fn write_graph_label<'a, 'gcx, 'tcx, W: Write>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
         )?;
     }
 
-    write!(w, ") -&gt; {}", escape(mir.return_ty()))?;
+    write!(w, ") -&gt; {}", escape(&mir.return_ty()))?;
     write!(w, r#"<br align="left"/>"#)?;
 
     for local in mir.vars_and_temps_iter() {
@@ -156,7 +167,7 @@ fn write_graph_label<'a, 'gcx, 'tcx, W: Write>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
             write!(w, r#"{:?}: {}; // {}<br align="left"/>"#,
                    Place::Base(PlaceBase::Local(local)), escape(&decl.ty), name)?;
         } else {
-            write!(w, r#"let mut {:?}: {};<br align="left"/>"#,
+            write!(w, r#"{:?}: {};<br align="left"/>"#,
                    Place::Base(PlaceBase::Local(local)), escape(&decl.ty))?;
         }
     }

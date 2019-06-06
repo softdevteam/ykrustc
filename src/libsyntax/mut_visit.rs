@@ -11,7 +11,6 @@ use crate::ast::*;
 use crate::source_map::{Spanned, respan};
 use crate::parse::token::{self, Token};
 use crate::ptr::P;
-use crate::symbol::keywords;
 use crate::ThinVec;
 use crate::tokenstream::*;
 use crate::util::map_in_place::MapInPlace;
@@ -384,11 +383,15 @@ pub fn noop_visit_use_tree<T: MutVisitor>(use_tree: &mut UseTree, vis: &mut T) {
     vis.visit_span(span);
 }
 
-pub fn noop_visit_arm<T: MutVisitor>(Arm { attrs, pats, guard, body }: &mut Arm, vis: &mut T) {
+pub fn noop_visit_arm<T: MutVisitor>(
+    Arm { attrs, pats, guard, body, span }: &mut Arm,
+    vis: &mut T,
+) {
     visit_attrs(attrs, vis);
     visit_vec(pats, |pat| vis.visit_pat(pat));
     visit_opt(guard, |guard| vis.visit_guard(guard));
     vis.visit_expr(body);
+    vis.visit_span(span);
 }
 
 pub fn noop_visit_guard<T: MutVisitor>(g: &mut Guard, vis: &mut T) {
@@ -450,9 +453,10 @@ pub fn noop_visit_foreign_mod<T: MutVisitor>(foreign_mod: &mut ForeignMod, vis: 
 }
 
 pub fn noop_visit_variant<T: MutVisitor>(variant: &mut Variant, vis: &mut T) {
-    let Spanned { node: Variant_ { ident, attrs, data, disr_expr }, span } = variant;
+    let Spanned { node: Variant_ { ident, attrs, id, data, disr_expr }, span } = variant;
     vis.visit_ident(ident);
     visit_attrs(attrs, vis);
+    vis.visit_id(id);
     vis.visit_variant_data(data);
     visit_opt(disr_expr, |disr_expr| vis.visit_anon_const(disr_expr));
     vis.visit_span(span);
@@ -539,16 +543,14 @@ pub fn noop_visit_macro_def<T: MutVisitor>(macro_def: &mut MacroDef, vis: &mut T
 }
 
 pub fn noop_visit_meta_list_item<T: MutVisitor>(li: &mut NestedMetaItem, vis: &mut T) {
-    let Spanned { node, span } = li;
-    match node {
-        NestedMetaItemKind::MetaItem(mi) => vis.visit_meta_item(mi),
-        NestedMetaItemKind::Literal(_lit) => {}
+    match li {
+        NestedMetaItem::MetaItem(mi) => vis.visit_meta_item(mi),
+        NestedMetaItem::Literal(_lit) => {}
     }
-    vis.visit_span(span);
 }
 
 pub fn noop_visit_meta_item<T: MutVisitor>(mi: &mut MetaItem, vis: &mut T) {
-    let MetaItem { ident: _, node, span } = mi;
+    let MetaItem { path: _, node, span } = mi;
     match node {
         MetaItemKind::Word => {}
         MetaItemKind::List(mis) => visit_vec(mis, |mi| vis.visit_meta_list_item(mi)),
@@ -644,7 +646,6 @@ pub fn noop_visit_interpolated<T: MutVisitor>(nt: &mut token::Nonterminal, vis: 
         token::NtMeta(meta) => vis.visit_meta_item(meta),
         token::NtPath(path) => vis.visit_path(path),
         token::NtTT(tt) => vis.visit_tt(tt),
-        token::NtArm(arm) => vis.visit_arm(arm),
         token::NtImplItem(item) =>
             visit_clobber(item, |item| {
                 // See reasoning above.
@@ -657,9 +658,6 @@ pub fn noop_visit_interpolated<T: MutVisitor>(nt: &mut token::Nonterminal, vis: 
                 vis.flat_map_trait_item(item)
                     .expect_one("expected visitor to produce exactly one item")
             }),
-        token::NtGenerics(generics) => vis.visit_generics(generics),
-        token::NtWhereClause(where_clause) => vis.visit_where_clause(where_clause),
-        token::NtArg(arg) => vis.visit_arg(arg),
         token::NtVis(visib) => vis.visit_vis(visib),
         token::NtForeignItem(item) =>
             visit_clobber(item, |item| {
@@ -767,11 +765,11 @@ pub fn noop_visit_where_predicate<T: MutVisitor>(pred: &mut WherePredicate, vis:
 
 pub fn noop_visit_variant_data<T: MutVisitor>(vdata: &mut VariantData, vis: &mut T) {
     match vdata {
-        VariantData::Struct(fields, id) |
+        VariantData::Struct(fields, ..) => visit_vec(fields, |field| vis.visit_struct_field(field)),
         VariantData::Tuple(fields, id) => {
             visit_vec(fields, |field| vis.visit_struct_field(field));
             vis.visit_id(id);
-        }
+        },
         VariantData::Unit(id) => vis.visit_id(id),
     }
 }
@@ -946,7 +944,7 @@ pub fn noop_visit_mod<T: MutVisitor>(Mod { inner, items, inline: _ }: &mut Mod, 
 pub fn noop_visit_crate<T: MutVisitor>(krate: &mut Crate, vis: &mut T) {
     visit_clobber(krate, |Crate { module, attrs, span }| {
         let item = P(Item {
-            ident: keywords::Invalid.ident(),
+            ident: Ident::invalid(),
             attrs,
             id: DUMMY_NODE_ID,
             vis: respan(span.shrink_to_lo(), VisibilityKind::Public),
@@ -1065,10 +1063,6 @@ pub fn noop_visit_anon_const<T: MutVisitor>(AnonConst { id, value }: &mut AnonCo
 pub fn noop_visit_expr<T: MutVisitor>(Expr { node, id, span, attrs }: &mut Expr, vis: &mut T) {
     match node {
         ExprKind::Box(expr) => vis.visit_expr(expr),
-        ExprKind::ObsoleteInPlace(a, b) => {
-            vis.visit_expr(a);
-            vis.visit_expr(b);
-        }
         ExprKind::Array(exprs) => visit_exprs(exprs, vis),
         ExprKind::Repeat(expr, count) => {
             vis.visit_expr(expr);
@@ -1150,6 +1144,7 @@ pub fn noop_visit_expr<T: MutVisitor>(Expr { node, id, span, attrs }: &mut Expr,
             vis.visit_id(node_id);
             vis.visit_block(body);
         }
+        ExprKind::Await(_origin, expr) => vis.visit_expr(expr),
         ExprKind::Assign(el, er) => {
             vis.visit_expr(el);
             vis.visit_expr(er);
@@ -1273,7 +1268,7 @@ mod tests {
     use crate::util::parser_testing::{string_to_crate, matches_codepattern};
     use crate::print::pprust;
     use crate::mut_visit;
-    use crate::with_globals;
+    use crate::with_default_globals;
     use super::*;
 
     // this version doesn't care about getting comments or docstrings in.
@@ -1311,7 +1306,7 @@ mod tests {
 
     // make sure idents get transformed everywhere
     #[test] fn ident_transformation () {
-        with_globals(|| {
+        with_default_globals(|| {
             let mut zz_visitor = ToZzIdentMutVisitor;
             let mut krate = string_to_crate(
                 "#[a] mod b {fn c (d : e, f : g) {h!(i,j,k);l;m}}".to_string());
@@ -1326,7 +1321,7 @@ mod tests {
 
     // even inside macro defs....
     #[test] fn ident_transformation_in_defs () {
-        with_globals(|| {
+        with_default_globals(|| {
             let mut zz_visitor = ToZzIdentMutVisitor;
             let mut krate = string_to_crate(
                 "macro_rules! a {(b $c:expr $(d $e:token)f+ => \
@@ -1340,4 +1335,3 @@ mod tests {
         })
     }
 }
-

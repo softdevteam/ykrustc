@@ -1,7 +1,7 @@
 use crate::borrow_check::borrow_set::{BorrowSet, BorrowData};
 use crate::borrow_check::place_ext::PlaceExt;
 
-use rustc::mir::{self, Location, Place, PlaceBase, Mir};
+use rustc::mir::{self, Location, Place, PlaceBase, Body};
 use rustc::ty::TyCtxt;
 use rustc::ty::RegionVid;
 
@@ -10,12 +10,17 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
 
 use crate::dataflow::{BitDenotation, BlockSets, InitialFlow};
-pub use crate::dataflow::indexes::BorrowIndex;
 use crate::borrow_check::nll::region_infer::RegionInferenceContext;
 use crate::borrow_check::nll::ToRegionVid;
 use crate::borrow_check::places_conflict;
 
 use std::rc::Rc;
+
+newtype_index! {
+    pub struct BorrowIndex {
+        DEBUG_FORMAT = "bw{}"
+    }
+}
 
 /// `Borrows` stores the data used in the analyses that track the flow
 /// of borrows.
@@ -26,7 +31,7 @@ use std::rc::Rc;
 /// borrows in compact bitvectors.
 pub struct Borrows<'a, 'gcx: 'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
 
     borrow_set: Rc<BorrowSet<'tcx>>,
     borrows_out_of_scope_at_location: FxHashMap<Location, Vec<BorrowIndex>>,
@@ -43,7 +48,7 @@ struct StackEntry {
 }
 
 fn precompute_borrows_out_of_scope<'tcx>(
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     regioncx: &Rc<RegionInferenceContext<'tcx>>,
     borrows_out_of_scope_at_location: &mut FxHashMap<Location, Vec<BorrowIndex>>,
     borrow_index: BorrowIndex,
@@ -131,7 +136,7 @@ fn precompute_borrows_out_of_scope<'tcx>(
 impl<'a, 'gcx, 'tcx> Borrows<'a, 'gcx, 'tcx> {
     crate fn new(
         tcx: TyCtxt<'a, 'gcx, 'tcx>,
-        mir: &'a Mir<'tcx>,
+        mir: &'a Body<'tcx>,
         nonlexical_regioncx: Rc<RegionInferenceContext<'tcx>>,
         borrow_set: &Rc<BorrowSet<'tcx>>,
     ) -> Self {
@@ -288,8 +293,8 @@ impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for Borrows<'a, 'gcx, 'tcx> {
                 self.kill_borrows_on_place(sets, &Place::Base(PlaceBase::Local(local)));
             }
 
-            mir::StatementKind::InlineAsm { ref outputs, ref asm, .. } => {
-                for (output, kind) in outputs.iter().zip(&asm.outputs) {
+            mir::StatementKind::InlineAsm(ref asm) => {
+                for (output, kind) in asm.outputs.iter().zip(&asm.asm.outputs) {
                     if !kind.is_indirect && !kind.is_rw {
                         self.kill_borrows_on_place(sets, output);
                     }

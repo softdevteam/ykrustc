@@ -8,9 +8,10 @@ use crate::dataflow::move_paths::MoveData;
 use crate::dataflow::FlowAtLocation;
 use crate::dataflow::MaybeInitializedPlaces;
 use crate::transform::MirSource;
+use crate::borrow_check::Upvar;
 use rustc::hir::def_id::DefId;
 use rustc::infer::InferCtxt;
-use rustc::mir::{ClosureOutlivesSubject, ClosureRegionRequirements, Mir};
+use rustc::mir::{ClosureOutlivesSubject, ClosureRegionRequirements, Body};
 use rustc::ty::{self, RegionKind, RegionVid};
 use rustc_errors::Diagnostic;
 use std::fmt::Debug;
@@ -19,6 +20,7 @@ use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::str::FromStr;
+use syntax::symbol::sym;
 
 use self::mir_util::PassWhere;
 use polonius_engine::{Algorithm, Output};
@@ -48,7 +50,7 @@ pub(in crate::borrow_check) fn replace_regions_in_mir<'cx, 'gcx, 'tcx>(
     infcx: &InferCtxt<'cx, 'gcx, 'tcx>,
     def_id: DefId,
     param_env: ty::ParamEnv<'tcx>,
-    mir: &mut Mir<'tcx>,
+    mir: &mut Body<'tcx>,
 ) -> UniversalRegions<'tcx> {
     debug!("replace_regions_in_mir(def_id={:?})", def_id);
 
@@ -71,7 +73,8 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'gcx, 'tcx>(
     infcx: &InferCtxt<'cx, 'gcx, 'tcx>,
     def_id: DefId,
     universal_regions: UniversalRegions<'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
+    upvars: &[Upvar],
     location_table: &LocationTable,
     param_env: ty::ParamEnv<'gcx>,
     flow_inits: &mut FlowAtLocation<'tcx, MaybeInitializedPlaces<'cx, 'gcx, 'tcx>>,
@@ -173,7 +176,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'gcx, 'tcx>(
 
         if infcx.tcx.sess.opts.debugging_opts.polonius {
             let algorithm = env::var("POLONIUS_ALGORITHM")
-                .unwrap_or_else(|_| String::from("DatafrogOpt"));
+                .unwrap_or_else(|_| String::from("Hybrid"));
             let algorithm = Algorithm::from_str(&algorithm).unwrap();
             debug!("compute_regions: using polonius algorithm {:?}", algorithm);
             Some(Rc::new(Output::compute(
@@ -187,7 +190,8 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'gcx, 'tcx>(
     });
 
     // Solve the region constraints.
-    let closure_region_requirements = regioncx.solve(infcx, &mir, def_id, errors_buffer);
+    let closure_region_requirements =
+        regioncx.solve(infcx, &mir, upvars, def_id, errors_buffer);
 
     // Dump MIR results into a file, if that is enabled. This let us
     // write unit-tests, as well as helping with debugging.
@@ -209,7 +213,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'gcx, 'tcx>(
 fn dump_mir_results<'a, 'gcx, 'tcx>(
     infcx: &InferCtxt<'a, 'gcx, 'tcx>,
     source: MirSource<'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     regioncx: &RegionInferenceContext<'_>,
     closure_region_requirements: &Option<ClosureRegionRequirements<'_>>,
 ) {
@@ -269,7 +273,7 @@ fn dump_mir_results<'a, 'gcx, 'tcx>(
 
 fn dump_annotation<'a, 'gcx, 'tcx>(
     infcx: &InferCtxt<'a, 'gcx, 'tcx>,
-    mir: &Mir<'tcx>,
+    mir: &Body<'tcx>,
     mir_def_id: DefId,
     regioncx: &RegionInferenceContext<'tcx>,
     closure_region_requirements: &Option<ClosureRegionRequirements<'_>>,
@@ -277,7 +281,7 @@ fn dump_annotation<'a, 'gcx, 'tcx>(
 ) {
     let tcx = infcx.tcx;
     let base_def_id = tcx.closure_base_def_id(mir_def_id);
-    if !tcx.has_attr(base_def_id, "rustc_regions") {
+    if !tcx.has_attr(base_def_id, sym::rustc_regions) {
         return;
     }
 

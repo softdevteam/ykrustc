@@ -16,6 +16,7 @@
 #![feature(step_trait)]
 
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
 
 #[macro_use] extern crate log;
 

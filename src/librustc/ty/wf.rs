@@ -7,6 +7,7 @@ use crate::ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable};
 use std::iter::once;
 use syntax_pos::Span;
 use crate::middle::lang_items;
+use crate::mir::interpret::ConstValue;
 
 /// Returns the set of obligations needed to make `ty` well-formed.
 /// If `ty` contains unresolved inference variables, this may include
@@ -203,8 +204,8 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
 
     /// Pushes the obligations required for an array length to be WF
     /// into `self.out`.
-    fn compute_array_len(&mut self, constant: ty::LazyConst<'tcx>) {
-        if let ty::LazyConst::Unevaluated(def_id, substs) = constant {
+    fn compute_array_len(&mut self, constant: ty::Const<'tcx>) {
+        if let ConstValue::Unevaluated(def_id, substs) = constant.val {
             let obligations = self.nominal_obligations(def_id, substs);
             self.out.extend(obligations);
 
@@ -264,7 +265,7 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                 ty::Tuple(ref tys) => {
                     if let Some((_last, rest)) = tys.split_last() {
                         for elem in rest {
-                            self.require_sized(elem, traits::TupleElem);
+                            self.require_sized(elem.expect_ty(), traits::TupleElem);
                         }
                     }
                 }
@@ -482,8 +483,7 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
         //
         // Note: in fact we only permit builtin traits, not `Bar<'d>`, I
         // am looking forward to the future here.
-
-        if !data.has_escaping_bound_vars() {
+        if !data.has_escaping_bound_vars() && !region.has_escaping_bound_vars() {
             let implicit_bounds =
                 object_region_bounds(self.infcx.tcx, data);
 
@@ -516,7 +516,7 @@ pub fn object_region_bounds<'a, 'gcx, 'tcx>(
     // Since we don't actually *know* the self type for an object,
     // this "open(err)" serves as a kind of dummy standin -- basically
     // a placeholder type.
-    let open_ty = tcx.mk_infer(ty::FreshTy(0));
+    let open_ty = tcx.mk_ty_infer(ty::FreshTy(0));
 
     let predicates = existential_predicates.iter().filter_map(|predicate| {
         if let ty::ExistentialPredicate::Projection(_) = *predicate.skip_binder() {

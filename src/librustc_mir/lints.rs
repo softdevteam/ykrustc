@@ -3,12 +3,12 @@ use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::FnKind;
 use rustc::hir::map::blocks::FnLikeNode;
 use rustc::lint::builtin::UNCONDITIONAL_RECURSION;
-use rustc::mir::{self, Mir, TerminatorKind};
-use rustc::ty::{AssociatedItem, AssociatedItemContainer, Instance, TyCtxt, TyKind};
+use rustc::mir::{self, Body, TerminatorKind};
+use rustc::ty::{self, AssocItem, AssocItemContainer, Instance, TyCtxt};
 use rustc::ty::subst::InternalSubsts;
 
 pub fn check(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-             mir: &Mir<'tcx>,
+             mir: &Body<'tcx>,
              def_id: DefId) {
     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
 
@@ -19,7 +19,7 @@ pub fn check(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
 fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                         fn_kind: FnKind<'_>,
-                                        mir: &Mir<'tcx>,
+                                        mir: &Body<'tcx>,
                                         def_id: DefId) {
     if let FnKind::Closure(_) = fn_kind {
         // closures can't recur, so they don't matter.
@@ -63,8 +63,8 @@ fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let param_env = tcx.param_env(def_id);
     let trait_substs_count =
         match tcx.opt_associated_item(def_id) {
-            Some(AssociatedItem {
-                container: AssociatedItemContainer::TraitContainer(trait_def_id),
+            Some(AssocItem {
+                container: AssocItemContainer::TraitContainer(trait_def_id),
                 ..
             }) => tcx.generics_of(trait_def_id).count(),
             _ => 0
@@ -86,7 +86,7 @@ fn check_fn_for_unconditional_recursion(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                 TerminatorKind::Call { ref func, .. } => {
                     let func_ty = func.ty(mir, tcx);
 
-                    if let TyKind::FnDef(fn_def_id, substs) = func_ty.sty {
+                    if let ty::FnDef(fn_def_id, substs) = func_ty.sty {
                         let (call_fn_id, call_substs) =
                             if let Some(instance) = Instance::resolve(tcx,
                                                                         param_env,

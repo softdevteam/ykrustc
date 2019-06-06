@@ -4,11 +4,10 @@
 
 use crate::dep_graph::{DepNodeIndex, DepNode, DepKind, SerializedDepNodeIndex};
 use crate::ty::tls;
-use crate::ty::{TyCtxt};
+use crate::ty::{self, TyCtxt};
 use crate::ty::query::Query;
 use crate::ty::query::config::{QueryConfig, QueryDescription};
 use crate::ty::query::job::{QueryJob, QueryResult, QueryInfo};
-use crate::ty::item_path;
 
 use crate::util::common::{profq_msg, ProfileQueriesMsg, QueryMsg};
 
@@ -115,7 +114,7 @@ impl<'a, 'tcx, Q: QueryDescription<'tcx>> JobOwner<'a, 'tcx, Q> {
             let mut lock = cache.borrow_mut();
             if let Some(value) = lock.results.get(key) {
                 profq_msg!(tcx, ProfileQueriesMsg::CacheHit);
-                tcx.sess.profiler(|p| p.record_query_hit(Q::NAME, Q::CATEGORY));
+                tcx.sess.profiler(|p| p.record_query_hit(Q::NAME));
                 let result = (value.value.clone(), value.index);
                 #[cfg(debug_assertions)]
                 {
@@ -131,7 +130,7 @@ impl<'a, 'tcx, Q: QueryDescription<'tcx>> JobOwner<'a, 'tcx, Q> {
                             //in another thread has completed. Record how long we wait in the
                             //self-profiler
                             #[cfg(parallel_compiler)]
-                            tcx.sess.profiler(|p| p.query_blocked_start(Q::NAME, Q::CATEGORY));
+                            tcx.sess.profiler(|p| p.query_blocked_start(Q::NAME));
 
                             job.clone()
                         },
@@ -173,7 +172,7 @@ impl<'a, 'tcx, Q: QueryDescription<'tcx>> JobOwner<'a, 'tcx, Q> {
             #[cfg(parallel_compiler)]
             {
                 let result = job.r#await(tcx, span);
-                tcx.sess.profiler(|p| p.query_blocked_end(Q::NAME, Q::CATEGORY));
+                tcx.sess.profiler(|p| p.query_blocked_end(Q::NAME));
 
                 if let Err(cycle) = result {
                     return TryGetJob::Cycle(Q::handle_cycle_error(tcx, cycle));
@@ -299,7 +298,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         // sometimes cycles itself, leading to extra cycle errors.
         // (And cycle errors around impls tend to occur during the
         // collect/coherence phases anyhow.)
-        item_path::with_forced_impl_filename_line(|| {
+        ty::print::with_forced_impl_filename_line(|| {
             let span = fix_span(stack[1 % stack.len()].span, &stack[0].query);
             let mut err = struct_span_err!(self.sess,
                                            span,
@@ -359,14 +358,14 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         key: Q::Key)
     -> Q::Value {
         debug!("ty::query::get_query<{}>(key={:?}, span={:?})",
-               Q::NAME,
+               Q::NAME.as_str(),
                key,
                span);
 
         profq_msg!(self,
             ProfileQueriesMsg::QueryBegin(
                 span.data(),
-                profq_query_msg!(Q::NAME, self, key),
+                profq_query_msg!(Q::NAME.as_str(), self, key),
             )
         );
 
@@ -390,7 +389,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
         if dep_node.kind.is_anon() {
             profq_msg!(self, ProfileQueriesMsg::ProviderBegin);
-            self.sess.profiler(|p| p.start_query(Q::NAME, Q::CATEGORY));
+            self.sess.profiler(|p| p.start_query(Q::NAME));
 
             let ((result, dep_node_index), diagnostics) = with_diagnostics(|diagnostics| {
                 self.start_query(job.job.clone(), diagnostics, |tcx| {
@@ -400,7 +399,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 })
             });
 
-            self.sess.profiler(|p| p.end_query(Q::NAME, Q::CATEGORY));
+            self.sess.profiler(|p| p.end_query(Q::NAME));
             profq_msg!(self, ProfileQueriesMsg::ProviderEnd);
 
             self.dep_graph.read_index(dep_node_index);
@@ -415,7 +414,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             return result;
         }
 
-        if !dep_node.kind.is_input() {
+        if !dep_node.kind.is_eval_always() {
             // The diagnostics for this query will be
             // promoted to the current session during
             // try_mark_green(), so we can ignore them here.
@@ -475,14 +474,14 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
         let result = if let Some(result) = result {
             profq_msg!(self, ProfileQueriesMsg::CacheHit);
-            self.sess.profiler(|p| p.record_query_hit(Q::NAME, Q::CATEGORY));
+            self.sess.profiler(|p| p.record_query_hit(Q::NAME));
 
             result
         } else {
             // We could not load a result from the on-disk cache, so
             // recompute.
 
-            self.sess.profiler(|p| p.start_query(Q::NAME, Q::CATEGORY));
+            self.sess.profiler(|p| p.start_query(Q::NAME));
 
             // The dep-graph for this computation is already in
             // place
@@ -490,7 +489,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 Q::compute(self, key)
             });
 
-            self.sess.profiler(|p| p.end_query(Q::NAME, Q::CATEGORY));
+            self.sess.profiler(|p| p.end_query(Q::NAME));
             result
         };
 
@@ -553,7 +552,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 key, dep_node);
 
         profq_msg!(self, ProfileQueriesMsg::ProviderBegin);
-        self.sess.profiler(|p| p.start_query(Q::NAME, Q::CATEGORY));
+        self.sess.profiler(|p| p.start_query(Q::NAME));
 
         let ((result, dep_node_index), diagnostics) = with_diagnostics(|diagnostics| {
             self.start_query(job.job.clone(), diagnostics, |tcx| {
@@ -573,7 +572,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             })
         });
 
-        self.sess.profiler(|p| p.end_query(Q::NAME, Q::CATEGORY));
+        self.sess.profiler(|p| p.end_query(Q::NAME));
         profq_msg!(self, ProfileQueriesMsg::ProviderEnd);
 
         if unlikely!(self.sess.opts.debugging_opts.query_dep_graph) {
@@ -602,9 +601,13 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub(super) fn ensure_query<Q: QueryDescription<'gcx>>(self, key: Q::Key) -> () {
         let dep_node = Q::to_dep_node(self, &key);
 
-        // Ensuring an "input" or anonymous query makes no sense
+        if dep_node.kind.is_eval_always() {
+            let _ = self.get_query::<Q>(DUMMY_SP, key);
+            return;
+        }
+
+        // Ensuring an anonymous query makes no sense
         assert!(!dep_node.kind.is_anon());
-        assert!(!dep_node.kind.is_input());
         if self.dep_graph.try_mark_green_and_read(self, &dep_node).is_none() {
             // A None return from `try_mark_green_and_read` means that this is either
             // a new dep node or that the dep node has already been marked red.
@@ -616,7 +619,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
             let _ = self.get_query::<Q>(DUMMY_SP, key);
         } else {
             profq_msg!(self, ProfileQueriesMsg::CacheHit);
-            self.sess.profiler(|p| p.record_query_hit(Q::NAME, Q::CATEGORY));
+            self.sess.profiler(|p| p.record_query_hit(Q::NAME));
         }
     }
 
@@ -629,7 +632,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     ) {
         profq_msg!(
             self,
-            ProfileQueriesMsg::QueryBegin(span.data(), profq_query_msg!(Q::NAME, self, key))
+            ProfileQueriesMsg::QueryBegin(span.data(),
+                                          profq_query_msg!(Q::NAME.as_str(), self, key))
         );
 
         // We may be concurrently trying both execute and force a query
@@ -720,18 +724,6 @@ macro_rules! define_queries_inner {
                     on_disk_cache,
                     $($name: Default::default()),*
                 }
-            }
-
-            pub fn record_computed_queries(&self, sess: &Session) {
-                sess.profiler(|p| {
-                    $(
-                        p.record_computed_queries(
-                            <queries::$name<'_> as QueryConfig<'_>>::NAME,
-                            <queries::$name<'_> as QueryConfig<'_>>::CATEGORY,
-                            self.$name.lock().results.len()
-                        );
-                    )*
-                });
             }
 
             #[cfg(parallel_compiler)]
@@ -852,6 +844,24 @@ macro_rules! define_queries_inner {
         }
 
         #[allow(nonstandard_style)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum QueryName {
+            $($name),*
+        }
+
+        impl QueryName {
+            pub fn register_with_profiler(profiler: &crate::util::profiling::SelfProfiler) {
+                $(profiler.register_query_name(QueryName::$name);)*
+            }
+
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(QueryName::$name => stringify!($name),)*
+                }
+            }
+        }
+
+        #[allow(nonstandard_style)]
         #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
         pub enum Query<$tcx> {
             $($(#[$attr])* $name($K)),*
@@ -891,6 +901,12 @@ macro_rules! define_queries_inner {
                     $(Query::$name(key) => key.default_span(tcx),)*
                 }
             }
+
+            pub fn query_name(&self) -> QueryName {
+                match self {
+                    $(Query::$name(_) => QueryName::$name,)*
+                }
+            }
         }
 
         impl<'a, $tcx> HashStable<StableHashingContext<'a>> for Query<$tcx> {
@@ -927,7 +943,7 @@ macro_rules! define_queries_inner {
             type Key = $K;
             type Value = $V;
 
-            const NAME: &'static str = stringify!($name);
+            const NAME: QueryName = QueryName::$name;
             const CATEGORY: ProfileCategory = $category;
         }
 
@@ -1132,14 +1148,15 @@ macro_rules! define_provider_struct {
 /// then `force_from_dep_node()` should not fail for it. Otherwise, you can just
 /// add it to the "We don't have enough information to reconstruct..." group in
 /// the match below.
-pub fn force_from_dep_node<'a, 'gcx, 'lcx>(tcx: TyCtxt<'a, 'gcx, 'lcx>,
-                                           dep_node: &DepNode)
-                                           -> bool {
-    use crate::hir::def_id::LOCAL_CRATE;
+pub fn force_from_dep_node<'tcx>(
+    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    dep_node: &DepNode
+) -> bool {
+    use crate::dep_graph::RecoverKey;
 
     // We must avoid ever having to call force_from_dep_node() for a
-    // DepNode::CodegenUnit:
-    // Since we cannot reconstruct the query key of a DepNode::CodegenUnit, we
+    // DepNode::codegen_unit:
+    // Since we cannot reconstruct the query key of a DepNode::codegen_unit, we
     // would always end up having to evaluate the first caller of the
     // `codegen_unit` query that *is* reconstructible. This might very well be
     // the `compile_codegen_unit` query, thus re-codegenning the whole CGU just
@@ -1150,8 +1167,8 @@ pub fn force_from_dep_node<'a, 'gcx, 'lcx>(tcx: TyCtxt<'a, 'gcx, 'lcx>,
     // each CGU, right after partitioning. This way `try_mark_green` will always
     // hit the cache instead of having to go through `force_from_dep_node`.
     // This assertion makes sure, we actually keep applying the solution above.
-    debug_assert!(dep_node.kind != DepKind::CodegenUnit,
-                  "calling force_from_dep_node() on DepKind::CodegenUnit");
+    debug_assert!(dep_node.kind != DepKind::codegen_unit,
+                  "calling force_from_dep_node() on DepKind::codegen_unit");
 
     if !dep_node.kind.can_reconstruct_query_key() {
         return false
@@ -1172,17 +1189,23 @@ pub fn force_from_dep_node<'a, 'gcx, 'lcx>(tcx: TyCtxt<'a, 'gcx, 'lcx>,
         () => { (def_id!()).krate }
     };
 
-    macro_rules! force {
-        ($query:ident, $key:expr) => {
+    macro_rules! force_ex {
+        ($tcx:expr, $query:ident, $key:expr) => {
             {
-                tcx.force_query::<crate::ty::query::queries::$query<'_>>($key, DUMMY_SP, *dep_node);
+                $tcx.force_query::<crate::ty::query::queries::$query<'_>>(
+                    $key,
+                    DUMMY_SP,
+                    *dep_node
+                );
             }
         }
     };
 
-    // FIXME(#45015): We should try move this boilerplate code into a macro
-    //                somehow.
-    match dep_node.kind {
+    macro_rules! force {
+        ($query:ident, $key:expr) => { force_ex!(tcx, $query, $key) }
+    };
+
+    rustc_dep_node_force!([dep_node, tcx]
         // These are inputs that are expected to be pre-allocated and that
         // should therefore always be red or green already
         DepKind::AllLocalTraitImpls |
@@ -1196,244 +1219,12 @@ pub fn force_from_dep_node<'a, 'gcx, 'lcx>(tcx: TyCtxt<'a, 'gcx, 'lcx>,
 
         // We don't have enough information to reconstruct the query key of
         // these
-        DepKind::IsCopy |
-        DepKind::IsSized |
-        DepKind::IsFreeze |
-        DepKind::NeedsDrop |
-        DepKind::Layout |
-        DepKind::ConstEval |
-        DepKind::ConstEvalRaw |
-        DepKind::InstanceSymbolName |
-        DepKind::MirShim |
-        DepKind::BorrowCheckKrate |
-        DepKind::Specializes |
-        DepKind::ImplementationsOfTrait |
-        DepKind::TypeParamPredicates |
-        DepKind::CodegenUnit |
-        DepKind::CompileCodegenUnit |
-        DepKind::FulfillObligation |
-        DepKind::VtableMethods |
-        DepKind::EraseRegionsTy |
-        DepKind::NormalizeProjectionTy |
-        DepKind::NormalizeTyAfterErasingRegions |
-        DepKind::ImpliedOutlivesBounds |
-        DepKind::DropckOutlives |
-        DepKind::EvaluateObligation |
-        DepKind::EvaluateGoal |
-        DepKind::TypeOpAscribeUserType |
-        DepKind::TypeOpEq |
-        DepKind::TypeOpSubtype |
-        DepKind::TypeOpProvePredicate |
-        DepKind::TypeOpNormalizeTy |
-        DepKind::TypeOpNormalizePredicate |
-        DepKind::TypeOpNormalizePolyFnSig |
-        DepKind::TypeOpNormalizeFnSig |
-        DepKind::SubstituteNormalizeAndTestPredicates |
-        DepKind::MethodAutoderefSteps |
-        DepKind::InstanceDefSizeEstimate |
-        DepKind::ProgramClausesForEnv |
-
-        // This one should never occur in this context
-        DepKind::Null => {
+        DepKind::CompileCodegenUnit => {
             bug!("force_from_dep_node() - Encountered {:?}", dep_node)
         }
 
-        // These are not queries
-        DepKind::CoherenceCheckTrait |
-        DepKind::ItemVarianceConstraints => {
-            return false
-        }
-
-        DepKind::RegionScopeTree => { force!(region_scope_tree, def_id!()); }
-
-        DepKind::Coherence => { force!(crate_inherent_impls, LOCAL_CRATE); }
-        DepKind::CoherenceInherentImplOverlapCheck => {
-            force!(crate_inherent_impls_overlap_check, LOCAL_CRATE)
-        },
-        DepKind::PrivacyAccessLevels => { force!(privacy_access_levels, LOCAL_CRATE); }
-        DepKind::CheckPrivateInPublic => { force!(check_private_in_public, LOCAL_CRATE); }
-        DepKind::MirBuilt => { force!(mir_built, def_id!()); }
-        DepKind::MirConstQualif => { force!(mir_const_qualif, def_id!()); }
-        DepKind::MirConst => { force!(mir_const, def_id!()); }
-        DepKind::MirValidated => { force!(mir_validated, def_id!()); }
-        DepKind::MirOptimized => { force!(optimized_mir, def_id!()); }
-
-        DepKind::BorrowCheck => { force!(borrowck, def_id!()); }
-        DepKind::MirBorrowCheck => { force!(mir_borrowck, def_id!()); }
-        DepKind::UnsafetyCheckResult => { force!(unsafety_check_result, def_id!()); }
-        DepKind::UnsafeDeriveOnReprPacked => { force!(unsafe_derive_on_repr_packed, def_id!()); }
-        DepKind::CheckModAttrs => { force!(check_mod_attrs, def_id!()); }
-        DepKind::CheckModLoops => { force!(check_mod_loops, def_id!()); }
-        DepKind::CheckModUnstableApiUsage => { force!(check_mod_unstable_api_usage, def_id!()); }
-        DepKind::CheckModItemTypes => { force!(check_mod_item_types, def_id!()); }
-        DepKind::CheckModPrivacy => { force!(check_mod_privacy, def_id!()); }
-        DepKind::CheckModIntrinsics => { force!(check_mod_intrinsics, def_id!()); }
-        DepKind::CheckModLiveness => { force!(check_mod_liveness, def_id!()); }
-        DepKind::CheckModImplWf => { force!(check_mod_impl_wf, def_id!()); }
-        DepKind::CollectModItemTypes => { force!(collect_mod_item_types, def_id!()); }
-        DepKind::Reachability => { force!(reachable_set, LOCAL_CRATE); }
-        DepKind::MirKeys => { force!(mir_keys, LOCAL_CRATE); }
-        DepKind::CrateVariances => { force!(crate_variances, LOCAL_CRATE); }
-        DepKind::AssociatedItems => { force!(associated_item, def_id!()); }
-        DepKind::TypeOfItem => { force!(type_of, def_id!()); }
-        DepKind::GenericsOfItem => { force!(generics_of, def_id!()); }
-        DepKind::PredicatesOfItem => { force!(predicates_of, def_id!()); }
-        DepKind::PredicatesDefinedOnItem => { force!(predicates_defined_on, def_id!()); }
-        DepKind::ExplicitPredicatesOfItem => { force!(explicit_predicates_of, def_id!()); }
-        DepKind::InferredOutlivesOf => { force!(inferred_outlives_of, def_id!()); }
-        DepKind::InferredOutlivesCrate => { force!(inferred_outlives_crate, LOCAL_CRATE); }
-        DepKind::SuperPredicatesOfItem => { force!(super_predicates_of, def_id!()); }
-        DepKind::TraitDefOfItem => { force!(trait_def, def_id!()); }
-        DepKind::AdtDefOfItem => { force!(adt_def, def_id!()); }
-        DepKind::ImplTraitRef => { force!(impl_trait_ref, def_id!()); }
-        DepKind::ImplPolarity => { force!(impl_polarity, def_id!()); }
-        DepKind::Issue33140SelfTy => { force!(issue33140_self_ty, def_id!()); }
-        DepKind::FnSignature => { force!(fn_sig, def_id!()); }
-        DepKind::CoerceUnsizedInfo => { force!(coerce_unsized_info, def_id!()); }
-        DepKind::ItemVariances => { force!(variances_of, def_id!()); }
-        DepKind::IsConstFn => { force!(is_const_fn_raw, def_id!()); }
-        DepKind::IsPromotableConstFn => { force!(is_promotable_const_fn, def_id!()); }
-        DepKind::IsForeignItem => { force!(is_foreign_item, def_id!()); }
-        DepKind::SizedConstraint => { force!(adt_sized_constraint, def_id!()); }
-        DepKind::DtorckConstraint => { force!(adt_dtorck_constraint, def_id!()); }
-        DepKind::AdtDestructor => { force!(adt_destructor, def_id!()); }
-        DepKind::AssociatedItemDefIds => { force!(associated_item_def_ids, def_id!()); }
-        DepKind::InherentImpls => { force!(inherent_impls, def_id!()); }
-        DepKind::TypeckBodiesKrate => { force!(typeck_item_bodies, LOCAL_CRATE); }
-        DepKind::TypeckTables => { force!(typeck_tables_of, def_id!()); }
-        DepKind::UsedTraitImports => { force!(used_trait_imports, def_id!()); }
-        DepKind::HasTypeckTables => { force!(has_typeck_tables, def_id!()); }
-        DepKind::SymbolName => { force!(def_symbol_name, def_id!()); }
-        DepKind::SpecializationGraph => { force!(specialization_graph_of, def_id!()); }
-        DepKind::ObjectSafety => { force!(is_object_safe, def_id!()); }
-        DepKind::TraitImpls => { force!(trait_impls_of, def_id!()); }
-        DepKind::CheckMatch => { force!(check_match, def_id!()); }
-
-        DepKind::ParamEnv => { force!(param_env, def_id!()); }
-        DepKind::Environment => { force!(environment, def_id!()); }
-        DepKind::DescribeDef => { force!(describe_def, def_id!()); }
-        DepKind::DefSpan => { force!(def_span, def_id!()); }
-        DepKind::LookupStability => { force!(lookup_stability, def_id!()); }
-        DepKind::LookupDeprecationEntry => {
-            force!(lookup_deprecation_entry, def_id!());
-        }
-        DepKind::ConstIsRvaluePromotableToStatic => {
-            force!(const_is_rvalue_promotable_to_static, def_id!());
-        }
-        DepKind::RvaluePromotableMap => { force!(rvalue_promotable_map, def_id!()); }
-        DepKind::ImplParent => { force!(impl_parent, def_id!()); }
-        DepKind::TraitOfItem => { force!(trait_of_item, def_id!()); }
-        DepKind::IsReachableNonGeneric => { force!(is_reachable_non_generic, def_id!()); }
-        DepKind::IsUnreachableLocalDefinition => {
-            force!(is_unreachable_local_definition, def_id!());
-        }
-        DepKind::IsMirAvailable => { force!(is_mir_available, def_id!()); }
-        DepKind::ItemAttrs => { force!(item_attrs, def_id!()); }
-        DepKind::CodegenFnAttrs => { force!(codegen_fn_attrs, def_id!()); }
-        DepKind::FnArgNames => { force!(fn_arg_names, def_id!()); }
-        DepKind::RenderedConst => { force!(rendered_const, def_id!()); }
-        DepKind::DylibDepFormats => { force!(dylib_dependency_formats, krate!()); }
-        DepKind::IsPanicRuntime => { force!(is_panic_runtime, krate!()); }
-        DepKind::IsCompilerBuiltins => { force!(is_compiler_builtins, krate!()); }
-        DepKind::HasGlobalAllocator => { force!(has_global_allocator, krate!()); }
-        DepKind::HasPanicHandler => { force!(has_panic_handler, krate!()); }
-        DepKind::ExternCrate => { force!(extern_crate, def_id!()); }
-        DepKind::LintLevels => { force!(lint_levels, LOCAL_CRATE); }
-        DepKind::InScopeTraits => { force!(in_scope_traits_map, def_id!().index); }
-        DepKind::ModuleExports => { force!(module_exports, def_id!()); }
-        DepKind::IsSanitizerRuntime => { force!(is_sanitizer_runtime, krate!()); }
-        DepKind::IsProfilerRuntime => { force!(is_profiler_runtime, krate!()); }
-        DepKind::GetPanicStrategy => { force!(panic_strategy, krate!()); }
-        DepKind::IsNoBuiltins => { force!(is_no_builtins, krate!()); }
-        DepKind::ImplDefaultness => { force!(impl_defaultness, def_id!()); }
-        DepKind::CheckItemWellFormed => { force!(check_item_well_formed, def_id!()); }
-        DepKind::CheckTraitItemWellFormed => { force!(check_trait_item_well_formed, def_id!()); }
-        DepKind::CheckImplItemWellFormed => { force!(check_impl_item_well_formed, def_id!()); }
-        DepKind::ReachableNonGenerics => { force!(reachable_non_generics, krate!()); }
-        DepKind::NativeLibraries => { force!(native_libraries, krate!()); }
-        DepKind::EntryFn => { force!(entry_fn, krate!()); }
-        DepKind::PluginRegistrarFn => { force!(plugin_registrar_fn, krate!()); }
-        DepKind::ProcMacroDeclsStatic => { force!(proc_macro_decls_static, krate!()); }
-        DepKind::CrateDisambiguator => { force!(crate_disambiguator, krate!()); }
-        DepKind::CrateHash => { force!(crate_hash, krate!()); }
-        DepKind::OriginalCrateName => { force!(original_crate_name, krate!()); }
-        DepKind::ExtraFileName => { force!(extra_filename, krate!()); }
         DepKind::Analysis => { force!(analysis, krate!()); }
-
-        DepKind::AllTraitImplementations => {
-            force!(all_trait_implementations, krate!());
-        }
-
-        DepKind::DllimportForeignItems => {
-            force!(dllimport_foreign_items, krate!());
-        }
-        DepKind::IsDllimportForeignItem => {
-            force!(is_dllimport_foreign_item, def_id!());
-        }
-        DepKind::IsStaticallyIncludedForeignItem => {
-            force!(is_statically_included_foreign_item, def_id!());
-        }
-        DepKind::NativeLibraryKind => { force!(native_library_kind, def_id!()); }
-        DepKind::LinkArgs => { force!(link_args, LOCAL_CRATE); }
-
-        DepKind::ResolveLifetimes => { force!(resolve_lifetimes, krate!()); }
-        DepKind::NamedRegion => { force!(named_region_map, def_id!().index); }
-        DepKind::IsLateBound => { force!(is_late_bound_map, def_id!().index); }
-        DepKind::ObjectLifetimeDefaults => {
-            force!(object_lifetime_defaults_map, def_id!().index);
-        }
-
-        DepKind::Visibility => { force!(visibility, def_id!()); }
-        DepKind::DepKind => { force!(dep_kind, krate!()); }
-        DepKind::CrateName => { force!(crate_name, krate!()); }
-        DepKind::ItemChildren => { force!(item_children, def_id!()); }
-        DepKind::ExternModStmtCnum => { force!(extern_mod_stmt_cnum, def_id!()); }
-        DepKind::GetLibFeatures => { force!(get_lib_features, LOCAL_CRATE); }
-        DepKind::DefinedLibFeatures => { force!(defined_lib_features, krate!()); }
-        DepKind::GetLangItems => { force!(get_lang_items, LOCAL_CRATE); }
-        DepKind::DefinedLangItems => { force!(defined_lang_items, krate!()); }
-        DepKind::MissingLangItems => { force!(missing_lang_items, krate!()); }
-        DepKind::VisibleParentMap => { force!(visible_parent_map, LOCAL_CRATE); }
-        DepKind::MissingExternCrateItem => {
-            force!(missing_extern_crate_item, krate!());
-        }
-        DepKind::UsedCrateSource => { force!(used_crate_source, krate!()); }
-        DepKind::PostorderCnums => { force!(postorder_cnums, LOCAL_CRATE); }
-
-        DepKind::Freevars => { force!(freevars, def_id!()); }
-        DepKind::MaybeUnusedTraitImport => {
-            force!(maybe_unused_trait_import, def_id!());
-        }
-        DepKind::NamesImportedByGlobUse => { force!(names_imported_by_glob_use, def_id!()); }
-        DepKind::MaybeUnusedExternCrates => { force!(maybe_unused_extern_crates, LOCAL_CRATE); }
-        DepKind::StabilityIndex => { force!(stability_index, LOCAL_CRATE); }
-        DepKind::AllTraits => { force!(all_traits, LOCAL_CRATE); }
-        DepKind::AllCrateNums => { force!(all_crate_nums, LOCAL_CRATE); }
-        DepKind::ExportedSymbols => { force!(exported_symbols, krate!()); }
-        DepKind::CollectAndPartitionMonoItems => {
-            force!(collect_and_partition_mono_items, LOCAL_CRATE);
-        }
-        DepKind::IsCodegenedItem => { force!(is_codegened_item, def_id!()); }
-        DepKind::OutputFilenames => { force!(output_filenames, LOCAL_CRATE); }
-
-        DepKind::TargetFeaturesWhitelist => { force!(target_features_whitelist, LOCAL_CRATE); }
-
-        DepKind::Features => { force!(features_query, LOCAL_CRATE); }
-
-        DepKind::ProgramClausesFor => { force!(program_clauses_for, def_id!()); }
-        DepKind::WasmImportModuleMap => { force!(wasm_import_module_map, krate!()); }
-        DepKind::ForeignModules => { force!(foreign_modules, krate!()); }
-
-        DepKind::UpstreamMonomorphizations => {
-            force!(upstream_monomorphizations, krate!());
-        }
-        DepKind::UpstreamMonomorphizationsFor => {
-            force!(upstream_monomorphizations_for, def_id!());
-        }
-        DepKind::BackendOptimizationLevel => {
-            force!(backend_optimization_level, krate!());
-        }
-    }
+    );
 
     true
 }
@@ -1485,19 +1276,18 @@ macro_rules! impl_load_from_cache {
 }
 
 impl_load_from_cache!(
-    TypeckTables => typeck_tables_of,
-    MirOptimized => optimized_mir,
-    UnsafetyCheckResult => unsafety_check_result,
-    BorrowCheck => borrowck,
-    MirBorrowCheck => mir_borrowck,
-    MirConstQualif => mir_const_qualif,
-    SymbolName => def_symbol_name,
-    ConstIsRvaluePromotableToStatic => const_is_rvalue_promotable_to_static,
-    CheckMatch => check_match,
-    TypeOfItem => type_of,
-    GenericsOfItem => generics_of,
-    PredicatesOfItem => predicates_of,
-    UsedTraitImports => used_trait_imports,
-    CodegenFnAttrs => codegen_fn_attrs,
-    SpecializationGraph => specialization_graph_of,
+    typeck_tables_of => typeck_tables_of,
+    optimized_mir => optimized_mir,
+    unsafety_check_result => unsafety_check_result,
+    borrowck => borrowck,
+    mir_borrowck => mir_borrowck,
+    mir_const_qualif => mir_const_qualif,
+    const_is_rvalue_promotable_to_static => const_is_rvalue_promotable_to_static,
+    check_match => check_match,
+    type_of => type_of,
+    generics_of => generics_of,
+    predicates_of => predicates_of,
+    used_trait_imports => used_trait_imports,
+    codegen_fn_attrs => codegen_fn_attrs,
+    specialization_graph_of => specialization_graph_of,
 );

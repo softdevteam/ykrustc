@@ -5,7 +5,6 @@ use super::write::WriteBackendMethods;
 use super::CodegenObject;
 use rustc::middle::allocator::AllocatorKind;
 use rustc::middle::cstore::EncodedMetadata;
-use rustc::mir::mono::Stats;
 use rustc::session::{Session, config};
 use rustc::ty::TyCtxt;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
@@ -33,11 +32,12 @@ impl<'tcx, T> Backend<'tcx> for T where
 
 pub trait ExtraBackendMethods: CodegenBackend + WriteBackendMethods + Sized + Send {
     fn new_metadata(&self, sess: TyCtxt<'_, '_, '_>, mod_name: &str) -> Self::Module;
-    fn write_metadata<'b, 'gcx>(
+    fn write_compressed_metadata<'b, 'gcx>(
         &self,
         tcx: TyCtxt<'b, 'gcx, 'gcx>,
-        metadata: &mut Self::Module,
-    ) -> EncodedMetadata;
+        metadata: &EncodedMetadata,
+        llvm_module: &mut Self::Module,
+    );
     fn codegen_allocator<'b, 'gcx>(
         &self,
         tcx: TyCtxt<'b, 'gcx, 'gcx>,
@@ -48,7 +48,7 @@ pub trait ExtraBackendMethods: CodegenBackend + WriteBackendMethods + Sized + Se
         &self,
         tcx: TyCtxt<'a, 'tcx, 'tcx>,
         cgu_name: InternedString,
-    ) -> Stats;
+    );
     // If find_features is true this won't access `sess.crate_types` by assuming
     // that `is_pie_binary` is false. When we discover LLVM target features
     // `sess.crate_types` is uninitialized so we cannot access it.

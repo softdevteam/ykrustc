@@ -1,12 +1,14 @@
 //! Hook into libgraphviz for rendering dataflow graphs for MIR.
 
-use rustc::hir::HirId;
-use rustc::mir::{BasicBlock, Mir};
+use rustc::hir::def_id::DefId;
+use rustc::mir::{BasicBlock, Body};
 
 use std::fs;
 use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
+
+use crate::util::graphviz_safe_def_name;
 
 use super::{BitDenotation, DataflowState};
 use super::DataflowBuilder;
@@ -14,8 +16,8 @@ use super::DebugFormatted;
 
 pub trait MirWithFlowState<'tcx> {
     type BD: BitDenotation<'tcx>;
-    fn hir_id(&self) -> HirId;
-    fn mir(&self) -> &Mir<'tcx>;
+    fn def_id(&self) -> DefId;
+    fn mir(&self) -> &Body<'tcx>;
     fn flow_state(&self) -> &DataflowState<'tcx, Self::BD>;
 }
 
@@ -23,8 +25,8 @@ impl<'a, 'tcx, BD> MirWithFlowState<'tcx> for DataflowBuilder<'a, 'tcx, BD>
     where BD: BitDenotation<'tcx>
 {
     type BD = BD;
-    fn hir_id(&self) -> HirId { self.hir_id }
-    fn mir(&self) -> &Mir<'tcx> { self.flow_state.mir() }
+    fn def_id(&self) -> DefId { self.def_id }
+    fn mir(&self) -> &Body<'tcx> { self.flow_state.mir() }
     fn flow_state(&self) -> &DataflowState<'tcx, Self::BD> { &self.flow_state.flow_state }
 }
 
@@ -47,8 +49,8 @@ pub(crate) fn print_borrowck_graph_to<'a, 'tcx, BD, P>(
     let g = Graph { mbcx, phantom: PhantomData, render_idx };
     let mut v = Vec::new();
     dot::render(&g, &mut v)?;
-    debug!("print_borrowck_graph_to path: {} hir_id: {}",
-           path.display(), mbcx.hir_id);
+    debug!("print_borrowck_graph_to path: {} def_id: {:?}",
+           path.display(), mbcx.def_id);
     fs::write(path, v)
 }
 
@@ -57,7 +59,7 @@ pub type Node = BasicBlock;
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct Edge { source: BasicBlock, index: usize }
 
-fn outgoing(mir: &Mir<'_>, bb: BasicBlock) -> Vec<Edge> {
+fn outgoing(mir: &Body<'_>, bb: BasicBlock) -> Vec<Edge> {
     (0..mir[bb].terminator().successors().count())
         .map(|index| Edge { source: bb, index: index}).collect()
 }
@@ -69,9 +71,8 @@ impl<'a, 'tcx, MWF, P> dot::Labeller<'a> for Graph<'a, 'tcx, MWF, P>
     type Node = Node;
     type Edge = Edge;
     fn graph_id(&self) -> dot::Id<'_> {
-        dot::Id::new(format!("graph_for_node_{}",
-                             self.mbcx.hir_id()))
-            .unwrap()
+        let name = graphviz_safe_def_name(self.mbcx.def_id());
+        dot::Id::new(format!("graph_for_def_id_{}", name)).unwrap()
     }
 
     fn node_id(&self, n: &Node) -> dot::Id<'_> {
@@ -123,7 +124,7 @@ where MWF: MirWithFlowState<'tcx>,
                                          n: &Node,
                                          w: &mut W,
                                          block: BasicBlock,
-                                         mir: &Mir<'_>) -> io::Result<()> {
+                                         mir: &Body<'_>) -> io::Result<()> {
         // Header rows
         const HDRS: [&str; 4] = ["ENTRY", "MIR", "BLOCK GENS", "BLOCK KILLS"];
         const HDR_FMT: &str = "bgcolor=\"grey\"";
@@ -148,7 +149,7 @@ where MWF: MirWithFlowState<'tcx>,
                                             n: &Node,
                                             w: &mut W,
                                             block: BasicBlock,
-                                            mir: &Mir<'_>)
+                                            mir: &Body<'_>)
                                             -> io::Result<()> {
         let i = n.index();
 
@@ -198,7 +199,7 @@ where MWF: MirWithFlowState<'tcx>,
                                           n: &Node,
                                           w: &mut W,
                                           block: BasicBlock,
-                                          mir: &Mir<'_>)
+                                          mir: &Body<'_>)
                                           -> io::Result<()> {
         let i = n.index();
 

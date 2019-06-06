@@ -7,7 +7,7 @@ use rustc::ty::subst::Subst;
 use crate::require_same_types;
 
 use rustc_target::spec::abi::Abi;
-use syntax::symbol::Symbol;
+use syntax::symbol::InternedString;
 
 use rustc::hir;
 
@@ -80,7 +80,7 @@ pub fn intrisic_operation_unsafety(intrinsic: &str) -> hir::Unsafety {
 /// and in libcore/intrinsics.rs
 pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                       it: &hir::ForeignItem) {
-    let param = |n| tcx.mk_ty_param(n, Symbol::intern(&format!("P{}", n)).as_interned_str());
+    let param = |n| tcx.mk_ty_param(n, InternedString::intern(&format!("P{}", n)));
     let name = it.ident.as_str();
 
     let mk_va_list_ty = || {
@@ -305,7 +305,8 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             "unchecked_shl" | "unchecked_shr" |
             "rotate_left" | "rotate_right" =>
                 (1, vec![param(0), param(0)], param(0)),
-
+            "unchecked_add" | "unchecked_sub" | "unchecked_mul" =>
+                (1, vec![param(0), param(0)], param(0)),
             "overflowing_add" | "overflowing_sub" | "overflowing_mul" =>
                 (1, vec![param(0), param(0)], param(0)),
             "saturating_add" | "saturating_sub" =>
@@ -397,7 +398,7 @@ pub fn check_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 pub fn check_platform_intrinsic_type<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                                                it: &hir::ForeignItem) {
     let param = |n| {
-        let name = Symbol::intern(&format!("P{}", n)).as_interned_str();
+        let name = InternedString::intern(&format!("P{}", n));
         tcx.mk_ty_param(n, name)
     };
 

@@ -7,6 +7,7 @@
 //!
 //! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
+use crate::arena::ArenaAllocatable;
 use crate::infer::canonical::substitute::substitute_value;
 use crate::infer::canonical::{
     Canonical, CanonicalVarValues, CanonicalizedQueryResponse, Certainty,
@@ -15,9 +16,9 @@ use crate::infer::canonical::{
 use crate::infer::region_constraints::{Constraint, RegionConstraintData};
 use crate::infer::InferCtxtBuilder;
 use crate::infer::{InferCtxt, InferOk, InferResult};
+use crate::mir::interpret::ConstValue;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::indexed_vec::IndexVec;
-use rustc_data_structures::sync::Lrc;
 use std::fmt::Debug;
 use syntax_pos::DUMMY_SP;
 use crate::traits::query::{Fallible, NoSolution};
@@ -25,7 +26,7 @@ use crate::traits::TraitEngine;
 use crate::traits::{Obligation, ObligationCause, PredicateObligation};
 use crate::ty::fold::TypeFoldable;
 use crate::ty::subst::{Kind, UnpackedKind};
-use crate::ty::{self, BoundVar, Lift, Ty, TyCtxt};
+use crate::ty::{self, BoundVar, InferConst, Lift, Ty, TyCtxt};
 use crate::util::captures::Captures;
 
 impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
@@ -54,6 +55,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxtBuilder<'cx, 'gcx, 'tcx> {
     where
         K: TypeFoldable<'tcx>,
         R: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
+        Canonical<'gcx, <QueryResponse<'gcx, R> as Lift<'gcx>>::Lifted>: ArenaAllocatable,
     {
         self.enter_with_canonical(
             DUMMY_SP,
@@ -99,6 +101,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
     ) -> Fallible<CanonicalizedQueryResponse<'gcx, T>>
     where
         T: Debug + Lift<'gcx> + TypeFoldable<'tcx>,
+        Canonical<'gcx, <QueryResponse<'gcx, T> as Lift<'gcx>>::Lifted>: ArenaAllocatable,
     {
         let query_response = self.make_query_response(inference_vars, answer, fulfill_cx)?;
         let canonical_result = self.canonicalize_response(&query_response);
@@ -108,7 +111,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
             canonical_result
         );
 
-        Ok(Lrc::new(canonical_result))
+        Ok(self.tcx.arena.alloc(canonical_result))
     }
 
     /// A version of `make_canonicalized_query_response` that does
@@ -315,8 +318,9 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                     obligations.extend(ok.into_obligations());
                 }
 
-                (UnpackedKind::Const(..), UnpackedKind::Const(..)) => {
-                    unimplemented!() // FIXME(const_generics)
+                (UnpackedKind::Const(v1), UnpackedKind::Const(v2)) => {
+                    let ok = self.at(cause, param_env).eq(v1, v2)?;
+                    obligations.extend(ok.into_obligations());
                 }
 
                 _ => {
@@ -477,8 +481,17 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                         opt_values[br.assert_bound_var()] = Some(*original_value);
                     }
                 }
-                UnpackedKind::Const(..) => {
-                    unimplemented!() // FIXME(const_generics)
+                UnpackedKind::Const(result_value) => {
+                    if let ty::Const {
+                        val: ConstValue::Infer(InferConst::Canonical(debrujin, b)),
+                        ..
+                    } = result_value {
+                        // ...in which case we would set `canonical_vars[0]` to `Some(const X)`.
+
+                        // We only allow a `ty::INNERMOST` index in substitutions.
+                        assert_eq!(*debrujin, ty::INNERMOST);
+                        opt_values[*b] = Some(*original_value);
+                    }
                 }
             }
         }
@@ -614,8 +627,9 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                         obligations
                             .extend(self.at(cause, param_env).eq(v1, v2)?.into_obligations());
                     }
-                    (UnpackedKind::Const(..), UnpackedKind::Const(..)) => {
-                        unimplemented!() // FIXME(const_generics)
+                    (UnpackedKind::Const(v1), UnpackedKind::Const(v2)) => {
+                        let ok = self.at(cause, param_env).eq(v1, v2)?;
+                        obligations.extend(ok.into_obligations());
                     }
                     _ => {
                         bug!("kind mismatch, cannot unify {:?} and {:?}", value1, value2,);

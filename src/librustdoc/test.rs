@@ -8,21 +8,22 @@ use rustc::session::config::{OutputType, OutputTypes, Externs, CodegenOptions};
 use rustc::session::search_paths::SearchPath;
 use rustc::util::common::ErrorReported;
 use syntax::ast;
+use syntax::with_globals;
 use syntax::source_map::SourceMap;
 use syntax::edition::Edition;
 use syntax::feature_gate::UnstableFeatures;
-use syntax_pos::{BytePos, DUMMY_SP, Pos, Span, FileName};
-use tempfile::Builder as TempFileBuilder;
-use testing;
-
 use std::env;
 use std::io::prelude::*;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{self, Command};
 use std::str;
 use std::sync::{Arc, Mutex};
+use syntax::symbol::sym;
+use syntax_pos::{BytePos, DUMMY_SP, Pos, Span, FileName};
+use tempfile::Builder as TempFileBuilder;
+use testing;
 
 use crate::clean::Attributes;
 use crate::config::Options;
@@ -137,17 +138,17 @@ fn scrape_test_config(krate: &::rustc::hir::Crate) -> TestOptions {
     };
 
     let test_attrs: Vec<_> = krate.attrs.iter()
-        .filter(|a| a.check_name("doc"))
+        .filter(|a| a.check_name(sym::doc))
         .flat_map(|a| a.meta_item_list().unwrap_or_else(Vec::new))
-        .filter(|a| a.check_name("test"))
+        .filter(|a| a.check_name(sym::test))
         .collect();
     let attrs = test_attrs.iter().flat_map(|a| a.meta_item_list().unwrap_or(&[]));
 
     for attr in attrs {
-        if attr.check_name("no_crate_inject") {
+        if attr.check_name(sym::no_crate_inject) {
             opts.no_crate_inject = true;
         }
-        if attr.check_name("attr") {
+        if attr.check_name(sym::attr) {
             if let Some(l) = attr.meta_item_list() {
                 for item in l {
                     opts.attrs.push(pprust::meta_list_item_to_string(item));
@@ -159,16 +160,57 @@ fn scrape_test_config(krate: &::rustc::hir::Crate) -> TestOptions {
     opts
 }
 
-fn run_test(test: &str, cratename: &str, filename: &FileName, line: usize,
-            cfgs: Vec<String>, libs: Vec<SearchPath>,
-            cg: CodegenOptions, externs: Externs,
-            should_panic: bool, no_run: bool, as_test_harness: bool,
-            compile_fail: bool, mut error_codes: Vec<String>, opts: &TestOptions,
-            maybe_sysroot: Option<PathBuf>, linker: Option<PathBuf>, edition: Edition,
-            persist_doctests: Option<PathBuf>) {
-    // The test harness wants its own `main` and top-level functions, so
-    // never wrap the test in `fn main() { ... }`.
-    let (test, line_offset) = make_test(test, Some(cratename), as_test_harness, opts);
+/// Documentation test failure modes.
+enum TestFailure {
+    /// The test failed to compile.
+    CompileError,
+    /// The test is marked `compile_fail` but compiled successfully.
+    UnexpectedCompilePass,
+    /// The test failed to compile (as expected) but the compiler output did not contain all
+    /// expected error codes.
+    MissingErrorCodes(Vec<String>),
+    /// The test binary was unable to be executed.
+    ExecutionError(io::Error),
+    /// The test binary exited with a non-zero exit code.
+    ///
+    /// This typically means an assertion in the test failed or another form of panic occurred.
+    ExecutionFailure(process::Output),
+    /// The test is marked `should_panic` but the test binary executed successfully.
+    UnexpectedRunPass,
+}
+
+fn run_test(
+    test: &str,
+    cratename: &str,
+    filename: &FileName,
+    line: usize,
+    cfgs: Vec<String>,
+    libs: Vec<SearchPath>,
+    cg: CodegenOptions,
+    externs: Externs,
+    should_panic: bool,
+    no_run: bool,
+    as_test_harness: bool,
+    compile_fail: bool,
+    mut error_codes: Vec<String>,
+    opts: &TestOptions,
+    maybe_sysroot: Option<PathBuf>,
+    linker: Option<PathBuf>,
+    edition: Edition,
+    persist_doctests: Option<PathBuf>,
+) -> Result<(), TestFailure> {
+    let (test, line_offset) = match panic::catch_unwind(|| {
+        make_test(test, Some(cratename), as_test_harness, opts, edition)
+    }) {
+        Ok((test, line_offset)) => (test, line_offset),
+        Err(cause) if cause.is::<errors::FatalErrorMarker>() => {
+            // If the parser used by `make_test` panicked due to a fatal error, pass the test code
+            // through unchanged. The error will be reported during compilation.
+            (test.to_owned(), 0)
+        },
+        Err(cause) => panic::resume_unwind(cause),
+    };
+
     // FIXME(#44940): if doctests ever support path remapping, then this filename
     // needs to be the result of `SourceMap::span_to_unmapped_path`.
     let path = match filename {
@@ -297,51 +339,57 @@ fn run_test(test: &str, cratename: &str, filename: &FileName, line: usize,
 
     match (compile_result, compile_fail) {
         (Ok(()), true) => {
-            panic!("test compiled while it wasn't supposed to")
+            return Err(TestFailure::UnexpectedCompilePass);
         }
         (Ok(()), false) => {}
         (Err(_), true) => {
-            if error_codes.len() > 0 {
+            if !error_codes.is_empty() {
                 let out = String::from_utf8(data.lock().unwrap().to_vec()).unwrap();
                 error_codes.retain(|err| !out.contains(err));
+
+                if !error_codes.is_empty() {
+                    return Err(TestFailure::MissingErrorCodes(error_codes));
+                }
             }
         }
         (Err(_), false) => {
-            panic!("couldn't compile the test")
+            return Err(TestFailure::CompileError);
         }
     }
 
-    if error_codes.len() > 0 {
-        panic!("Some expected error codes were not found: {:?}", error_codes);
+    if no_run {
+        return Ok(());
     }
-
-    if no_run { return }
 
     // Run the code!
     let mut cmd = Command::new(output_file);
 
     match cmd.output() {
-        Err(e) => panic!("couldn't run the test: {}{}", e,
-                        if e.kind() == io::ErrorKind::PermissionDenied {
-                            " - maybe your tempdir is mounted with noexec?"
-                        } else { "" }),
+        Err(e) => return Err(TestFailure::ExecutionError(e)),
         Ok(out) => {
             if should_panic && out.status.success() {
-                panic!("test executable succeeded when it should have failed");
+                return Err(TestFailure::UnexpectedRunPass);
             } else if !should_panic && !out.status.success() {
-                panic!("test executable failed:\n{}\n{}\n",
-                       str::from_utf8(&out.stdout).unwrap_or(""),
-                       str::from_utf8(&out.stderr).unwrap_or(""));
+                return Err(TestFailure::ExecutionFailure(out));
             }
         }
     }
+
+    Ok(())
 }
 
-/// Makes the test file. Also returns the number of lines before the code begins
+/// Transforms a test into code that can be compiled into a Rust binary, and returns the number of
+/// lines before the test code begins.
+///
+/// # Panics
+///
+/// This function uses the compiler's parser internally. The parser will panic if it encounters a
+/// fatal error while parsing the test.
 pub fn make_test(s: &str,
                  cratename: Option<&str>,
                  dont_insert_main: bool,
-                 opts: &TestOptions)
+                 opts: &TestOptions,
+                 edition: Edition)
                  -> (String, usize) {
     let (crate_attrs, everything_else, crates) = partition_source(s);
     let everything_else = everything_else.trim();
@@ -370,9 +418,8 @@ pub fn make_test(s: &str,
 
     // Uses libsyntax to parse the doctest and find if there's a main fn and the extern
     // crate already is included.
-    let (already_has_main, already_has_extern_crate, found_macro) = crate::syntax::with_globals(|| {
-        use crate::syntax::{ast, parse::{self, ParseSess}, source_map::FilePathMapping};
-        use crate::syntax_pos::FileName;
+    let (already_has_main, already_has_extern_crate, found_macro) = with_globals(edition, || {
+        use crate::syntax::{parse::{self, ParseSess}, source_map::FilePathMapping};
         use errors::emitter::EmitterWriter;
         use errors::Handler;
 
@@ -382,7 +429,8 @@ pub fn make_test(s: &str,
         // Any errors in parsing should also appear when the doctest is compiled for real, so just
         // send all the errors that libsyntax emits directly into a `Sink` instead of stderr.
         let cm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-        let emitter = EmitterWriter::new(box io::sink(), None, false, false);
+        let emitter = EmitterWriter::new(box io::sink(), None, false, false, false);
+        // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
         let handler = Handler::with_emitter(false, None, box emitter);
         let sess = ParseSess::with_span_handler(handler, cm);
 
@@ -482,8 +530,13 @@ pub fn make_test(s: &str,
         prog.push_str(everything_else);
     } else {
         let returns_result = everything_else.trim_end().ends_with("(())");
+        let returns_option = everything_else.trim_end().ends_with("Some(())");
         let (main_pre, main_post) = if returns_result {
-            ("fn main() { fn _inner() -> Result<(), impl core::fmt::Debug> {",
+            (if returns_option {
+                "fn main() { fn _inner() -> Option<()> {"
+            } else {
+                "fn main() { fn _inner() -> Result<(), impl core::fmt::Debug> {"
+            },
              "}\n_inner().unwrap() }")
         } else {
             ("fn main() {\n", "\n}")
@@ -694,7 +747,7 @@ impl Tester for Collector {
                 allow_fail: config.allow_fail,
             },
             testfn: testing::DynTestFn(box move || {
-                run_test(
+                let res = run_test(
                     &test,
                     &cratename,
                     &filename,
@@ -713,7 +766,65 @@ impl Tester for Collector {
                     linker,
                     edition,
                     persist_doctests
-                )
+                );
+
+                if let Err(err) = res {
+                    match err {
+                        TestFailure::CompileError => {
+                            eprint!("Couldn't compile the test.");
+                        }
+                        TestFailure::UnexpectedCompilePass => {
+                            eprint!("Test compiled successfully, but it's marked `compile_fail`.");
+                        }
+                        TestFailure::UnexpectedRunPass => {
+                            eprint!("Test executable succeeded, but it's marked `should_panic`.");
+                        }
+                        TestFailure::MissingErrorCodes(codes) => {
+                            eprint!("Some expected error codes were not found: {:?}", codes);
+                        }
+                        TestFailure::ExecutionError(err) => {
+                            eprint!("Couldn't run the test: {}", err);
+                            if err.kind() == io::ErrorKind::PermissionDenied {
+                                eprint!(" - maybe your tempdir is mounted with noexec?");
+                            }
+                        }
+                        TestFailure::ExecutionFailure(out) => {
+                            let reason = if let Some(code) = out.status.code() {
+                                format!("exit code {}", code)
+                            } else {
+                                String::from("terminated by signal")
+                            };
+
+                            eprintln!("Test executable failed ({}).", reason);
+
+                            // FIXME(#12309): An unfortunate side-effect of capturing the test
+                            // executable's output is that the relative ordering between the test's
+                            // stdout and stderr is lost. However, this is better than the
+                            // alternative: if the test executable inherited the parent's I/O
+                            // handles the output wouldn't be captured at all, even on success.
+                            //
+                            // The ordering could be preserved if the test process' stderr was
+                            // redirected to stdout, but that functionality does not exist in the
+                            // standard library, so it may not be portable enough.
+                            let stdout = str::from_utf8(&out.stdout).unwrap_or_default();
+                            let stderr = str::from_utf8(&out.stderr).unwrap_or_default();
+
+                            if !stdout.is_empty() || !stderr.is_empty() {
+                                eprintln!();
+
+                                if !stdout.is_empty() {
+                                    eprintln!("stdout:\n{}", stdout);
+                                }
+
+                                if !stderr.is_empty() {
+                                    eprintln!("stderr:\n{}", stderr);
+                                }
+                            }
+                        }
+                    }
+
+                    panic::resume_unwind(box ());
+                }
             }),
         });
     }
@@ -797,11 +908,7 @@ impl<'a, 'hir> HirCollector<'a, 'hir> {
         // anything else, this will combine them for us.
         if let Some(doc) = attrs.collapsed_doc_value() {
             self.collector.set_position(attrs.span.unwrap_or(DUMMY_SP));
-            let res = markdown::find_testable_code(&doc, self.collector, self.codes);
-            if let Err(err) = res {
-                self.sess.diagnostic().span_warn(attrs.span.unwrap_or(DUMMY_SP),
-                    &err.to_string());
-            }
+            markdown::find_testable_code(&doc, self.collector, self.codes);
         }
 
         nested(self);
@@ -870,6 +977,7 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for HirCollector<'a, 'hir> {
 #[cfg(test)]
 mod tests {
     use super::{TestOptions, make_test};
+    use syntax::edition::DEFAULT_EDITION;
 
     #[test]
     fn make_test_basic() {
@@ -882,7 +990,7 @@ mod tests {
 fn main() {
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, None, false, &opts);
+        let output = make_test(input, None, false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -898,7 +1006,7 @@ assert_eq!(2+2, 4);
 fn main() {
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -917,7 +1025,7 @@ fn main() {
 use asdf::qwop;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 3));
     }
 
@@ -939,7 +1047,7 @@ fn main() {
 use asdf::qwop;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -958,7 +1066,7 @@ fn main() {
 use std::*;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("std"), false, &opts);
+        let output = make_test(input, Some("std"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -978,7 +1086,7 @@ fn main() {
 use asdf::qwop;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -996,7 +1104,7 @@ fn main() {
 use asdf::qwop;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -1016,7 +1124,7 @@ fn main() {
 use asdf::qwop;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 3));
 
         // Adding more will also bump the returned line offset.
@@ -1029,7 +1137,7 @@ fn main() {
 use asdf::qwop;
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 4));
     }
 
@@ -1047,7 +1155,7 @@ assert_eq!(2+2, 4);";
 fn main() {
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, None, false, &opts);
+        let output = make_test(input, None, false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -1064,7 +1172,7 @@ assert_eq!(2+2, 4);
 fn main() {
     assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, None, false, &opts);
+        let output = make_test(input, None, false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 1));
     }
 
@@ -1081,7 +1189,7 @@ assert_eq!(2+2, 4);";
 fn main() {
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, None, false, &opts);
+        let output = make_test(input, None, false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
     }
 
@@ -1096,7 +1204,7 @@ assert_eq!(2+2, 4);";
 "#![allow(unused)]
 //Ceci n'est pas une `fn main`
 assert_eq!(2+2, 4);".to_string();
-        let output = make_test(input, None, true, &opts);
+        let output = make_test(input, None, true, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 1));
     }
 
@@ -1111,7 +1219,7 @@ assert_eq!(2+2, 4);".to_string();
 "fn main() {
 assert_eq!(2+2, 4);
 }".to_string();
-        let output = make_test(input, None, false, &opts);
+        let output = make_test(input, None, false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 1));
     }
 
@@ -1130,7 +1238,7 @@ fn main() {
 assert_eq!(2+2, 4);
 }".to_string();
 
-        let output = make_test(input, None, false, &opts);
+        let output = make_test(input, None, false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 2));
 
         let input =
@@ -1145,7 +1253,7 @@ fn main() {
 assert_eq!(asdf::foo, 4);
 }".to_string();
 
-        let output = make_test(input, Some("asdf"), false, &opts);
+        let output = make_test(input, Some("asdf"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 3));
     }
 
@@ -1164,7 +1272,7 @@ test_wrapper! {
     fn main() {}
 }".to_string();
 
-        let output = make_test(input, Some("my_crate"), false, &opts);
+        let output = make_test(input, Some("my_crate"), false, &opts, DEFAULT_EDITION);
         assert_eq!(output, (expected, 1));
     }
 }

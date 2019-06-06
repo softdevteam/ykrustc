@@ -37,7 +37,7 @@ impl<'a, 'tcx> Checker<'a, 'tcx> {
     {
         if Some(self.trait_def_id) == trait_def_id {
             for &impl_id in self.tcx.hir().trait_impls(self.trait_def_id) {
-                let impl_def_id = self.tcx.hir().local_def_id(impl_id);
+                let impl_def_id = self.tcx.hir().local_def_id_from_hir_id(impl_id);
                 f(self.tcx, impl_def_id);
             }
         }
@@ -198,8 +198,8 @@ fn visit_implementation_of_dispatch_from_dyn<'a, 'tcx>(
                     if def_a.is_struct() && def_b.is_struct() =>
                 {
                     if def_a != def_b {
-                        let source_path = tcx.item_path_str(def_a.did);
-                        let target_path = tcx.item_path_str(def_b.did);
+                        let source_path = tcx.def_path_str(def_a.did);
+                        let target_path = tcx.def_path_str(def_b.did);
 
                         create_err(
                             &format!(
@@ -223,19 +223,22 @@ fn visit_implementation_of_dispatch_from_dyn<'a, 'tcx>(
                     let fields = &def_a.non_enum_variant().fields;
 
                     let coerced_fields = fields.iter().filter_map(|field| {
-                        if tcx.type_of(field.did).is_phantom_data() {
-                            // ignore PhantomData fields
-                            return None
-                        }
-
                         let ty_a = field.ty(tcx, substs_a);
                         let ty_b = field.ty(tcx, substs_b);
+
+                        if let Ok(layout) = tcx.layout_of(param_env.and(ty_a)) {
+                            if layout.is_zst() && layout.details.align.abi.bytes() == 1 {
+                                // ignore ZST fields with alignment of 1 byte
+                                return None;
+                            }
+                        }
+
                         if let Ok(ok) = infcx.at(&cause, param_env).eq(ty_a, ty_b) {
                             if ok.obligations.is_empty() {
                                 create_err(
                                     "the trait `DispatchFromDyn` may only be implemented \
                                      for structs containing the field being coerced, \
-                                     `PhantomData` fields, and nothing else"
+                                     ZST fields with 1 byte alignment, and nothing else"
                                 ).note(
                                     &format!(
                                         "extra field `{}` of type `{}` is not allowed",
@@ -388,8 +391,8 @@ pub fn coerce_unsized_info<'a, 'gcx>(gcx: TyCtxt<'a, 'gcx, 'gcx>,
             (&ty::Adt(def_a, substs_a), &ty::Adt(def_b, substs_b)) if def_a.is_struct() &&
                                                                       def_b.is_struct() => {
                 if def_a != def_b {
-                    let source_path = gcx.item_path_str(def_a.did);
-                    let target_path = gcx.item_path_str(def_b.did);
+                    let source_path = gcx.def_path_str(def_a.did);
+                    let target_path = gcx.def_path_str(def_b.did);
                     span_err!(gcx.sess,
                               span,
                               E0377,

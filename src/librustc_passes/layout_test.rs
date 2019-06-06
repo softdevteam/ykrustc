@@ -7,10 +7,12 @@ use rustc::ty::layout::HasTyCtxt;
 use rustc::ty::layout::LayoutOf;
 use rustc::ty::layout::TargetDataLayout;
 use rustc::ty::layout::TyLayout;
+use rustc::ty::layout::HasParamEnv;
 use rustc::ty::ParamEnv;
 use rustc::ty::Ty;
 use rustc::ty::TyCtxt;
 use syntax::ast::Attribute;
+use syntax::symbol::sym;
 
 pub fn test_layout<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     if tcx.features().rustc_attrs {
@@ -31,7 +33,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for VarianceTest<'a, 'tcx> {
 
         if let ItemKind::Ty(..) = item.node {
             for attr in self.tcx.get_attrs(item_def_id).iter() {
-                if attr.check_name("rustc_layout") {
+                if attr.check_name(sym::rustc_layout) {
                     self.dump_layout_of(item_def_id, item, attr);
                 }
             }
@@ -53,29 +55,26 @@ impl<'a, 'tcx> VarianceTest<'a, 'tcx> {
                 // The `..` are the names of fields to dump.
                 let meta_items = attr.meta_item_list().unwrap_or_default();
                 for meta_item in meta_items {
-                    let name = meta_item.word().map(|mi| mi.name().as_str());
-                    let name = name.as_ref().map(|s| &s[..]).unwrap_or("");
-
-                    match name {
-                        "abi" => {
+                    match meta_item.name_or_empty() {
+                        sym::abi => {
                             self.tcx
                                 .sess
                                 .span_err(item.span, &format!("abi: {:?}", ty_layout.abi));
                         }
 
-                        "align" => {
+                        sym::align => {
                             self.tcx
                                 .sess
                                 .span_err(item.span, &format!("align: {:?}", ty_layout.align));
                         }
 
-                        "size" => {
+                        sym::size => {
                             self.tcx
                                 .sess
                                 .span_err(item.span, &format!("size: {:?}", ty_layout.size));
                         }
 
-                        "homogeneous_aggregate" => {
+                        sym::homogeneous_aggregate => {
                             self.tcx.sess.span_err(
                                 item.span,
                                 &format!(
@@ -86,9 +85,9 @@ impl<'a, 'tcx> VarianceTest<'a, 'tcx> {
                             );
                         }
 
-                        _ => {
+                        name => {
                             self.tcx.sess.span_err(
-                                meta_item.span,
+                                meta_item.span(),
                                 &format!("unrecognized field name `{}`", name),
                             );
                         }
@@ -122,6 +121,12 @@ impl<'me, 'tcx> LayoutOf for UnwrapLayoutCx<'me, 'tcx> {
 impl<'me, 'tcx> HasTyCtxt<'tcx> for UnwrapLayoutCx<'me, 'tcx> {
     fn tcx<'a>(&'a self) -> TyCtxt<'a, 'tcx, 'tcx> {
         self.tcx
+    }
+}
+
+impl<'me, 'tcx> HasParamEnv<'tcx> for UnwrapLayoutCx<'me, 'tcx> {
+    fn param_env(&self) -> ParamEnv<'tcx> {
+        self.param_env
     }
 }
 

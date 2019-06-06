@@ -204,10 +204,10 @@ mod prim_bool { }
 /// #![feature(never_type)]
 /// # use std::fmt;
 /// # trait Debug {
-/// # fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result;
+/// # fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result;
 /// # }
 /// impl Debug for ! {
-///     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+///     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 ///         *self
 ///     }
 /// }
@@ -279,7 +279,7 @@ mod prim_never { }
 ///
 /// As always, remember that a human intuition for 'character' may not map to
 /// Unicode's definitions. For example, despite looking similar, the 'é'
-/// character is one Unicode code point while 'é' is two Unicode code points:
+/// character is one Unicode code point while 'é' is two Unicode code points:
 ///
 /// ```
 /// let mut chars = "é".chars();

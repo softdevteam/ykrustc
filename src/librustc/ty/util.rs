@@ -1,13 +1,13 @@
 //! Miscellaneous type-system utilities that are too small to deserve their own modules.
 
-use crate::hir::def::Def;
+use crate::hir;
+use crate::hir::def::DefKind;
 use crate::hir::def_id::DefId;
 use crate::hir::map::DefPathData;
-use crate::hir::{self, Node};
 use crate::mir::interpret::{sign_extend, truncate};
 use crate::ich::NodeIdHashingMode;
 use crate::traits::{self, ObligationCause};
-use crate::ty::{self, Ty, TyCtxt, GenericParamDefKind, TypeFoldable};
+use crate::ty::{self, DefIdTree, Ty, TyCtxt, GenericParamDefKind, TypeFoldable};
 use crate::ty::subst::{Subst, InternalSubsts, SubstsRef, UnpackedKind};
 use crate::ty::query::TyCtxtAt;
 use crate::ty::TyKind::*;
@@ -18,9 +18,11 @@ use crate::middle::lang_items;
 
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_macros::HashStable;
 use std::{cmp, fmt};
 use syntax::ast;
 use syntax::attr::{self, SignedInt, UnsignedInt};
+use syntax::symbol::sym;
 use syntax_pos::{Span, DUMMY_SP};
 
 #[derive(Copy, Clone, Debug)]
@@ -278,7 +280,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
                 ty::Tuple(tys) => {
                     if let Some((&last_ty, _)) = tys.split_last() {
-                        ty = last_ty;
+                        ty = last_ty.expect_ty();
                     } else {
                         break;
                     }
@@ -316,8 +318,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 (&Tuple(a_tys), &Tuple(b_tys))
                         if a_tys.len() == b_tys.len() => {
                     if let Some(a_last) = a_tys.last() {
-                        a = a_last;
-                        b = b_tys.last().unwrap();
+                        a = a_last.expect_ty();
+                        b = b_tys.last().unwrap().expect_ty();
                     } else {
                         break;
                     }
@@ -446,7 +448,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         // Such access can be in plain sight (e.g., dereferencing
         // `*foo.0` of `Foo<'a>(&'a u32)`) or indirectly hidden
         // (e.g., calling `foo.0.clone()` of `Foo<T:Clone>`).
-        if self.has_attr(dtor, "unsafe_destructor_blind_to_params") {
+        if self.has_attr(dtor, sym::unsafe_destructor_blind_to_params) {
             debug!("destructor_constraint({:?}) - blind", def.did);
             return vec![];
         }
@@ -496,10 +498,10 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     }) => {
                         !impl_generics.type_param(pt, self).pure_wrt_drop
                     }
-                    UnpackedKind::Const(&ty::LazyConst::Evaluated(ty::Const {
+                    UnpackedKind::Const(&ty::Const {
                         val: ConstValue::Param(ref pc),
                         ..
-                    })) => {
+                    }) => {
                         !impl_generics.const_param(pc, self).pure_wrt_drop
                     }
                     UnpackedKind::Lifetime(_) |
@@ -529,27 +531,19 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
     /// Returns `true` if `def_id` refers to a trait (i.e., `trait Foo { ... }`).
     pub fn is_trait(self, def_id: DefId) -> bool {
-        if let DefPathData::Trait(_) = self.def_key(def_id).disambiguated_data.data {
-            true
-        } else {
-            false
-        }
+        self.def_kind(def_id) == Some(DefKind::Trait)
     }
 
     /// Returns `true` if `def_id` refers to a trait alias (i.e., `trait Foo = ...;`),
     /// and `false` otherwise.
     pub fn is_trait_alias(self, def_id: DefId) -> bool {
-        if let DefPathData::TraitAlias(_) = self.def_key(def_id).disambiguated_data.data {
-            true
-        } else {
-            false
-        }
+        self.def_kind(def_id) == Some(DefKind::TraitAlias)
     }
 
     /// Returns `true` if this `DefId` refers to the implicit constructor for
     /// a tuple struct like `struct Foo(u32)`, and `false` otherwise.
-    pub fn is_struct_constructor(self, def_id: DefId) -> bool {
-        self.def_key(def_id).disambiguated_data.data == DefPathData::StructCtor
+    pub fn is_constructor(self, def_id: DefId) -> bool {
+        self.def_key(def_id).disambiguated_data.data == DefPathData::Ctor
     }
 
     /// Given the `DefId` of a fn or closure, returns the `DefId` of
@@ -562,7 +556,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn closure_base_def_id(self, def_id: DefId) -> DefId {
         let mut def_id = def_id;
         while self.is_closure(def_id) {
-            def_id = self.parent_def_id(def_id).unwrap_or_else(|| {
+            def_id = self.parent(def_id).unwrap_or_else(|| {
                 bug!("closure {:?} has no parent", def_id);
             });
         }
@@ -601,7 +595,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn empty_substs_for_def_id(self, item_def_id: DefId) -> SubstsRef<'tcx> {
         InternalSubsts::for_item(self, item_def_id, |param, _| {
             match param.kind {
-                GenericParamDefKind::Lifetime => self.types.re_erased.into(),
+                GenericParamDefKind::Lifetime => self.lifetimes.re_erased.into(),
                 GenericParamDefKind::Type { .. } => {
                     bug!("empty_substs_for_def_id: {:?} has type parameters", item_def_id)
                 }
@@ -612,34 +606,14 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         })
     }
 
-    /// Returns `true` if the node pointed to by `def_id` is a static item, and its mutability.
-    pub fn is_static(&self, def_id: DefId) -> Option<hir::Mutability> {
-        if let Some(node) = self.hir().get_if_local(def_id) {
-            match node {
-                Node::Item(&hir::Item {
-                    node: hir::ItemKind::Static(_, mutbl, _), ..
-                }) => Some(mutbl),
-                Node::ForeignItem(&hir::ForeignItem {
-                    node: hir::ForeignItemKind::Static(_, is_mutbl), ..
-                }) =>
-                    Some(if is_mutbl {
-                        hir::Mutability::MutMutable
-                    } else {
-                        hir::Mutability::MutImmutable
-                    }),
-                _ => None
-            }
-        } else {
-            match self.describe_def(def_id) {
-                Some(Def::Static(_, is_mutbl)) =>
-                    Some(if is_mutbl {
-                        hir::Mutability::MutMutable
-                    } else {
-                        hir::Mutability::MutImmutable
-                    }),
-                _ => None
-            }
-        }
+    /// Returns `true` if the node pointed to by `def_id` is a `static` item.
+    pub fn is_static(&self, def_id: DefId) -> bool {
+        self.static_mutability(def_id).is_some()
+    }
+
+    /// Returns `true` if the node pointed to by `def_id` is a mutable `static` item.
+    pub fn is_mutable_static(&self, def_id: DefId) -> bool {
+        self.static_mutability(def_id) == Some(hir::MutMutable)
     }
 
     /// Expands the given impl trait type, stopping if the type is recursive.
@@ -815,7 +789,13 @@ impl<'a, 'tcx> ty::TyS<'tcx> {
                 Tuple(ref ts) => {
                     // Find non representable
                     fold_repr(ts.iter().map(|ty| {
-                        is_type_structurally_recursive(tcx, sp, seen, representable_cache, ty)
+                        is_type_structurally_recursive(
+                            tcx,
+                            sp,
+                            seen,
+                            representable_cache,
+                            ty.expect_ty(),
+                        )
                     }))
                 }
                 // Fixed-length vectors.
@@ -1005,7 +985,7 @@ fn is_freeze_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         ))
 }
 
-#[derive(Clone)]
+#[derive(Clone, HashStable)]
 pub struct NeedsDrop(pub bool);
 
 fn needs_drop_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
@@ -1068,7 +1048,7 @@ fn needs_drop_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         // state transformation pass
         ty::Generator(..) => true,
 
-        ty::Tuple(ref tys) => tys.iter().cloned().any(needs_drop),
+        ty::Tuple(ref tys) => tys.iter().map(|k| k.expect_ty()).any(needs_drop),
 
         // unions don't have destructors because of the child types,
         // only if they manually implement `Drop` (handled above).

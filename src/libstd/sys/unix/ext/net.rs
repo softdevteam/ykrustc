@@ -18,7 +18,7 @@ mod libc {
 use crate::ascii;
 use crate::ffi::OsStr;
 use crate::fmt;
-use crate::io::{self, Initializer, IoVec, IoVecMut};
+use crate::io::{self, Initializer, IoSlice, IoSliceMut};
 use crate::mem;
 use crate::net::{self, Shutdown};
 use crate::os::unix::ffi::OsStrExt;
@@ -32,12 +32,12 @@ use crate::sys_common::{self, AsInner, FromInner, IntoInner};
 #[cfg(any(target_os = "linux", target_os = "android",
           target_os = "dragonfly", target_os = "freebsd",
           target_os = "openbsd", target_os = "netbsd",
-          target_os = "haiku", target_os = "bitrig"))]
+          target_os = "haiku"))]
 use libc::MSG_NOSIGNAL;
 #[cfg(not(any(target_os = "linux", target_os = "android",
               target_os = "dragonfly", target_os = "freebsd",
               target_os = "openbsd", target_os = "netbsd",
-              target_os = "haiku", target_os = "bitrig")))]
+              target_os = "haiku")))]
 const MSG_NOSIGNAL: libc::c_int = 0x0;
 
 fn sun_path_offset() -> usize {
@@ -219,7 +219,7 @@ impl SocketAddr {
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for SocketAddr {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.address() {
             AddressKind::Unnamed => write!(fmt, "(unnamed)"),
             AddressKind::Abstract(name) => write!(fmt, "{} (abstract)", AsciiEscaped(name)),
@@ -231,7 +231,7 @@ impl fmt::Debug for SocketAddr {
 struct AsciiEscaped<'a>(&'a [u8]);
 
 impl<'a> fmt::Display for AsciiEscaped<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "\"")?;
         for byte in self.0.iter().cloned().flat_map(ascii::escape_default) {
             write!(fmt, "{}", byte as char)?;
@@ -259,7 +259,7 @@ pub struct UnixStream(Socket);
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixStream {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixStream");
         builder.field("fd", self.0.as_inner());
         if let Ok(addr) = self.local_addr() {
@@ -551,7 +551,7 @@ impl io::Read for UnixStream {
         io::Read::read(&mut &*self, buf)
     }
 
-    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         io::Read::read_vectored(&mut &*self, bufs)
     }
 
@@ -567,7 +567,7 @@ impl<'a> io::Read for &'a UnixStream {
         self.0.read(buf)
     }
 
-    fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         self.0.read_vectored(bufs)
     }
 
@@ -583,7 +583,7 @@ impl io::Write for UnixStream {
         io::Write::write(&mut &*self, buf)
     }
 
-    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         io::Write::write_vectored(&mut &*self, bufs)
     }
 
@@ -598,7 +598,7 @@ impl<'a> io::Write for &'a UnixStream {
         self.0.write(buf)
     }
 
-    fn write_vectored(&mut self, bufs: &[IoVec<'_>]) -> io::Result<usize> {
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         self.0.write_vectored(bufs)
     }
 
@@ -719,7 +719,7 @@ pub struct UnixListener(Socket);
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixListener {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixListener");
         builder.field("fd", self.0.as_inner());
         if let Ok(addr) = self.local_addr() {
@@ -998,7 +998,7 @@ pub struct UnixDatagram(Socket);
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixDatagram {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixDatagram");
         builder.field("fd", self.0.as_inner());
         if let Ok(addr) = self.local_addr() {
@@ -1531,14 +1531,14 @@ mod test {
         let (mut s1, mut s2) = or_panic!(UnixStream::pair());
 
         let len = or_panic!(s1.write_vectored(
-            &[IoVec::new(b"hello"), IoVec::new(b" "), IoVec::new(b"world!")],
+            &[IoSlice::new(b"hello"), IoSlice::new(b" "), IoSlice::new(b"world!")],
         ));
         assert_eq!(len, 12);
 
         let mut buf1 = [0; 6];
         let mut buf2 = [0; 7];
         let len = or_panic!(s2.read_vectored(
-            &mut [IoVecMut::new(&mut buf1), IoVecMut::new(&mut buf2)],
+            &mut [IoSliceMut::new(&mut buf1), IoSliceMut::new(&mut buf2)],
         ));
         assert_eq!(len, 12);
         assert_eq!(&buf1, b"hello ");

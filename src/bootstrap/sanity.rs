@@ -15,7 +15,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use build_helper::output;
+use build_helper::{output, t};
 
 use crate::Build;
 
@@ -128,6 +128,11 @@ pub fn check(build: &mut Build) {
         // build the target artifacts, only for testing. For the sake
         // of easier bot configuration, just skip detection.
         if target.contains("emscripten") {
+            continue;
+        }
+
+        // We don't use a C compiler on wasm32
+        if target.contains("wasm32") {
             continue;
         }
 

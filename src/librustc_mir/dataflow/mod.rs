@@ -1,12 +1,13 @@
 use syntax::ast::{self, MetaItem};
+use syntax::symbol::{Symbol, sym};
 
 use rustc_data_structures::bit_set::{BitSet, BitSetOperator, HybridBitSet};
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::work_queue::WorkQueue;
 
-use rustc::hir::HirId;
+use rustc::hir::def_id::DefId;
 use rustc::ty::{self, TyCtxt};
-use rustc::mir::{self, Mir, BasicBlock, BasicBlockData, Location, Statement, Terminator};
+use rustc::mir::{self, Body, BasicBlock, BasicBlockData, Location, Statement, Terminator};
 use rustc::mir::traversal;
 use rustc::session::Session;
 
@@ -33,13 +34,18 @@ mod graphviz;
 mod impls;
 pub mod move_paths;
 
-pub(crate) use self::move_paths::indexes;
+pub(crate) mod indexes {
+    pub(crate) use super::{
+        move_paths::{MovePathIndex, MoveOutIndex, InitIndex},
+        impls::borrows::BorrowIndex,
+    };
+}
 
 pub(crate) struct DataflowBuilder<'a, 'tcx: 'a, BD>
 where
     BD: BitDenotation<'tcx>
 {
-    hir_id: HirId,
+    def_id: DefId,
     flow_state: DataflowAnalysis<'a, 'tcx, BD>,
     print_preflow_to: Option<String>,
     print_postflow_to: Option<String>,
@@ -95,9 +101,9 @@ where
     fn propagate(&mut self) { self.flow_state.propagate(); }
 }
 
-pub(crate) fn has_rustc_mir_with(attrs: &[ast::Attribute], name: &str) -> Option<MetaItem> {
+pub(crate) fn has_rustc_mir_with(attrs: &[ast::Attribute], name: Symbol) -> Option<MetaItem> {
     for attr in attrs {
-        if attr.check_name("rustc_mir") {
+        if attr.check_name(sym::rustc_mir) {
             let items = attr.meta_item_list();
             for item in items.iter().flat_map(|l| l.iter()) {
                 match item.meta_item() {
@@ -116,8 +122,8 @@ pub struct MoveDataParamEnv<'gcx, 'tcx> {
 }
 
 pub(crate) fn do_dataflow<'a, 'gcx, 'tcx, BD, P>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                                                 mir: &'a Mir<'tcx>,
-                                                 hir_id: HirId,
+                                                 mir: &'a Body<'tcx>,
+                                                 def_id: DefId,
                                                  attributes: &[ast::Attribute],
                                                  dead_unwinds: &BitSet<BasicBlock>,
                                                  bd: BD,
@@ -127,14 +133,14 @@ pub(crate) fn do_dataflow<'a, 'gcx, 'tcx, BD, P>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
           P: Fn(&BD, BD::Idx) -> DebugFormatted
 {
     let flow_state = DataflowAnalysis::new(mir, dead_unwinds, bd);
-    flow_state.run(tcx, hir_id, attributes, p)
+    flow_state.run(tcx, def_id, attributes, p)
 }
 
 impl<'a, 'gcx: 'tcx, 'tcx: 'a, BD> DataflowAnalysis<'a, 'tcx, BD> where BD: BitDenotation<'tcx>
 {
     pub(crate) fn run<P>(self,
                          tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                         hir_id: HirId,
+                         def_id: DefId,
                          attributes: &[ast::Attribute],
                          p: P) -> DataflowResults<'tcx, BD>
         where P: Fn(&BD, BD::Idx) -> DebugFormatted
@@ -146,20 +152,18 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a, BD> DataflowAnalysis<'a, 'tcx, BD> where BD: BitD
                 } else {
                     sess.span_err(
                         item.span,
-                        &format!("{} attribute requires a path", item.ident));
+                        &format!("{} attribute requires a path", item.path));
                     return None;
                 }
             }
             return None;
         };
 
-        let print_preflow_to =
-            name_found(tcx.sess, attributes, "borrowck_graphviz_preflow");
-        let print_postflow_to =
-            name_found(tcx.sess, attributes, "borrowck_graphviz_postflow");
+        let print_preflow_to = name_found(tcx.sess, attributes, sym::borrowck_graphviz_preflow);
+        let print_postflow_to = name_found(tcx.sess, attributes, sym::borrowck_graphviz_postflow);
 
         let mut mbcx = DataflowBuilder {
-            hir_id,
+            def_id,
             print_preflow_to, print_postflow_to, flow_state: self,
         };
 
@@ -339,13 +343,13 @@ pub(crate) trait DataflowResultsConsumer<'a, 'tcx: 'a> {
 
     // Delegated Hooks: Provide access to the MIR and process the flow state.
 
-    fn mir(&self) -> &'a Mir<'tcx>;
+    fn mir(&self) -> &'a Body<'tcx>;
 }
 
 pub fn state_for_location<'tcx, T: BitDenotation<'tcx>>(loc: Location,
                                                         analysis: &T,
                                                         result: &DataflowResults<'tcx, T>,
-                                                        mir: &Mir<'tcx>)
+                                                        mir: &Body<'tcx>)
     -> BitSet<T::Idx> {
     let mut on_entry = result.sets().on_entry_set_for(loc.block.index()).to_owned();
     let mut kill_set = on_entry.to_hybrid();
@@ -380,7 +384,7 @@ pub struct DataflowAnalysis<'a, 'tcx: 'a, O> where O: BitDenotation<'tcx>
 {
     flow_state: DataflowState<'tcx, O>,
     dead_unwinds: &'a BitSet<mir::BasicBlock>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
 }
 
 impl<'a, 'tcx: 'a, O> DataflowAnalysis<'a, 'tcx, O> where O: BitDenotation<'tcx>
@@ -389,7 +393,7 @@ impl<'a, 'tcx: 'a, O> DataflowAnalysis<'a, 'tcx, O> where O: BitDenotation<'tcx>
         DataflowResults(self.flow_state)
     }
 
-    pub fn mir(&self) -> &'a Mir<'tcx> { self.mir }
+    pub fn mir(&self) -> &'a Body<'tcx> { self.mir }
 }
 
 pub struct DataflowResults<'tcx, O>(pub(crate) DataflowState<'tcx, O>) where O: BitDenotation<'tcx>;
@@ -693,7 +697,7 @@ pub trait BitDenotation<'tcx>: BitSetOperator {
 
 impl<'a, 'tcx, D> DataflowAnalysis<'a, 'tcx, D> where D: BitDenotation<'tcx>
 {
-    pub fn new(mir: &'a Mir<'tcx>,
+    pub fn new(mir: &'a Body<'tcx>,
                dead_unwinds: &'a BitSet<mir::BasicBlock>,
                denotation: D) -> Self where D: InitialFlow {
         let bits_per_block = denotation.bits_per_block();

@@ -2,7 +2,7 @@ error[E0392]: parameter `T` is never used
   --> $DIR/issue-20413.rs:5:15
    |
 LL | struct NoData<T>;
-   |               ^ unused type parameter
+   |               ^ unused parameter
    |
    = help: consider removing `T` or using a marker such as `std::marker::PhantomData`
 
@@ -10,9 +10,9 @@ error[E0275]: overflow evaluating the requirement `NoData<NoData<NoData<NoData<N
   --> $DIR/issue-20413.rs:8:1
    |
 LL | / impl<T> Foo for T where NoData<T>: Foo {
-LL | | //~^ ERROR: overflow evaluating the requirement
+LL | |
 LL | |   fn answer(self) {
-LL | |   //~^ ERROR: overflow evaluating the requirement
+LL | |
 LL | |     let val: NoData<T> = NoData;
 LL | |   }
 LL | | }
@@ -92,7 +92,7 @@ error[E0275]: overflow evaluating the requirement `NoData<NoData<NoData<NoData<N
   --> $DIR/issue-20413.rs:10:3
    |
 LL | /   fn answer(self) {
-LL | |   //~^ ERROR: overflow evaluating the requirement
+LL | |
 LL | |     let val: NoData<T> = NoData;
 LL | |   }
    | |___^
@@ -169,5 +169,5 @@ LL | trait Foo {
 
 error: aborting due to 3 previous errors
 
-Some errors occurred: E0275, E0392.
+Some errors have detailed explanations: E0275, E0392.
 For more information about an error, try `rustc --explain E0275`.

@@ -35,7 +35,7 @@ fn scatter(x: i32) -> i32 { (x * 31) % 127 }
 fn bench_max_by_key(b: &mut Bencher) {
     b.iter(|| {
         let it = 0..100;
-        it.max_by_key(|&x| scatter(x))
+        it.map(black_box).max_by_key(|&x| scatter(x))
     })
 }
 
@@ -56,7 +56,7 @@ fn bench_max_by_key2(b: &mut Bencher) {
 fn bench_max(b: &mut Bencher) {
     b.iter(|| {
         let it = 0..100;
-        it.map(scatter).max()
+        it.map(black_box).map(scatter).max()
     })
 }
 
@@ -333,4 +333,14 @@ fn bench_filter_chain_ref_count(b: &mut Bencher) {
     b.iter(|| {
         (0i64..1000000).chain(0..1000000).map(black_box).by_ref().filter(|x| x % 3 == 0).count()
     })
+}
+
+#[bench]
+fn bench_partial_cmp(b: &mut Bencher) {
+    b.iter(|| (0..100000).map(black_box).partial_cmp((0..100000).map(black_box)))
+}
+
+#[bench]
+fn bench_lt(b: &mut Bencher) {
+    b.iter(|| (0..100000).map(black_box).lt((0..100000).map(black_box)))
 }

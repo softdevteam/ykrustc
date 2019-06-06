@@ -5,13 +5,13 @@ use crate::attr::HasAttrs;
 use crate::source_map::{SourceMap, Spanned, respan};
 use crate::edition::Edition;
 use crate::ext::expand::{self, AstFragment, Invocation};
-use crate::ext::hygiene::{self, Mark, SyntaxContext, Transparency};
+use crate::ext::hygiene::{Mark, SyntaxContext, Transparency};
 use crate::mut_visit::{self, MutVisitor};
 use crate::parse::{self, parser, DirectoryOwnership};
 use crate::parse::token;
 use crate::ptr::P;
-use crate::symbol::{keywords, Ident, Symbol};
-use crate::ThinVec;
+use crate::symbol::{kw, sym, Ident, Symbol};
+use crate::{ThinVec, MACRO_ARGUMENTS};
 use crate::tokenstream::{self, TokenStream};
 
 use errors::{DiagnosticBuilder, DiagnosticId};
@@ -713,7 +713,7 @@ impl SyntaxExtension {
         }
     }
 
-    pub fn edition(&self) -> Edition {
+    pub fn edition(&self, default_edition: Edition) -> Edition {
         match *self {
             SyntaxExtension::NormalTT { edition, .. } |
             SyntaxExtension::DeclMacro { edition, .. } |
@@ -725,7 +725,7 @@ impl SyntaxExtension {
             SyntaxExtension::IdentTT { .. } |
             SyntaxExtension::MultiDecorator(..) |
             SyntaxExtension::MultiModifier(..) |
-            SyntaxExtension::BuiltinDerive(..) => hygiene::default_edition(),
+            SyntaxExtension::BuiltinDerive(..) => default_edition,
         }
     }
 }
@@ -734,6 +734,7 @@ pub type NamedSyntaxExtension = (Name, SyntaxExtension);
 
 pub trait Resolver {
     fn next_node_id(&mut self) -> ast::NodeId;
+
     fn get_module_scope(&mut self, id: ast::NodeId) -> Mark;
 
     fn resolve_dollar_crates(&mut self, fragment: &AstFragment);
@@ -768,6 +769,7 @@ pub struct DummyResolver;
 
 impl Resolver for DummyResolver {
     fn next_node_id(&mut self) -> ast::NodeId { ast::DUMMY_NODE_ID }
+
     fn get_module_scope(&mut self, _id: ast::NodeId) -> Mark { Mark::root() }
 
     fn resolve_dollar_crates(&mut self, _fragment: &AstFragment) {}
@@ -848,7 +850,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn new_parser_from_tts(&self, tts: &[tokenstream::TokenTree]) -> parser::Parser<'a> {
-        parse::stream_to_parser(self.parse_sess, tts.iter().cloned().collect())
+        parse::stream_to_parser(self.parse_sess, tts.iter().cloned().collect(), MACRO_ARGUMENTS)
     }
     pub fn source_map(&self) -> &'a SourceMap { self.parse_sess.source_map() }
     pub fn parse_sess(&self) -> &'a parse::ParseSess { self.parse_sess }
@@ -870,8 +872,8 @@ impl<'a> ExtCtxt<'a> {
         let mut ctxt = self.backtrace();
         let mut last_macro = None;
         loop {
-            if ctxt.outer().expn_info().map_or(None, |info| {
-                if info.format.name() == "include" {
+            if ctxt.outer_expn_info().map_or(None, |info| {
+                if info.format.name() == sym::include {
                     // Stop going up the backtrace once include! is encountered
                     return None;
                 }
@@ -967,10 +969,10 @@ impl<'a> ExtCtxt<'a> {
     pub fn ident_of(&self, st: &str) -> ast::Ident {
         ast::Ident::from_str(st)
     }
-    pub fn std_path(&self, components: &[&str]) -> Vec<ast::Ident> {
+    pub fn std_path(&self, components: &[Symbol]) -> Vec<ast::Ident> {
         let def_site = DUMMY_SP.apply_mark(self.current_expansion.mark);
-        iter::once(Ident::new(keywords::DollarCrate.name(), def_site))
-            .chain(components.iter().map(|s| self.ident_of(s)))
+        iter::once(Ident::new(kw::DollarCrate, def_site))
+            .chain(components.iter().map(|&s| Ident::with_empty_ctxt(s)))
             .collect()
     }
     pub fn name_of(&self, st: &str) -> ast::Name {
@@ -998,6 +1000,7 @@ pub fn expr_to_spanned_string<'a>(
     Err(match expr.node {
         ast::ExprKind::Lit(ref l) => match l.node {
             ast::LitKind::Str(s, style) => return Ok(respan(expr.span, (s, style))),
+            ast::LitKind::Err(_) => None,
             _ => Some(cx.struct_span_err(l.span, err_msg))
         },
         ast::ExprKind::Err => None,

@@ -102,6 +102,10 @@ fn main() {
 
     cmd.env("RUSTC_BREAK_ON_ICE", "1");
 
+    if let Ok(debuginfo_level) = env::var("RUSTC_DEBUGINFO_LEVEL") {
+        cmd.arg(format!("-Cdebuginfo={}", debuginfo_level));
+    }
+
     if let Some(target) = target {
         // The stage0 compiler has a special sysroot distinct from what we
         // actually downloaded, so we just always pass the `--sysroot` option.
@@ -122,8 +126,8 @@ fn main() {
             cmd.arg("-Cprefer-dynamic");
         }
 
-        // Help the libc crate compile by assisting it in finding the MUSL
-        // native libraries.
+        // Help the libc crate compile by assisting it in finding various
+        // sysroot native libraries.
         if let Some(s) = env::var_os("MUSL_ROOT") {
             if target.contains("musl") {
                 let mut root = OsString::from("native=");
@@ -131,6 +135,12 @@ fn main() {
                 root.push("/lib");
                 cmd.arg("-L").arg(&root);
             }
+        }
+        if let Some(s) = env::var_os("WASI_ROOT") {
+            let mut root = OsString::from("native=");
+            root.push(&s);
+            root.push("/lib/wasm32-wasi");
+            cmd.arg("-L").arg(&root);
         }
 
         // Override linker if necessary.
@@ -163,11 +173,6 @@ fn main() {
 
         // Set various options from config.toml to configure how we're building
         // code.
-        if env::var("RUSTC_DEBUGINFO") == Ok("true".to_string()) {
-            cmd.arg("-g");
-        } else if env::var("RUSTC_DEBUGINFO_LINES") == Ok("true".to_string()) {
-            cmd.arg("-Cdebuginfo=1");
-        }
         let debug_assertions = match env::var("RUSTC_DEBUG_ASSERTIONS") {
             Ok(s) => if s == "true" { "y" } else { "n" },
             Err(..) => "n",
@@ -256,6 +261,7 @@ fn main() {
             // The flags here should be kept in sync with `add_miri_default_args`
             // in miri's `src/lib.rs`.
             cmd.arg("-Zalways-encode-mir");
+            cmd.arg("--cfg=miri");
             // These options are preferred by miri, to be able to perform better validation,
             // but the bootstrap compiler might not understand them.
             if stage != "0" {
@@ -283,6 +289,9 @@ fn main() {
         }
     }
 
+    // This is required for internal lints.
+    cmd.arg("-Zunstable-options");
+
     // Force all crates compiled by this compiler to (a) be unstable and (b)
     // allow the `rustc_private` feature to link to other unstable crates
     // also in the sysroot. We also do this for host crates, since those
@@ -299,6 +308,7 @@ fn main() {
     {
         cmd.arg("-Dwarnings");
         cmd.arg("-Dbare_trait_objects");
+        cmd.arg("-Drust_2018_idioms");
     }
 
     if verbose > 1 {

@@ -9,10 +9,11 @@ use crate::mir::interpret::ConstValue;
 use serialize::{self, Encodable, Encoder, Decodable, Decoder};
 use syntax_pos::{Span, DUMMY_SP};
 use smallvec::SmallVec;
+use rustc_macros::HashStable;
 
 use core::intrinsics;
-use std::cmp::Ordering;
 use std::fmt;
+use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -25,7 +26,7 @@ use std::num::NonZeroUsize;
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Kind<'tcx> {
     ptr: NonZeroUsize,
-    marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, &'tcx ty::LazyConst<'tcx>)>
+    marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, &'tcx ty::Const<'tcx>)>
 }
 
 const TAG_MASK: usize = 0b11;
@@ -33,11 +34,11 @@ const TYPE_TAG: usize = 0b00;
 const REGION_TAG: usize = 0b01;
 const CONST_TAG: usize = 0b10;
 
-#[derive(Debug, RustcEncodable, RustcDecodable, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, RustcEncodable, RustcDecodable, PartialEq, Eq, PartialOrd, Ord, HashStable)]
 pub enum UnpackedKind<'tcx> {
     Lifetime(ty::Region<'tcx>),
     Type(Ty<'tcx>),
-    Const(&'tcx ty::LazyConst<'tcx>),
+    Const(&'tcx ty::Const<'tcx>),
 }
 
 impl<'tcx> UnpackedKind<'tcx> {
@@ -69,6 +70,16 @@ impl<'tcx> UnpackedKind<'tcx> {
     }
 }
 
+impl fmt::Debug for Kind<'tcx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.unpack() {
+            UnpackedKind::Lifetime(lt) => lt.fmt(f),
+            UnpackedKind::Type(ty) => ty.fmt(f),
+            UnpackedKind::Const(ct) => ct.fmt(f),
+        }
+    }
+}
+
 impl<'tcx> Ord for Kind<'tcx> {
     fn cmp(&self, other: &Kind<'_>) -> Ordering {
         self.unpack().cmp(&other.unpack())
@@ -93,8 +104,8 @@ impl<'tcx> From<Ty<'tcx>> for Kind<'tcx> {
     }
 }
 
-impl<'tcx> From<&'tcx ty::LazyConst<'tcx>> for Kind<'tcx> {
-    fn from(c: &'tcx ty::LazyConst<'tcx>) -> Kind<'tcx> {
+impl<'tcx> From<&'tcx ty::Const<'tcx>> for Kind<'tcx> {
+    fn from(c: &'tcx ty::Const<'tcx>) -> Kind<'tcx> {
         UnpackedKind::Const(c).pack()
     }
 }
@@ -112,24 +123,14 @@ impl<'tcx> Kind<'tcx> {
             }
         }
     }
-}
 
-impl<'tcx> fmt::Debug for Kind<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// Unpack the `Kind` as a type when it is known certainly to be a type.
+    /// This is true in cases where `Substs` is used in places where the kinds are known
+    /// to be limited (e.g. in tuples, where the only parameters are type parameters).
+    pub fn expect_ty(self) -> Ty<'tcx> {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => write!(f, "{:?}", lt),
-            UnpackedKind::Type(ty) => write!(f, "{:?}", ty),
-            UnpackedKind::Const(ct) => write!(f, "{:?}", ct),
-        }
-    }
-}
-
-impl<'tcx> fmt::Display for Kind<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.unpack() {
-            UnpackedKind::Lifetime(lt) => write!(f, "{}", lt),
-            UnpackedKind::Type(ty) => write!(f, "{}", ty),
-            UnpackedKind::Const(ct) => write!(f, "{}", ct),
+            UnpackedKind::Type(ty) => ty,
+            _ => bug!("expected a type, but found another kind"),
         }
     }
 }
@@ -139,9 +140,9 @@ impl<'a, 'tcx> Lift<'tcx> for Kind<'a> {
 
     fn lift_to_tcx<'cx, 'gcx>(&self, tcx: TyCtxt<'cx, 'gcx, 'tcx>) -> Option<Self::Lifted> {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => lt.lift_to_tcx(tcx).map(|lt| lt.into()),
-            UnpackedKind::Type(ty) => ty.lift_to_tcx(tcx).map(|ty| ty.into()),
-            UnpackedKind::Const(ct) => ct.lift_to_tcx(tcx).map(|ct| ct.into()),
+            UnpackedKind::Lifetime(lt) => tcx.lift(&lt).map(|lt| lt.into()),
+            UnpackedKind::Type(ty) => tcx.lift(&ty).map(|ty| ty.into()),
+            UnpackedKind::Const(ct) => tcx.lift(&ct).map(|ct| ct.into()),
         }
     }
 }
@@ -183,8 +184,7 @@ pub type SubstsRef<'tcx> = &'tcx InternalSubsts<'tcx>;
 
 impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     /// Creates a `InternalSubsts` that maps each generic parameter to itself.
-    pub fn identity_for_item(tcx: TyCtxt<'a, 'gcx, 'tcx>, def_id: DefId)
-                             -> SubstsRef<'tcx> {
+    pub fn identity_for_item(tcx: TyCtxt<'a, 'gcx, 'tcx>, def_id: DefId) -> SubstsRef<'tcx> {
         Self::for_item(tcx, def_id, |param, _| {
             tcx.mk_param_from_def(param)
         })
@@ -217,12 +217,12 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
                 }
 
                 ty::GenericParamDefKind::Const => {
-                    tcx.mk_lazy_const(ty::LazyConst::Evaluated(ty::Const {
+                    tcx.mk_const(ty::Const {
                         val: ConstValue::Infer(
                             InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from(param.index))
                         ),
                         ty: tcx.type_of(def_id),
-                    })).into()
+                    }).into()
                 }
             }
         })
@@ -313,7 +313,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     }
 
     #[inline]
-    pub fn consts(&'a self) -> impl DoubleEndedIterator<Item = &'tcx ty::LazyConst<'tcx>> + 'a {
+    pub fn consts(&'a self) -> impl DoubleEndedIterator<Item = &'tcx ty::Const<'tcx>> + 'a {
         self.iter().filter_map(|k| {
             if let UnpackedKind::Const(ct) = k.unpack() {
                 Some(ct)
@@ -354,7 +354,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     }
 
     #[inline]
-    pub fn const_at(&self, i: usize) -> &'tcx ty::LazyConst<'tcx> {
+    pub fn const_at(&self, i: usize) -> &'tcx ty::Const<'tcx> {
         if let UnpackedKind::Const(ct) = self[i].unpack() {
             ct
         } else {
@@ -448,16 +448,16 @@ struct SubstFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     substs: &'a [Kind<'tcx>],
 
-    // The location for which the substitution is performed, if available.
+    /// The location for which the substitution is performed, if available.
     span: Option<Span>,
 
-    // The root type that is being substituted, if available.
+    /// The root type that is being substituted, if available.
     root_ty: Option<Ty<'tcx>>,
 
-    // Depth of type stack
+    /// Depth of type stack
     ty_stack_depth: usize,
 
-    // Number of region binders we have passed through while doing the substitution
+    /// Number of region binders we have passed through while doing the substitution
     binders_passed: u32,
 }
 
@@ -479,21 +479,22 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
         // the specialized routine `ty::replace_late_regions()`.
         match *r {
             ty::ReEarlyBound(data) => {
-                let r = self.substs.get(data.index as usize).map(|k| k.unpack());
-                match r {
+                let rk = self.substs.get(data.index as usize).map(|k| k.unpack());
+                match rk {
                     Some(UnpackedKind::Lifetime(lt)) => {
                         self.shift_region_through_binders(lt)
                     }
                     _ => {
                         let span = self.span.unwrap_or(DUMMY_SP);
-                        span_bug!(
-                            span,
+                        let msg = format!(
                             "Region parameter out of range \
                              when substituting in region {} (root type={:?}) \
                              (index={})",
                             data.name,
                             self.root_ty,
                             data.index);
+                        self.tcx.sess.delay_span_bug(span, &msg);
+                        r
                     }
                 }
             }
@@ -531,16 +532,13 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
         return t1;
     }
 
-    fn fold_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
+    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
         if !c.needs_subst() {
             return c;
         }
 
-        if let ty::LazyConst::Evaluated(ty::Const {
-            val: ConstValue::Param(p),
-            ..
-        }) = c {
-            self.const_for_param(*p, c)
+        if let ConstValue::Param(p) = c.val {
+            self.const_for_param(p, c)
         } else {
             c.super_fold_with(self)
         }
@@ -550,20 +548,35 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
 impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
     fn ty_for_param(&self, p: ty::ParamTy, source_ty: Ty<'tcx>) -> Ty<'tcx> {
         // Look up the type in the substitutions. It really should be in there.
-        let opt_ty = self.substs.get(p.idx as usize).map(|k| k.unpack());
+        let opt_ty = self.substs.get(p.index as usize).map(|k| k.unpack());
         let ty = match opt_ty {
             Some(UnpackedKind::Type(ty)) => ty,
-            _ => {
+            Some(kind) => {
                 let span = self.span.unwrap_or(DUMMY_SP);
                 span_bug!(
                     span,
-                    "Type parameter `{:?}` ({:?}/{}) out of range \
+                    "expected type for `{:?}` ({:?}/{}) but found {:?} \
                      when substituting (root type={:?}) substs={:?}",
                     p,
                     source_ty,
-                    p.idx,
+                    p.index,
+                    kind,
                     self.root_ty,
-                    self.substs);
+                    self.substs,
+                );
+            }
+            None => {
+                let span = self.span.unwrap_or(DUMMY_SP);
+                span_bug!(
+                    span,
+                    "type parameter `{:?}` ({:?}/{}) out of range \
+                     when substituting (root type={:?}) substs={:?}",
+                    p,
+                    source_ty,
+                    p.index,
+                    self.root_ty,
+                    self.substs,
+                );
             }
         };
 
@@ -573,29 +586,40 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
     fn const_for_param(
         &self,
         p: ParamConst,
-        source_cn: &'tcx ty::LazyConst<'tcx>
-    ) -> &'tcx ty::LazyConst<'tcx> {
+        source_ct: &'tcx ty::Const<'tcx>
+    ) -> &'tcx ty::Const<'tcx> {
         // Look up the const in the substitutions. It really should be in there.
-        let opt_cn = self.substs.get(p.index as usize).map(|k| k.unpack());
-        let cn = match opt_cn {
-            Some(UnpackedKind::Const(cn)) => cn,
-            _ => {
+        let opt_ct = self.substs.get(p.index as usize).map(|k| k.unpack());
+        let ct = match opt_ct {
+            Some(UnpackedKind::Const(ct)) => ct,
+            Some(kind) => {
                 let span = self.span.unwrap_or(DUMMY_SP);
                 span_bug!(
                     span,
-                    "Const parameter `{:?}` ({:?}/{}) out of range \
-                     when substituting (root type={:?}) substs={:?}",
+                    "expected const for `{:?}` ({:?}/{}) but found {:?} \
+                     when substituting substs={:?}",
                     p,
-                    source_cn,
+                    source_ct,
                     p.index,
-                    self.root_ty,
+                    kind,
+                    self.substs,
+                );
+            }
+            None => {
+                let span = self.span.unwrap_or(DUMMY_SP);
+                span_bug!(
+                    span,
+                    "const parameter `{:?}` ({:?}/{}) out of range \
+                     when substituting substs={:?}",
+                    p,
+                    source_ct,
+                    p.index,
                     self.substs,
                 );
             }
         };
 
-        // FIXME(const_generics): shift const through binders
-        cn
+        self.shift_vars_through_binders(ct)
     }
 
     /// It is sometimes necessary to adjust the De Bruijn indices during substitution. This occurs
@@ -640,15 +664,15 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
     /// As indicated in the diagram, here the same type `&'a int` is substituted once, but in the
     /// first case we do not increase the De Bruijn index and in the second case we do. The reason
     /// is that only in the second case have we passed through a fn binder.
-    fn shift_vars_through_binders(&self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        debug!("shift_vars(ty={:?}, binders_passed={:?}, has_escaping_bound_vars={:?})",
-               ty, self.binders_passed, ty.has_escaping_bound_vars());
+    fn shift_vars_through_binders<T: TypeFoldable<'tcx>>(&self, val: T) -> T {
+        debug!("shift_vars(val={:?}, binders_passed={:?}, has_escaping_bound_vars={:?})",
+               val, self.binders_passed, val.has_escaping_bound_vars());
 
-        if self.binders_passed == 0 || !ty.has_escaping_bound_vars() {
-            return ty;
+        if self.binders_passed == 0 || !val.has_escaping_bound_vars() {
+            return val;
         }
 
-        let result = ty::fold::shift_vars(self.tcx(), &ty, self.binders_passed);
+        let result = ty::fold::shift_vars(self.tcx(), &val, self.binders_passed);
         debug!("shift_vars: shifted result = {:?}", result);
 
         result
@@ -666,7 +690,7 @@ pub type CanonicalUserSubsts<'tcx> = Canonical<'tcx, UserSubsts<'tcx>>;
 
 /// Stores the user-given substs to reach some fully qualified path
 /// (e.g., `<T>::Item` or `<T as Trait>::Item`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
 pub struct UserSubsts<'tcx> {
     /// The substitutions for the item as given by the user.
     pub substs: SubstsRef<'tcx>,
@@ -707,7 +731,7 @@ BraceStructLiftImpl! {
 /// the impl (with the substs from `UserSubsts`) and apply those to
 /// the self type, giving `Foo<?A>`. Finally, we unify that with
 /// the self type here, which contains `?A` to be `&'static u32`
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
 pub struct UserSelfTy<'tcx> {
     pub impl_def_id: DefId,
     pub self_ty: Ty<'tcx>,

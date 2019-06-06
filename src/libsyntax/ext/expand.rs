@@ -5,7 +5,7 @@ use crate::source_map::{ExpnInfo, MacroBang, MacroAttribute, dummy_spanned, resp
 use crate::config::StripUnconfigured;
 use crate::ext::base::*;
 use crate::ext::derive::{add_derived_markers, collect_derives};
-use crate::ext::hygiene::{self, Mark, SyntaxContext};
+use crate::ext::hygiene::{Mark, SyntaxContext};
 use crate::ext::placeholders::{placeholder, PlaceholderExpander};
 use crate::feature_gate::{self, Features, GateIssue, is_builtin_attr, emit_feature_err};
 use crate::mut_visit::*;
@@ -14,7 +14,7 @@ use crate::parse::token::{self, Token};
 use crate::parse::parser::Parser;
 use crate::ptr::P;
 use crate::symbol::Symbol;
-use crate::symbol::keywords;
+use crate::symbol::{kw, sym};
 use crate::tokenstream::{TokenStream, TokenTree};
 use crate::visit::{self, Visitor};
 use crate::util::map_in_place::MapInPlace;
@@ -198,7 +198,7 @@ fn macro_bang_format(path: &ast::Path) -> ExpnFormat {
         if i != 0 {
             path_str.push_str("::");
         }
-        if segment.ident.name != keywords::PathRoot.name() {
+        if segment.ident.name != kw::PathRoot {
             path_str.push_str(&segment.ident.as_str())
         }
     }
@@ -271,7 +271,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             attrs: krate.attrs,
             span: krate.span,
             node: ast::ItemKind::Mod(krate.module),
-            ident: keywords::Invalid.ident(),
+            ident: Ident::invalid(),
             id: ast::DUMMY_NODE_ID,
             vis: respan(krate.span.shrink_to_lo(), ast::VisibilityKind::Public),
             tokens: None,
@@ -356,7 +356,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     self.collect_invocations(fragment, &[])
                 } else if let InvocationKind::Attr { attr: None, traits, item, .. } = invoc.kind {
                     if !item.derive_allowed() {
-                        let attr = attr::find_by_name(item.attrs(), "derive")
+                        let attr = attr::find_by_name(item.attrs(), sym::derive)
                             .expect("`derive` attribute should exist");
                         let span = attr.span;
                         let mut err = self.cx.mut_span_err(span,
@@ -376,7 +376,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     }
 
                     let mut item = self.fully_configure(item);
-                    item.visit_attrs(|attrs| attrs.retain(|a| a.path != "derive"));
+                    item.visit_attrs(|attrs| attrs.retain(|a| a.path != sym::derive));
                     let mut item_with_markers = item.clone();
                     add_derived_markers(&mut self.cx, item.span(), &traits, &mut item_with_markers);
                     let derives = derives.entry(invoc.expansion_data.mark).or_default();
@@ -510,7 +510,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         if invoc.fragment_kind == AstFragmentKind::ForeignItems &&
            !self.cx.ecfg.macros_in_extern_enabled() {
             if let SyntaxExtension::NonMacroAttr { .. } = *ext {} else {
-                emit_feature_err(&self.cx.parse_sess, "macros_in_extern",
+                emit_feature_err(&self.cx.parse_sess, sym::macros_in_extern,
                                  invoc.span(), GateIssue::Language,
                                  "macro invocations in `extern {}` blocks are experimental");
             }
@@ -560,7 +560,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             allow_internal_unstable: None,
             allow_internal_unsafe: false,
             local_inner_macros: false,
-            edition: ext.edition(),
+            edition: ext.edition(self.cx.parse_sess.edition),
         });
 
         match *ext {
@@ -601,7 +601,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                 res
             }
             ProcMacroDerive(..) | BuiltinDerive(..) => {
-                self.cx.span_err(attr.span, &format!("`{}` is a derive mode", attr.path));
+                self.cx.span_err(attr.span, &format!("`{}` is a derive macro", attr.path));
                 self.cx.trace_macros_diag();
                 invoc.fragment_kind.dummy(attr.span)
             }
@@ -636,7 +636,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             Annotatable::Item(ref item) => {
                 match item.node {
                     ItemKind::Mod(_) if self.cx.ecfg.proc_macro_hygiene() => return,
-                    ItemKind::Mod(_) => ("modules", "proc_macro_hygiene"),
+                    ItemKind::Mod(_) => ("modules", sym::proc_macro_hygiene),
                     _ => return,
                 }
             }
@@ -645,8 +645,8 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             Annotatable::ForeignItem(_) => return,
             Annotatable::Stmt(_) |
             Annotatable::Expr(_) if self.cx.ecfg.proc_macro_hygiene() => return,
-            Annotatable::Stmt(_) => ("statements", "proc_macro_hygiene"),
-            Annotatable::Expr(_) => ("expressions", "proc_macro_hygiene"),
+            Annotatable::Stmt(_) => ("statements", sym::proc_macro_hygiene),
+            Annotatable::Expr(_) => ("expressions", sym::proc_macro_hygiene),
         };
         emit_feature_err(
             self.cx.parse_sess,
@@ -681,7 +681,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                 if let ast::ItemKind::MacroDef(_) = i.node {
                     emit_feature_err(
                         self.parse_sess,
-                        "proc_macro_hygiene",
+                        sym::proc_macro_hygiene,
                         self.span,
                         GateIssue::Language,
                         "procedural macros cannot expand to macro definitions",
@@ -708,7 +708,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         };
         let path = &mac.node.path;
 
-        let ident = ident.unwrap_or_else(|| keywords::Invalid.ident());
+        let ident = ident.unwrap_or_else(|| Ident::invalid());
         let validate_and_set_expn_info = |this: &mut Self, // arg instead of capture
                                           def_site_span: Option<Span>,
                                           allow_internal_unstable,
@@ -724,19 +724,19 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                 // don't stability-check macros in the same crate
                 // (the only time this is null is for syntax extensions registered as macros)
                 if def_site_span.map_or(false, |def_span| !crate_span.contains(def_span))
-                    && !span.allows_unstable(&feature.as_str())
+                    && !span.allows_unstable(feature)
                     && this.cx.ecfg.features.map_or(true, |feats| {
                     // macro features will count as lib features
                     !feats.declared_lib_features.iter().any(|&(feat, _)| feat == feature)
                 }) {
                     let explain = format!("macro {}! is unstable", path);
-                    emit_feature_err(this.cx.parse_sess, &*feature.as_str(), span,
+                    emit_feature_err(this.cx.parse_sess, feature, span,
                                      GateIssue::Library(Some(issue)), &explain);
                     this.cx.trace_macros_diag();
                 }
             }
 
-            if ident.name != keywords::Invalid.name() {
+            if ident.name != kw::Invalid {
                 let msg = format!("macro {}! expects no ident argument, given '{}'", path, ident);
                 this.cx.span_err(path.span, &msg);
                 this.cx.trace_macros_diag();
@@ -792,7 +792,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             }
 
             IdentTT { ref expander, span: tt_span, ref allow_internal_unstable } => {
-                if ident.name == keywords::Invalid.name() {
+                if ident.name == kw::Invalid {
                     self.cx.span_err(path.span,
                                     &format!("macro {}! expects an ident argument", path));
                     self.cx.trace_macros_diag();
@@ -805,7 +805,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                         allow_internal_unstable: allow_internal_unstable.clone(),
                         allow_internal_unsafe: false,
                         local_inner_macros: false,
-                        edition: hygiene::default_edition(),
+                        edition: self.cx.parse_sess.edition,
                     });
 
                     let input: Vec<_> = mac.node.stream().into_trees().collect();
@@ -822,13 +822,13 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             }
 
             ProcMacroDerive(..) | BuiltinDerive(..) => {
-                self.cx.span_err(path.span, &format!("`{}` is a derive mode", path));
+                self.cx.span_err(path.span, &format!("`{}` is a derive macro", path));
                 self.cx.trace_macros_diag();
                 kind.dummy(span)
             }
 
             SyntaxExtension::ProcMacro { ref expander, ref allow_internal_unstable, edition } => {
-                if ident.name != keywords::Invalid.name() {
+                if ident.name != kw::Invalid {
                     let msg =
                         format!("macro {}! expects no ident argument, given '{}'", path, ident);
                     self.cx.span_err(path.span, &msg);
@@ -885,7 +885,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         }
         emit_feature_err(
             self.cx.parse_sess,
-            "proc_macro_hygiene",
+            sym::proc_macro_hygiene,
             span,
             GateIssue::Language,
             &format!("procedural macros cannot be expanded to {}", kind),
@@ -921,7 +921,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             allow_internal_unstable: None,
             allow_internal_unsafe: false,
             local_inner_macros: false,
-            edition: ext.edition(),
+            edition: ext.edition(self.cx.parse_sess.edition),
         };
 
         match *ext {
@@ -929,7 +929,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                 invoc.expansion_data.mark.set_expn_info(expn_info);
                 let span = span.with_ctxt(self.cx.backtrace());
                 let dummy = ast::MetaItem { // FIXME(jseyfried) avoid this
-                    ident: Path::from_ident(keywords::Invalid.ident()),
+                    path: Path::from_ident(Ident::invalid()),
                     span: DUMMY_SP,
                     node: ast::MetaItemKind::Word,
                 };
@@ -938,7 +938,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             }
             BuiltinDerive(func) => {
                 expn_info.allow_internal_unstable = Some(vec![
-                    Symbol::intern("rustc_attrs"),
+                    sym::rustc_attrs,
                     Symbol::intern("derive_clone_copy"),
                     Symbol::intern("derive_eq"),
                     Symbol::intern("libstd_sys_internals"), // RustcDeserialize and RustcSerialize
@@ -1109,7 +1109,7 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
                        -> Option<ast::Attribute> {
         let attr = attrs.iter()
                         .position(|a| {
-                            if a.path == "derive" {
+                            if a.path == sym::derive {
                                 *after_derive = true;
                             }
                             !attr::is_known(a) && !is_builtin_attr(a)
@@ -1117,8 +1117,8 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
                         .map(|i| attrs.remove(i));
         if let Some(attr) = &attr {
             if !self.cx.ecfg.enable_custom_inner_attributes() &&
-               attr.style == ast::AttrStyle::Inner && attr.path != "test" {
-                emit_feature_err(&self.cx.parse_sess, "custom_inner_attributes",
+               attr.style == ast::AttrStyle::Inner && attr.path != sym::test {
+                emit_feature_err(&self.cx.parse_sess, sym::custom_inner_attributes,
                                  attr.span, GateIssue::Language,
                                  "non-builtin inner attributes are unstable");
             }
@@ -1167,7 +1167,7 @@ impl<'a, 'b> InvocationCollector<'a, 'b> {
             self.check_attribute_inner(attr, features);
 
             // macros are expanded before any lint passes so this warning has to be hardcoded
-            if attr.path == "derive" {
+            if attr.path == sym::derive {
                 self.cx.struct_span_warn(attr.span, "`#[derive]` does nothing on macro invocations")
                     .note("this may become a hard error in a future release")
                     .emit();
@@ -1338,7 +1338,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                 })
             }
             ast::ItemKind::Mod(ast::Mod { inner, .. }) => {
-                if item.ident == keywords::Invalid.ident() {
+                if item.ident == Ident::invalid() {
                     return noop_flat_map_item(item, self);
                 }
 
@@ -1352,7 +1352,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                 let inline_module = item.span.contains(inner) || inner.is_dummy();
 
                 if inline_module {
-                    if let Some(path) = attr::first_attr_value_str_by_name(&item.attrs, "path") {
+                    if let Some(path) = attr::first_attr_value_str_by_name(&item.attrs, sym::path) {
                         self.cx.current_expansion.directory_ownership =
                             DirectoryOwnership::Owned { relative: None };
                         module.directory.push(&*path.as_str());
@@ -1485,19 +1485,19 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
     fn visit_attribute(&mut self, at: &mut ast::Attribute) {
         // turn `#[doc(include="filename")]` attributes into `#[doc(include(file="filename",
         // contents="file contents")]` attributes
-        if !at.check_name("doc") {
+        if !at.check_name(sym::doc) {
             return noop_visit_attribute(at, self);
         }
 
         if let Some(list) = at.meta_item_list() {
-            if !list.iter().any(|it| it.check_name("include")) {
+            if !list.iter().any(|it| it.check_name(sym::include)) {
                 return noop_visit_attribute(at, self);
             }
 
             let mut items = vec![];
 
             for mut it in list {
-                if !it.check_name("include") {
+                if !it.check_name(sym::include) {
                     items.push({ noop_visit_meta_list_item(&mut it, self); it });
                     continue;
                 }
@@ -1520,23 +1520,23 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                             self.cx.source_map().new_source_file(filename.into(), src);
 
                             let include_info = vec![
-                                dummy_spanned(ast::NestedMetaItemKind::MetaItem(
+                                ast::NestedMetaItem::MetaItem(
                                     attr::mk_name_value_item_str(
-                                        Ident::from_str("file"),
+                                        Ident::with_empty_ctxt(sym::file),
                                         dummy_spanned(file),
                                     ),
-                                )),
-                                dummy_spanned(ast::NestedMetaItemKind::MetaItem(
+                                ),
+                                ast::NestedMetaItem::MetaItem(
                                     attr::mk_name_value_item_str(
-                                        Ident::from_str("contents"),
+                                        Ident::with_empty_ctxt(sym::contents),
                                         dummy_spanned(src_interned),
                                     ),
-                                )),
+                                ),
                             ];
 
-                            let include_ident = Ident::from_str("include");
+                            let include_ident = Ident::with_empty_ctxt(sym::include);
                             let item = attr::mk_list_item(DUMMY_SP, include_ident, include_info);
-                            items.push(dummy_spanned(ast::NestedMetaItemKind::MetaItem(item)));
+                            items.push(ast::NestedMetaItem::MetaItem(item));
                         }
                         Err(e) => {
                             let lit = it
@@ -1569,7 +1569,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                     }
                 } else {
                     let mut err = self.cx.struct_span_err(
-                        it.span,
+                        it.span(),
                         &format!("expected path to external documentation"),
                     );
 
@@ -1590,7 +1590,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                     };
 
                     err.span_suggestion(
-                        it.span,
+                        it.span(),
                         "provide a file path with `=`",
                         format!("include = \"{}\"", path),
                         applicability,
@@ -1600,7 +1600,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                 }
             }
 
-            let meta = attr::mk_list_item(DUMMY_SP, Ident::from_str("doc"), items);
+            let meta = attr::mk_list_item(DUMMY_SP, Ident::with_empty_ctxt(sym::doc), items);
             match at.style {
                 ast::AttrStyle::Inner => *at = attr::mk_spanned_attr_inner(at.span, at.id, meta),
                 ast::AttrStyle::Outer => *at = attr::mk_spanned_attr_outer(at.span, at.id, meta),

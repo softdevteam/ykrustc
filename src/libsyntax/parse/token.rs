@@ -1,14 +1,14 @@
 pub use BinOpToken::*;
 pub use Nonterminal::*;
 pub use DelimToken::*;
-pub use Lit::*;
+pub use LitKind::*;
 pub use Token::*;
 
 use crate::ast::{self};
 use crate::parse::ParseSess;
 use crate::print::pprust;
 use crate::ptr::P;
-use crate::symbol::keywords;
+use crate::symbol::kw;
 use crate::syntax::parse::parse_stream_from_source_str;
 use crate::tokenstream::{self, DelimSpan, TokenStream, TokenTree};
 
@@ -19,7 +19,7 @@ use log::info;
 use std::fmt;
 use std::mem;
 #[cfg(target_arch = "x86_64")]
-use rustc_data_structures::static_assert;
+use rustc_data_structures::static_assert_size;
 use rustc_data_structures::sync::Lrc;
 
 #[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Hash, Debug, Copy)]
@@ -59,36 +59,61 @@ impl DelimToken {
     }
 }
 
-#[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Hash, Debug, Copy)]
-pub enum Lit {
-    Byte(ast::Name),
-    Char(ast::Name),
-    Err(ast::Name),
-    Integer(ast::Name),
-    Float(ast::Name),
-    Str_(ast::Name),
-    StrRaw(ast::Name, u16), /* raw str delimited by n hash symbols */
-    ByteStr(ast::Name),
-    ByteStrRaw(ast::Name, u16), /* raw byte str delimited by n hash symbols */
+#[derive(Clone, Copy, PartialEq, RustcEncodable, RustcDecodable, Debug)]
+pub enum LitKind {
+    Bool, // AST only, must never appear in a `Token`
+    Byte,
+    Char,
+    Integer,
+    Float,
+    Str,
+    StrRaw(u16), // raw string delimited by `n` hash symbols
+    ByteStr,
+    ByteStrRaw(u16), // raw byte string delimited by `n` hash symbols
+    Err,
 }
 
-impl Lit {
-    crate fn literal_name(&self) -> &'static str {
-        match *self {
-            Byte(_) => "byte literal",
-            Char(_) => "char literal",
-            Err(_) => "invalid literal",
-            Integer(_) => "integer literal",
-            Float(_) => "float literal",
-            Str_(_) | StrRaw(..) => "string literal",
-            ByteStr(_) | ByteStrRaw(..) => "byte string literal"
+/// A literal token.
+#[derive(Clone, Copy, PartialEq, RustcEncodable, RustcDecodable, Debug)]
+pub struct Lit {
+    pub kind: LitKind,
+    pub symbol: Symbol,
+    pub suffix: Option<Symbol>,
+}
+
+impl LitKind {
+    /// An English article for the literal token kind.
+    crate fn article(self) -> &'static str {
+        match self {
+            Integer | Err => "an",
+            _ => "a",
         }
     }
 
-    // See comments in `Nonterminal::to_tokenstream` for why we care about
-    // *probably* equal here rather than actual equality
-    fn probably_equal_for_proc_macro(&self, other: &Lit) -> bool {
-        mem::discriminant(self) == mem::discriminant(other)
+    crate fn descr(self) -> &'static str {
+        match self {
+            Bool => panic!("literal token contains `Lit::Bool`"),
+            Byte => "byte",
+            Char => "char",
+            Integer => "integer",
+            Float => "float",
+            Str | StrRaw(..) => "string",
+            ByteStr | ByteStrRaw(..) => "byte string",
+            Err => "error",
+        }
+    }
+
+    crate fn may_have_suffix(self) -> bool {
+        match self {
+            Integer | Float | Err => true,
+            _ => false,
+        }
+    }
+}
+
+impl Lit {
+    pub fn new(kind: LitKind, symbol: Symbol, suffix: Option<Symbol>) -> Lit {
+        Lit { kind, symbol, suffix }
     }
 }
 
@@ -98,23 +123,28 @@ pub(crate) fn ident_can_begin_expr(ident: ast::Ident, is_raw: bool) -> bool {
     !ident_token.is_reserved_ident() ||
     ident_token.is_path_segment_keyword() ||
     [
-        keywords::Async.name(),
-        keywords::Do.name(),
-        keywords::Box.name(),
-        keywords::Break.name(),
-        keywords::Continue.name(),
-        keywords::False.name(),
-        keywords::For.name(),
-        keywords::If.name(),
-        keywords::Loop.name(),
-        keywords::Match.name(),
-        keywords::Move.name(),
-        keywords::Return.name(),
-        keywords::True.name(),
-        keywords::Unsafe.name(),
-        keywords::While.name(),
-        keywords::Yield.name(),
-        keywords::Static.name(),
+        kw::Async,
+
+        // FIXME: remove when `await!(..)` syntax is removed
+        // https://github.com/rust-lang/rust/issues/60610
+        kw::Await,
+
+        kw::Do,
+        kw::Box,
+        kw::Break,
+        kw::Continue,
+        kw::False,
+        kw::For,
+        kw::If,
+        kw::Loop,
+        kw::Match,
+        kw::Move,
+        kw::Return,
+        kw::True,
+        kw::Unsafe,
+        kw::While,
+        kw::Yield,
+        kw::Static,
     ].contains(&ident.name)
 }
 
@@ -124,14 +154,14 @@ fn ident_can_begin_type(ident: ast::Ident, is_raw: bool) -> bool {
     !ident_token.is_reserved_ident() ||
     ident_token.is_path_segment_keyword() ||
     [
-        keywords::Underscore.name(),
-        keywords::For.name(),
-        keywords::Impl.name(),
-        keywords::Fn.name(),
-        keywords::Unsafe.name(),
-        keywords::Extern.name(),
-        keywords::Typeof.name(),
-        keywords::Dyn.name(),
+        kw::Underscore,
+        kw::For,
+        kw::Impl,
+        kw::Fn,
+        kw::Unsafe,
+        kw::Extern,
+        kw::Typeof,
+        kw::Dyn,
     ].contains(&ident.name)
 }
 
@@ -176,7 +206,7 @@ pub enum Token {
     CloseDelim(DelimToken),
 
     /* Literals */
-    Literal(Lit, Option<ast::Name>),
+    Literal(Lit),
 
     /* Name components */
     Ident(ast::Ident, /* is_raw */ bool),
@@ -203,7 +233,7 @@ pub enum Token {
 
 // `Token` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_STATEMENT: mem::size_of::<Token>() == 16);
+static_assert_size!(Token, 16);
 
 impl Token {
     /// Recovers a `Token` from an `ast::Ident`. This creates a raw identifier if necessary.
@@ -289,8 +319,12 @@ impl Token {
 
     /// Returns `true` if the token can appear at the start of a generic bound.
     crate fn can_begin_bound(&self) -> bool {
-        self.is_path_start() || self.is_lifetime() || self.is_keyword(keywords::For) ||
+        self.is_path_start() || self.is_lifetime() || self.is_keyword(kw::For) ||
         self == &Question || self == &OpenDelim(Paren)
+    }
+
+    pub fn lit(kind: LitKind, symbol: Symbol, suffix: Option<Symbol>) -> Token {
+        Literal(Lit::new(kind, symbol, suffix))
     }
 
     /// Returns `true` if the token is any literal
@@ -301,14 +335,21 @@ impl Token {
         }
     }
 
+    crate fn expect_lit(&self) -> Lit {
+        match *self {
+            Literal(lit) => lit,
+            _=> panic!("`expect_lit` called on non-literal"),
+        }
+    }
+
     /// Returns `true` if the token is any literal, a minus (which can prefix a literal,
     /// for example a '-42', or one of the boolean idents).
     crate fn can_begin_literal_or_bool(&self) -> bool {
         match *self {
             Literal(..)  => true,
             BinOp(Minus) => true,
-            Ident(ident, false) if ident.name == keywords::True.name() => true,
-            Ident(ident, false) if ident.name == keywords::False.name() => true,
+            Ident(ident, false) if ident.name == kw::True => true,
+            Ident(ident, false) if ident.name == kw::False => true,
             Interpolated(ref nt) => match **nt {
                 NtLiteral(..) => true,
                 _             => false,
@@ -350,9 +391,9 @@ impl Token {
 
     /// Returns `true` if the token is a identifier whose name is the given
     /// string slice.
-    crate fn is_ident_named(&self, name: &str) -> bool {
+    crate fn is_ident_named(&self, name: Symbol) -> bool {
         match self.ident() {
-            Some((ident, _)) => ident.as_str() == name,
+            Some((ident, _)) => ident.name == name,
             None => false
         }
     }
@@ -369,8 +410,8 @@ impl Token {
 
     /// Returns `true` if the token is either the `mut` or `const` keyword.
     crate fn is_mutability(&self) -> bool {
-        self.is_keyword(keywords::Mut) ||
-        self.is_keyword(keywords::Const)
+        self.is_keyword(kw::Mut) ||
+        self.is_keyword(kw::Const)
     }
 
     crate fn is_qpath_start(&self) -> bool {
@@ -383,8 +424,8 @@ impl Token {
     }
 
     /// Returns `true` if the token is a given keyword, `kw`.
-    pub fn is_keyword(&self, kw: keywords::Keyword) -> bool {
-        self.ident().map(|(ident, is_raw)| ident.name == kw.name() && !is_raw).unwrap_or(false)
+    pub fn is_keyword(&self, kw: Symbol) -> bool {
+        self.ident().map(|(ident, is_raw)| ident.name == kw && !is_raw).unwrap_or(false)
     }
 
     pub fn is_path_segment_keyword(&self) -> bool {
@@ -547,14 +588,12 @@ impl Token {
             (&DocComment(a), &DocComment(b)) |
             (&Shebang(a), &Shebang(b)) => a == b,
 
+            (&Literal(a), &Literal(b)) => a == b,
+
             (&Lifetime(a), &Lifetime(b)) => a.name == b.name,
             (&Ident(a, b), &Ident(c, d)) => b == d && (a.name == c.name ||
-                                                       a.name == keywords::DollarCrate.name() ||
-                                                       c.name == keywords::DollarCrate.name()),
-
-            (&Literal(ref a, b), &Literal(ref c, d)) => {
-                b == d && a.probably_equal_for_proc_macro(c)
-            }
+                                                       a.name == kw::DollarCrate ||
+                                                       c.name == kw::DollarCrate),
 
             (&Interpolated(_), &Interpolated(_)) => false,
 
@@ -580,14 +619,12 @@ pub enum Nonterminal {
     NtPath(ast::Path),
     NtVis(ast::Visibility),
     NtTT(TokenTree),
-    // These are not exposed to macros, but are used by quasiquote.
-    NtArm(ast::Arm),
-    NtImplItem(ast::ImplItem),
+    // Used only for passing items to proc macro attributes (they are not
+    // strictly necessary for that, `Annotatable` can be converted into
+    // tokens directly, but doing that naively regresses pretty-printing).
     NtTraitItem(ast::TraitItem),
+    NtImplItem(ast::ImplItem),
     NtForeignItem(ast::ForeignItem),
-    NtGenerics(ast::Generics),
-    NtWhereClause(ast::WhereClause),
-    NtArg(ast::Arg),
 }
 
 impl PartialEq for Nonterminal {
@@ -620,13 +657,9 @@ impl fmt::Debug for Nonterminal {
             NtMeta(..) => f.pad("NtMeta(..)"),
             NtPath(..) => f.pad("NtPath(..)"),
             NtTT(..) => f.pad("NtTT(..)"),
-            NtArm(..) => f.pad("NtArm(..)"),
             NtImplItem(..) => f.pad("NtImplItem(..)"),
             NtTraitItem(..) => f.pad("NtTraitItem(..)"),
             NtForeignItem(..) => f.pad("NtForeignItem(..)"),
-            NtGenerics(..) => f.pad("NtGenerics(..)"),
-            NtWhereClause(..) => f.pad("NtWhereClause(..)"),
-            NtArg(..) => f.pad("NtArg(..)"),
             NtVis(..) => f.pad("NtVis(..)"),
             NtLifetime(..) => f.pad("NtLifetime(..)"),
         }

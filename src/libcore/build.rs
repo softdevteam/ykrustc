@@ -7,7 +7,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-extern crate cc;
+use cc;
 
 fn main() {
     let mut c_build = cc::Build::new();

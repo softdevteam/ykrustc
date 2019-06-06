@@ -16,7 +16,6 @@ use crate::infer::{InferCtxt, InferOk};
 use crate::lint;
 use crate::traits::{self, coherence, FutureCompatOverlapErrorKind, ObligationCause, TraitEngine};
 use rustc_data_structures::fx::FxHashSet;
-use rustc_data_structures::sync::Lrc;
 use syntax_pos::DUMMY_SP;
 use crate::traits::select::IntercrateAmbiguityCause;
 use crate::ty::{self, TyCtxt, TypeFoldable};
@@ -113,7 +112,7 @@ pub fn translate_substs<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
 pub fn find_associated_item<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     param_env: ty::ParamEnv<'tcx>,
-    item: &ty::AssociatedItem,
+    item: &ty::AssocItem,
     substs: SubstsRef<'tcx>,
     impl_data: &super::VtableImplData<'tcx, ()>,
 ) -> (DefId, SubstsRef<'tcx>) {
@@ -279,7 +278,7 @@ fn fulfill_implication<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
 
                 // Now resolve the *substitution* we built for the target earlier, replacing
                 // the inference variables inside with whatever we got from fulfillment.
-                Ok(infcx.resolve_type_vars_if_possible(&target_substs))
+                Ok(infcx.resolve_vars_if_possible(&target_substs))
             }
         }
     })
@@ -289,7 +288,7 @@ fn fulfill_implication<'a, 'gcx, 'tcx>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
 pub(super) fn specialization_graph_provider<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     trait_id: DefId,
-) -> Lrc<specialization_graph::Graph> {
+) -> &'tcx specialization_graph::Graph {
     let mut sg = specialization_graph::Graph::new();
 
     let mut trait_impls = tcx.all_impls(trait_id);
@@ -299,9 +298,7 @@ pub(super) fn specialization_graph_provider<'a, 'tcx>(
     // negated `CrateNum` (so remote definitions are visited first) and then
     // by a flattened version of the `DefIndex`.
     trait_impls.sort_unstable_by_key(|def_id| {
-        (-(def_id.krate.as_u32() as i64),
-         def_id.index.address_space().index(),
-         def_id.index.as_array_index())
+        (-(def_id.krate.as_u32() as i64), def_id.index.index())
     });
 
     for impl_def_id in trait_impls {
@@ -322,29 +319,34 @@ pub(super) fn specialization_graph_provider<'a, 'tcx>(
                         String::new(), |ty| {
                             format!(" for type `{}`", ty)
                         }),
-                    if used_to_be_allowed.is_some() { " (E0119)" } else { "" }
+                    match used_to_be_allowed {
+                        Some(FutureCompatOverlapErrorKind::Issue33140) => " (E0119)",
+                        _ => "",
+                    }
                 );
                 let impl_span = tcx.sess.source_map().def_span(
                     tcx.span_of_impl(impl_def_id).unwrap()
                 );
-                let mut err = if let Some(kind) = used_to_be_allowed {
-                    let lint = match kind {
-                        FutureCompatOverlapErrorKind::Issue43355 =>
-                            lint::builtin::INCOHERENT_FUNDAMENTAL_IMPLS,
-                        FutureCompatOverlapErrorKind::Issue33140 =>
-                            lint::builtin::ORDER_DEPENDENT_TRAIT_OBJECTS,
-                    };
-                    tcx.struct_span_lint_hir(
-                        lint,
-                        tcx.hir().as_local_hir_id(impl_def_id).unwrap(),
-                        impl_span,
-                        &msg)
-                } else {
-                    struct_span_err!(tcx.sess,
-                                     impl_span,
-                                     E0119,
-                                     "{}",
-                                     msg)
+                let mut err = match used_to_be_allowed {
+                    Some(FutureCompatOverlapErrorKind::Issue43355) | None =>
+                        struct_span_err!(tcx.sess,
+                                         impl_span,
+                                         E0119,
+                                         "{}",
+                                         msg),
+                    Some(kind) => {
+                        let lint = match kind {
+                            FutureCompatOverlapErrorKind::Issue43355 =>
+                                unreachable!("converted to hard error above"),
+                            FutureCompatOverlapErrorKind::Issue33140 =>
+                                lint::builtin::ORDER_DEPENDENT_TRAIT_OBJECTS,
+                        };
+                        tcx.struct_span_lint_hir(
+                            lint,
+                            tcx.hir().as_local_hir_id(impl_def_id).unwrap(),
+                            impl_span,
+                            &msg)
+                    }
                 };
 
                 match tcx.span_of_impl(overlap.with_impl) {
@@ -383,7 +385,7 @@ pub(super) fn specialization_graph_provider<'a, 'tcx>(
         }
     }
 
-    Lrc::new(sg)
+    tcx.arena.alloc(sg)
 }
 
 /// Recovers the "impl X for Y" signature from `impl_def_id` and returns it as a
@@ -411,7 +413,7 @@ fn to_pretty_impl_header(tcx: TyCtxt<'_, '_, '_>, impl_def_id: DefId) -> Option<
         w.push('<');
         w.push_str(&substs.iter()
             .map(|k| k.to_string())
-            .filter(|k| &k[..] != "'_")
+            .filter(|k| k != "'_")
             .collect::<Vec<_>>().join(", "));
         w.push('>');
     }

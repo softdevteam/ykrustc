@@ -9,6 +9,7 @@
        test(attr(deny(warnings))))]
 
 #![deny(rust_2018_idioms)]
+#![deny(internal)]
 
 #![feature(nll)]
 #![feature(rustc_private)]

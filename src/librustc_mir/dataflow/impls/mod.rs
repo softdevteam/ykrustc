@@ -3,7 +3,7 @@
 //! zero-sized structure.
 
 use rustc::ty::TyCtxt;
-use rustc::mir::{self, Mir, Location};
+use rustc::mir::{self, Body, Location};
 use rustc_data_structures::bit_set::{BitSet, BitSetOperator};
 use rustc_data_structures::indexed_vec::Idx;
 
@@ -11,8 +11,7 @@ use super::MoveDataParamEnv;
 
 use crate::util::elaborate_drops::DropFlagState;
 
-use super::move_paths::{HasMoveData, MoveData, MovePathIndex, InitIndex};
-use super::move_paths::{LookupResult, InitKind};
+use super::move_paths::{HasMoveData, MoveData, MovePathIndex, InitIndex, InitKind};
 use super::{BitDenotation, BlockSets, InitialFlow};
 
 use super::drop_flag_effects_for_function_entry;
@@ -66,13 +65,13 @@ pub(super) mod borrows;
 /// places that would require a dynamic drop-flag at that statement.
 pub struct MaybeInitializedPlaces<'a, 'gcx: 'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>,
 }
 
 impl<'a, 'gcx: 'tcx, 'tcx> MaybeInitializedPlaces<'a, 'gcx, 'tcx> {
     pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-               mir: &'a Mir<'tcx>,
+               mir: &'a Body<'tcx>,
                mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>)
                -> Self
     {
@@ -121,13 +120,13 @@ impl<'a, 'gcx, 'tcx> HasMoveData<'tcx> for MaybeInitializedPlaces<'a, 'gcx, 'tcx
 /// places that would require a dynamic drop-flag at that statement.
 pub struct MaybeUninitializedPlaces<'a, 'gcx: 'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>,
 }
 
 impl<'a, 'gcx, 'tcx> MaybeUninitializedPlaces<'a, 'gcx, 'tcx> {
     pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-               mir: &'a Mir<'tcx>,
+               mir: &'a Body<'tcx>,
                mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>)
                -> Self
     {
@@ -175,13 +174,13 @@ impl<'a, 'gcx, 'tcx> HasMoveData<'tcx> for MaybeUninitializedPlaces<'a, 'gcx, 't
 /// that would require a dynamic drop-flag at that statement.
 pub struct DefinitelyInitializedPlaces<'a, 'gcx: 'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>,
 }
 
 impl<'a, 'gcx, 'tcx: 'a> DefinitelyInitializedPlaces<'a, 'gcx, 'tcx> {
     pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-               mir: &'a Mir<'tcx>,
+               mir: &'a Body<'tcx>,
                mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>)
                -> Self
     {
@@ -224,13 +223,13 @@ impl<'a, 'gcx, 'tcx: 'a> HasMoveData<'tcx> for DefinitelyInitializedPlaces<'a, '
 /// ```
 pub struct EverInitializedPlaces<'a, 'gcx: 'tcx, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>,
 }
 
 impl<'a, 'gcx: 'tcx, 'tcx: 'a> EverInitializedPlaces<'a, 'gcx, 'tcx> {
     pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-               mir: &'a Mir<'tcx>,
+               mir: &'a Body<'tcx>,
                mdpe: &'a MoveDataParamEnv<'gcx, 'tcx>)
                -> Self
     {
@@ -470,35 +469,13 @@ impl<'a, 'gcx, 'tcx> BitDenotation<'tcx> for EverInitializedPlaces<'a, 'gcx, 'tc
         sets.gen_all(&init_loc_map[location]);
 
         match stmt.kind {
-            mir::StatementKind::StorageDead(local) |
-            mir::StatementKind::StorageLive(local) => {
-                // End inits for StorageDead and StorageLive, so that an immutable
-                // variable can be reinitialized on the next iteration of the loop.
-                //
-                // FIXME(#46525): We *need* to do this for StorageLive as well as
-                // StorageDead, because lifetimes of match bindings with guards are
-                // weird - i.e., this code
-                //
-                // ```
-                //     fn main() {
-                //         match 0 {
-                //             a | a
-                //             if { println!("a={}", a); false } => {}
-                //             _ => {}
-                //         }
-                //     }
-                // ```
-                //
-                // runs the guard twice, using the same binding for `a`, and only
-                // storagedeads after everything ends, so if we don't regard the
-                // storagelive as killing storage, we would have a multiple assignment
-                // to immutable data error.
-                if let LookupResult::Exact(mpi) =
-                    rev_lookup.find(&mir::Place::Base(mir::PlaceBase::Local(local))) {
-                    debug!("stmt {:?} at loc {:?} clears the ever initialized status of {:?}",
-                           stmt, location, &init_path_map[mpi]);
-                    sets.kill_all(&init_path_map[mpi]);
-                }
+            mir::StatementKind::StorageDead(local) => {
+                // End inits for StorageDead, so that an immutable variable can
+                // be reinitialized on the next iteration of the loop.
+                let move_path_index = rev_lookup.find_local(local);
+                debug!("stmt {:?} at loc {:?} clears the ever initialized status of {:?}",
+                        stmt, location, &init_path_map[move_path_index]);
+                sets.kill_all(&init_path_map[move_path_index]);
             }
             _ => {}
         }

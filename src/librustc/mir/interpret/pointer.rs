@@ -1,8 +1,11 @@
+use std::fmt;
+
 use crate::mir;
 use crate::ty::layout::{self, HasDataLayout, Size};
+use rustc_macros::HashStable;
 
 use super::{
-    AllocId, EvalResult, InboundsCheck,
+    AllocId, EvalResult, CheckInAllocMsg
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -17,11 +20,35 @@ pub trait PointerArithmetic: layout::HasDataLayout {
         self.data_layout().pointer_size
     }
 
-    //// Trunace the given value to the pointer size; also return whether there was an overflow
+    /// Helper function: truncate given value-"overflowed flag" pair to pointer size and
+    /// update "overflowed flag" if there was an overflow.
+    /// This should be called by all the other methods before returning!
     #[inline]
-    fn truncate_to_ptr(&self, val: u128) -> (u64, bool) {
+    fn truncate_to_ptr(&self, (val, over): (u64, bool)) -> (u64, bool) {
+        let val = val as u128;
         let max_ptr_plus_1 = 1u128 << self.pointer_size().bits();
-        ((val % max_ptr_plus_1) as u64, val >= max_ptr_plus_1)
+        ((val % max_ptr_plus_1) as u64, over || val >= max_ptr_plus_1)
+    }
+
+    #[inline]
+    fn overflowing_offset(&self, val: u64, i: u64) -> (u64, bool) {
+        let res = val.overflowing_add(i);
+        self.truncate_to_ptr(res)
+    }
+
+    // Overflow checking only works properly on the range from -u64 to +u64.
+    #[inline]
+    fn overflowing_signed_offset(&self, val: u64, i: i128) -> (u64, bool) {
+        // FIXME: is it possible to over/underflow here?
+        if i < 0 {
+            // Trickery to ensure that i64::min_value() works fine: compute n = -i.
+            // This formula only works for true negative values, it overflows for zero!
+            let n = u64::max_value() - (i as u64) + 1;
+            let res = val.overflowing_sub(n);
+            self.truncate_to_ptr(res)
+        } else {
+            self.overflowing_offset(val, i as u64)
+        }
     }
 
     #[inline]
@@ -31,30 +58,9 @@ pub trait PointerArithmetic: layout::HasDataLayout {
     }
 
     #[inline]
-    fn overflowing_offset(&self, val: u64, i: u64) -> (u64, bool) {
-        let (res, over1) = val.overflowing_add(i);
-        let (res, over2) = self.truncate_to_ptr(u128::from(res));
-        (res, over1 || over2)
-    }
-
-    #[inline]
     fn signed_offset<'tcx>(&self, val: u64, i: i64) -> EvalResult<'tcx, u64> {
         let (res, over) = self.overflowing_signed_offset(val, i128::from(i));
         if over { err!(Overflow(mir::BinOp::Add)) } else { Ok(res) }
-    }
-
-    // Overflow checking only works properly on the range from -u64 to +u64.
-    #[inline]
-    fn overflowing_signed_offset(&self, val: u64, i: i128) -> (u64, bool) {
-        // FIXME: is it possible to over/underflow here?
-        if i < 0 {
-            // trickery to ensure that i64::min_value() works fine
-            // this formula only works for true negative values, it panics for zero!
-            let n = u64::max_value() - (i as u64) + 1;
-            val.overflowing_sub(n)
-        } else {
-            self.overflowing_offset(val, i as u64)
-        }
     }
 }
 
@@ -69,14 +75,27 @@ impl<T: layout::HasDataLayout> PointerArithmetic for T {}
 ///
 /// Pointer is also generic over the `Tag` associated with each pointer,
 /// which is used to do provenance tracking during execution.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, RustcEncodable, RustcDecodable, Hash)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd,
+         RustcEncodable, RustcDecodable, Hash, HashStable)]
 pub struct Pointer<Tag=(),Id=AllocId> {
     pub alloc_id: Id,
     pub offset: Size,
     pub tag: Tag,
 }
 
-static_assert!(POINTER_SIZE: ::std::mem::size_of::<Pointer>() == 16);
+static_assert_size!(Pointer, 16);
+
+impl<Tag: fmt::Debug, Id: fmt::Debug> fmt::Debug for Pointer<Tag, Id> {
+    default fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}.{:#x}[{:?}]", self.alloc_id, self.offset.bytes(), self.tag)
+    }
+}
+// Specialization for no tag
+impl<Id: fmt::Debug> fmt::Debug for Pointer<(), Id> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}.{:#x}", self.alloc_id, self.offset.bytes())
+    }
+}
 
 /// Produces a `Pointer` which points to the beginning of the Allocation
 impl From<AllocId> for Pointer {
@@ -93,10 +112,9 @@ impl<'tcx> Pointer<()> {
     }
 
     #[inline(always)]
-    pub fn with_default_tag<Tag>(self) -> Pointer<Tag>
-        where Tag: Default
+    pub fn with_tag<Tag>(self, tag: Tag) -> Pointer<Tag>
     {
-        Pointer::new_with_tag(self.alloc_id, self.offset, Default::default())
+        Pointer::new_with_tag(self.alloc_id, self.offset, tag)
     }
 }
 
@@ -155,12 +173,12 @@ impl<'tcx, Tag> Pointer<Tag> {
     pub fn check_in_alloc(
         self,
         allocation_size: Size,
-        check: InboundsCheck,
+        msg: CheckInAllocMsg,
     ) -> EvalResult<'tcx, ()> {
         if self.offset > allocation_size {
             err!(PointerOutOfBounds {
                 ptr: self.erase_tag(),
-                check,
+                msg,
                 allocation_size,
             })
         } else {

@@ -29,10 +29,10 @@ impl<'a, 'tcx> MutVisitor<'tcx> for EraseRegionsVisitor<'a, 'tcx> {
     }
 
     fn visit_region(&mut self, region: &mut ty::Region<'tcx>, _: Location) {
-        *region = self.tcx.types.re_erased;
+        *region = self.tcx.lifetimes.re_erased;
     }
 
-    fn visit_const(&mut self, constant: &mut &'tcx ty::LazyConst<'tcx>, _: Location) {
+    fn visit_const(&mut self, constant: &mut &'tcx ty::Const<'tcx>, _: Location) {
         *constant = self.tcx.erase_regions(constant);
     }
 
@@ -41,10 +41,9 @@ impl<'a, 'tcx> MutVisitor<'tcx> for EraseRegionsVisitor<'a, 'tcx> {
     }
 
     fn visit_statement(&mut self,
-                       block: BasicBlock,
                        statement: &mut Statement<'tcx>,
                        location: Location) {
-        self.super_statement(block, statement, location);
+        self.super_statement(statement, location);
     }
 }
 
@@ -54,7 +53,7 @@ impl MirPass for EraseRegions {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           _: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
-        EraseRegionsVisitor::new(tcx).visit_mir(mir);
+                          mir: &mut Body<'tcx>) {
+        EraseRegionsVisitor::new(tcx).visit_body(mir);
     }
 }

@@ -1,6 +1,6 @@
 use rustc::mir::visit::{PlaceContext, Visitor};
 use rustc::mir::{
-    BasicBlock, Local, Location, Place, PlaceBase, Statement, StatementKind, TerminatorKind
+    Local, Location, Place, PlaceBase, Statement, StatementKind, TerminatorKind
 };
 
 use rustc_data_structures::fx::FxHashSet;
@@ -34,7 +34,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                 never_initialized_mut_locals: &mut never_initialized_mut_locals,
                 mbcx: self,
             };
-            visitor.visit_mir(visitor.mbcx.mir);
+            visitor.visit_body(visitor.mbcx.mir);
         }
 
         // Take the union of the existed `used_mut` set with those variables we've found were
@@ -52,24 +52,32 @@ struct GatherUsedMutsVisitor<'visit, 'cx: 'visit, 'gcx: 'tcx, 'tcx: 'cx> {
     mbcx: &'visit mut MirBorrowckCtxt<'cx, 'gcx, 'tcx>,
 }
 
+impl GatherUsedMutsVisitor<'_, '_, '_, '_> {
+    fn remove_never_initialized_mut_locals(&mut self, into: &Place<'_>) {
+        // Remove any locals that we found were initialized from the
+        // `never_initialized_mut_locals` set. At the end, the only remaining locals will
+        // be those that were never initialized - we will consider those as being used as
+        // they will either have been removed by unreachable code optimizations; or linted
+        // as unused variables.
+        if let Some(local) = into.base_local() {
+            let _ = self.never_initialized_mut_locals.remove(&local);
+        }
+    }
+}
+
 impl<'visit, 'cx, 'gcx, 'tcx> Visitor<'tcx> for GatherUsedMutsVisitor<'visit, 'cx, 'gcx, 'tcx> {
     fn visit_terminator_kind(
         &mut self,
-        _block: BasicBlock,
         kind: &TerminatorKind<'tcx>,
         _location: Location,
     ) {
         debug!("visit_terminator_kind: kind={:?}", kind);
         match &kind {
             TerminatorKind::Call { destination: Some((into, _)), .. } => {
-                if let Some(local) = into.base_local() {
-                    debug!(
-                        "visit_terminator_kind: kind={:?} local={:?} \
-                         never_initialized_mut_locals={:?}",
-                        kind, local, self.never_initialized_mut_locals
-                    );
-                    let _ = self.never_initialized_mut_locals.remove(&local);
-                }
+                self.remove_never_initialized_mut_locals(&into);
+            },
+            TerminatorKind::DropAndReplace { location, .. } => {
+                self.remove_never_initialized_mut_locals(&location);
             },
             _ => {},
         }
@@ -77,25 +85,19 @@ impl<'visit, 'cx, 'gcx, 'tcx> Visitor<'tcx> for GatherUsedMutsVisitor<'visit, 'c
 
     fn visit_statement(
         &mut self,
-        _block: BasicBlock,
         statement: &Statement<'tcx>,
         _location: Location,
     ) {
         match &statement.kind {
             StatementKind::Assign(into, _) => {
-                // Remove any locals that we found were initialized from the
-                // `never_initialized_mut_locals` set. At the end, the only remaining locals will
-                // be those that were never initialized - we will consider those as being used as
-                // they will either have been removed by unreachable code optimizations; or linted
-                // as unused variables.
                 if let Some(local) = into.base_local() {
                     debug!(
                         "visit_statement: statement={:?} local={:?} \
                          never_initialized_mut_locals={:?}",
                         statement, local, self.never_initialized_mut_locals
                     );
-                    let _ = self.never_initialized_mut_locals.remove(&local);
                 }
+                self.remove_never_initialized_mut_locals(into);
             },
             _ => {},
         }
@@ -104,7 +106,7 @@ impl<'visit, 'cx, 'gcx, 'tcx> Visitor<'tcx> for GatherUsedMutsVisitor<'visit, 'c
     fn visit_local(
         &mut self,
         local: &Local,
-        place_context: PlaceContext<'tcx>,
+        place_context: PlaceContext,
         location: Location,
     ) {
         if place_context.is_place_assignment() && self.temporary_used_locals.contains(local) {

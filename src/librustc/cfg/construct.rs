@@ -166,47 +166,6 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
                 self.add_ast_node(expr.hir_id.local_id, &[blk_exit])
             }
 
-            hir::ExprKind::If(ref cond, ref then, None) => {
-                //
-                //     [pred]
-                //       |
-                //       v 1
-                //     [cond]
-                //       |
-                //      / \
-                //     /   \
-                //    v 2   *
-                //  [then]  |
-                //    |     |
-                //    v 3   v 4
-                //   [..expr..]
-                //
-                let cond_exit = self.expr(&cond, pred);                // 1
-                let then_exit = self.expr(&then, cond_exit);          // 2
-                self.add_ast_node(expr.hir_id.local_id, &[cond_exit, then_exit])      // 3,4
-            }
-
-            hir::ExprKind::If(ref cond, ref then, Some(ref otherwise)) => {
-                //
-                //     [pred]
-                //       |
-                //       v 1
-                //     [cond]
-                //       |
-                //      / \
-                //     /   \
-                //    v 2   v 3
-                //  [then][otherwise]
-                //    |     |
-                //    v 4   v 5
-                //   [..expr..]
-                //
-                let cond_exit = self.expr(&cond, pred);                // 1
-                let then_exit = self.expr(&then, cond_exit);          // 2
-                let else_exit = self.expr(&otherwise, cond_exit);      // 3
-                self.add_ast_node(expr.hir_id.local_id, &[then_exit, else_exit])      // 4, 5
-            }
-
             hir::ExprKind::While(ref cond, ref body, _) => {
                 //
                 //         [pred]
@@ -369,6 +328,7 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
             hir::ExprKind::AddrOf(_, ref e) |
             hir::ExprKind::Cast(ref e, _) |
             hir::ExprKind::Type(ref e, _) |
+            hir::ExprKind::DropTemps(ref e) |
             hir::ExprKind::Unary(_, ref e) |
             hir::ExprKind::Field(ref e, _) |
             hir::ExprKind::Yield(ref e) |
@@ -459,7 +419,7 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
         for arm in arms {
             // Add an exit node for when we've visited all the
             // patterns and the guard (if there is one) in the arm.
-            let arm_exit = self.add_dummy_node(&[]);
+            let bindings_exit = self.add_dummy_node(&[]);
 
             for pat in &arm.pats {
                 // Visit the pattern, coming from the discriminant exit
@@ -493,14 +453,16 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
 
                 // Add an edge from the exit of this pattern to the
                 // exit of the arm
-                self.add_contained_edge(pat_exit, arm_exit);
+                self.add_contained_edge(pat_exit, bindings_exit);
             }
 
             // Visit the body of this arm
-            let body_exit = self.expr(&arm.body, arm_exit);
+            let body_exit = self.expr(&arm.body, bindings_exit);
+
+            let arm_exit = self.add_ast_node(arm.hir_id.local_id, &[body_exit]);
 
             // Link the body to the exit of the expression
-            self.add_contained_edge(body_exit, expr_exit);
+            self.add_contained_edge(arm_exit, expr_exit);
         }
 
         expr_exit

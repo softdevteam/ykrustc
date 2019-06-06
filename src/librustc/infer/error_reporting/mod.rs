@@ -56,7 +56,7 @@ use crate::hir::Node;
 use crate::middle::region;
 use crate::traits::{ObligationCause, ObligationCauseCode};
 use crate::ty::error::TypeError;
-use crate::ty::{self, subst::{Subst, SubstsRef}, Region, Ty, TyCtxt, TyKind, TypeFoldable};
+use crate::ty::{self, subst::{Subst, SubstsRef}, Region, Ty, TyCtxt, TypeFoldable};
 use errors::{Applicability, DiagnosticBuilder, DiagnosticStyledString};
 use std::{cmp, fmt};
 use syntax_pos::{Pos, Span};
@@ -194,20 +194,20 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 let mut sp = cm.def_span(self.hir().span_by_hir_id(node));
                 if let Some(param) = self.hir()
                     .get_generics(scope)
-                    .and_then(|generics| generics.get_named(&br.name))
+                    .and_then(|generics| generics.get_named(br.name))
                 {
                     sp = param.span;
                 }
                 (format!("the lifetime {} as defined on", br.name), sp)
             }
             ty::ReFree(ty::FreeRegion {
-                bound_region: ty::BoundRegion::BrNamed(_, ref name),
+                bound_region: ty::BoundRegion::BrNamed(_, name),
                 ..
             }) => {
                 let mut sp = cm.def_span(self.hir().span_by_hir_id(node));
                 if let Some(param) = self.hir()
                     .get_generics(scope)
-                    .and_then(|generics| generics.get_named(&name))
+                    .and_then(|generics| generics.get_named(name))
                 {
                     sp = param.span;
                 }
@@ -218,12 +218,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     format!("the anonymous lifetime #{} defined on", idx + 1),
                     self.hir().span_by_hir_id(node),
                 ),
-                ty::BrFresh(_) => (
-                    "an anonymous lifetime defined on".to_owned(),
-                    self.hir().span_by_hir_id(node),
-                ),
                 _ => (
-                    format!("the lifetime {} as defined on", fr.bound_region),
+                    format!("the lifetime {} as defined on", region),
                     cm.def_span(self.hir().span_by_hir_id(node)),
                 ),
             },
@@ -278,7 +274,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 
     fn explain_span(self, heading: &str, span: Span) -> (String, Option<Span>) {
-        let lo = self.sess.source_map().lookup_char_pos_adj(span.lo());
+        let lo = self.sess.source_map().lookup_char_pos(span.lo());
         (
             format!("the {} at {}:{}", heading, lo.line, lo.col.to_usize() + 1),
             Some(span),
@@ -444,17 +440,117 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         terr: &TypeError<'tcx>,
         sp: Span,
     ) {
+        use hir::def_id::CrateNum;
+        use hir::map::DisambiguatedDefPathData;
+        use ty::print::Printer;
+        use ty::subst::Kind;
+
+        struct AbsolutePathPrinter<'a, 'gcx, 'tcx> {
+            tcx: TyCtxt<'a, 'gcx, 'tcx>,
+        }
+
+        struct NonTrivialPath;
+
+        impl<'gcx, 'tcx> Printer<'gcx, 'tcx> for AbsolutePathPrinter<'_, 'gcx, 'tcx> {
+            type Error = NonTrivialPath;
+
+            type Path = Vec<String>;
+            type Region = !;
+            type Type = !;
+            type DynExistential = !;
+            type Const = !;
+
+            fn tcx<'a>(&'a self) -> TyCtxt<'a, 'gcx, 'tcx> {
+                self.tcx
+            }
+
+            fn print_region(
+                self,
+                _region: ty::Region<'_>,
+            ) -> Result<Self::Region, Self::Error> {
+                Err(NonTrivialPath)
+            }
+
+            fn print_type(
+                self,
+                _ty: Ty<'tcx>,
+            ) -> Result<Self::Type, Self::Error> {
+                Err(NonTrivialPath)
+            }
+
+            fn print_dyn_existential(
+                self,
+                _predicates: &'tcx ty::List<ty::ExistentialPredicate<'tcx>>,
+            ) -> Result<Self::DynExistential, Self::Error> {
+                Err(NonTrivialPath)
+            }
+
+            fn print_const(
+                self,
+                _ct: &'tcx ty::Const<'tcx>,
+            ) -> Result<Self::Const, Self::Error> {
+                Err(NonTrivialPath)
+            }
+
+            fn path_crate(
+                self,
+                cnum: CrateNum,
+            ) -> Result<Self::Path, Self::Error> {
+                Ok(vec![self.tcx.original_crate_name(cnum).to_string()])
+            }
+            fn path_qualified(
+                self,
+                _self_ty: Ty<'tcx>,
+                _trait_ref: Option<ty::TraitRef<'tcx>>,
+            ) -> Result<Self::Path, Self::Error> {
+                Err(NonTrivialPath)
+            }
+
+            fn path_append_impl(
+                self,
+                _print_prefix: impl FnOnce(Self) -> Result<Self::Path, Self::Error>,
+                _disambiguated_data: &DisambiguatedDefPathData,
+                _self_ty: Ty<'tcx>,
+                _trait_ref: Option<ty::TraitRef<'tcx>>,
+            ) -> Result<Self::Path, Self::Error> {
+                Err(NonTrivialPath)
+            }
+            fn path_append(
+                self,
+                print_prefix: impl FnOnce(Self) -> Result<Self::Path, Self::Error>,
+                disambiguated_data: &DisambiguatedDefPathData,
+            ) -> Result<Self::Path, Self::Error> {
+                let mut path = print_prefix(self)?;
+                path.push(disambiguated_data.data.as_interned_str().to_string());
+                Ok(path)
+            }
+            fn path_generic_args(
+                self,
+                print_prefix: impl FnOnce(Self) -> Result<Self::Path, Self::Error>,
+                _args: &[Kind<'tcx>],
+            ) -> Result<Self::Path, Self::Error> {
+                print_prefix(self)
+            }
+        }
+
         let report_path_match = |err: &mut DiagnosticBuilder<'_>, did1: DefId, did2: DefId| {
             // Only external crates, if either is from a local
             // module we could have false positives
             if !(did1.is_local() || did2.is_local()) && did1.krate != did2.krate {
-                let exp_path = self.tcx.item_path_str(did1);
-                let found_path = self.tcx.item_path_str(did2);
-                let exp_abs_path = self.tcx.absolute_item_path_str(did1);
-                let found_abs_path = self.tcx.absolute_item_path_str(did2);
+                let abs_path = |def_id| {
+                    AbsolutePathPrinter { tcx: self.tcx }
+                        .print_def_path(def_id, &[])
+                };
+
                 // We compare strings because DefPath can be different
                 // for imported and non-imported crates
-                if exp_path == found_path || exp_abs_path == found_abs_path {
+                let same_path = || -> Result<_, NonTrivialPath> {
+                    Ok(
+                        self.tcx.def_path_str(did1) == self.tcx.def_path_str(did2) ||
+                        abs_path(did1)? == abs_path(did2)?
+                    )
+                };
+                if same_path().unwrap_or(false) {
                     let crate_name = self.tcx.crate_name(did1.krate);
                     err.span_note(
                         sp,
@@ -512,13 +608,39 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 source,
                 ref prior_arms,
                 last_ty,
+                discrim_hir_id,
                 ..
             } => match source {
                 hir::MatchSource::IfLetDesugar { .. } => {
                     let msg = "`if let` arms have incompatible types";
                     err.span_label(cause.span, msg);
                 }
-                hir::MatchSource::TryDesugar => {}
+                hir::MatchSource::TryDesugar => {
+                    if let Some(ty::error::ExpectedFound { expected, .. }) = exp_found {
+                        let discrim_expr = self.tcx.hir().expect_expr_by_hir_id(discrim_hir_id);
+                        let discrim_ty = if let hir::ExprKind::Call(_, args) = &discrim_expr.node {
+                            let arg_expr = args.first().expect("try desugaring call w/out arg");
+                            self.in_progress_tables.and_then(|tables| {
+                                tables.borrow().expr_ty_opt(arg_expr)
+                            })
+                        } else {
+                            bug!("try desugaring w/out call expr as discriminant");
+                        };
+
+                        match discrim_ty {
+                            Some(ty) if expected == ty => {
+                                let source_map = self.tcx.sess.source_map();
+                                err.span_suggestion(
+                                    source_map.end_point(cause.span),
+                                    "try removing this `?`",
+                                    "".to_string(),
+                                    Applicability::MachineApplicable,
+                                );
+                            },
+                            _ => {},
+                        }
+                    }
+                }
                 _ => {
                     let msg = "`match` arms have incompatible types";
                     err.span_label(cause.span, msg);
@@ -526,7 +648,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         for sp in prior_arms {
                             err.span_label(*sp, format!(
                                 "this is found to be of type `{}`",
-                                last_ty,
+                                self.resolve_vars_if_possible(&last_ty),
                             ));
                         }
                     } else if let Some(sp) = prior_arms.last() {
@@ -572,7 +694,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         name: String,
         sub: ty::subst::SubstsRef<'tcx>,
         pos: usize,
-        other_ty: &Ty<'tcx>,
+        other_ty: Ty<'tcx>,
     ) {
         // `value` and `other_value` hold two incomplete type representation for display.
         // `name` is the path of both types being compared. `sub`
@@ -650,15 +772,15 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         path: String,
         sub: ty::subst::SubstsRef<'tcx>,
         other_path: String,
-        other_ty: &Ty<'tcx>,
+        other_ty: Ty<'tcx>,
     ) -> Option<()> {
         for (i, ta) in sub.types().enumerate() {
-            if &ta == other_ty {
+            if ta == other_ty {
                 self.highlight_outer(&mut t1_out, &mut t2_out, path, sub, i, &other_ty);
                 return Some(());
             }
             if let &ty::Adt(def, _) = &ta.sty {
-                let path_ = self.tcx.item_path_str(def.did.clone());
+                let path_ = self.tcx.def_path_str(def.did.clone());
                 if path_ == other_path {
                     self.highlight_outer(&mut t1_out, &mut t2_out, path, sub, i, &other_ty);
                     return Some(());
@@ -683,7 +805,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     }
 
     /// For generic types with parameters with defaults, remove the parameters corresponding to
-    /// the defaults. This repeats a lot of the logic found in `PrintContext::parameterized`.
+    /// the defaults. This repeats a lot of the logic found in `ty::print::pretty`.
     fn strip_generic_default_params(
         &self,
         def_id: DefId,
@@ -721,7 +843,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     /// Compares two given types, eliding parts that are the same between them and highlighting
     /// relevant differences, and return two representation of those types for highlighted printing.
     fn cmp(&self, t1: Ty<'tcx>, t2: Ty<'tcx>) -> (DiagnosticStyledString, DiagnosticStyledString) {
-        fn equals<'tcx>(a: &Ty<'tcx>, b: &Ty<'tcx>) -> bool {
+        fn equals<'tcx>(a: Ty<'tcx>, b: Ty<'tcx>) -> bool {
             match (&a.sty, &b.sty) {
                 (a, b) if *a == *b => true,
                 (&ty::Int(_), &ty::Infer(ty::InferTy::IntVar(_)))
@@ -742,11 +864,15 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             mutbl: hir::Mutability,
             s: &mut DiagnosticStyledString,
         ) {
-            let r = &r.to_string();
+            let mut r = r.to_string();
+            if r == "'_" {
+                r.clear();
+            } else {
+                r.push(' ');
+            }
             s.push_highlighted(format!(
-                "&{}{}{}",
+                "&{}{}",
                 r,
-                if r == "" { "" } else { " " },
                 if mutbl == hir::MutMutable { "mut " } else { "" }
             ));
             s.push_normal(ty.to_string());
@@ -757,8 +883,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 let sub_no_defaults_1 = self.strip_generic_default_params(def1.did, sub1);
                 let sub_no_defaults_2 = self.strip_generic_default_params(def2.did, sub2);
                 let mut values = (DiagnosticStyledString::new(), DiagnosticStyledString::new());
-                let path1 = self.tcx.item_path_str(def1.did.clone());
-                let path2 = self.tcx.item_path_str(def2.did.clone());
+                let path1 = self.tcx.def_path_str(def1.did.clone());
+                let path2 = self.tcx.def_path_str(def2.did.clone());
                 if def1.did == def2.did {
                     // Easy case. Replace same types with `_` to shorten the output and highlight
                     // the differing ones.
@@ -977,7 +1103,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             }
         };
 
-        let span = cause.span(&self.tcx);
+        let span = cause.span(self.tcx);
 
         diag.span_label(span, terr.to_string());
         if let Some((sp, msg)) = secondary_span {
@@ -998,14 +1124,14 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 (_, false, _) => {
                     if let Some(exp_found) = exp_found {
                         let (def_id, ret_ty) = match exp_found.found.sty {
-                            TyKind::FnDef(def, _) => {
+                            ty::FnDef(def, _) => {
                                 (Some(def), Some(self.tcx.fn_sig(def).output()))
                             }
                             _ => (None, None),
                         };
 
                         let exp_is_struct = match exp_found.expected.sty {
-                            TyKind::Adt(def, _) => def.is_struct(),
+                            ty::Adt(def, _) => def.is_struct(),
                             _ => false,
                         };
 
@@ -1013,7 +1139,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                             if exp_is_struct && &exp_found.expected == ret_ty.skip_binder() {
                                 let message = format!(
                                     "did you mean `{}(/* fields */)`?",
-                                    self.tcx.item_path_str(def_id)
+                                    self.tcx.def_path_str(def_id)
                                 );
                                 diag.span_label(span, message);
                             }
@@ -1044,8 +1170,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         diag: &mut DiagnosticBuilder<'tcx>,
     ) {
         match (&exp_found.expected.sty, &exp_found.found.sty) {
-            (TyKind::Adt(exp_def, exp_substs), TyKind::Ref(_, found_ty, _)) => {
-                if let TyKind::Adt(found_def, found_substs) = found_ty.sty {
+            (ty::Adt(exp_def, exp_substs), ty::Ref(_, found_ty, _)) => {
+                if let ty::Adt(found_def, found_substs) = found_ty.sty {
                     let path_str = format!("{:?}", exp_def);
                     if exp_def == &found_def {
                         let opt_msg = "you can convert from `&Option<T>` to `Option<&T>` using \
@@ -1068,17 +1194,17 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                             let mut show_suggestion = true;
                             for (exp_ty, found_ty) in exp_substs.types().zip(found_substs.types()) {
                                 match exp_ty.sty {
-                                    TyKind::Ref(_, exp_ty, _) => {
+                                    ty::Ref(_, exp_ty, _) => {
                                         match (&exp_ty.sty, &found_ty.sty) {
-                                            (_, TyKind::Param(_)) |
-                                            (_, TyKind::Infer(_)) |
-                                            (TyKind::Param(_), _) |
-                                            (TyKind::Infer(_), _) => {}
+                                            (_, ty::Param(_)) |
+                                            (_, ty::Infer(_)) |
+                                            (ty::Param(_), _) |
+                                            (ty::Infer(_), _) => {}
                                             _ if ty::TyS::same_type(exp_ty, found_ty) => {}
                                             _ => show_suggestion = false,
                                         };
                                     }
-                                    TyKind::Param(_) | TyKind::Infer(_) => {}
+                                    ty::Param(_) | ty::Infer(_) => {}
                                     _ => show_suggestion = false,
                                 }
                             }
@@ -1111,7 +1237,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             trace, terr
         );
 
-        let span = trace.cause.span(&self.tcx);
+        let span = trace.cause.span(self.tcx);
         let failure_code = trace.cause.as_failure_code(terr);
         let mut diag = match failure_code {
             FailureCode::Error0317(failure_str) => {
@@ -1138,6 +1264,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         match *values {
             infer::Types(ref exp_found) => self.expected_found_str_ty(exp_found),
             infer::Regions(ref exp_found) => self.expected_found_str(exp_found),
+            infer::Consts(ref exp_found) => self.expected_found_str(exp_found),
             infer::TraitRefs(ref exp_found) => self.expected_found_str(exp_found),
             infer::PolyTraitRefs(ref exp_found) => self.expected_found_str(exp_found),
         }
@@ -1147,7 +1274,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         &self,
         exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
     ) -> Option<(DiagnosticStyledString, DiagnosticStyledString)> {
-        let exp_found = self.resolve_type_vars_if_possible(exp_found);
+        let exp_found = self.resolve_vars_if_possible(exp_found);
         if exp_found.references_error() {
             return None;
         }
@@ -1160,7 +1287,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         &self,
         exp_found: &ty::error::ExpectedFound<T>,
     ) -> Option<(DiagnosticStyledString, DiagnosticStyledString)> {
-        let exp_found = self.resolve_type_vars_if_possible(exp_found);
+        let exp_found = self.resolve_vars_if_possible(exp_found);
         if exp_found.references_error() {
             return None;
         }
@@ -1425,7 +1552,10 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         var_origin: RegionVariableOrigin,
     ) -> DiagnosticBuilder<'tcx> {
         let br_string = |br: ty::BoundRegion| {
-            let mut s = br.to_string();
+            let mut s = match br {
+                ty::BrNamed(_, name) => name.to_string(),
+                _ => String::new(),
+            };
             if !s.is_empty() {
                 s.push_str(" ");
             }

@@ -119,7 +119,7 @@ impl<'a, 'tcx> TermsContext<'a, 'tcx> {
         // for a particular item are assigned continuous indices.
 
         let arena = self.arena;
-        self.inferred_terms.extend((start..start+count).map(|i| {
+        self.inferred_terms.extend((start..(start + count)).map(|i| {
             &*arena.alloc(InferredTerm(InferredIndex(i)))
         }));
     }
@@ -136,7 +136,7 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for TermsContext<'a, 'tcx> {
                 self.add_inferreds_for_item(item.hir_id);
 
                 if let hir::VariantData::Tuple(..) = *struct_def {
-                    self.add_inferreds_for_item(struct_def.hir_id());
+                    self.add_inferreds_for_item(struct_def.ctor_hir_id().unwrap());
                 }
             }
 
@@ -145,7 +145,7 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for TermsContext<'a, 'tcx> {
 
                 for variant in &enum_def.variants {
                     if let hir::VariantData::Tuple(..) = variant.node.data {
-                        self.add_inferreds_for_item(variant.node.data.hir_id());
+                        self.add_inferreds_for_item(variant.node.data.ctor_hir_id().unwrap());
                     }
                 }
             }

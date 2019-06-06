@@ -1,5 +1,6 @@
 mod environment;
 
+use rustc::hir::def::DefKind;
 use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc::hir::map::definitions::DefPathData;
@@ -20,6 +21,7 @@ use rustc::ty::query::Providers;
 use rustc::ty::{self, List, TyCtxt};
 use rustc::ty::subst::{Subst, InternalSubsts};
 use syntax::ast;
+use syntax::symbol::sym;
 
 use std::iter;
 
@@ -157,13 +159,27 @@ crate fn program_clauses_for<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     def_id: DefId,
 ) -> Clauses<'tcx> {
+    // FIXME(eddyb) this should only be using `def_kind`.
     match tcx.def_key(def_id).disambiguated_data.data {
-        DefPathData::Trait(_) |
-        DefPathData::TraitAlias(_) => program_clauses_for_trait(tcx, def_id),
+        DefPathData::TypeNs(..) => match tcx.def_kind(def_id) {
+            Some(DefKind::Trait)
+            | Some(DefKind::TraitAlias) => program_clauses_for_trait(tcx, def_id),
+            // FIXME(eddyb) deduplicate this `associated_item` call with
+            // `program_clauses_for_associated_type_{value,def}`.
+            Some(DefKind::AssocTy) => match tcx.associated_item(def_id).container {
+                ty::AssocItemContainer::ImplContainer(_) =>
+                    program_clauses_for_associated_type_value(tcx, def_id),
+                ty::AssocItemContainer::TraitContainer(_) =>
+                    program_clauses_for_associated_type_def(tcx, def_id)
+            },
+            Some(DefKind::Struct)
+            | Some(DefKind::Enum)
+            | Some(DefKind::TyAlias)
+            | Some(DefKind::Union)
+            | Some(DefKind::Existential) => program_clauses_for_type_def(tcx, def_id),
+            _ => List::empty(),
+        },
         DefPathData::Impl => program_clauses_for_impl(tcx, def_id),
-        DefPathData::AssocTypeInImpl(..) => program_clauses_for_associated_type_value(tcx, def_id),
-        DefPathData::AssocTypeInTrait(..) => program_clauses_for_associated_type_def(tcx, def_id),
-        DefPathData::TypeNs(..) => program_clauses_for_type_def(tcx, def_id),
         _ => List::empty(),
     }
 }
@@ -209,6 +225,10 @@ fn program_clauses_for_trait<'a, 'tcx>(
     let implemented_from_env = Clause::ForAll(ty::Binder::bind(implemented_from_env));
 
     let predicates = &tcx.predicates_defined_on(def_id).predicates;
+
+    // Warning: these where clauses are not substituted for bound vars yet,
+    // so that we don't need to adjust binders in the `FromEnv` rules below
+    // (see the FIXME).
     let where_clauses = &predicates
         .iter()
         .map(|(wc, _)| wc.lower())
@@ -258,6 +278,7 @@ fn program_clauses_for_trait<'a, 'tcx>(
     // `WellFormed(WC)`
     let wf_conditions = where_clauses
         .into_iter()
+        .map(|wc| wc.subst(tcx, bound_vars))
         .map(|wc| wc.map_bound(|goal| goal.into_well_formed_goal()));
 
     // `WellFormed(Self: Trait<P1..Pn>) :- Implemented(Self: Trait<P1..Pn>) && WellFormed(WC)`
@@ -332,7 +353,7 @@ pub fn program_clauses_for_type_def<'a, 'tcx>(
     //
     // ```
     // forall<P1..Pn> {
-    //   WellFormed(Ty<...>) :- WC1, ..., WCm`
+    //   WellFormed(Ty<...>) :- WellFormed(WC1), ..., WellFormed(WCm)`
     // }
     // ```
 
@@ -341,19 +362,22 @@ pub fn program_clauses_for_type_def<'a, 'tcx>(
     // `Ty<...>`
     let ty = tcx.type_of(def_id).subst(tcx, bound_vars);
 
-    // `WC`
+    // Warning: these where clauses are not substituted for bound vars yet,
+    // so that we don't need to adjust binders in the `FromEnv` rules below
+    // (see the FIXME).
     let where_clauses = tcx.predicates_of(def_id).predicates
         .iter()
         .map(|(wc, _)| wc.lower())
         .collect::<Vec<_>>();
 
-    // `WellFormed(Ty<...>) :- WC1, ..., WCm`
+    // `WellFormed(Ty<...>) :- WellFormed(WC1), ..., WellFormed(WCm)`
     let well_formed_clause = ProgramClause {
         goal: DomainGoal::WellFormed(WellFormed::Ty(ty)),
         hypotheses: tcx.mk_goals(
             where_clauses
                 .iter()
                 .map(|wc| wc.subst(tcx, bound_vars))
+                .map(|wc| wc.map_bound(|bound| bound.into_well_formed_goal()))
                 .map(|wc| tcx.mk_goal(GoalKind::from_poly_domain_goal(wc, tcx))),
         ),
         category: ProgramClauseCategory::WellFormed,
@@ -420,9 +444,9 @@ pub fn program_clauses_for_associated_type_def<'a, 'tcx>(
     // ```
 
     let item = tcx.associated_item(item_id);
-    debug_assert_eq!(item.kind, ty::AssociatedKind::Type);
+    debug_assert_eq!(item.kind, ty::AssocKind::Type);
     let trait_id = match item.container {
-        ty::AssociatedItemContainer::TraitContainer(trait_id) => trait_id,
+        ty::AssocItemContainer::TraitContainer(trait_id) => trait_id,
         _ => bug!("not an trait container"),
     };
 
@@ -450,13 +474,13 @@ pub fn program_clauses_for_associated_type_def<'a, 'tcx>(
     // ```
     // forall<Self, P1..Pn, Pn+1..Pm> {
     //     WellFormed((Trait::AssocType)<Self, P1..Pn, Pn+1..Pm>)
-    //         :- Implemented(Self: Trait<P1..Pn>)
+    //         :- WellFormed(Self: Trait<P1..Pn>)
     // }
     // ```
 
     let trait_predicate = ty::TraitPredicate { trait_ref };
     let hypothesis = tcx.mk_goal(
-        DomainGoal::Holds(WhereClause::Implemented(trait_predicate)).into_goal()
+        DomainGoal::WellFormed(WellFormed::Trait(trait_predicate)).into_goal()
     );
 
     let wf_clause = ProgramClause {
@@ -558,9 +582,9 @@ pub fn program_clauses_for_associated_type_value<'a, 'tcx>(
     // ```
 
     let item = tcx.associated_item(item_id);
-    debug_assert_eq!(item.kind, ty::AssociatedKind::Type);
+    debug_assert_eq!(item.kind, ty::AssocKind::Type);
     let impl_id = match item.container {
-        ty::AssociatedItemContainer::ImplContainer(impl_id) => impl_id,
+        ty::AssocItemContainer::ImplContainer(impl_id) => impl_id,
         _ => bug!("not an impl container"),
     };
 
@@ -617,11 +641,11 @@ impl<'a, 'tcx> ClauseDumper<'a, 'tcx> {
         for attr in attrs {
             let mut clauses = None;
 
-            if attr.check_name("rustc_dump_program_clauses") {
+            if attr.check_name(sym::rustc_dump_program_clauses) {
                 clauses = Some(self.tcx.program_clauses_for(def_id));
             }
 
-            if attr.check_name("rustc_dump_env_program_clauses") {
+            if attr.check_name(sym::rustc_dump_env_program_clauses) {
                 let environment = self.tcx.environment(def_id);
                 clauses = Some(self.tcx.program_clauses_for_env(environment));
             }

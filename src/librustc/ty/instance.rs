@@ -1,20 +1,23 @@
 use crate::hir::Unsafety;
+use crate::hir::def::Namespace;
 use crate::hir::def_id::DefId;
 use crate::ty::{self, Ty, PolyFnSig, TypeFoldable, SubstsRef, TyCtxt};
+use crate::ty::print::{FmtPrinter, Printer};
 use crate::traits;
+use crate::middle::lang_items::DropInPlaceFnLangItem;
 use rustc_target::spec::abi::Abi;
-use crate::util::ppaux;
+use rustc_macros::HashStable;
 
 use std::fmt;
 use std::iter;
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable, HashStable)]
 pub struct Instance<'tcx> {
     pub def: InstanceDef<'tcx>,
     pub substs: SubstsRef<'tcx>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable, HashStable)]
 pub enum InstanceDef<'tcx> {
     Item(DefId),
     Intrinsic(DefId),
@@ -148,9 +151,7 @@ impl<'tcx> InstanceDef<'tcx> {
             _ => return true
         };
         match tcx.def_key(def_id).disambiguated_data.data {
-            DefPathData::StructCtor |
-            DefPathData::EnumVariant(..) |
-            DefPathData::ClosureExpr => true,
+            DefPathData::Ctor | DefPathData::ClosureExpr => true,
             _ => false
         }
     }
@@ -174,7 +175,13 @@ impl<'tcx> InstanceDef<'tcx> {
 
 impl<'tcx> fmt::Display for Instance<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        ppaux::parameterized(f, self.substs, self.def_id(), &[])?;
+        ty::tls::with(|tcx| {
+            let substs = tcx.lift(&self.substs).expect("could not lift for printing");
+            FmtPrinter::new(tcx, &mut *f, Namespace::ValueNS)
+                .print_def_path(self.def_id(), substs)?;
+            Ok(())
+        })?;
+
         match self.def {
             InstanceDef::Item(_) => Ok(()),
             InstanceDef::VtableShim(_) => {
@@ -319,9 +326,45 @@ impl<'a, 'b, 'tcx> Instance<'tcx> {
         let actual_kind = substs.closure_kind(def_id, tcx);
 
         match needs_fn_once_adapter_shim(actual_kind, requested_kind) {
-            Ok(true) => fn_once_adapter_instance(tcx, def_id, substs),
+            Ok(true) => Instance::fn_once_adapter_instance(tcx, def_id, substs),
             _ => Instance::new(def_id, substs.substs)
         }
+    }
+
+    pub fn resolve_drop_in_place(
+        tcx: TyCtxt<'a, 'tcx, 'tcx>,
+        ty: Ty<'tcx>)
+        -> ty::Instance<'tcx>
+    {
+        let def_id = tcx.require_lang_item(DropInPlaceFnLangItem);
+        let substs = tcx.intern_substs(&[ty.into()]);
+        Instance::resolve(tcx, ty::ParamEnv::reveal_all(), def_id, substs).unwrap()
+    }
+
+    pub fn fn_once_adapter_instance(
+        tcx: TyCtxt<'a, 'tcx, 'tcx>,
+        closure_did: DefId,
+        substs: ty::ClosureSubsts<'tcx>)
+        -> Instance<'tcx>
+    {
+        debug!("fn_once_adapter_shim({:?}, {:?})",
+               closure_did,
+               substs);
+        let fn_once = tcx.lang_items().fn_once_trait().unwrap();
+        let call_once = tcx.associated_items(fn_once)
+            .find(|it| it.kind == ty::AssocKind::Method)
+            .unwrap().def_id;
+        let def = ty::InstanceDef::ClosureOnceShim { call_once };
+
+        let self_ty = tcx.mk_closure(closure_did, substs);
+
+        let sig = substs.closure_sig(closure_did, tcx);
+        let sig = tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &sig);
+        assert_eq!(sig.inputs().len(), 1);
+        let substs = tcx.mk_substs_trait(self_ty, &[sig.inputs()[0].into()]);
+
+        debug!("fn_once_adapter_shim: self_ty={:?} sig={:?}", self_ty, sig);
+        Instance { def, substs }
     }
 
     pub fn is_vtable_shim(&self) -> bool {
@@ -335,7 +378,7 @@ impl<'a, 'b, 'tcx> Instance<'tcx> {
 
 fn resolve_associated_item<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    trait_item: &ty::AssociatedItem,
+    trait_item: &ty::AssocItem,
     param_env: ty::ParamEnv<'tcx>,
     trait_id: DefId,
     rcvr_substs: SubstsRef<'tcx>,
@@ -431,30 +474,4 @@ fn needs_fn_once_adapter_shim<'a, 'tcx>(actual_closure_kind: ty::ClosureKind,
         (ty::ClosureKind::FnMut, _) |
         (ty::ClosureKind::FnOnce, _) => Err(())
     }
-}
-
-fn fn_once_adapter_instance<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    closure_did: DefId,
-    substs: ty::ClosureSubsts<'tcx>)
-    -> Instance<'tcx>
-{
-    debug!("fn_once_adapter_shim({:?}, {:?})",
-           closure_did,
-           substs);
-    let fn_once = tcx.lang_items().fn_once_trait().unwrap();
-    let call_once = tcx.associated_items(fn_once)
-        .find(|it| it.kind == ty::AssociatedKind::Method)
-        .unwrap().def_id;
-    let def = ty::InstanceDef::ClosureOnceShim { call_once };
-
-    let self_ty = tcx.mk_closure(closure_did, substs);
-
-    let sig = substs.closure_sig(closure_did, tcx);
-    let sig = tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &sig);
-    assert_eq!(sig.inputs().len(), 1);
-    let substs = tcx.mk_substs_trait(self_ty, &[sig.inputs()[0].into()]);
-
-    debug!("fn_once_adapter_shim: self_ty={:?} sig={:?}", self_ty, sig);
-    Instance { def, substs }
 }

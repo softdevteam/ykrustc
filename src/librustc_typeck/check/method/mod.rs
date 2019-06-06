@@ -15,7 +15,7 @@ use crate::namespace::Namespace;
 use errors::{Applicability, DiagnosticBuilder};
 use rustc_data_structures::sync::Lrc;
 use rustc::hir;
-use rustc::hir::def::Def;
+use rustc::hir::def::{CtorOf, DefKind};
 use rustc::hir::def_id::DefId;
 use rustc::traits;
 use rustc::ty::subst::{InternalSubsts, SubstsRef};
@@ -53,9 +53,9 @@ pub enum MethodError<'tcx> {
     // Multiple methods might apply.
     Ambiguity(Vec<CandidateSource>),
 
-    // Found an applicable method, but it is not visible. The second argument contains a list of
+    // Found an applicable method, but it is not visible. The third argument contains a list of
     // not-in-scope traits which may work.
-    PrivateMatch(Def, Vec<DefId>),
+    PrivateMatch(DefKind, DefId, Vec<DefId>),
 
     // Found a `Self: Sized` bound where `Self` is a trait object, also the caller may have
     // forgotten to import a trait.
@@ -71,7 +71,7 @@ pub struct NoMatchData<'tcx> {
     pub static_candidates: Vec<CandidateSource>,
     pub unsatisfied_predicates: Vec<TraitRef<'tcx>>,
     pub out_of_scope_traits: Vec<DefId>,
-    pub lev_candidate: Option<ty::AssociatedItem>,
+    pub lev_candidate: Option<ty::AssocItem>,
     pub mode: probe::Mode,
 }
 
@@ -79,7 +79,7 @@ impl<'tcx> NoMatchData<'tcx> {
     pub fn new(static_candidates: Vec<CandidateSource>,
                unsatisfied_predicates: Vec<TraitRef<'tcx>>,
                out_of_scope_traits: Vec<DefId>,
-               lev_candidate: Option<ty::AssociatedItem>,
+               lev_candidate: Option<ty::AssocItem>,
                mode: probe::Mode)
                -> Self {
         NoMatchData {
@@ -195,8 +195,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             ProbeScope::TraitsInScope
         )?;
 
-        if let Some(import_id) = pick.import_id {
-            let import_def_id = self.tcx.hir().local_def_id(import_id);
+        for import_id in &pick.import_ids {
+            let import_def_id = self.tcx.hir().local_def_id_from_hir_id(*import_id);
             debug!("used_trait_import: {:?}", import_def_id);
             Lrc::get_mut(&mut self.tables.borrow_mut().used_trait_imports)
                 .unwrap().insert(import_def_id);
@@ -253,7 +253,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     scope: ProbeScope)
                     -> probe::PickResult<'tcx> {
         let mode = probe::Mode::MethodCall;
-        let self_ty = self.resolve_type_vars_if_possible(&self_ty);
+        let self_ty = self.resolve_vars_if_possible(&self_ty);
         self.probe_for_name(span, mode, method_name, IsSuggestion(false),
                             self_ty, call_expr.hir_id, scope)
     }
@@ -400,7 +400,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         method_name: ast::Ident,
         self_ty: Ty<'tcx>,
         expr_id: hir::HirId
-    ) -> Result<Def, MethodError<'tcx>> {
+    ) -> Result<(DefKind, DefId), MethodError<'tcx>> {
         debug!(
             "resolve_ufcs: method_name={:?} self_ty={:?} expr_id={:?}",
             method_name, self_ty, expr_id,
@@ -417,9 +417,16 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 if let Some(variant_def) = variant_def {
                     check_type_alias_enum_variants_enabled(tcx, span);
 
-                    let def = Def::VariantCtor(variant_def.did, variant_def.ctor_kind);
-                    tcx.check_stability(def.def_id(), Some(expr_id), span);
-                    return Ok(def);
+                    // Braced variants generate unusable names in value namespace (reserved for
+                    // possible future use), so variants resolved as associated items may refer to
+                    // them as well. It's ok to use the variant's id as a ctor id since an
+                    // error will be reported on any use of such resolution anyway.
+                    let ctor_def_id = variant_def.ctor_def_id.unwrap_or(variant_def.def_id);
+                    tcx.check_stability(ctor_def_id, Some(expr_id), span);
+                    return Ok((
+                        DefKind::Ctor(CtorOf::Variant, variant_def.ctor_kind),
+                        ctor_def_id,
+                    ));
                 }
             }
         }
@@ -427,23 +434,23 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         let pick = self.probe_for_name(span, probe::Mode::Path, method_name, IsSuggestion(false),
                                        self_ty, expr_id, ProbeScope::TraitsInScope)?;
         debug!("resolve_ufcs: pick={:?}", pick);
-        if let Some(import_id) = pick.import_id {
-            let import_def_id = tcx.hir().local_def_id(import_id);
+        for import_id in pick.import_ids {
+            let import_def_id = tcx.hir().local_def_id_from_hir_id(import_id);
             debug!("resolve_ufcs: used_trait_import: {:?}", import_def_id);
             Lrc::get_mut(&mut self.tables.borrow_mut().used_trait_imports)
                 .unwrap().insert(import_def_id);
         }
 
-        let def = pick.item.def();
-        debug!("resolve_ufcs: def={:?}", def);
-        tcx.check_stability(def.def_id(), Some(expr_id), span);
-        Ok(def)
+        let def_kind = pick.item.def_kind();
+        debug!("resolve_ufcs: def_kind={:?}, def_id={:?}", def_kind, pick.item.def_id);
+        tcx.check_stability(pick.item.def_id, Some(expr_id), span);
+        Ok((def_kind, pick.item.def_id))
     }
 
     /// Finds item with name `item_name` defined in impl/trait `def_id`
     /// and return it, or `None`, if no such item was defined there.
     pub fn associated_item(&self, def_id: DefId, item_name: ast::Ident, ns: Namespace)
-                           -> Option<ty::AssociatedItem> {
+                           -> Option<ty::AssocItem> {
         self.tcx.associated_items(def_id).find(|item| {
             Namespace::from(item.kind) == ns &&
             self.tcx.hygienic_eq(item_name, item.ident, def_id)

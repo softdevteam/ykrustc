@@ -54,7 +54,7 @@ impl<'cx, 'gcx, 'tcx> At<'cx, 'gcx, 'tcx> {
                     &orig_values,
                     result)
                 {
-                    let ty = self.infcx.resolve_type_vars_if_possible(&ty);
+                    let ty = self.infcx.resolve_vars_if_possible(&ty);
                     let kinds = value.into_kinds_reporting_overflows(tcx, span, ty);
                     return InferOk {
                         value: kinds,
@@ -217,7 +217,7 @@ pub fn trivial_dropck_outlives<'tcx>(tcx: TyCtxt<'_, '_, 'tcx>, ty: Ty<'tcx>) ->
 
         // (T1..Tn) and closures have same properties as T1..Tn --
         // check if *any* of those are trivial.
-        ty::Tuple(ref tys) => tys.iter().all(|t| trivial_dropck_outlives(tcx, t)),
+        ty::Tuple(ref tys) => tys.iter().all(|t| trivial_dropck_outlives(tcx, t.expect_ty())),
         ty::Closure(def_id, ref substs) => substs
             .upvar_tys(def_id, tcx)
             .all(|t| trivial_dropck_outlives(tcx, t)),

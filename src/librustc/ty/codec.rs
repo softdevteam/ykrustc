@@ -6,6 +6,7 @@
 // The functionality in here is shared between persisting to crate metadata and
 // persisting to incr. comp. caches.
 
+use crate::arena::ArenaAllocatable;
 use crate::hir::def_id::{DefId, CrateNum};
 use crate::infer::canonical::{CanonicalVarInfo, CanonicalVarInfos};
 use rustc_data_structures::fx::FxHashMap;
@@ -131,6 +132,26 @@ pub trait TyDecoder<'a, 'tcx: 'a>: Decoder {
 }
 
 #[inline]
+pub fn decode_arena_allocable<'a, 'tcx, D, T: ArenaAllocatable + Decodable>(
+    decoder: &mut D
+) -> Result<&'tcx T, D::Error>
+    where D: TyDecoder<'a, 'tcx>,
+          'tcx: 'a,
+{
+    Ok(decoder.tcx().arena.alloc(Decodable::decode(decoder)?))
+}
+
+#[inline]
+pub fn decode_arena_allocable_slice<'a, 'tcx, D, T: ArenaAllocatable + Decodable>(
+    decoder: &mut D
+) -> Result<&'tcx [T], D::Error>
+    where D: TyDecoder<'a, 'tcx>,
+          'tcx: 'a,
+{
+    Ok(decoder.tcx().arena.alloc_from_iter(<Vec<T> as Decodable>::decode(decoder)?))
+}
+
+#[inline]
 pub fn decode_cnum<'a, 'tcx, D>(decoder: &mut D) -> Result<CrateNum, D::Error>
     where D: TyDecoder<'a, 'tcx>,
           'tcx: 'a,
@@ -247,12 +268,12 @@ pub fn decode_canonical_var_infos<'a, 'tcx, D>(decoder: &mut D)
 }
 
 #[inline]
-pub fn decode_lazy_const<'a, 'tcx, D>(decoder: &mut D)
-                                 -> Result<&'tcx ty::LazyConst<'tcx>, D::Error>
+pub fn decode_const<'a, 'tcx, D>(decoder: &mut D)
+                                 -> Result<&'tcx ty::Const<'tcx>, D::Error>
     where D: TyDecoder<'a, 'tcx>,
           'tcx: 'a,
 {
-    Ok(decoder.tcx().mk_lazy_const(Decodable::decode(decoder)?))
+    Ok(decoder.tcx().mk_const(Decodable::decode(decoder)?))
 }
 
 #[inline]
@@ -270,6 +291,39 @@ macro_rules! __impl_decoder_methods {
         $(fn $name(&mut self) -> Result<$ty, Self::Error> {
             self.opaque.$name()
         })*
+    }
+}
+
+#[macro_export]
+macro_rules! impl_arena_allocatable_decoder {
+    ([]$args:tt) => {};
+    ([decode $(, $attrs:ident)*]
+     [[$DecoderName:ident [$($typaram:tt),*]], [$name:ident: $ty:ty], $tcx:lifetime]) => {
+        impl<$($typaram),*> SpecializedDecoder<&$tcx $ty> for $DecoderName<$($typaram),*> {
+            #[inline]
+            fn specialized_decode(&mut self) -> Result<&$tcx $ty, Self::Error> {
+                decode_arena_allocable(self)
+            }
+        }
+
+        impl<$($typaram),*> SpecializedDecoder<&$tcx [$ty]> for $DecoderName<$($typaram),*> {
+            #[inline]
+            fn specialized_decode(&mut self) -> Result<&$tcx [$ty], Self::Error> {
+                decode_arena_allocable_slice(self)
+            }
+        }
+    };
+    ([$ignore:ident $(, $attrs:ident)*]$args:tt) => {
+        impl_arena_allocatable_decoder!([$($attrs),*]$args);
+    };
+}
+
+#[macro_export]
+macro_rules! impl_arena_allocatable_decoders {
+    ($args:tt, [$($a:tt $name:ident: $ty:ty,)*], $tcx:lifetime) => {
+        $(
+            impl_arena_allocatable_decoder!($a [$args, [$name: $ty], $tcx]);
+        )*
     }
 }
 
@@ -321,6 +375,8 @@ macro_rules! implement_ty_decoder {
             // FIXME(#36588) These impls are horribly unsound as they allow
             // the caller to pick any lifetime for 'tcx, including 'static,
             // by using the unspecialized proxies to them.
+
+            arena_types!(impl_arena_allocatable_decoders, [$DecoderName [$($typaram),*]], 'tcx);
 
             impl<$($typaram),*> SpecializedDecoder<CrateNum>
             for $DecoderName<$($typaram),*> {
@@ -389,10 +445,10 @@ macro_rules! implement_ty_decoder {
                 }
             }
 
-            impl<$($typaram),*> SpecializedDecoder<&'tcx $crate::ty::LazyConst<'tcx>>
+            impl<$($typaram),*> SpecializedDecoder<&'tcx $crate::ty::Const<'tcx>>
             for $DecoderName<$($typaram),*> {
-                fn specialized_decode(&mut self) -> Result<&'tcx ty::LazyConst<'tcx>, Self::Error> {
-                    decode_lazy_const(self)
+                fn specialized_decode(&mut self) -> Result<&'tcx ty::Const<'tcx>, Self::Error> {
+                    decode_const(self)
                 }
             }
 

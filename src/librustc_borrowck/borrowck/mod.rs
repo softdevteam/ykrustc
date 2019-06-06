@@ -32,9 +32,8 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
-use rustc_data_structures::sync::Lrc;
 use std::hash::{Hash, Hasher};
-use syntax::ast;
+use syntax::source_map::CompilerDesugaringKind;
 use syntax_pos::{MultiSpan, Span};
 use errors::{Applicability, DiagnosticBuilder, DiagnosticId};
 use log::debug;
@@ -48,8 +47,6 @@ pub mod check_loans;
 pub mod gather_loans;
 
 pub mod move_data;
-
-mod unused;
 
 #[derive(Clone, Copy)]
 pub struct LoanDataFlowOperator;
@@ -77,7 +74,7 @@ pub struct AnalysisData<'a, 'tcx: 'a> {
 }
 
 fn borrowck<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, owner_def_id: DefId)
-    -> Lrc<BorrowCheckResult>
+    -> &'tcx BorrowCheckResult
 {
     assert!(tcx.use_ast_borrowck() || tcx.migrate_borrowck());
 
@@ -86,13 +83,12 @@ fn borrowck<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, owner_def_id: DefId)
     let owner_id = tcx.hir().as_local_hir_id(owner_def_id).unwrap();
 
     match tcx.hir().get_by_hir_id(owner_id) {
-        Node::StructCtor(_) |
-        Node::Variant(_) => {
+        Node::Ctor(..) => {
             // We get invoked with anything that has MIR, but some of
             // those things (notably the synthesized constructors from
             // tuple structs/variants) do not have an associated body
             // and do not need borrowchecking.
-            return Lrc::new(BorrowCheckResult {
+            return tcx.arena.alloc(BorrowCheckResult {
                 used_mut_nodes: Default::default(),
                 signalled_any_error: SignalledError::NoErrorsSeen,
             })
@@ -139,11 +135,7 @@ fn borrowck<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, owner_def_id: DefId)
         check_loans::check_loans(&mut bccx, &loan_dfcx, &flowed_moves, &all_loans, body);
     }
 
-    if !tcx.use_mir_borrowck() {
-        unused::check(&mut bccx, body);
-    }
-
-    Lrc::new(BorrowCheckResult {
+    tcx.arena.alloc(BorrowCheckResult {
         used_mut_nodes: bccx.used_mut_nodes.into_inner(),
         signalled_any_error: bccx.signalled_any_error.into_inner(),
     })
@@ -235,7 +227,7 @@ pub struct BorrowckCtxt<'a, 'tcx: 'a> {
     // Some in `borrowck_fn` and cleared later
     tables: &'a ty::TypeckTables<'tcx>,
 
-    region_scope_tree: Lrc<region::ScopeTree>,
+    region_scope_tree: &'tcx region::ScopeTree,
 
     owner_def_id: DefId,
 
@@ -399,12 +391,12 @@ pub enum LoanPathElem<'tcx> {
 }
 
 fn closure_to_block(closure_id: LocalDefId,
-                    tcx: TyCtxt<'_, '_, '_>) -> ast::NodeId {
+                    tcx: TyCtxt<'_, '_, '_>) -> HirId {
     let closure_id = tcx.hir().local_def_id_to_node_id(closure_id);
     match tcx.hir().get(closure_id) {
         Node::Expr(expr) => match expr.node {
             hir::ExprKind::Closure(.., body_id, _, _) => {
-                tcx.hir().hir_to_node_id(body_id.hir_id)
+                body_id.hir_id
             }
             _ => {
                 bug!("encountered non-closure id: {}", closure_id)
@@ -422,8 +414,7 @@ impl<'a, 'tcx> LoanPath<'tcx> {
             }
             LpUpvar(upvar_id) => {
                 let block_id = closure_to_block(upvar_id.closure_expr_id, bccx.tcx);
-                let hir_id = bccx.tcx.hir().node_to_hir_id(block_id);
-                region::Scope { id: hir_id.local_id, data: region::ScopeData::Node }
+                region::Scope { id: block_id.local_id, data: region::ScopeData::Node }
             }
             LpDowncast(ref base, _) |
             LpExtend(ref base, ..) => base.kill_scope(bccx),
@@ -746,6 +737,19 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 },
                 moved_lp.ty));
         }
+        if let (Some(CompilerDesugaringKind::ForLoop), Ok(snippet)) = (
+            move_span.compiler_desugaring_kind(),
+            self.tcx.sess.source_map().span_to_snippet(move_span),
+         ) {
+            if !snippet.starts_with("&") {
+                err.span_suggestion(
+                    move_span,
+                    "consider borrowing this to avoid moving it into the for loop",
+                    format!("&{}", snippet),
+                    Applicability::MaybeIncorrect,
+                );
+            }
+        }
 
         // Note: we used to suggest adding a `ref binding` or calling
         // `clone` but those suggestions have been removed because
@@ -886,8 +890,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                         self.cannot_borrow_path_as_mutable(error_span, &descr, Origin::Ast)
                     }
                     BorrowViolation(euv::ClosureInvocation) => {
-                        span_bug!(err.span,
-                            "err_mutbl with a closure invocation");
+                        span_bug!(err.span, "err_mutbl with a closure invocation");
                     }
                 };
 
@@ -1085,7 +1088,6 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
             BorrowViolation(euv::MatchDiscriminant) => {
                 "cannot borrow data mutably"
             }
-
             BorrowViolation(euv::ClosureInvocation) => {
                 is_closure = true;
                 "closure invocation"
@@ -1406,7 +1408,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 out.push('(');
                 self.append_loan_path_to_string(&lp_base, out);
                 out.push_str(DOWNCAST_PRINTED_OPERATOR);
-                out.push_str(&self.tcx.item_path_str(variant_def_id));
+                out.push_str(&self.tcx.def_path_str(variant_def_id));
                 out.push(')');
             }
 
@@ -1443,7 +1445,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 out.push('(');
                 self.append_autoderefd_loan_path_to_string(&lp_base, out);
                 out.push_str(DOWNCAST_PRINTED_OPERATOR);
-                out.push_str(&self.tcx.item_path_str(variant_def_id));
+                out.push_str(&self.tcx.def_path_str(variant_def_id));
                 out.push(')');
             }
 
@@ -1523,7 +1525,7 @@ impl<'tcx> fmt::Debug for LoanPath<'tcx> {
 
             LpDowncast(ref lp, variant_def_id) => {
                 let variant_str = if variant_def_id.is_local() {
-                    ty::tls::with(|tcx| tcx.item_path_str(variant_def_id))
+                    ty::tls::with(|tcx| tcx.def_path_str(variant_def_id))
                 } else {
                     format!("{:?}", variant_def_id)
                 };
@@ -1558,7 +1560,7 @@ impl<'tcx> fmt::Display for LoanPath<'tcx> {
 
             LpDowncast(ref lp, variant_def_id) => {
                 let variant_str = if variant_def_id.is_local() {
-                    ty::tls::with(|tcx| tcx.item_path_str(variant_def_id))
+                    ty::tls::with(|tcx| tcx.def_path_str(variant_def_id))
                 } else {
                     format!("{:?}", variant_def_id)
                 };

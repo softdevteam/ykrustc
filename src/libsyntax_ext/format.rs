@@ -12,7 +12,7 @@ use syntax::ext::build::AstBuilder;
 use syntax::feature_gate;
 use syntax::parse::token;
 use syntax::ptr::P;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax::tokenstream;
 use syntax_pos::{MultiSpan, Span, DUMMY_SP};
 
@@ -347,9 +347,9 @@ impl<'a, 'b> Context<'a, 'b> {
 
             Named(name) => {
                 match self.names.get(&name) {
-                    Some(idx) => {
+                    Some(&idx) => {
                         // Treat as positional arg.
-                        self.verify_arg_type(Exact(*idx), ty)
+                        self.verify_arg_type(Exact(idx), ty)
                     }
                     None => {
                         let msg = format!("there is no argument named `{}`", name);
@@ -387,7 +387,7 @@ impl<'a, 'b> Context<'a, 'b> {
     }
 
     fn rtpath(ecx: &ExtCtxt<'_>, s: &str) -> Vec<ast::Ident> {
-        ecx.std_path(&["fmt", "rt", "v1", s])
+        ecx.std_path(&[sym::fmt, sym::rt, sym::v1, Symbol::intern(s)])
     }
 
     fn build_count(&self, c: parse::Count<'_>) -> P<ast::Expr> {
@@ -644,7 +644,7 @@ impl<'a, 'b> Context<'a, 'b> {
             ("new_v1_formatted", vec![pieces, args_slice, fmt])
         };
 
-        let path = self.ecx.std_path(&["fmt", "Arguments", fn_name]);
+        let path = self.ecx.std_path(&[sym::fmt, sym::Arguments, Symbol::intern(fn_name)]);
         self.ecx.expr_call_global(self.macsp, path, fn_args)
     }
 
@@ -675,14 +675,14 @@ impl<'a, 'b> Context<'a, 'b> {
                 }
             }
             Count => {
-                let path = ecx.std_path(&["fmt", "ArgumentV1", "from_usize"]);
+                let path = ecx.std_path(&[sym::fmt, sym::ArgumentV1, sym::from_usize]);
                 return ecx.expr_call_global(macsp, path, vec![arg]);
             }
         };
 
-        let path = ecx.std_path(&["fmt", trait_, "fmt"]);
+        let path = ecx.std_path(&[sym::fmt, Symbol::intern(trait_), sym::fmt]);
         let format_fn = ecx.path_global(sp, path);
-        let path = ecx.std_path(&["fmt", "ArgumentV1", "new"]);
+        let path = ecx.std_path(&[sym::fmt, sym::ArgumentV1, sym::new]);
         ecx.expr_call_global(macsp, path, vec![arg, ecx.expr_path(format_fn)])
     }
 }
@@ -711,12 +711,12 @@ pub fn expand_format_args_nl<'cx>(
     //if !ecx.ecfg.enable_allow_internal_unstable() {
 
     // For some reason, the only one that actually works for `println` is the first check
-    if !sp.allows_unstable("format_args_nl") // the span is marked as `#[allow_insternal_unsable]`
+    if !sp.allows_unstable(sym::format_args_nl) // the span is marked `#[allow_insternal_unsable]`
         && !ecx.ecfg.enable_allow_internal_unstable()  // NOTE: when is this enabled?
         && !ecx.ecfg.enable_format_args_nl()  // enabled using `#[feature(format_args_nl]`
     {
         feature_gate::emit_feature_err(&ecx.parse_sess,
-                                       "format_args_nl",
+                                       sym::format_args_nl,
                                        sp,
                                        feature_gate::GateIssue::Language,
                                        feature_gate::EXPLAIN_FORMAT_ARGS_NL);

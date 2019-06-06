@@ -12,7 +12,7 @@ use crate::panicking;
 use crate::ptr::{Unique, NonNull};
 use crate::rc::Rc;
 use crate::sync::{Arc, Mutex, RwLock, atomic};
-use crate::task::{Waker, Poll};
+use crate::task::{Context, Poll};
 use crate::thread::Result;
 
 #[stable(feature = "panic_hooks", since = "1.10.0")]
@@ -312,20 +312,20 @@ impl<R, F: FnOnce() -> R> FnOnce<()> for AssertUnwindSafe<F> {
 
 #[stable(feature = "std_debug", since = "1.16.0")]
 impl<T: fmt::Debug> fmt::Debug for AssertUnwindSafe<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("AssertUnwindSafe")
             .field(&self.0)
             .finish()
     }
 }
 
-#[unstable(feature = "futures_api", issue = "50547")]
+#[stable(feature = "futures_api", since = "1.36.0")]
 impl<F: Future> Future for AssertUnwindSafe<F> {
     type Output = F::Output;
 
-    fn poll(self: Pin<&mut Self>, waker: &Waker) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let pinned_field = unsafe { Pin::map_unchecked_mut(self, |x| &mut x.0) };
-        F::poll(pinned_field, waker)
+        F::poll(pinned_field, cx)
     }
 }
 

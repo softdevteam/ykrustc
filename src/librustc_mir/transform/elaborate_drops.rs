@@ -24,11 +24,11 @@ impl MirPass for ElaborateDrops {
     fn run_pass<'a, 'tcx>(&self,
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           src: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>)
+                          mir: &mut Body<'tcx>)
     {
         debug!("elaborate_drops({:?} @ {:?})", src, mir.span);
 
-        let id = tcx.hir().as_local_hir_id(src.def_id()).unwrap();
+        let def_id = src.def_id();
         let param_env = tcx.param_env(src.def_id()).with_reveal_all();
         let move_data = match MoveData::gather_moves(mir, tcx) {
             Ok(move_data) => move_data,
@@ -50,13 +50,13 @@ impl MirPass for ElaborateDrops {
                 move_data,
                 param_env,
             };
-            let dead_unwinds = find_dead_unwinds(tcx, mir, id, &env);
+            let dead_unwinds = find_dead_unwinds(tcx, mir, def_id, &env);
             let flow_inits =
-                do_dataflow(tcx, mir, id, &[], &dead_unwinds,
+                do_dataflow(tcx, mir, def_id, &[], &dead_unwinds,
                             MaybeInitializedPlaces::new(tcx, mir, &env),
                             |bd, p| DebugFormatted::new(&bd.move_data().move_paths[p]));
             let flow_uninits =
-                do_dataflow(tcx, mir, id, &[], &dead_unwinds,
+                do_dataflow(tcx, mir, def_id, &[], &dead_unwinds,
                             MaybeUninitializedPlaces::new(tcx, mir, &env),
                             |bd, p| DebugFormatted::new(&bd.move_data().move_paths[p]));
 
@@ -79,8 +79,8 @@ impl MirPass for ElaborateDrops {
 /// that can't drop anything.
 fn find_dead_unwinds<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    mir: &Mir<'tcx>,
-    id: hir::HirId,
+    mir: &Body<'tcx>,
+    def_id: hir::def_id::DefId,
     env: &MoveDataParamEnv<'tcx, 'tcx>)
     -> BitSet<BasicBlock>
 {
@@ -89,7 +89,7 @@ fn find_dead_unwinds<'a, 'tcx>(
     // reach cleanup blocks, which can't have unwind edges themselves.
     let mut dead_unwinds = BitSet::new_empty(mir.basic_blocks().len());
     let flow_inits =
-        do_dataflow(tcx, mir, id, &[], &dead_unwinds,
+        do_dataflow(tcx, mir, def_id, &[], &dead_unwinds,
                     MaybeInitializedPlaces::new(tcx, mir, &env),
                     |bd, p| DebugFormatted::new(&bd.move_data().move_paths[p]));
     for (bb, bb_data) in mir.basic_blocks().iter_enumerated() {
@@ -143,7 +143,7 @@ struct InitializationData {
 impl InitializationData {
     fn apply_location<'a,'tcx>(&mut self,
                                tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                               mir: &Mir<'tcx>,
+                               mir: &Body<'tcx>,
                                env: &MoveDataParamEnv<'tcx, 'tcx>,
                                loc: Location)
     {
@@ -186,7 +186,7 @@ impl<'a, 'b, 'tcx> DropElaborator<'a, 'tcx> for Elaborator<'a, 'b, 'tcx> {
         &mut self.ctxt.patch
     }
 
-    fn mir(&self) -> &'a Mir<'tcx> {
+    fn mir(&self) -> &'a Body<'tcx> {
         self.ctxt.mir
     }
 
@@ -291,7 +291,7 @@ impl<'a, 'b, 'tcx> DropElaborator<'a, 'tcx> for Elaborator<'a, 'b, 'tcx> {
 
 struct ElaborateDropsCtxt<'a, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    mir: &'a Mir<'tcx>,
+    mir: &'a Body<'tcx>,
     env: &'a MoveDataParamEnv<'tcx, 'tcx>,
     flow_inits: DataflowResults<'tcx, MaybeInitializedPlaces<'a, 'tcx, 'tcx>>,
     flow_uninits:  DataflowResults<'tcx, MaybeUninitializedPlaces<'a, 'tcx, 'tcx>>,
@@ -533,9 +533,7 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
             span,
             ty: self.tcx.types.bool,
             user_ty: None,
-            literal: self.tcx.mk_lazy_const(ty::LazyConst::Evaluated(
-                ty::Const::from_bool(self.tcx, val),
-            )),
+            literal: ty::Const::from_bool(self.tcx, val),
         })))
     }
 

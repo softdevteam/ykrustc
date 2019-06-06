@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! A double-ended queue implemented with a growable ring buffer.
 //!
 //! This queue has `O(1)` amortized inserts and removals from both ends of the
@@ -367,7 +369,7 @@ impl<T> VecDeque<T> {
         VecDeque::with_capacity(INITIAL_CAPACITY)
     }
 
-    /// Creates an empty `VecDeque` with space for at least `n` elements.
+    /// Creates an empty `VecDeque` with space for at least `capacity` elements.
     ///
     /// # Examples
     ///
@@ -377,10 +379,10 @@ impl<T> VecDeque<T> {
     /// let vector: VecDeque<u32> = VecDeque::with_capacity(10);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn with_capacity(n: usize) -> VecDeque<T> {
+    pub fn with_capacity(capacity: usize) -> VecDeque<T> {
         // +1 since the ringbuffer always leaves one space empty
-        let cap = cmp::max(n + 1, MINIMUM_CAPACITY + 1).next_power_of_two();
-        assert!(cap > n, "capacity overflow");
+        let cap = cmp::max(capacity + 1, MINIMUM_CAPACITY + 1).next_power_of_two();
+        assert!(cap > capacity, "capacity overflow");
 
         VecDeque {
             tail: 0,
@@ -1833,8 +1835,8 @@ impl<T> VecDeque<T> {
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all elements `e` such that `f(&e)` returns false.
-    /// This method operates in place and preserves the order of the retained
-    /// elements.
+    /// This method operates in place, visiting each element exactly once in the
+    /// original order, and preserves the order of the retained elements.
     ///
     /// # Examples
     ///
@@ -1845,6 +1847,20 @@ impl<T> VecDeque<T> {
     /// buf.extend(1..5);
     /// buf.retain(|&x| x%2 == 0);
     /// assert_eq!(buf, [2, 4]);
+    /// ```
+    ///
+    /// The exact order may be useful for tracking external state, like an index.
+    ///
+    /// ```
+    /// use std::collections::VecDeque;
+    ///
+    /// let mut buf = VecDeque::new();
+    /// buf.extend(1..6);
+    ///
+    /// let keep = [false, true, true, false, true];
+    /// let mut i = 0;
+    /// buf.retain(|_| (keep[i], i += 1).0);
+    /// assert_eq!(buf, [2, 3, 5]);
     /// ```
     #[stable(feature = "vec_deque_retain", since = "1.4.0")]
     pub fn retain<F>(&mut self, mut f: F)
@@ -1932,8 +1948,6 @@ impl<T> VecDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(vecdeque_rotate)]
-    ///
     /// use std::collections::VecDeque;
     ///
     /// let mut buf: VecDeque<_> = (0..10).collect();
@@ -1947,7 +1961,7 @@ impl<T> VecDeque<T> {
     /// }
     /// assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     /// ```
-    #[unstable(feature = "vecdeque_rotate", issue = "56686")]
+    #[stable(feature = "vecdeque_rotate", since = "1.36.0")]
     pub fn rotate_left(&mut self, mid: usize) {
         assert!(mid <= self.len());
         let k = self.len() - mid;
@@ -1977,8 +1991,6 @@ impl<T> VecDeque<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(vecdeque_rotate)]
-    ///
     /// use std::collections::VecDeque;
     ///
     /// let mut buf: VecDeque<_> = (0..10).collect();
@@ -1992,7 +2004,7 @@ impl<T> VecDeque<T> {
     /// }
     /// assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     /// ```
-    #[unstable(feature = "vecdeque_rotate", issue = "56686")]
+    #[stable(feature = "vecdeque_rotate", since = "1.36.0")]
     pub fn rotate_right(&mut self, k: usize) {
         assert!(k <= self.len());
         let mid = self.len() - k;
@@ -2677,9 +2689,7 @@ impl<'a, T> IntoIterator for &'a mut VecDeque<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<A> Extend<A> for VecDeque<A> {
     fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
-        for elt in iter {
-            self.push_back(elt);
-        }
+        iter.into_iter().for_each(move |elt| self.push_back(elt));
     }
 }
 
@@ -2801,6 +2811,7 @@ mod tests {
     use super::VecDeque;
 
     #[bench]
+    #[cfg(not(miri))] // Miri does not support benchmarks
     fn bench_push_back_100(b: &mut test::Bencher) {
         let mut deq = VecDeque::with_capacity(101);
         b.iter(|| {
@@ -2813,6 +2824,7 @@ mod tests {
     }
 
     #[bench]
+    #[cfg(not(miri))] // Miri does not support benchmarks
     fn bench_push_front_100(b: &mut test::Bencher) {
         let mut deq = VecDeque::with_capacity(101);
         b.iter(|| {
@@ -2825,6 +2837,7 @@ mod tests {
     }
 
     #[bench]
+    #[cfg(not(miri))] // Miri does not support benchmarks
     fn bench_pop_back_100(b: &mut test::Bencher) {
         let mut deq = VecDeque::<i32>::with_capacity(101);
 
@@ -2838,6 +2851,7 @@ mod tests {
     }
 
     #[bench]
+    #[cfg(not(miri))] // Miri does not support benchmarks
     fn bench_pop_front_100(b: &mut test::Bencher) {
         let mut deq = VecDeque::<i32>::with_capacity(101);
 
@@ -3105,7 +3119,12 @@ mod tests {
             assert!(vec.into_iter().eq(vd));
         }
 
-        for cap_pwr in 0..7 {
+        #[cfg(not(miri))] // Miri is too slow
+        let max_pwr = 7;
+        #[cfg(miri)]
+        let max_pwr = 5;
+
+        for cap_pwr in 0..max_pwr {
             // Make capacity as a (2^x)-1, so that the ring size is 2^x
             let cap = (2i32.pow(cap_pwr) - 1) as usize;
 

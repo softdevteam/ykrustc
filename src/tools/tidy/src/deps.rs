@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use serde::Deserialize;
 use serde_json;
 
 const LICENSES: &[&str] = &[
@@ -46,6 +47,9 @@ const EXCEPTIONS: &[&str] = &[
     "adler32",            // BSD-3-Clause AND Zlib, cargo dep that isn't used
     "fortanix-sgx-abi",   // MPL-2.0+, libstd but only for `sgx` target
     "constant_time_eq",   // CC0-1.0, rustfmt
+    "utf8parse",          // Apache-2.0 OR MIT, cargo via strip-ansi-escapes
+    "vte",                // Apache-2.0 OR MIT, cargo via strip-ansi-escapes
+    "sized-chunks",       // MPL-2.0+, cargo via im-rc
 ];
 
 /// Which crates to check against the whitelist?
@@ -58,8 +62,11 @@ const WHITELIST_CRATES: &[CrateVersion<'_>] = &[
 const WHITELIST: &[Crate<'_>] = &[
     Crate("adler32"),
     Crate("aho-corasick"),
+    Crate("annotate-snippets"),
+    Crate("ansi_term"),
     Crate("arrayvec"),
     Crate("atty"),
+    Crate("autocfg"),
     Crate("backtrace"),
     Crate("backtrace-sys"),
     Crate("bitflags"),
@@ -87,6 +94,8 @@ const WHITELIST: &[Crate<'_>] = &[
     Crate("fuchsia-zircon-sys"),
     Crate("getopts"),
     Crate("humantime"),
+    Crate("indexmap"),
+    Crate("itertools"),
     Crate("jobserver"),
     Crate("kernel32-sys"),
     Crate("lazy_static"),
@@ -95,6 +104,7 @@ const WHITELIST: &[Crate<'_>] = &[
     Crate("lock_api"),
     Crate("log"),
     Crate("log_settings"),
+    Crate("measureme"),
     Crate("memchr"),
     Crate("memmap"),
     Crate("memoffset"),
@@ -238,7 +248,7 @@ pub fn check(path: &Path, bad: &mut bool) {
         }
 
         let toml = dir.path().join("Cargo.toml");
-        *bad = *bad || !check_license(&toml);
+        *bad = !check_license(&toml) || *bad;
     }
     assert!(saw_dir, "no vendored source");
 }
