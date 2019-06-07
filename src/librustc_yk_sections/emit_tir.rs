@@ -96,9 +96,9 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     /// Entry point for the lowering process.
-    fn lower(&mut self) -> ykpack::Tir {
+    fn lower(&mut self) -> ykpack::Body {
         let dps = self.tcx.def_path_str(self.def_id);
-        ykpack::Tir::new(self.lower_def_id(&self.def_id.to_owned()),
+        ykpack::Body::new(self.lower_def_id(&self.def_id.to_owned()),
             dps, self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect())
     }
 
@@ -376,7 +376,7 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
             let pack = ccx.lower();
 
             if let Some(ref mut e) = enc {
-                e.serialise(ykpack::Pack::Tir(pack))?;
+                e.serialise(ykpack::Pack::Body(pack))?;
             } else {
                 write!(textdump_file.as_ref().unwrap(), "{}", pack)?;
             }
