@@ -498,6 +498,13 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
     if let Some(args) = sess.target.target.options.post_link_args.get(&flavor) {
         cmd.args(args);
     }
+
+    // Link Yorick objects into executables.
+    if crate_type == config::CrateType::Executable {
+        cmd.arg("-Wl,--no-gc-sections");
+        cmd.args(sess.yk_link_objects.borrow().iter().map(|o| o.path()));
+    }
+
     for &(ref k, ref v) in &sess.target.target.options.link_env {
         cmd.env(k, v);
     }
