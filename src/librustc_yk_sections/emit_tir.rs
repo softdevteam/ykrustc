@@ -11,7 +11,7 @@
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
-use rustc::ty::{TyCtxt, TyS, Const, TyKind, Ty};
+use rustc::ty::{TyCtxt, TyS, Const, TyKind, Ty, Instance};
 use syntax::ast::{UintTy, IntTy};
 use rustc::hir::def_id::DefId;
 use rustc::mir::{
@@ -29,6 +29,7 @@ use std::error::Error;
 use std::mem::size_of;
 use rustc_data_structures::indexed_vec::IndexVec;
 use ykpack;
+use rustc::ty::fold::TypeFoldable;
 
 const SECTION_NAME: &'static str = ".yk_tir";
 const TMP_EXT: &'static str = ".yk_tir.tmp";
@@ -109,13 +110,13 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         }
     }
 
-    fn lower_block(&mut self, blk: &BasicBlockData<'_>) -> ykpack::BasicBlock {
+    fn lower_block(&mut self, blk: &BasicBlockData<'tcx>) -> ykpack::BasicBlock {
         ykpack::BasicBlock::new(
             blk.statements.iter().map(|s| self.lower_stmt(s)).flatten().collect(),
             self.lower_terminator(blk.terminator()))
     }
 
-    fn lower_terminator(&mut self, term: &Terminator<'_>) -> ykpack::Terminator {
+    fn lower_terminator(&mut self, term: &Terminator<'tcx>) -> ykpack::Terminator {
         match term.kind {
             TerminatorKind::Goto{target: target_bb} =>
                 ykpack::Terminator::Goto(u32::from(target_bb)),
@@ -146,12 +147,18 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 let ser_oper = if let Operand::Constant(box Constant {
                     literal: Const {
                         ty: &TyS {
-                            sty: TyKind::FnDef(ref target_def_id, ..), ..
+                            sty: TyKind::FnDef(ref target_def_id, ref substs), ..
                         }, ..
                     }, ..
                 }, ..) = func {
                     // A statically known call target.
-                    ykpack::CallOperand::Fn(self.lower_def_id(target_def_id))
+                    let inst = Instance::new(*target_def_id, substs);
+                    let sym_name = match substs.needs_subst() {
+                        // If the instance isn't full instantiated, then it has no symbol name.
+                        true => None,
+                        false => Some(self.tcx.symbol_name(inst).as_str().get().to_owned()),
+                    };
+                    ykpack::CallOperand::Fn(self.lower_def_id(target_def_id), sym_name)
                 } else {
                     // FIXME -- implement other callables.
                     ykpack::CallOperand::Unknown
