@@ -13,8 +13,8 @@ fn main() {
 }
 
 // END RUST SOURCE
-// [Begin TIR for main]
+// [Begin SIR for main]
 // ...
 // $1: t0 = $2: t0
 // ...
-// [End TIR for main]
+// [End SIR for main]

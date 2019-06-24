@@ -852,10 +852,10 @@ default_test!(MirOpt {
     suite: "mir-opt"
 });
 
-default_test!(YkTir {
-    path: "src/test/yk-tir",
-    mode: "yk-tir",
-    suite: "yk-tir"
+default_test!(YkSir {
+    path: "src/test/yk-sir",
+    mode: "yk-sir",
+    suite: "yk-sir"
 });
 
 default_test!(Codegen {

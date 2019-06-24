@@ -148,7 +148,7 @@ pub enum DebugInfo {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, RustcEncodable, RustcDecodable)]
 pub enum OutputType {
-    YkTir,
+    YkSir,
     Bitcode,
     Assembly,
     LlvmAssembly,
@@ -165,7 +165,7 @@ impl OutputType {
     fn is_compatible_with_codegen_units_and_single_output_file(&self) -> bool {
         match *self {
             OutputType::Exe | OutputType::DepInfo | OutputType::Metadata => true,
-            OutputType::YkTir
+            OutputType::YkSir
             | OutputType::Bitcode
             | OutputType::Assembly
             | OutputType::LlvmAssembly
@@ -176,7 +176,7 @@ impl OutputType {
 
     fn shorthand(&self) -> &'static str {
         match *self {
-            OutputType::YkTir => "yk-tir",
+            OutputType::YkSir => "yk-sir",
             OutputType::Bitcode => "llvm-bc",
             OutputType::Assembly => "asm",
             OutputType::LlvmAssembly => "llvm-ir",
@@ -190,7 +190,7 @@ impl OutputType {
 
     fn from_shorthand(shorthand: &str) -> Option<Self> {
         Some(match shorthand {
-            "yk-tir" => OutputType::YkTir,
+            "yk-sir" => OutputType::YkSir,
             "asm" => OutputType::Assembly,
             "llvm-ir" => OutputType::LlvmAssembly,
             "mir" => OutputType::Mir,
@@ -206,7 +206,7 @@ impl OutputType {
     fn shorthands_display() -> String {
         format!(
             "`{}` `{}`, `{}`, `{}`, `{}`, `{}`, `{}`, `{}`, `{}`",
-            OutputType::YkTir.shorthand(),
+            OutputType::YkSir.shorthand(),
             OutputType::Bitcode.shorthand(),
             OutputType::Assembly.shorthand(),
             OutputType::LlvmAssembly.shorthand(),
@@ -220,7 +220,7 @@ impl OutputType {
 
     pub fn extension(&self) -> &'static str {
         match *self {
-            OutputType::YkTir => "yktir",
+            OutputType::YkSir => "yksir",
             OutputType::Bitcode => "bc",
             OutputType::Assembly => "s",
             OutputType::LlvmAssembly => "ll",
@@ -288,7 +288,7 @@ impl OutputTypes {
     // True if any of the output types require codegen or linking.
     pub fn should_codegen(&self) -> bool {
         self.0.keys().any(|k| match *k {
-            OutputType::YkTir
+            OutputType::YkSir
             | OutputType::Bitcode
             | OutputType::Assembly
             | OutputType::LlvmAssembly
@@ -1765,7 +1765,7 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
             "emit",
             "Comma separated list of types of output for \
              the compiler to emit",
-            "[asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir|yk-tir]",
+            "[asm|llvm-bc|llvm-ir|obj|metadata|link|dep-info|mir|yk-sir]",
         ),
         opt::multi_s(
             "",

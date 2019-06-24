@@ -50,7 +50,7 @@ use syntax::symbol::Symbol;
 use syntax::feature_gate::AttributeType;
 use syntax_pos::{FileName, edition::Edition, hygiene};
 use syntax_ext;
-use rustc_yk_sections::emit_tir::{generate_tir, TirMode};
+use rustc_yk_sections::emit_sir::{generate_sir, SirMode};
 use rustc_codegen_utils::link::out_filename;
 use rustc::util::nodemap::DefIdSet;
 
@@ -1102,22 +1102,22 @@ pub fn start_codegen<'tcx>(
 
     // Output Yorick debug sections into binary targets.
     if tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) {
-        let tir_mode = if tcx.sess.opts.output_types.contains_key(&OutputType::YkTir) {
-            // The user passed "--emit yk-tir" so we will output textual TIR and stop.
-            TirMode::TextDump(outputs.path(OutputType::YkTir))
+        let sir_mode = if tcx.sess.opts.output_types.contains_key(&OutputType::YkSir) {
+            // The user passed "--emit yk-sir" so we will output textual SIR and stop.
+            SirMode::TextDump(outputs.path(OutputType::YkSir))
         } else {
-            // TIR will be encoded into the compiled binary.
+            // SIR will be encoded into the compiled binary.
             let out_fname = out_filename(
                 tcx.sess, config::CrateType::Executable, &outputs,
                 &*tcx.crate_name(LOCAL_CRATE).as_str());
-            TirMode::Default(out_fname)
+            SirMode::Default(out_fname)
         };
 
-        match generate_tir(&tcx, &def_ids, tir_mode) {
+        match generate_sir(&tcx, &def_ids, sir_mode) {
             Ok(Some(obj)) => tcx.sess.yk_link_objects.borrow_mut().push(obj),
             Ok(None) => (),
             Err(e) => {
-                tcx.sess.err(&format!("could not emit TIR: {}", e));
+                tcx.sess.err(&format!("could not emit SIR: {}", e));
                 tcx.sess.abort_if_errors();
             }
         }
