@@ -6,8 +6,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! This module converts MIR into Yorick TIR (Tracing IR).
-//! Note that we preserve the MIR block structure when lowering to TIR.
+//! This module converts MIR into Yorick SIR (Serialised IR).
+//! Note that we preserve the MIR block structure when lowering to SIR.
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
@@ -31,11 +31,11 @@ use rustc_data_structures::indexed_vec::IndexVec;
 use ykpack;
 use rustc::ty::fold::TypeFoldable;
 
-const SECTION_NAME: &'static str = ".yk_tir";
-const TMP_EXT: &'static str = ".yk_tir.tmp";
+const SECTION_NAME: &'static str = ".yk_sir";
+const TMP_EXT: &'static str = ".yk_sir.tmp";
 
 /// Describes how to output MIR.
-pub enum TirMode {
+pub enum SirMode {
     /// Write MIR into an object file for linkage. The inner path should be the path to the main
     /// executable (from this we generate a filename for the resulting object).
     Default(PathBuf),
@@ -43,13 +43,13 @@ pub enum TirMode {
     TextDump(PathBuf),
 }
 
-/// A conversion context holds the state needed to perform the TIR lowering.
+/// A conversion context holds the state needed to perform the SIR lowering.
 struct ConvCx<'a, 'tcx, 'gcx> {
     /// The compiler's god struct. Needed for queries etc.
     tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
-    /// Monotonically increasing number used to give TIR variables a unique ID.
-    next_tir_var: ykpack::LocalIndex,
-    /// A mapping from MIR variables to TIR variables.
+    /// Monotonically increasing number used to give SIR variables a unique ID.
+    next_sir_var: ykpack::LocalIndex,
+    /// A mapping from MIR variables to SIR variables.
     var_map: IndexVec<Local, Option<ykpack::Local>>,
     /// The MIR we are lowering.
     mir: &'a Body<'tcx>,
@@ -61,22 +61,22 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_id: DefId, mir: &'a Body<'tcx>) -> Self {
         Self {
             tcx,
-            next_tir_var: 0,
+            next_sir_var: 0,
             var_map: IndexVec::new(),
             mir,
             def_id,
         }
     }
 
-    /// Returns a guaranteed unique TIR variable index.
-    fn new_tir_var(&mut self) -> ykpack::LocalIndex {
-        let var_idx = self.next_tir_var;
-        self.next_tir_var += 1;
+    /// Returns a guaranteed unique SIR variable index.
+    fn new_sir_var(&mut self) -> ykpack::LocalIndex {
+        let var_idx = self.next_sir_var;
+        self.next_sir_var += 1;
         var_idx
     }
 
-    /// Get the TIR variable for the specified MIR variable, creating a fresh variable if needed.
-    fn tir_var(&mut self, local: Local) -> ykpack::Local {
+    /// Get the SIR variable for the specified MIR variable, creating a fresh variable if needed.
+    fn sir_var(&mut self, local: Local) -> ykpack::Local {
         let local_u32 = local.as_u32();
 
         // Resize the backing Vec if necessary.
@@ -88,11 +88,11 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         }
 
         self.var_map[local].unwrap_or_else(|| {
-            let idx = self.new_tir_var();
+            let idx = self.new_sir_var();
             let ty = 0; // FIXME notimplemented.
-            let tir_local = ykpack::Local::new(idx, ty);
-            self.var_map[local] = Some(tir_local);
-            tir_local
+            let sir_local = ykpack::Local::new(idx, ty);
+            self.var_map[local] = Some(sir_local);
+            sir_local
         })
     }
 
@@ -317,49 +317,49 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     fn lower_local(&mut self, local: Local) -> ykpack::Local {
-        self.tir_var(local)
+        self.sir_var(local)
     }
 }
 
-/// Writes TIR to file for the specified DefIds, possibly returning a linkable ELF object.
-pub fn generate_tir<'a, 'tcx, 'gcx>(
-    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_ids: &DefIdSet, mode: TirMode)
+/// Writes SIR to file for the specified DefIds, possibly returning a linkable ELF object.
+pub fn generate_sir<'a, 'tcx, 'gcx>(
+    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_ids: &DefIdSet, mode: SirMode)
     -> Result<Option<YkExtraLinkObject>, Box<dyn Error>>
 {
-    let tir_path = do_generate_tir(tcx, def_ids, &mode)?;
+    let sir_path = do_generate_sir(tcx, def_ids, &mode)?;
     match mode {
-        TirMode::Default(_) => {
-            // In this case the file at `tir_path` is a raw binary file which we use to make an
+        SirMode::Default(_) => {
+            // In this case the file at `sir_path` is a raw binary file which we use to make an
             // object file for linkage.
-            let obj = YkExtraLinkObject::new(&tir_path, SECTION_NAME);
+            let obj = YkExtraLinkObject::new(&sir_path, SECTION_NAME);
             // Now we have our object, we can remove the temp file. It's not the end of the world
             // if we can't remove it, so we allow this to fail.
-            fs::remove_file(tir_path).ok();
+            fs::remove_file(sir_path).ok();
             Ok(Some(obj))
         },
-        TirMode::TextDump(_) => {
-            // In this case we have no object to link, and we keep the file at `tir_path` around,
+        SirMode::TextDump(_) => {
+            // In this case we have no object to link, and we keep the file at `sir_path` around,
             // as this is the text dump the user asked for.
             Ok(None)
         }
     }
 }
 
-fn do_generate_tir<'a, 'tcx, 'gcx>(
-    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_ids: &DefIdSet, mode: &TirMode)
+fn do_generate_sir<'a, 'tcx, 'gcx>(
+    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_ids: &DefIdSet, mode: &SirMode)
     -> Result<PathBuf, Box<dyn Error>>
 {
-    let (tir_path, mut default_file, textdump_file) = match mode {
-        TirMode::Default(exe_path) => {
-            // The default mode of operation dumps TIR in binary format to a temporary file, which
+    let (sir_path, mut default_file, textdump_file) = match mode {
+        SirMode::Default(exe_path) => {
+            // The default mode of operation dumps SIR in binary format to a temporary file, which
             // is later converted into an ELF object. Note that the temporary file name must be the
             // same between builds for the reproducible build tests to pass.
-            let mut tir_path = exe_path.clone();
-            tir_path.set_extension(TMP_EXT);
-            let file = File::create(&tir_path)?;
-            (tir_path, Some(file), None)
+            let mut sir_path = exe_path.clone();
+            sir_path.set_extension(TMP_EXT);
+            let file = File::create(&sir_path)?;
+            (sir_path, Some(file), None)
         },
-        TirMode::TextDump(dump_path) => {
+        SirMode::TextDump(dump_path) => {
             // In text dump mode we just write lines to a file and we don't need an encoder.
             let file = File::create(&dump_path)?;
             (dump_path.clone(), None, Some(file))
@@ -396,5 +396,5 @@ fn do_generate_tir<'a, 'tcx, 'gcx>(
         e.done()?;
     }
 
-    Ok(tir_path)
+    Ok(sir_path)
 }

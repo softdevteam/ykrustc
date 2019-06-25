@@ -9,4 +9,4 @@
 
 #![feature(box_patterns)]
 
-pub mod emit_tir;
+pub mod emit_sir;

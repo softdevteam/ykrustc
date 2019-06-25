@@ -376,7 +376,7 @@ impl<'a> Builder<'a> {
                 test::RunFail,
                 test::RunPassValgrind,
                 test::MirOpt,
-                test::YkTir,
+                test::YkSir,
                 test::Codegen,
                 test::CodegenUnits,
                 test::Assembly,
