@@ -16,7 +16,7 @@ extern crate core;
 extern crate libc;
 extern crate test;
 
-use core::yk_swt::{start_tracing, stop_tracing, MirLoc};
+use core::yk_swt::{start_tracing, stop_tracing, SirLoc};
 use std::thread;
 use test::black_box;
 
@@ -41,7 +41,7 @@ fn main() {
 }
 
 // Copies a trace into a plain Rust Vec of tuples so we can compare them.
-fn trace_to_vec(tup: (*mut MirLoc, usize)) -> Vec<(u64, u32, u32)> {
+fn trace_to_vec(tup: (*mut SirLoc, usize)) -> Vec<(u64, u32, u32)> {
     let (buf, len) = tup;
     let mut v = Vec::new();
     assert!(len < (isize::max_value() as usize)); // Or we can't do ptr arithmetic.

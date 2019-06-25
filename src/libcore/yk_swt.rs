@@ -7,11 +7,11 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/// A MIR basic block location.
+/// A SIR basic block location.
 /// FIXME: This shouldn't live here, as it will need to be shared across all tracing backends.
 #[repr(C)]
 #[derive(Debug)]
-pub struct MirLoc {
+pub struct SirLoc {
     /// Unique identifier for the crate.
     crate_hash: u64,
     /// The definition index.
@@ -20,7 +20,7 @@ pub struct MirLoc {
     bb_idx: u32,
 }
 
-impl MirLoc {
+impl SirLoc {
     /// Returns the crate hash of the location.
     pub fn crate_hash(&self) -> u64 {
         self.crate_hash
@@ -59,10 +59,10 @@ pub fn start_tracing() {
 /// buffer, and the number of items inside. Returns `None` if the trace was invalidated, or if an
 /// error occurred. The current thread must already be tracing.
 #[cfg_attr(not(stage0), no_trace)]
-pub fn stop_tracing() -> Option<(*mut MirLoc, usize)> {
+pub fn stop_tracing() -> Option<(*mut SirLoc, usize)> {
     let len: usize = 0;
 
-    extern "C" { fn yk_swt_stop_tracing_impl(ret_len: &usize) -> *mut MirLoc; }
+    extern "C" { fn yk_swt_stop_tracing_impl(ret_len: &usize) -> *mut SirLoc; }
     let buf = unsafe { yk_swt_stop_tracing_impl(&len) };
 
     if buf.is_null() {
