@@ -15,6 +15,6 @@ fn main() {
 // END RUST SOURCE
 // [Begin SIR for main]
 // ...
-// $1: t0 = $2: t0
+// $1: t0 = I32(42)
 // ...
 // [End SIR for main]

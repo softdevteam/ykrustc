@@ -9,6 +9,8 @@
 //! This module converts MIR into Yorick SIR (Serialised IR).
 //! Note that we preserve the MIR block structure when lowering to SIR.
 //!
+//! Note that SIR assumes the abort panic strategy.
+//!
 //! Serialisation itself is performed by an external library: ykpack.
 
 use rustc::ty::{TyCtxt, TyS, Const, TyKind, Ty, Instance};
@@ -111,39 +113,45 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     fn lower_block(&mut self, blk: &BasicBlockData<'tcx>) -> ykpack::BasicBlock {
+        let term = match self.lower_terminator(blk.terminator()) {
+            Ok(t) => t,
+            _ => ykpack::Terminator::Unimplemented(format!("{:?}", blk.terminator())),
+        };
         ykpack::BasicBlock::new(
-            blk.statements.iter().map(|s| self.lower_stmt(s)).flatten().collect(),
-            self.lower_terminator(blk.terminator()))
+            blk.statements.iter().map(|s| self.lower_stmt(s)).flatten().collect(), term)
     }
 
-    fn lower_terminator(&mut self, term: &Terminator<'tcx>) -> ykpack::Terminator {
+    fn lower_terminator(&mut self, term: &Terminator<'tcx>) -> Result<ykpack::Terminator, ()> {
         match term.kind {
             TerminatorKind::Goto{target: target_bb} =>
-                ykpack::Terminator::Goto(u32::from(target_bb)),
+                Ok(ykpack::Terminator::Goto(u32::from(target_bb))),
             TerminatorKind::SwitchInt{ref discr, ref values, ref targets, ..} => {
                 match self.lower_operand(discr) {
-                    Ok(ykpack::Operand::Local(local)) => ykpack::Terminator::SwitchInt{local,
-                        values: values.iter().map(|u| ykpack::SerU128::new(*u)).collect(),
-                        target_bbs: targets.iter().map(|bb| u32::from(*bb)).collect()},
-                    // FIXME dynamic call targets.
-                    _ => ykpack::Terminator::Unimplemented,
+                    Ok(ykpack::Operand::Local(local)) => {
+                        Ok(ykpack::Terminator::SwitchInt{
+                            local,
+                            values: values.iter().map(|u| ykpack::SerU128::new(*u)).collect(),
+                            target_bbs: targets.iter().map(|bb| u32::from(*bb)).collect()})
+                    },
+                    _ => Err(()), // FIXME
                 }
             },
-            TerminatorKind::Resume => ykpack::Terminator::Resume,
-            TerminatorKind::Abort => ykpack::Terminator::Abort,
-            TerminatorKind::Return => ykpack::Terminator::Return,
-            TerminatorKind::Unreachable => ykpack::Terminator::Unreachable,
-            TerminatorKind::Drop{target: target_bb, unwind: unwind_bb, ..} =>
-                ykpack::Terminator::Drop{
+            // Since SIR uses the abort panic strategy, Resume and Abort are redundant.
+            TerminatorKind::Resume | TerminatorKind::Abort => Err(()),
+            TerminatorKind::Return => Ok(ykpack::Terminator::Return),
+            TerminatorKind::Unreachable => Ok(ykpack::Terminator::Unreachable),
+            TerminatorKind::Drop{target: target_bb, ref location, ..} =>
+                Ok(ykpack::Terminator::Drop{
+                    location: self.lower_place(location)?,
                     target_bb: u32::from(target_bb),
-                    unwind_bb: unwind_bb.map(|bb| u32::from(bb)),
-                },
-            TerminatorKind::DropAndReplace{target: target_bb, unwind: unwind_bb, ..} =>
-                ykpack::Terminator::DropAndReplace{
+                }),
+            TerminatorKind::DropAndReplace{target: target_bb, ref location, ref value, ..} =>
+                Ok(ykpack::Terminator::DropAndReplace{
+                    location: self.lower_place(location)?,
+                    value: self.lower_operand(value)?,
                     target_bb: u32::from(target_bb),
-                    unwind_bb: unwind_bb.map(|bb| u32::from(bb)),
-                },
-            TerminatorKind::Call{ref func, cleanup: cleanup_bb, ref destination, .. } => {
+                }),
+            TerminatorKind::Call{ref func, ref destination, .. } => {
                 let ser_oper = if let Operand::Constant(box Constant {
                     literal: Const {
                         ty: &TyS {
@@ -165,17 +173,16 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 };
 
                 let ret_bb = destination.as_ref().map(|(_, bb)| u32::from(*bb));
-                ykpack::Terminator::Call{
+                Ok(ykpack::Terminator::Call{
                     operand: ser_oper,
-                    cleanup_bb: cleanup_bb.map(|bb| u32::from(bb)),
                     ret_bb: ret_bb,
-                }
+                })
             },
-            TerminatorKind::Assert{target: target_bb, cleanup: cleanup_bb, ..} =>
-                ykpack::Terminator::Assert{
+            TerminatorKind::Assert{target: target_bb, ref cond, ..} =>
+                Ok(ykpack::Terminator::Assert{
+                    cond: self.lower_operand(cond)?,
                     target_bb: u32::from(target_bb),
-                    cleanup_bb: cleanup_bb.map(|bb| u32::from(bb)),
-                },
+                }),
             // We will never see these MIR terminators, as they are not present at code-gen time.
             TerminatorKind::Yield{..} => panic!("Tried to lower a Yield terminator"),
             TerminatorKind::GeneratorDrop => panic!("Tried to lower a GeneratorDrop terminator"),
