@@ -128,10 +128,18 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
             TerminatorKind::SwitchInt{ref discr, ref values, ref targets, ..} => {
                 match self.lower_operand(discr) {
                     Ok(ykpack::Operand::Local(local)) => {
+                        let mut target_bbs: Vec<ykpack::BasicBlockIndex> =
+                            targets.iter().map(|bb| u32::from(*bb)).collect();
+                        // In the `SwitchInt` MIR terminator the last block index in the targets
+                        // list is the block to jump to if the discriminant matches none of the
+                        // values. In SIR, we use a dedicated field to avoid confusion.
+                        let otherwise_bb = target_bbs.pop().expect("no otherwise block");
                         Ok(ykpack::Terminator::SwitchInt{
                             local,
                             values: values.iter().map(|u| ykpack::SerU128::new(*u)).collect(),
-                            target_bbs: targets.iter().map(|bb| u32::from(*bb)).collect()})
+                            target_bbs,
+                            otherwise_bb,
+                        })
                     },
                     _ => Err(()), // FIXME
                 }
