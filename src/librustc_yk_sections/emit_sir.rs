@@ -128,10 +128,18 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
             TerminatorKind::SwitchInt{ref discr, ref values, ref targets, ..} => {
                 match self.lower_operand(discr) {
                     Ok(ykpack::Operand::Local(local)) => {
+                        let mut target_bbs: Vec<ykpack::BasicBlockIndex> =
+                            targets.iter().map(|bb| u32::from(*bb)).collect();
+                        // In the `SwitchInt` MIR terminator the last block index in the targets
+                        // list is the block to jump to if the discriminant matches none of the
+                        // values. In SIR, we use a dedicated field to avoid confusion.
+                        let otherwise_bb = target_bbs.pop().expect("no otherwise block");
                         Ok(ykpack::Terminator::SwitchInt{
                             local,
                             values: values.iter().map(|u| ykpack::SerU128::new(*u)).collect(),
-                            target_bbs: targets.iter().map(|bb| u32::from(*bb)).collect()})
+                            target_bbs,
+                            otherwise_bb,
+                        })
                     },
                     _ => Err(()), // FIXME
                 }
@@ -178,11 +186,18 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                     ret_bb: ret_bb,
                 })
             },
-            TerminatorKind::Assert{target: target_bb, ref cond, ..} =>
+            TerminatorKind::Assert{target: target_bb, ref cond, expected, ..} => {
+                let local = match self.lower_operand(cond)? {
+                    ykpack::Operand::Local(l) => l,
+                    // Constant assertions will have been optimised out.
+                    ykpack::Operand::Constant(_) => panic!("constant assertion"),
+                };
                 Ok(ykpack::Terminator::Assert{
-                    cond: self.lower_operand(cond)?,
+                    cond: local,
+                    expected,
                     target_bb: u32::from(target_bb),
-                }),
+                })
+            },
             // We will never see these MIR terminators, as they are not present at code-gen time.
             TerminatorKind::Yield{..} => panic!("Tried to lower a Yield terminator"),
             TerminatorKind::GeneratorDrop => panic!("Tried to lower a GeneratorDrop terminator"),
