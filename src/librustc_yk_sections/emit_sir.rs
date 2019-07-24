@@ -406,6 +406,8 @@ fn do_generate_sir<'a, 'tcx, 'gcx>(
 
             if let Some(ref mut e) = enc {
                 e.serialise(ykpack::Pack::Body(pack))?;
+                e.serialise(ykpack::Pack::Debug(ykpack::SirDebug::new(
+                    ccx.lower_def_id(def_id), tcx.def_path_str(*def_id))))?;
             } else {
                 write!(textdump_file.as_ref().unwrap(), "{}", pack)?;
             }
