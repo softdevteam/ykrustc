@@ -106,10 +106,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     fn lower_def_id(&mut self, def_id: &DefId) -> ykpack::DefId {
-        ykpack::DefId {
-            crate_hash: self.tcx.crate_hash(def_id.krate).as_u64(),
-            def_idx: def_id.index.as_u32(),
-        }
+        lower_def_id(self.tcx, def_id)
     }
 
     fn lower_block(&mut self, blk: &BasicBlockData<'tcx>) -> ykpack::BasicBlock {
@@ -406,11 +403,14 @@ fn do_generate_sir<'a, 'tcx, 'gcx>(
 
             if let Some(ref mut e) = enc {
                 e.serialise(ykpack::Pack::Body(pack))?;
-                e.serialise(ykpack::Pack::Debug(ykpack::SirDebug::new(
-                    ccx.lower_def_id(def_id), tcx.def_path_str(*def_id))))?;
             } else {
                 write!(textdump_file.as_ref().unwrap(), "{}", pack)?;
             }
+        }
+
+        if let Some(ref mut e) = enc {
+            e.serialise(ykpack::Pack::Debug(ykpack::SirDebug::new(
+                lower_def_id(tcx, def_id), tcx.def_path_str(*def_id))))?;
         }
     }
 
@@ -421,4 +421,11 @@ fn do_generate_sir<'a, 'tcx, 'gcx>(
     }
 
     Ok(sir_path)
+}
+
+fn lower_def_id(tcx: &TyCtxt<'_, '_, '_>, &def_id: &DefId) -> ykpack::DefId {
+    ykpack::DefId {
+        crate_hash: tcx.crate_hash(def_id.krate).as_u64(),
+        def_idx: def_id.index.as_u32(),
+    }
 }
