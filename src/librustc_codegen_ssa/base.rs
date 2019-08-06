@@ -28,7 +28,6 @@ use rustc::middle::cstore::{self, LinkagePreference};
 use rustc::util::common::{time, print_time_passes_entry};
 use rustc::session::config::{self, EntryFnType, Lto};
 use rustc::session::Session;
-use rustc::util::nodemap::DefIdSet;
 use rustc::util::nodemap::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_codegen_utils::{symbol_names_test, check_for_rustc_errors_attr};
@@ -48,7 +47,7 @@ use std::any::Any;
 use std::cmp;
 use std::ops::{Deref, DerefMut};
 use std::time::{Instant, Duration};
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 use syntax_pos::Span;
 use syntax::attr;
 use rustc::hir;
@@ -485,7 +484,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     metadata: EncodedMetadata,
     need_metadata_module: bool,
     rx: mpsc::Receiver<Box<dyn Any + Send>>
-) -> (OngoingCodegen<B>, Arc<DefIdSet>) {
+) -> OngoingCodegen<B> {
 
     check_for_rustc_errors_attr(tcx);
 
@@ -505,14 +504,14 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
         ongoing_codegen.check_for_errors(tcx.sess);
 
-        return (ongoing_codegen, Arc::new(DefIdSet::default()));
+        return ongoing_codegen;
     }
 
     let cgu_name_builder = &mut CodegenUnitNameBuilder::new(tcx);
 
     // Run the monomorphization collector and partition the collected items into
     // codegen units.
-    let (def_ids, codegen_units) = tcx.collect_and_partition_mono_items(LOCAL_CRATE);
+    let codegen_units = tcx.collect_and_partition_mono_items(LOCAL_CRATE).1;
     let codegen_units = (*codegen_units).clone();
 
     // Force all codegen_unit queries so they are already either red or green
@@ -654,7 +653,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     ongoing_codegen.check_for_errors(tcx.sess);
 
     assert_and_save_dep_graph(tcx);
-    (ongoing_codegen.into_inner(), def_ids)
+    ongoing_codegen.into_inner()
 }
 
 /// A curious wrapper structure whose only purpose is to call `codegen_aborted`

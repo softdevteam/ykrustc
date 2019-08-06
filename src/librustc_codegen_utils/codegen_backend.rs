@@ -10,7 +10,7 @@
 #![feature(box_syntax)]
 
 use std::any::Any;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc;
 
 use syntax::symbol::Symbol;
 use rustc::session::Session;
@@ -20,7 +20,6 @@ use rustc::ty::TyCtxt;
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::dep_graph::DepGraph;
-use rustc::util::nodemap::DefIdSet;
 
 pub use rustc_data_structures::sync::MetadataRef;
 
@@ -41,7 +40,7 @@ pub trait CodegenBackend {
         metadata: EncodedMetadata,
         need_metadata_module: bool,
         rx: mpsc::Receiver<Box<dyn Any + Send>>
-    ) -> (Box<dyn Any>, Arc<DefIdSet>);
+    ) -> Box<dyn Any>;
 
     /// This is called on the returned `Box<dyn Any>` from `codegen_backend`
     ///
