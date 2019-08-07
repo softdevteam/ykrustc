@@ -1083,7 +1083,7 @@ pub fn start_codegen<'tcx>(
     });
 
     tcx.sess.profiler(|p| p.start_activity("codegen crate"));
-    let (codegen, def_ids) = time(tcx.sess, "codegen", move || {
+    let codegen = time(tcx.sess, "codegen", move || {
         codegen_backend.codegen_crate(tcx, metadata, need_metadata_module, rx)
     });
     tcx.sess.profiler(|p| p.end_activity("codegen crate"));
@@ -1102,6 +1102,7 @@ pub fn start_codegen<'tcx>(
 
     // Output Yorick debug sections into binary targets.
     if tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) {
+        let (def_ids, _) = tcx.collect_and_partition_mono_items(LOCAL_CRATE);
         let sir_mode = if tcx.sess.opts.output_types.contains_key(&OutputType::YkSir) {
             // The user passed "--emit yk-sir" so we will output textual SIR and stop.
             SirMode::TextDump(outputs.path(OutputType::YkSir))

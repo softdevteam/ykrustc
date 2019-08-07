@@ -17,7 +17,6 @@ use rustc::ty::TyCtxt;
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::dep_graph::DepGraph;
-use rustc::util::nodemap::DefIdSet;
 use rustc::util::common::ErrorReported;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 use rustc_data_structures::sync::MetadataRef;
@@ -65,10 +64,10 @@ impl CodegenBackend for TheBackend {
         _metadata: EncodedMetadata,
         _need_metadata_module: bool,
         _rx: mpsc::Receiver<Box<Any + Send>>
-    ) -> (Box<Any>, Arc<DefIdSet>) {
+    ) -> Box<Any> {
         use rustc::hir::def_id::LOCAL_CRATE;
 
-        (Box::new(tcx.crate_name(LOCAL_CRATE) as Symbol), Arc::new(DefIdSet::default()))
+        Box::new(tcx.crate_name(LOCAL_CRATE) as Symbol)
     }
 
     fn join_codegen_and_link(

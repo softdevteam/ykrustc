@@ -62,7 +62,6 @@ use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::session::Session;
 use rustc::session::config::{OutputFilenames, OutputType, PrintRequest, OptLevel};
 use rustc::ty::{self, TyCtxt};
-use rustc::util::nodemap::DefIdSet;
 use rustc::util::common::ErrorReported;
 use rustc_codegen_ssa::ModuleCodegen;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
@@ -292,10 +291,9 @@ impl CodegenBackend for LlvmCodegenBackend {
         metadata: EncodedMetadata,
         need_metadata_module: bool,
         rx: mpsc::Receiver<Box<dyn Any + Send>>
-    ) -> (Box<dyn Any>, Arc<DefIdSet>) {
-        let (codegen, def_ids) = rustc_codegen_ssa::base::codegen_crate(
-            LlvmCodegenBackend(()), tcx, metadata, need_metadata_module, rx);
-        (box codegen, def_ids)
+    ) -> Box<dyn Any> {
+        box rustc_codegen_ssa::base::codegen_crate(
+            LlvmCodegenBackend(()), tcx, metadata, need_metadata_module, rx)
     }
 
     fn join_codegen_and_link(
