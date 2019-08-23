@@ -1462,14 +1462,22 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         self.cstore.metadata_encoding_version().to_vec()
     }
 
+    /// Get the DefIds of items with MIRs in dependency crates.
+    /// This is for exclusive use by Yorick, as it makes an assumption: that we never want to
+    /// serialise librustc* in the SIR (they are too big and VMs shouldn't use them).
     pub fn metadata_mir_defids(&self) -> DefIdSet {
         let mut res = Vec::new();
         let tbl_lens = self.cstore.def_path_table_lens();
 
         for (cnum, ln) in tbl_lens.iter().enumerate() {
+            let cnum = CrateNum::from_usize(cnum);
+            if self.crate_name(cnum).as_str().starts_with("rustc") {
+                continue;
+            }
+
             for idx in 0..*ln {
                 let def_id = DefId {
-                    krate: CrateNum::from_usize(cnum),
+                    krate: cnum,
                     index: DefIndex::from_usize(idx)
                 };
                 if self.is_mir_available(def_id) {
