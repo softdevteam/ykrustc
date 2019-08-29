@@ -561,16 +561,4 @@ impl CrateStore for cstore::CStore {
     {
         schema::METADATA_HEADER
     }
-
-    /// Returns a vector of definition path table lengths for all crates. The vector indices
-    /// correspond with crate numbers. Index 0 (the local crate) always reports length 0.
-    fn def_path_table_lens(&self) -> Vec<usize> {
-        let mut res = vec![0];
-        self.iter_crate_data(|cnum, md| {
-            // We are assuming the crates come out in order.
-            debug_assert!(cnum.as_usize() == res.len());
-            res.push(md.def_path_table.size());
-        });
-        res
-    }
 }

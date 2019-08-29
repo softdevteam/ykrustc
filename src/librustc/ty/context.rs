@@ -64,7 +64,7 @@ use std::hash::{Hash, Hasher};
 use std::fmt;
 use std::mem;
 use std::ops::{Deref, Bound};
-use std::iter::{self, FromIterator};
+use std::iter;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::marker::PhantomData;
@@ -1460,24 +1460,6 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
     pub fn metadata_encoding_version(self) -> Vec<u8> {
         self.cstore.metadata_encoding_version().to_vec()
-    }
-
-    pub fn metadata_mir_defids(&self) -> DefIdSet {
-        let mut res = Vec::new();
-        let tbl_lens = self.cstore.def_path_table_lens();
-
-        for (cnum, ln) in tbl_lens.iter().enumerate() {
-            for idx in 0..*ln {
-                let def_id = DefId {
-                    krate: CrateNum::from_usize(cnum),
-                    index: DefIndex::from_usize(idx)
-                };
-                if self.is_mir_available(def_id) {
-                    res.push(def_id);
-                }
-            }
-        }
-        DefIdSet::from_iter(res)
     }
 
     // Note that this is *untracked* and should only be used within the query

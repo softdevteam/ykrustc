@@ -11,7 +11,7 @@ TARBALL_NAME=ykrustc-stage2-latest.tar.bz2
 SNAP_DIR=/opt/ykrustc-bin-snapshots
 
 # Ensure the build fails if it uses excessive amounts of memory.
-ulimit -d $((1024 * 1024 * 12)) # 12 GiB
+ulimit -d $((1024 * 1024 * 8)) # 8 GiB
 
 # Note that the gdb must be Python enabled.
 /usr/bin/time -v ./x.py test --config .buildbot.config.toml

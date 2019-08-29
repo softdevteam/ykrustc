@@ -1,4 +1,6 @@
 // ignore-tidy-linelength
+// ignore-test FIXME swt_ignore
+// ^ trace recorder function interferes with gdb output.
 
 // Require LLVM with DW_TAG_variant_part and a gdb that can read it.
 // min-system-llvm-version: 8.0
