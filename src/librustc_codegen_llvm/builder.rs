@@ -5,6 +5,7 @@ use crate::context::CodegenCx;
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
+use crate::llvm::debuginfo::DIScope;
 use syntax::symbol::LocalInternedString;
 use rustc_codegen_ssa::common::{IntPredicate, TypeKind, RealPredicate};
 use rustc_codegen_ssa::MemFlags;
@@ -20,7 +21,7 @@ use rustc_codegen_ssa::mir::operand::{OperandValue, OperandRef};
 use rustc_codegen_ssa::mir::place::PlaceRef;
 use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::ops::{Deref, Range};
 use std::ptr;
 use std::iter::TrustedLen;
@@ -57,6 +58,7 @@ impl BackendTypes for Builder<'_, 'll, 'tcx> {
     type Funclet = <CodegenCx<'ll, 'tcx> as BackendTypes>::Funclet;
 
     type DIScope = <CodegenCx<'ll, 'tcx> as BackendTypes>::DIScope;
+    type DISubprogram = <CodegenCx<'ll, 'tcx> as BackendTypes>::DISubprogram;
 }
 
 impl ty::layout::HasDataLayout for Builder<'_, '_, '_> {
@@ -154,9 +156,48 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
+    fn position_before(&mut self, instr: &Value) {
+        unsafe {
+            llvm::LLVMPositionBuilderBefore(self.llbuilder, instr);
+        }
+    }
+
     fn position_at_end(&mut self, llbb: &'ll BasicBlock) {
         unsafe {
             llvm::LLVMPositionBuilderAtEnd(self.llbuilder, llbb);
+        }
+    }
+
+    fn add_yk_block_label(&mut self, di_sp: &DIScope, lbl_name: CString) {
+        // Insert a DWARF label at the start of each block.
+        // ykrt uses this at runtime to map virtual addresses to MIR blocks.
+        if let Some(first_instr) = self.first_instruction(self.llbb()) {
+            self.position_before(first_instr);
+
+            let dbg_cx = self.cx().dbg_cx.as_ref().unwrap();
+            let di_bldr = dbg_cx.get_builder();
+
+            unsafe {
+                llvm::LLVMRustAddYkBlockLabel(self.llbuilder, di_bldr, di_sp, first_instr,
+                                              lbl_name.as_ptr());
+            }
+        }
+
+        self.position_at_end(self.llbb());
+    }
+
+    fn add_yk_block_label_at_end(&mut self, di_sp: &DIScope, lbl_name: CString) {
+        let dbg_cx = self.cx().dbg_cx.as_ref().unwrap();
+        let di_bldr = dbg_cx.get_builder();
+        unsafe {
+            llvm::LLVMRustAddYkBlockLabelAtEnd(self.llbuilder, di_bldr, di_sp, self.llbb(),
+                                               lbl_name.as_ptr());
+        }
+    }
+
+    fn first_instruction(&mut self, llbb: &'ll BasicBlock) -> Option<&'ll Value> {
+        unsafe {
+            llvm::LLVMGetFirstInstruction(llbb)
         }
     }
 

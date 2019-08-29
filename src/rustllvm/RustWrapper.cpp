@@ -5,6 +5,7 @@
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
@@ -952,6 +953,27 @@ extern "C" int64_t LLVMRustDIBuilderCreateOpDeref() {
 
 extern "C" int64_t LLVMRustDIBuilderCreateOpPlusUconst() {
   return dwarf::DW_OP_plus_uconst;
+}
+
+extern "C" bool LLVMRustAddYkBlockLabel(LLVMBuilderRef Builder,
+                                        LLVMRustDIBuilderRef DBuilder,
+                                        DISubprogram *SP, Instruction *Instr,
+                                        char *Name) {
+    // FIXME Add useful location info?
+    auto Loc = DebugLoc::get(0, 0, SP);
+    DILabel *label = DBuilder->createLabel(SP, Name, SP->getFile(), 0, true);
+    DBuilder->insertLabel(label, Loc, Instr);
+    return true;
+}
+
+extern "C" bool LLVMRustAddYkBlockLabelAtEnd(LLVMBuilderRef Builder,
+                                             LLVMRustDIBuilderRef DBuilder,
+                                             DISubprogram *SP,
+                                             BasicBlock *Block, char *Name) {
+    auto Loc = DebugLoc::get(0, 0, SP);
+    DILabel *label = DBuilder->createLabel(SP, Name, SP->getFile(), 0, true);
+    DBuilder->insertLabel(label, Loc, Block);
+    return true;
 }
 
 extern "C" void LLVMRustWriteTypeToString(LLVMTypeRef Ty, RustStringRef Str) {

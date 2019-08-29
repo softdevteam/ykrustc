@@ -99,6 +99,10 @@ impl<'a, 'tcx> CrateDebugContext<'a, 'tcx> {
             composite_types_completed: Default::default(),
         }
     }
+
+    pub fn get_builder(&self) -> &DIBuilder<'a> {
+        &self.builder
+    }
 }
 
 /// Creates any deferred debug metadata nodes
@@ -549,5 +553,9 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
              byte_offset_of_var_in_env as i64,
              llvm::LLVMRustDIBuilderCreateOpDeref()]
         }
+    }
+
+    fn has_debug(&self) -> bool {
+        self.dbg_cx.is_some()
     }
 }

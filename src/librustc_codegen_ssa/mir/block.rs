@@ -1,7 +1,7 @@
 use rustc::middle::lang_items;
 use rustc::ty::{self, Ty, TypeFoldable, Instance};
 use rustc::ty::layout::{self, LayoutOf, HasTyCtxt, FnTypeExt};
-use rustc::mir::{self, Place, PlaceBase, Static, StaticKind};
+use rustc::mir::{self, Place, PlaceBase, Static, StaticKind, Location};
 use rustc::mir::interpret::InterpError;
 use rustc_target::abi::call::{ArgType, FnType, PassMode, IgnoreMode};
 use rustc_target::spec::abi::Abi;
@@ -9,6 +9,8 @@ use crate::base;
 use crate::MemFlags;
 use crate::common::{self, IntPredicate};
 use crate::meth;
+
+use std::ffi::CString;
 
 use crate::traits::*;
 
@@ -800,6 +802,20 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let data = &self.mir[bb];
 
         debug!("codegen_block({:?}={:?})", bb, data);
+
+        if bx.cx().has_debug() {
+            let did = self.instance.def.def_id();
+            let lbl_name = CString::new(format!("__YK_BLK_{}_{}_{}", did.krate.as_u32(),
+                                        did.index.as_u32(), bb.index())).unwrap();
+
+            // Get the sub_program.
+            // FIXME must be an easier way.
+            let loc = Location{block: bb, statement_index: 0};
+            let source_info = self.mir.source_info(loc);
+            let (_, span) = self.debug_loc(*source_info);
+            let di_sp = self.fn_metadata(span);
+            bx.add_yk_block_label_at_end(*di_sp, lbl_name);
+        }
 
         for statement in &data.statements {
             bx = self.codegen_statement(bx, statement);

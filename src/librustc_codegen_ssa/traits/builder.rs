@@ -14,6 +14,7 @@ use rustc::ty::layout::{Align, Size, HasParamEnv};
 use rustc_target::spec::{HasTargetSpec};
 use std::ops::Range;
 use std::iter::TrustedLen;
+use std::ffi::CString;
 
 #[derive(Copy, Clone)]
 pub enum OverflowOp {
@@ -40,6 +41,10 @@ pub trait BuilderMethods<'a, 'tcx: 'a>:
     fn cx(&self) -> &Self::CodegenCx;
     fn llbb(&self) -> Self::BasicBlock;
 
+    fn first_instruction(&mut self, llbb: Self::BasicBlock) -> Option<Self::Value>;
+    fn add_yk_block_label(&mut self, di_sp: Self::DIScope, lbl_name: CString);
+    fn add_yk_block_label_at_end(&mut self, di_sp: Self::DIScope, lbl_name: CString);
+    fn position_before(&mut self, instr: Self::Value);
     fn position_at_end(&mut self, llbb: Self::BasicBlock);
     fn ret_void(&mut self);
     fn ret(&mut self, v: Self::Value);

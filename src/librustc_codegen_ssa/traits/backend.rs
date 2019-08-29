@@ -18,6 +18,7 @@ pub trait BackendTypes {
     type Funclet;
 
     type DIScope: Copy;
+    type DISubprogram: Copy;
 }
 
 pub trait Backend<'tcx>:
