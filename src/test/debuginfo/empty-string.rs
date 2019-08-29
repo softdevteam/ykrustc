@@ -1,6 +1,5 @@
 // ignore-windows failing on win32 bot
 // ignore-android: FIXME(#10381)
-// ignore-test FIXME swt_ignore
 // compile-flags:-g
 // min-gdb-version: 7.7
 // min-lldb-version: 310

@@ -1,6 +1,4 @@
 // min-lldb-version: 310
-// ignore-test FIXME swt_ignore
-// ^-- See https://github.com/rust-lang/rust/pull/63742
 
 // compile-flags:-g
 
