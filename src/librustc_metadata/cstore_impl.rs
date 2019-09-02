@@ -245,6 +245,10 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     used_crate_source => { Lrc::new(cdata.source.clone()) }
 
     exported_symbols => { Arc::new(cdata.exported_symbols(tcx)) }
+
+    defids_with_mir => {
+        cdata.defids_with_mir(tcx)
+    }
 }
 
 pub fn provide<'tcx>(providers: &mut Providers<'tcx>) {
