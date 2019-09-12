@@ -138,7 +138,7 @@ impl MirPass for AddYkSWTCalls {
 /// Given a `MirSource`, decides if it is possible for us to trace (and thus whether we should
 /// transform) the MIR. Returns `true` if we cannot trace, otherwise `false`.
 fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource<'_>) -> bool {
-    // Never annotate anything annotated with the `#[no_trace]` attribute. This is used on tests
+    // Never annotate anything annotated with the `#[no_sw_trace]` attribute. This is used on tests
     // where our pass would interfere and on the trace recorder to prevent infinite
     // recursion.
     //
@@ -146,7 +146,7 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource<'_>) -> bool {
     // binary-level function epilogues and prologues, often using in-line assembler. We can't
     // automatically insert our calls into such code without breaking stuff.
     for attr in tcx.get_attrs(src.def_id()).iter() {
-        if attr.check_name(sym::no_trace) {
+        if attr.check_name(sym::no_sw_trace) {
             return true;
         }
         if attr.check_name(sym::naked) {
@@ -154,9 +154,10 @@ fn is_untraceable(tcx: TyCtxt<'a, 'tcx, 'tcx>, src: MirSource<'_>) -> bool {
        }
     }
 
-    // Similar to `#[no_trace]`, don't transform anything inside a crate marked `#![no_trace]`.
+    // Similar to `#[no_sw_trace]`, don't transform anything inside a crate marked
+    // `#![no_sw_trace]`.
     for attr in tcx.hir().krate_attrs() {
-        if attr.check_name(sym::no_trace) {
+        if attr.check_name(sym::no_sw_trace) {
             return true;
         }
     }

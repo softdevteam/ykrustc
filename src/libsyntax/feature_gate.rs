@@ -1000,7 +1000,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     (sym::automatically_derived, Normal, template!(Word), Ungated),
     (sym::no_mangle, Whitelisted, template!(Word), Ungated),
     // Don't trace this. Disables the `AddYkSWTCalls` MIR transform.
-    (sym::no_trace, Whitelisted, template!(Word), Ungated),
+    (sym::no_sw_trace, Whitelisted, template!(Word), Ungated),
     (sym::no_link, Normal, template!(Word), Ungated),
     (sym::derive, Normal, template!(List: "Trait1, Trait2, ..."), Ungated),
     (

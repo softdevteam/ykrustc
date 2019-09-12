@@ -4,7 +4,7 @@
 // Tests that MIR inliner can handle closure arguments,
 // even when (#45894)
 
-#![no_trace]
+#![no_sw_trace]
 
 fn main() {
     println!("{}", foo(0, &14));

@@ -14,7 +14,7 @@
 // be re-used, so checking that this module was re-used is sufficient.
 #![rustc_partition_reused(module="issue_38222", cfg="rpass2")]
 
-#![no_trace]
+#![no_sw_trace]
 
 //[rpass1] compile-flags: -C debuginfo=1
 //[rpass2] compile-flags: -C debuginfo=1

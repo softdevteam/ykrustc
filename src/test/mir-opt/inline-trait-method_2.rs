@@ -1,6 +1,6 @@
 // compile-flags: -Z span_free_formats -Z mir-opt-level=3
 
-#![no_trace]
+#![no_sw_trace]
 
 fn test2(x: &dyn X) -> bool {
     test(x)

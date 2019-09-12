@@ -9,7 +9,7 @@
 #![feature(stmt_expr_attributes)]
 #![allow(dead_code)]
 #![crate_type = "rlib"]
-#![no_trace]
+#![no_sw_trace]
 
 #![rustc_partition_codegened(module="struct_point-point", cfg="cfail2")]
 

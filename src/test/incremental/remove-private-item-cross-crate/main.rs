@@ -7,7 +7,7 @@
 
 #![feature(rustc_attrs)]
 #![crate_type = "bin"]
-#![no_trace]
+#![no_sw_trace]
 
 #![rustc_partition_reused(module="main", cfg="rpass2")]
 
