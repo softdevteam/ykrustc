@@ -709,6 +709,9 @@ rustc_queries! {
         }
         query upstream_monomorphizations_for(_: DefId)
             -> Option<&'tcx FxHashMap<SubstsRef<'tcx>, CrateNum>> {}
+        query defids_with_mir(k: CrateNum) -> DefIdSet {
+            desc { "collecting codegenned indices that have MIR encoded" }
+        }
     }
 
     Other {
