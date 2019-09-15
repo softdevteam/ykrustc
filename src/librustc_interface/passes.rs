@@ -1101,8 +1101,12 @@ pub fn start_codegen<'tcx>(
         }
     }
 
-    // Output Yorick debug sections into binary targets.
-    if tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) {
+    // Output Yorick debug sections into binary targets if necessary.
+    let no_sir = match env::var("YK_NO_SIR") {
+        Ok(val) => val == "1",
+        Err(_) => false,
+    };
+    if !no_sir && tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) {
         let def_ids = tcx.collect_and_partition_mono_items(LOCAL_CRATE).0;
         let mut def_ids = (*def_ids).clone();
         for cnum in tcx.crates() {

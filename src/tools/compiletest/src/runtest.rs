@@ -3536,6 +3536,10 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_yk_sir_test(&self) {
+        // We build the compiler with SIR emission disabled (because it is slow), but these tests
+        // really do need the SIR.
+        env::remove_var("YK_NO_SIR");
+
         let proc_res = self.compile_test();
 
         if !proc_res.status.success() {
