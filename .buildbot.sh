@@ -5,13 +5,16 @@
 set -e
 
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
+# This disables encoding SIR into the compiler binaries. We do this because
+# encoding SIR is slow and we don't SIR in the compiler binaries anyway.
+export YK_NO_SIR=1
 
 TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest
 TARBALL_NAME=ykrustc-stage2-latest.tar.bz2
 SNAP_DIR=/opt/ykrustc-bin-snapshots
 
 # Ensure the build fails if it uses excessive amounts of memory.
-ulimit -d $((1024 * 1024 * 12)) # 12 GiB
+ulimit -d $((1024 * 1024 * 8)) # 8 GiB
 
 # Note that the gdb must be Python enabled.
 /usr/bin/time -v ./x.py test --config .buildbot.config.toml
