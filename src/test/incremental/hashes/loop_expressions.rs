@@ -12,7 +12,7 @@
 #![allow(warnings)]
 #![feature(rustc_attrs)]
 #![crate_type="rlib"]
-#![no_trace]
+#![no_sw_trace]
 
 
 // Change loop body ------------------------------------------------------------

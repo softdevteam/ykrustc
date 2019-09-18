@@ -6,7 +6,7 @@
 
 #![rustc_partition_codegened(module="change_symbol_export_status-mod1", cfg="rpass2")]
 #![rustc_partition_reused(module="change_symbol_export_status-mod2", cfg="rpass2")]
-#![no_trace]
+#![no_sw_trace]
 
 // This test case makes sure that a change in symbol visibility is detected by
 // our dependency tracking. We do this by changing a module's visibility to

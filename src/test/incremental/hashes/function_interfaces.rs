@@ -15,7 +15,7 @@
 #![feature(linkage)]
 #![feature(rustc_attrs)]
 #![crate_type = "rlib"]
-#![no_trace]
+#![no_sw_trace]
 
 
 // Add Parameter ---------------------------------------------------------------

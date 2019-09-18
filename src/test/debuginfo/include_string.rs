@@ -30,7 +30,7 @@
 #![allow(unused_variables)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![no_trace]
+#![no_sw_trace]
 
 // This test case makes sure that debug info does not ICE when include_str is
 // used multiple times (see issue #11322).

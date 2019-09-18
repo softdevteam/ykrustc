@@ -1,7 +1,7 @@
 // compile-flags: -O
 
 #![crate_type="rlib"]
-#![no_trace]
+#![no_sw_trace]
 
 // CHECK-LABEL: @memzero
 // CHECK-NOT: store

@@ -17,7 +17,7 @@
 
 
 #![allow(unused_variables)]
-#![no_trace]
+#![no_sw_trace]
 
 fn main() {
 

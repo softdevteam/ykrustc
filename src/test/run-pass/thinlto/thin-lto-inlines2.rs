@@ -10,7 +10,7 @@
 // praying two functions go into separate codegen units and then assuming that
 // if inlining *doesn't* happen the first byte of the functions will differ.
 
-#![no_trace]
+#![no_sw_trace]
 
 extern crate thin_lto_inlines_aux as bar;
 

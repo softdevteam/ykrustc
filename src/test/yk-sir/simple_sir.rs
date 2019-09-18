@@ -1,6 +1,6 @@
 use std::env;
 
-#[no_trace]
+#[no_sw_trace]
 fn main() {
     let x = env::args().count();
     let mut res = 42;

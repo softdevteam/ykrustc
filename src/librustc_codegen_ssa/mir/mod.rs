@@ -107,6 +107,10 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         bx.set_source_location(&mut self.debug_context, scope, span);
     }
 
+    pub fn fn_metadata(&self, span: Span) -> &Bx::DIScope {
+        &self.debug_context.get_ref(span).fn_metadata
+    }
+
     pub fn debug_loc(&self, source_info: mir::SourceInfo) -> (Option<Bx::DIScope>, Span) {
         // Bail out if debug info emission is not enabled.
         match self.debug_context {

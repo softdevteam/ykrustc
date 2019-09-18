@@ -1,7 +1,7 @@
 // compile-flags: -O
 
 #![crate_type = "lib"]
-#![no_trace]
+#![no_sw_trace]
 
 // CHECK-LABEL: @issue_34947
 #[no_mangle]

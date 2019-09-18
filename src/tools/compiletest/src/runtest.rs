@@ -3536,9 +3536,8 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_yk_sir_test(&self) {
-        // We build the compiler with SIR emission disabled (because it is slow), but these tests
-        // really do need the SIR.
-        env::remove_var("YK_NO_SIR");
+        // A tracer must be enabled for SIR to be emitted.
+        env::set_var("YK_TRACER", "sw");
 
         let proc_res = self.compile_test();
 

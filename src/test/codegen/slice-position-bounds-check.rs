@@ -1,7 +1,7 @@
 // no-system-llvm
 // compile-flags: -O -C panic=abort
 #![crate_type = "lib"]
-#![no_trace]
+#![no_sw_trace]
 
 fn search<T: Ord + Eq>(arr: &mut [T], a: &T) -> Result<usize, ()> {
     match arr.iter().position(|x| x == a) {

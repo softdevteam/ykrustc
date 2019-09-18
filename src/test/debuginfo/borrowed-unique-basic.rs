@@ -119,7 +119,7 @@
 #![feature(box_syntax)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![no_trace]
+#![no_sw_trace]
 
 fn main() {
     let bool_box: Box<bool> = box true;

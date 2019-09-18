@@ -24,6 +24,7 @@ use rustc::util::nodemap::FxHashMap;
 use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_serialize::{Encodable, Encoder, SpecializedEncoder, opaque};
 
+use std::env;
 use std::hash::Hash;
 use std::path::Path;
 use rustc_data_structures::sync::Lrc;
@@ -62,6 +63,20 @@ macro_rules! encoder_methods {
         $(fn $name(&mut self, value: $ty) -> Result<(), Self::Error> {
             self.opaque.$name(value)
         })*
+    }
+}
+
+/// A check to see if we are using a Yorick tracer. Used to decide whether we need to encode MIR
+/// for all items.
+fn building_with_yk_tracer() -> bool {
+    match env::var("YK_TRACER") {
+        Ok(val) => {
+            match val.as_str() {
+                "hw" | "sw" | "sw-nosir" => true,
+                unknown => panic!("Bad YK_TRACER environment: {}", unknown),
+            }
+        },
+        Err(_) => false,
     }
 }
 
@@ -979,7 +994,8 @@ impl EncodeContext<'_, 'tcx> {
                                         tcx.codegen_fn_attrs(def_id).requests_inline()) &&
                                         !self.metadata_output_only();
                     let is_const_fn = sig.header.constness == hir::Constness::Const;
-                    let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir;
+                    let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir
+                        || building_with_yk_tracer();
                     needs_inline || is_const_fn || always_encode_mir
                 },
                 hir::ImplItemKind::Existential(..) |
@@ -1297,7 +1313,8 @@ impl EncodeContext<'_, 'tcx> {
                         (generics.requires_monomorphization(tcx) ||
                          tcx.codegen_fn_attrs(def_id).requests_inline()) &&
                             !self.metadata_output_only();
-                    let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir;
+                    let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir
+                        || building_with_yk_tracer();
                     if needs_inline
                         || header.constness == hir::Constness::Const
                         || always_encode_mir

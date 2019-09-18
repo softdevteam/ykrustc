@@ -10,7 +10,7 @@
 #![feature(rustc_attrs)]
 #![feature(stmt_expr_attributes)]
 #![allow(dead_code)]
-#![no_trace]
+#![no_sw_trace]
 
 #![rustc_partition_reused(module="struct_point-fn_read_field", cfg="cfail2")]
 #![rustc_partition_reused(module="struct_point-fn_write_field", cfg="cfail2")]
