@@ -52,7 +52,7 @@ impl MirPass for AddYkSWTCalls {
         match env::var("YK_TRACER") {
             Ok(val) => {
                 match val.as_str() {
-                    "sw" | "sw-rustc" => (),
+                    "sw" | "sw-nosir" => (),
                     "hw" => return,
                     unknown => panic!("Invalid YK_TRACER environment: {}", unknown),
                 }

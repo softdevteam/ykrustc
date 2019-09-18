@@ -72,7 +72,7 @@ fn building_with_yk_tracer() -> bool {
     match env::var("YK_TRACER") {
         Ok(val) => {
             match val.as_str() {
-                "hw" | "sw" | "sw-rustc" => true,
+                "hw" | "sw" | "sw-nosir" => true,
                 unknown => panic!("Bad YK_TRACER environment: {}", unknown),
             }
         },

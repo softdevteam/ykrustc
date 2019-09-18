@@ -5,11 +5,11 @@
 set -e
 
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
-# For now we only test the software tracer in CI. We use `sw-rustc` below so
+# For now we only test the software tracer in CI. We use `sw-nosir` below so
 # that the standard library is software-tracing ready, but the compiler
 # binaries themselves do not contain SIR (making SIR really slows down testing,
 # and it isn't necessary for the compiler itself anyway).
-export YK_TRACER=sw-rustc
+export YK_TRACER=sw-nosir
 
 TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest
 TARBALL_NAME=ykrustc-stage2-latest.tar.bz2

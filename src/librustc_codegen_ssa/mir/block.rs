@@ -807,7 +807,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let tracer = match env::var("YK_TRACER") {
             Ok(val) => match val.as_str() {
                 "hw" => true,
-                "sw" | "sw-rustc" => false,
+                "sw" | "sw-nosir" => false,
                 unknown => panic!("Invalid YK_TRACER environment: {}", unknown),
             }
             Err(_) => false

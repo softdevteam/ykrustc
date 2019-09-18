@@ -1109,10 +1109,10 @@ pub fn start_codegen<'tcx>(
         Ok(val) => {
             match val.as_str() {
                 "hw" | "sw" => true,
-                // We use `sw-rustc` when building the compiler itself for software tracing.
+                // We use `sw-nosir` when building the compiler itself for software tracing.
                 // There's no need to encode SIR into compiler tools and it would make the
                 // build/test cycle very slow.
-                "sw-rustc" => false,
+                "sw-nosir" => false,
                 unknown => panic!("Invalid YK_TRACER environment: {}", unknown)
             }
         },
