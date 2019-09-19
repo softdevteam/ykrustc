@@ -11,7 +11,6 @@ use crate::common::{self, IntPredicate};
 use crate::meth;
 
 use std::ffi::CString;
-use std::env;
 
 use crate::traits::*;
 
@@ -804,16 +803,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         debug!("codegen_block({:?}={:?})", bb, data);
 
-        let tracer = match env::var("YK_TRACER") {
-            Ok(val) => match val.as_str() {
-                "hw" => true,
-                "sw" | "sw-nosir" => false,
-                unknown => panic!("Invalid YK_TRACER environment: {}", unknown),
-            }
-            Err(_) => false
-        };
-
-        if tracer && bx.cx().has_debug() {
+        if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
             let did = self.instance.def.def_id();
             let lbl_name = CString::new(format!("__YK_BLK_{}_{}_{}", did.krate.as_u32(),
                                         did.index.as_u32(), bb.index())).unwrap();

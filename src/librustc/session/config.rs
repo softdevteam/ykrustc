@@ -99,6 +99,42 @@ pub enum LtoCli {
     Unspecified,
 }
 
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum TracerMode {
+    /// `-C tracer=off`
+    Off,
+    /// `-C tracer=sw`
+    Software,
+    /// `-C tracer=hw`
+    Hardware,
+}
+
+impl TracerMode {
+    /// Does this mode require SIR to be encoded into the resulting binary?
+    pub fn encode_sir(&self) -> bool {
+        match self {
+            TracerMode::Off => false,
+            TracerMode::Software | TracerMode::Hardware => true,
+        }
+    }
+
+    /// Does this mode require DILabels for SIR mapping?
+    pub fn sir_labels(&self) -> bool {
+        match self {
+            TracerMode::Hardware => true,
+            TracerMode::Software | TracerMode::Off => false,
+        }
+    }
+
+    /// Does this mode require each block to call the software trace recorder?
+    pub fn sw_trace_recorder(&self) -> bool {
+        match self {
+            TracerMode::Off | TracerMode::Hardware => false,
+            TracerMode::Software => true,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Hash)]
 pub enum LinkerPluginLto {
     LinkerPlugin(PathBuf),
@@ -846,6 +882,8 @@ macro_rules! options {
         pub const parse_lto: Option<&str> =
             Some("either a boolean (`yes`, `no`, `on`, `off`, etc), `thin`, \
                   `fat`, or omitted");
+        pub const parse_tracer: Option<&str> =
+            Some("one of `off`, `sw` or `hw`");
         pub const parse_linker_plugin_lto: Option<&str> =
             Some("either a boolean (`yes`, `no`, `on`, `off`, etc), \
                   or the path to the linker plugin");
@@ -860,7 +898,7 @@ macro_rules! options {
     #[allow(dead_code)]
     mod $mod_set {
         use super::{$struct_name, Passes, Sanitizer, LtoCli, LinkerPluginLto, SwitchWithOptPath,
-            SymbolManglingVersion};
+            SymbolManglingVersion, TracerMode};
         use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel};
         use std::path::PathBuf;
         use std::str::FromStr;
@@ -1095,6 +1133,16 @@ macro_rules! options {
             true
         }
 
+        fn parse_tracer(slot: &mut TracerMode, v: Option<&str>) -> bool {
+            *slot = match v {
+                None | Some("off") => TracerMode::Off,
+                Some("sw") => TracerMode::Software,
+                Some("hw") => TracerMode::Hardware,
+                Some(_) => return false,
+            };
+            true
+        }
+
         fn parse_linker_plugin_lto(slot: &mut LinkerPluginLto, v: Option<&str>) -> bool {
             if v.is_some() {
                 let mut bool_arg = None;
@@ -1160,6 +1208,7 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "don't let linker strip dead code (turning it on can be used for code coverage)"),
     lto: LtoCli = (LtoCli::Unspecified, parse_lto, [TRACKED],
         "perform LLVM link-time optimizations"),
+    tracer: TracerMode = (TracerMode::Off, parse_tracer, [TRACKED], "Specify Yorick tracer mode"),
     target_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
         "select target processor (rustc --print target-cpus for details)"),
     target_feature: String = (String::new(), parse_string, [TRACKED],
@@ -2595,7 +2644,7 @@ mod dep_tracking {
     use std::collections::hash_map::DefaultHasher;
     use super::{CrateType, DebugInfo, ErrorOutputType, OptLevel, OutputTypes,
                 Passes, Sanitizer, LtoCli, LinkerPluginLto, SwitchWithOptPath,
-                SymbolManglingVersion};
+                SymbolManglingVersion, TracerMode};
     use syntax::feature_gate::UnstableFeatures;
     use rustc_target::spec::{MergeFunctions, PanicStrategy, RelroLevel, TargetTriple};
     use syntax::edition::Edition;
@@ -2654,6 +2703,7 @@ mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(Passes);
     impl_dep_tracking_hash_via_hash!(OptLevel);
     impl_dep_tracking_hash_via_hash!(LtoCli);
+    impl_dep_tracking_hash_via_hash!(TracerMode);
     impl_dep_tracking_hash_via_hash!(DebugInfo);
     impl_dep_tracking_hash_via_hash!(UnstableFeatures);
     impl_dep_tracking_hash_via_hash!(OutputTypes);
@@ -2732,7 +2782,8 @@ mod tests {
         build_session_options_and_crate_config,
         to_crate_config
     };
-    use crate::session::config::{LtoCli, LinkerPluginLto, SwitchWithOptPath, ExternEntry};
+    use crate::session::config::{LtoCli, LinkerPluginLto, SwitchWithOptPath, ExternEntry,
+                                 TracerMode};
     use crate::session::build_session;
     use crate::session::search_paths::SearchPath;
     use std::collections::{BTreeMap, BTreeSet};
@@ -3180,6 +3231,10 @@ mod tests {
         assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
 
         // Make sure changing a [TRACKED] option changes the hash
+        opts = reference.clone();
+        opts.cg.tracer = TracerMode::Hardware;
+        assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
+
         opts = reference.clone();
         opts.cg.lto = LtoCli::Fat;
         assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
