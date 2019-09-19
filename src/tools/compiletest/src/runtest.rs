@@ -1548,7 +1548,7 @@ impl<'test> TestCx<'test> {
                 if !self.config.src_base.ends_with("rustdoc-ui") {
                     rustc.args(&["-A", "unused"]);
                 }
-            }
+            },
             _ => {}
         }
 
@@ -1967,7 +1967,7 @@ impl<'test> TestCx<'test> {
                 rustc.arg(dir_opt);
             }
             YkSir => {
-                rustc.args(&[ "--emit", "yk-sir"]);
+                rustc.args(&[ "--emit", "yk-sir", "-C", "tracer=sw"]);
 
                 let mir_dump_dir = self.get_mir_dump_dir();
                 let _ = fs::remove_dir_all(&mir_dump_dir);
@@ -3536,9 +3536,6 @@ impl<'test> TestCx<'test> {
     }
 
     fn run_yk_sir_test(&self) {
-        // A tracer must be enabled for SIR to be emitted.
-        env::set_var("YK_TRACER", "sw");
-
         let proc_res = self.compile_test();
 
         if !proc_res.status.success() {

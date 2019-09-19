@@ -5,11 +5,9 @@
 set -e
 
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
-# For now we only test the software tracer in CI. We use `sw-nosir` below so
-# that the standard library is software-tracing ready, but the compiler
-# binaries themselves do not contain SIR (making SIR really slows down testing,
-# and it isn't necessary for the compiler itself anyway).
-export YK_TRACER=sw-nosir
+# Select which kind of traceable std lib to build.
+# FIXME eventually CI will test both modes and thus set this itself.
+export STD_TRACER_MODE=sw
 
 TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest
 TARBALL_NAME=ykrustc-stage2-latest.tar.bz2

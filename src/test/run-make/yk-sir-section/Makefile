@@ -2,6 +2,6 @@
 
 all:
 	# A tracer must be enabled for SIR to be emitted.
-	YK_TRACER=sw && $(RUSTC) sir_sec.rs
+	$(RUSTC) -C tracer=sw sir_sec.rs
 	# Exit non-zero if there was no Yorick TIR section in the binary.
 	[ "`readelf --section-headers ${TMPDIR}/sir_sec | grep yk_sir | wc -l`" != 0 ]

@@ -17,7 +17,6 @@ use crate::transform::{MirPass, MirSource};
 use rustc::hir;
 use rustc::hir::def_id::{DefIndex, LOCAL_CRATE};
 use rustc::hir::map::blocks::FnLikeNode;
-use std::env;
 
 /// A MIR transformation that, for each basic block, inserts a call to the software trace recorder.
 /// The arguments to the calls (crate hash, DefId and block index) identify the position to be
@@ -48,19 +47,7 @@ impl MirPass for AddYkSWTCalls {
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           src: MirSource<'_>,
                           mir: &mut Body<'tcx>) {
-        // This pass only makes sense for the Yorick software tracer.
-        match env::var("YK_TRACER") {
-            Ok(val) => {
-                match val.as_str() {
-                    "sw" | "sw-nosir" => (),
-                    "hw" => return,
-                    unknown => panic!("Invalid YK_TRACER environment: {}", unknown),
-                }
-            },
-            Err(_) => return,
-        }
-
-        if is_untraceable(tcx, src) {
+        if !tcx.sess.opts.cg.tracer.sw_trace_recorder() || is_untraceable(tcx, src) {
             return;
         }
 

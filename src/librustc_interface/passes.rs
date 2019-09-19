@@ -1102,24 +1102,9 @@ pub fn start_codegen<'tcx>(
     }
 
     // Output Yorick debug sections into binary targets if necessary.
-    // FIXME: YK_TRACER should eventually be a proper compiler flag and there should be a function
-    // for asking which tracer is being used. Then all places reading YK_TRACER can use that
-    // instead.
-    let enc_sir = match env::var("YK_TRACER") {
-        Ok(val) => {
-            match val.as_str() {
-                "hw" | "sw" => true,
-                // We use `sw-nosir` when building the compiler itself for software tracing.
-                // There's no need to encode SIR into compiler tools and it would make the
-                // build/test cycle very slow.
-                "sw-nosir" => false,
-                unknown => panic!("Invalid YK_TRACER environment: {}", unknown)
-            }
-        },
-        Err(_) => false,
-    };
-
-    if enc_sir && tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) {
+    if tcx.sess.opts.cg.tracer.encode_sir() &&
+        tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable)
+    {
         let def_ids = tcx.collect_and_partition_mono_items(LOCAL_CRATE).0;
         let mut def_ids = (*def_ids).clone();
         for cnum in tcx.crates() {
