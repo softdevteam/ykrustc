@@ -44,7 +44,7 @@ impl<W: StableHasherResult> StableHasher<W> {
 impl StableHasherResult for u128 {
     fn finish(hasher: StableHasher<Self>) -> Self {
         let (_0, _1) = hasher.finalize();
-        (_0 as u128) | ((_1 as u128) << 64)
+        u128::from(_0) | (u128::from(_1) << 64)
     }
 }
 
@@ -495,6 +495,16 @@ impl<I: indexed_vec::Idx, T, CTX> HashStable<CTX> for indexed_vec::IndexVec<I, T
 
 
 impl<I: indexed_vec::Idx, CTX> HashStable<CTX> for bit_set::BitSet<I>
+{
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          ctx: &mut CTX,
+                                          hasher: &mut StableHasher<W>) {
+        self.words().hash_stable(ctx, hasher);
+    }
+}
+
+impl<R: indexed_vec::Idx, C: indexed_vec::Idx, CTX> HashStable<CTX>
+for bit_set::BitMatrix<R, C>
 {
     fn hash_stable<W: StableHasherResult>(&self,
                                           ctx: &mut CTX,

@@ -24,6 +24,7 @@ use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use rustc::hir::intravisit;
 use rustc::ich::{ATTR_DIRTY, ATTR_CLEAN};
 use rustc::ty::TyCtxt;
+use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashSet;
 use syntax::ast::{self, Attribute, NestedMetaItem};
 use syntax::symbol::{Symbol, sym};
@@ -71,6 +72,7 @@ const BASE_IMPL: &[&str] = &[
 /// code, i.e., functions+methods
 const BASE_MIR: &[&str] = &[
     label_strs::optimized_mir,
+    label_strs::promoted_mir,
     label_strs::mir_built,
 ];
 
@@ -206,7 +208,7 @@ impl Assertion {
     }
 }
 
-pub fn check_dirty_clean_annotations<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+pub fn check_dirty_clean_annotations(tcx: TyCtxt<'_>) {
     // can't add `#[rustc_dirty]` etc without opting in to this feature
     if !tcx.features().rustc_attrs {
         return;
@@ -234,13 +236,12 @@ pub fn check_dirty_clean_annotations<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     })
 }
 
-pub struct DirtyCleanVisitor<'a, 'tcx:'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub struct DirtyCleanVisitor<'tcx> {
+    tcx: TyCtxt<'tcx>,
     checked_attrs: FxHashSet<ast::AttrId>,
 }
 
-impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
-
+impl DirtyCleanVisitor<'tcx> {
     /// Possibly "deserialize" the attribute into a clean/dirty assertion
     fn assertion_maybe(&mut self, item_id: hir::HirId, attr: &Attribute)
         -> Option<Assertion>
@@ -323,7 +324,7 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
     /// Return all DepNode labels that should be asserted for this item.
     /// index=0 is the "name" used for error messages
     fn auto_labels(&mut self, item_id: hir::HirId, attr: &Attribute) -> (&'static str, Labels) {
-        let node = self.tcx.hir().get_by_hir_id(item_id);
+        let node = self.tcx.hir().get(item_id);
         let (name, labels) = match node {
             HirNode::Item(item) => {
                 match item.node {
@@ -355,7 +356,7 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
                     HirItem::GlobalAsm(..) => ("ItemGlobalAsm", LABELS_HIR_ONLY),
 
                     // A type alias, e.g., `type Foo = Bar<u8>`
-                    HirItem::Ty(..) => ("ItemTy", LABELS_HIR_ONLY),
+                    HirItem::TyAlias(..) => ("ItemTy", LABELS_HIR_ONLY),
 
                     // An enum definition, e.g., `enum Foo<A, B> {C<A>, D<B>}`
                     HirItem::Enum(..) => ("ItemEnum", LABELS_ADT),
@@ -406,8 +407,8 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
                 match item.node {
                     ImplItemKind::Method(..) => ("Node::ImplItem", LABELS_FN_IN_IMPL),
                     ImplItemKind::Const(..) => ("NodeImplConst", LABELS_CONST_IN_IMPL),
-                    ImplItemKind::Type(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
-                    ImplItemKind::Existential(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
+                    ImplItemKind::TyAlias(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
+                    ImplItemKind::OpaqueTy(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
                 }
             },
             _ => self.tcx.sess.span_fatal(
@@ -473,11 +474,10 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
     fn assert_dirty(&self, item_span: Span, dep_node: DepNode) {
         debug!("assert_dirty({:?})", dep_node);
 
-        let dep_node_index = self.tcx.dep_graph.dep_node_index_of(&dep_node);
-        let current_fingerprint = self.tcx.dep_graph.fingerprint_of(dep_node_index);
+        let current_fingerprint = self.get_fingerprint(&dep_node);
         let prev_fingerprint = self.tcx.dep_graph.prev_fingerprint_of(&dep_node);
 
-        if Some(current_fingerprint) == prev_fingerprint {
+        if current_fingerprint == prev_fingerprint {
             let dep_node_str = self.dep_node_str(&dep_node);
             self.tcx.sess.span_err(
                 item_span,
@@ -485,14 +485,28 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
         }
     }
 
+    fn get_fingerprint(&self, dep_node: &DepNode) -> Option<Fingerprint> {
+        if self.tcx.dep_graph.dep_node_exists(dep_node) {
+            let dep_node_index = self.tcx.dep_graph.dep_node_index_of(dep_node);
+            Some(self.tcx.dep_graph.fingerprint_of(dep_node_index))
+        } else {
+            None
+        }
+    }
+
     fn assert_clean(&self, item_span: Span, dep_node: DepNode) {
         debug!("assert_clean({:?})", dep_node);
 
-        let dep_node_index = self.tcx.dep_graph.dep_node_index_of(&dep_node);
-        let current_fingerprint = self.tcx.dep_graph.fingerprint_of(dep_node_index);
+        let current_fingerprint = self.get_fingerprint(&dep_node);
         let prev_fingerprint = self.tcx.dep_graph.prev_fingerprint_of(&dep_node);
 
-        if Some(current_fingerprint) != prev_fingerprint {
+        // if the node wasn't previously evaluated and now is (or vice versa),
+        // then the node isn't actually clean or dirty.
+        if (current_fingerprint == None) ^ (prev_fingerprint == None) {
+            return;
+        }
+
+        if current_fingerprint != prev_fingerprint {
             let dep_node_str = self.dep_node_str(&dep_node);
             self.tcx.sess.span_err(
                 item_span,
@@ -501,7 +515,7 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
     }
 
     fn check_item(&mut self, item_id: hir::HirId, item_span: Span) {
-        let def_id = self.tcx.hir().local_def_id_from_hir_id(item_id);
+        let def_id = self.tcx.hir().local_def_id(item_id);
         for attr in self.tcx.get_attrs(def_id).iter() {
             let assertion = match self.assertion_maybe(item_id, attr) {
                 Some(a) => a,
@@ -518,7 +532,7 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> ItemLikeVisitor<'tcx> for DirtyCleanVisitor<'a, 'tcx> {
+impl ItemLikeVisitor<'tcx> for DirtyCleanVisitor<'tcx> {
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         self.check_item(item.hir_id, item.span);
     }
@@ -538,7 +552,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for DirtyCleanVisitor<'a, 'tcx> {
 ///
 /// Also make sure that the `label` and `except` fields do not
 /// both exist.
-fn check_config(tcx: TyCtxt<'_, '_, '_>, attr: &Attribute) -> bool {
+fn check_config(tcx: TyCtxt<'_>, attr: &Attribute) -> bool {
     debug!("check_config(attr={:?})", attr);
     let config = &tcx.sess.parse_sess.config;
     debug!("check_config: config={:?}", config);
@@ -573,7 +587,7 @@ fn check_config(tcx: TyCtxt<'_, '_, '_>, attr: &Attribute) -> bool {
     }
 }
 
-fn expect_associated_value(tcx: TyCtxt<'_, '_, '_>, item: &NestedMetaItem) -> ast::Name {
+fn expect_associated_value(tcx: TyCtxt<'_>, item: &NestedMetaItem) -> ast::Name {
     if let Some(value) = item.value_str() {
         value
     } else {
@@ -590,14 +604,13 @@ fn expect_associated_value(tcx: TyCtxt<'_, '_, '_>, item: &NestedMetaItem) -> as
 // A visitor that collects all #[rustc_dirty]/#[rustc_clean] attributes from
 // the HIR. It is used to verfiy that we really ran checks for all annotated
 // nodes.
-pub struct FindAllAttrs<'a, 'tcx:'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub struct FindAllAttrs<'tcx> {
+    tcx: TyCtxt<'tcx>,
     attr_names: Vec<Symbol>,
     found_attrs: Vec<&'tcx Attribute>,
 }
 
-impl<'a, 'tcx> FindAllAttrs<'a, 'tcx> {
-
+impl FindAllAttrs<'tcx> {
     fn is_active_attr(&mut self, attr: &Attribute) -> bool {
         for attr_name in &self.attr_names {
             if attr.check_name(*attr_name) && check_config(self.tcx, attr) {
@@ -612,13 +625,13 @@ impl<'a, 'tcx> FindAllAttrs<'a, 'tcx> {
         for attr in &self.found_attrs {
             if !checked_attrs.contains(&attr.id) {
                 self.tcx.sess.span_err(attr.span, &format!("found unchecked \
-                    #[rustc_dirty]/#[rustc_clean] attribute"));
+                    `#[rustc_dirty]` / `#[rustc_clean]` attribute"));
             }
         }
     }
 }
 
-impl<'a, 'tcx> intravisit::Visitor<'tcx> for FindAllAttrs<'a, 'tcx> {
+impl intravisit::Visitor<'tcx> for FindAllAttrs<'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, 'tcx> {
         intravisit::NestedVisitorMap::All(&self.tcx.hir())
     }

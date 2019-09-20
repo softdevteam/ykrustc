@@ -1,9 +1,11 @@
+#![feature(bool_to_option)]
+#![feature(bound_cloned)]
 #![feature(box_syntax)]
 #![feature(cell_update)]
 #![feature(core_private_bignum)]
 #![feature(core_private_diy_float)]
+#![feature(debug_map_key_value)]
 #![feature(dec2flt)]
-#![feature(euclidean_division)]
 #![feature(exact_size_is_empty)]
 #![feature(fixed_size_array)]
 #![feature(flt2dec)]
@@ -27,10 +29,11 @@
 #![feature(inner_deref)]
 #![feature(slice_internals)]
 #![feature(slice_partition_dedup)]
-#![feature(copy_within)]
 #![feature(int_error_matching)]
 #![feature(const_fn)]
-#![warn(rust_2018_idioms)]
+#![feature(iter_partition_in_place)]
+#![feature(iter_is_partitioned)]
+#![feature(iter_order_by)]
 
 extern crate test;
 
@@ -39,6 +42,7 @@ mod any;
 mod array;
 mod ascii;
 mod atomic;
+mod bool;
 mod cell;
 mod char;
 mod clone;

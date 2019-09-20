@@ -23,21 +23,21 @@ pub enum OverflowOp {
     Mul,
 }
 
-pub trait BuilderMethods<'a, 'tcx: 'a>:
+pub trait BuilderMethods<'a, 'tcx>:
     HasCodegen<'tcx>
     + DebugInfoBuilderMethods<'tcx>
     + ArgTypeMethods<'tcx>
     + AbiBuilderMethods<'tcx>
     + IntrinsicCallMethods<'tcx>
     + AsmBuilderMethods<'tcx>
-    + StaticBuilderMethods<'tcx>
+    + StaticBuilderMethods
     + HasParamEnv<'tcx>
     + HasTargetSpec
 
 {
     fn new_block<'b>(cx: &'a Self::CodegenCx, llfn: Self::Value, name: &'b str) -> Self;
     fn with_cx(cx: &'a Self::CodegenCx) -> Self;
-    fn build_sibling_block<'b>(&self, name: &'b str) -> Self;
+    fn build_sibling_block(&self, name: &str) -> Self;
     fn cx(&self) -> &Self::CodegenCx;
     fn llbb(&self) -> Self::BasicBlock;
 
@@ -114,13 +114,12 @@ pub trait BuilderMethods<'a, 'tcx: 'a>:
         rhs: Self::Value,
     ) -> (Self::Value, Self::Value);
 
-    fn alloca(&mut self, ty: Self::Type, name: &str, align: Align) -> Self::Value;
-    fn dynamic_alloca(&mut self, ty: Self::Type, name: &str, align: Align) -> Self::Value;
+    fn alloca(&mut self, ty: Self::Type, align: Align) -> Self::Value;
+    fn dynamic_alloca(&mut self, ty: Self::Type, align: Align) -> Self::Value;
     fn array_alloca(
         &mut self,
         ty: Self::Type,
         len: Self::Value,
-        name: &str,
         align: Align,
     ) -> Self::Value;
 

@@ -7,15 +7,18 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::newtype_index;
 use rustc_macros::symbols;
-use serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_serialize::{UseSpecializedDecodable, UseSpecializedEncodable};
 
 use std::cmp::{PartialEq, Ordering, PartialOrd, Ord};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::str;
 
-use crate::hygiene::SyntaxContext;
 use crate::{Span, DUMMY_SP, GLOBALS};
+
+#[cfg(test)]
+mod tests;
 
 symbols! {
     // After modifying this list adjust `is_special`, `is_used_keyword`/`is_unused_keyword`,
@@ -95,7 +98,6 @@ symbols! {
         Auto:               "auto",
         Catch:              "catch",
         Default:            "default",
-        Existential:        "existential",
         Union:              "union",
     }
 
@@ -135,15 +137,19 @@ symbols! {
         always,
         and,
         any,
+        arbitrary_enum_discriminant,
         arbitrary_self_types,
         Arguments,
         ArgumentV1,
         arm_target_feature,
         asm,
+        assert,
         associated_consts,
+        associated_type_bounds,
         associated_type_defaults,
         associated_types,
         async_await,
+        async_closure,
         attr,
         attributes,
         attr_literals,
@@ -156,6 +162,7 @@ symbols! {
         bin,
         bind_by_move_pattern_guards,
         block,
+        bool,
         borrowck_graphviz_postflow,
         borrowck_graphviz_preflow,
         box_patterns,
@@ -166,10 +173,13 @@ symbols! {
         cfg,
         cfg_attr,
         cfg_attr_multi,
+        cfg_doctest,
         cfg_target_feature,
         cfg_target_has_atomic,
         cfg_target_thread_local,
         cfg_target_vendor,
+        char,
+        clippy,
         clone,
         Clone,
         clone_closures,
@@ -178,16 +188,20 @@ symbols! {
         cmp,
         cmpxchg16b_target_feature,
         cold,
+        column,
         compile_error,
         compiler_builtins,
+        concat,
         concat_idents,
         conservative_impl_trait,
         console,
         const_compare_raw_pointers,
+        const_constructor,
         const_fn,
         const_fn_union,
         const_generics,
         const_indexing,
+        const_in_array_repeat_expressions,
         const_let,
         const_panic,
         const_raw_ptr_deref,
@@ -196,11 +210,13 @@ symbols! {
         contents,
         context,
         convert,
+        Copy,
         copy_closures,
         core,
         core_intrinsics,
         crate_id,
         crate_in_paths,
+        crate_local,
         crate_name,
         crate_type,
         crate_visibility_modifier,
@@ -209,7 +225,11 @@ symbols! {
         custom_inner_attributes,
         custom_test_frameworks,
         c_variadic,
+        debug_trait,
+        declare_lint_pass,
         decl_macro,
+        Debug,
+        Decodable,
         Default,
         default_lib_allocator,
         default_type_parameter_fallback,
@@ -219,12 +239,15 @@ symbols! {
         deref,
         deref_mut,
         derive,
+        diagnostic,
+        direct,
         doc,
         doc_alias,
         doc_cfg,
         doc_keyword,
         doc_masked,
         doc_spotlight,
+        doctest,
         document_private_items,
         dotdoteq_in_patterns,
         dotdot_in_tuple_patterns,
@@ -243,8 +266,12 @@ symbols! {
         eh_personality,
         eh_unwind_resume,
         enable,
+        Encodable,
+        env,
+        eq,
         err,
         Err,
+        Eq,
         Equal,
         except,
         exclusive_range_pattern,
@@ -273,11 +300,14 @@ symbols! {
         fmt_internals,
         fn_must_use,
         forbid,
+        format_args,
         format_args_nl,
         from,
         From,
+        from_desugaring,
         from_error,
         from_generator,
+        from_method,
         from_ok,
         from_usize,
         fundamental,
@@ -315,12 +345,15 @@ symbols! {
         if_while_or_patterns,
         ignore,
         impl_header_lifetime_elision,
+        impl_lint_pass,
         impl_trait_in_bindings,
         import_shadowing,
         index,
         index_mut,
         in_band_lifetimes,
         include,
+        include_bytes,
+        include_str,
         inclusive_range_syntax,
         infer_outlives_requirements,
         infer_static_outlives_requirements,
@@ -345,8 +378,11 @@ symbols! {
         label_break_value,
         lang,
         lang_items,
+        let_chains,
+        lhs,
         lib,
         lifetime,
+        line,
         link,
         linkage,
         link_args,
@@ -354,6 +390,7 @@ symbols! {
         link_llvm_intrinsics,
         link_name,
         link_section,
+        LintPass,
         lint_reasons,
         literal,
         local_inner_macros,
@@ -377,6 +414,8 @@ symbols! {
         match_beginning_vert,
         match_default_bindings,
         may_dangle,
+        mem,
+        member_constraints,
         message,
         meta,
         min_const_fn,
@@ -384,6 +423,7 @@ symbols! {
         mips_target_feature,
         mmx_target_feature,
         module,
+        module_path,
         more_struct_aliases,
         movbe_target_feature,
         must_use,
@@ -430,8 +470,10 @@ symbols! {
         optin_builtin_traits,
         option,
         Option,
+        option_env,
         opt_out_copy,
         or,
+        or_patterns,
         Ord,
         Ordering,
         Output,
@@ -442,7 +484,10 @@ symbols! {
         panic_impl,
         panic_implementation,
         panic_runtime,
+        parent_trait,
         partial_cmp,
+        param_attrs,
+        PartialEq,
         PartialOrd,
         passes,
         pat,
@@ -471,6 +516,7 @@ symbols! {
         proc_macro_expr,
         proc_macro_gen,
         proc_macro_hygiene,
+        proc_macro_internals,
         proc_macro_mod,
         proc_macro_non_items,
         proc_macro_path_invoc,
@@ -504,6 +550,7 @@ symbols! {
         result,
         Result,
         Return,
+        rhs,
         rlib,
         rt,
         rtm_target_feature,
@@ -512,19 +559,23 @@ symbols! {
         rust_2018_preview,
         rust_begin_unwind,
         rustc,
+        RustcDecodable,
+        RustcEncodable,
+        rustc_allocator,
         rustc_allocator_nounwind,
         rustc_allow_const_fn_ptr,
         rustc_args_required_const,
         rustc_attrs,
+        rustc_builtin_macro,
         rustc_clean,
         rustc_const_unstable,
         rustc_conversion_suggestion,
-        rustc_copy_clone_marker,
         rustc_def_path,
         rustc_deprecated,
+        rustc_diagnostic_item,
         rustc_diagnostic_macros,
         rustc_dirty,
-        rustc_doc_only_macro,
+        rustc_dummy,
         rustc_dump_env_program_clauses,
         rustc_dump_program_clauses,
         rustc_dump_user_substs,
@@ -535,6 +586,7 @@ symbols! {
         rustc_layout,
         rustc_layout_scalar_valid_range_end,
         rustc_layout_scalar_valid_range_start,
+        rustc_macro_transparency,
         rustc_mir,
         rustc_nonnull_optimization_guaranteed,
         rustc_object_lifetime_default,
@@ -557,18 +609,17 @@ symbols! {
         rustc_synthetic,
         rustc_test_marker,
         rustc_then_this_would_need,
-        rustc_transparent_macro,
         rustc_variance,
         rustdoc,
+        rustfmt,
         rust_eh_personality,
         rust_eh_unwind_resume,
         rust_oom,
-        __rust_unstable_column,
         rvalue_static_promotion,
         sanitizer_runtime,
+        _Self,
         self_in_typedefs,
         self_struct_ctor,
-        Send,
         should_panic,
         simd,
         simd_ffi,
@@ -576,6 +627,7 @@ symbols! {
         size,
         slice_patterns,
         slicing_syntax,
+        soft,
         Some,
         specialization,
         speed,
@@ -589,7 +641,9 @@ symbols! {
         static_nobundle,
         static_recursion,
         std,
+        std_inject,
         str,
+        stringify,
         stmt,
         stmt_expr_attributes,
         stop_after_dataflow,
@@ -620,6 +674,8 @@ symbols! {
         trait_alias,
         transmute,
         transparent,
+        transparent_enums,
+        transparent_unions,
         trivial_bounds,
         Try,
         try_blocks,
@@ -628,6 +684,7 @@ symbols! {
         tuple_indexing,
         Ty,
         ty,
+        type_alias_impl_trait,
         TyCtxt,
         TyKind,
         type_alias_enum_variants,
@@ -644,11 +701,11 @@ symbols! {
         underscore_imports,
         underscore_lifetimes,
         uniform_paths,
+        uninitialized,
         universal_impl_trait,
         unmarked_api,
         unreachable_code,
         unrestricted_attribute_tokens,
-        unsafe_destructor_blind_to_params,
         unsafe_no_drop_flag,
         unsized_locals,
         unsized_tuple_coercion,
@@ -676,6 +733,7 @@ symbols! {
         windows,
         windows_subsystem,
         Yield,
+        zeroed,
     }
 }
 
@@ -692,25 +750,25 @@ impl Ident {
         Ident { name, span }
     }
 
-    /// Constructs a new identifier with an empty syntax context.
+    /// Constructs a new identifier with a dummy span.
     #[inline]
-    pub const fn with_empty_ctxt(name: Symbol) -> Ident {
+    pub const fn with_dummy_span(name: Symbol) -> Ident {
         Ident::new(name, DUMMY_SP)
     }
 
     #[inline]
     pub fn invalid() -> Ident {
-        Ident::with_empty_ctxt(kw::Invalid)
+        Ident::with_dummy_span(kw::Invalid)
     }
 
     /// Maps an interned string to an identifier with an empty syntax context.
     pub fn from_interned_str(string: InternedString) -> Ident {
-        Ident::with_empty_ctxt(string.as_symbol())
+        Ident::with_dummy_span(string.as_symbol())
     }
 
-    /// Maps a string to an identifier with an empty span.
+    /// Maps a string to an identifier with a dummy span.
     pub fn from_str(string: &str) -> Ident {
-        Ident::with_empty_ctxt(Symbol::intern(string))
+        Ident::with_dummy_span(Symbol::intern(string))
     }
 
     /// Maps a string and a span to an identifier.
@@ -745,27 +803,25 @@ impl Ident {
         Ident::new(self.name, self.span.modern_and_legacy())
     }
 
-    /// Transforms an identifier into one with the same name, but gensymed.
-    pub fn gensym(self) -> Ident {
-        let name = with_interner(|interner| interner.gensymed(self.name));
-        Ident::new(name, self.span)
-    }
-
     /// Transforms an underscore identifier into one with the same name, but
     /// gensymed. Leaves non-underscore identifiers unchanged.
     pub fn gensym_if_underscore(self) -> Ident {
-        if self.name == kw::Underscore { self.gensym() } else { self }
+        if self.name == kw::Underscore {
+            let name = with_interner(|interner| interner.gensymed(self.name));
+            Ident::new(name, self.span)
+        } else {
+            self
+        }
     }
 
-    // WARNING: this function is deprecated and will be removed in the future.
-    pub fn is_gensymed(self) -> bool {
-        with_interner(|interner| interner.is_gensymed(self.name))
-    }
-
+    /// Convert the name to a `LocalInternedString`. This is a slowish
+    /// operation because it requires locking the symbol interner.
     pub fn as_str(self) -> LocalInternedString {
         self.name.as_str()
     }
 
+    /// Convert the name to an `InternedString`. This is a slowish operation
+    /// because it requires locking the symbol interner.
     pub fn as_interned_str(self) -> InternedString {
         self.name.as_interned_str()
     }
@@ -796,25 +852,26 @@ impl fmt::Display for Ident {
     }
 }
 
-impl Encodable for Ident {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        if self.span.ctxt().modern() == SyntaxContext::empty() {
-            s.emit_str(&self.as_str())
-        } else { // FIXME(jseyfried): intercrate hygiene
-            let mut string = "#".to_owned();
-            string.push_str(&self.as_str());
-            s.emit_str(&string)
-        }
+impl UseSpecializedEncodable for Ident {
+    fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+        s.emit_struct("Ident", 2, |s| {
+            s.emit_struct_field("name", 0, |s| {
+                self.name.encode(s)
+            })?;
+            s.emit_struct_field("span", 1, |s| {
+                self.span.encode(s)
+            })
+        })
     }
 }
 
-impl Decodable for Ident {
-    fn decode<D: Decoder>(d: &mut D) -> Result<Ident, D::Error> {
-        let string = d.read_str()?;
-        Ok(if !string.starts_with('#') {
-            Ident::from_str(&string)
-        } else { // FIXME(jseyfried): intercrate hygiene
-            Ident::from_str(&string[1..]).gensym()
+impl UseSpecializedDecodable for Ident {
+    fn default_decode<D: Decoder>(d: &mut D) -> Result<Self, D::Error> {
+        d.read_struct("Ident", 2, |d| {
+            Ok(Ident {
+                name: d.read_struct_field("name", 0, Decodable::decode)?,
+                span: d.read_struct_field("span", 1, Decodable::decode)?,
+            })
         })
     }
 }
@@ -831,9 +888,12 @@ impl Decodable for Ident {
 ///
 /// Examples:
 /// ```
-/// assert_eq!(Ident::from_str("x"), Ident::from_str("x"))
-/// assert_ne!(Ident::from_str("x").gensym(), Ident::from_str("x"))
-/// assert_ne!(Ident::from_str("x").gensym(), Ident::from_str("x").gensym())
+/// assert_eq!(Ident::from_str("_"), Ident::from_str("_"))
+/// assert_ne!(Ident::from_str("_").gensym_if_underscore(), Ident::from_str("_"))
+/// assert_ne!(
+///     Ident::from_str("_").gensym_if_underscore(),
+///     Ident::from_str("_").gensym_if_underscore(),
+/// )
 /// ```
 /// Internally, a symbol is implemented as an index, and all operations
 /// (including hashing, equality, and ordering) operate on that index. The use
@@ -859,6 +919,25 @@ impl Symbol {
         with_interner(|interner| interner.intern(string))
     }
 
+    /// Access the symbol's chars. This is a slowish operation because it
+    /// requires locking the symbol interner.
+    pub fn with<F: FnOnce(&str) -> R, R>(self, f: F) -> R {
+        with_interner(|interner| {
+            f(interner.get(self))
+        })
+    }
+
+    /// Access two symbols' chars. This is a slowish operation because it
+    /// requires locking the symbol interner, but it is faster than calling
+    /// `with()` twice.
+    fn with2<F: FnOnce(&str, &str) -> R, R>(self, other: Symbol, f: F) -> R {
+        with_interner(|interner| {
+            f(interner.get(self), interner.get(other))
+        })
+    }
+
+    /// Convert to a `LocalInternedString`. This is a slowish operation because
+    /// it requires locking the symbol interner.
     pub fn as_str(self) -> LocalInternedString {
         with_interner(|interner| unsafe {
             LocalInternedString {
@@ -867,6 +946,8 @@ impl Symbol {
         })
     }
 
+    /// Convert to an `InternedString`. This is a slowish operation because it
+    /// requires locking the symbol interner.
     pub fn as_interned_str(self) -> InternedString {
         with_interner(|interner| InternedString {
             symbol: interner.interned(self)
@@ -921,10 +1002,9 @@ pub struct Interner {
 
 impl Interner {
     fn prefill(init: &[&'static str]) -> Self {
-        let symbols = (0 .. init.len() as u32).map(Symbol::new);
         Interner {
-            strings: init.to_vec(),
-            names: init.iter().copied().zip(symbols).collect(),
+            strings: init.into(),
+            names: init.iter().copied().zip((0..).map(Symbol::new)).collect(),
             ..Default::default()
         }
     }
@@ -1019,6 +1099,26 @@ impl Symbol {
     pub fn is_doc_keyword(self) -> bool {
         self <= kw::Union
     }
+
+    /// A keyword or reserved identifier that can be used as a path segment.
+    pub fn is_path_segment_keyword(self) -> bool {
+        self == kw::Super ||
+        self == kw::SelfLower ||
+        self == kw::SelfUpper ||
+        self == kw::Crate ||
+        self == kw::PathRoot ||
+        self == kw::DollarCrate
+    }
+
+    /// Returns `true` if the symbol is `true` or `false`.
+    pub fn is_bool_lit(self) -> bool {
+        self == kw::True || self == kw::False
+    }
+
+    /// This symbol can be a raw identifier.
+    pub fn can_be_raw(self) -> bool {
+        self != kw::Invalid && self != kw::Underscore && !self.is_path_segment_keyword()
+    }
 }
 
 impl Ident {
@@ -1049,24 +1149,13 @@ impl Ident {
 
     /// A keyword or reserved identifier that can be used as a path segment.
     pub fn is_path_segment_keyword(self) -> bool {
-        self.name == kw::Super ||
-        self.name == kw::SelfLower ||
-        self.name == kw::SelfUpper ||
-        self.name == kw::Crate ||
-        self.name == kw::PathRoot ||
-        self.name == kw::DollarCrate
-    }
-
-    /// This identifier can be a raw identifier.
-    pub fn can_be_raw(self) -> bool {
-        self.name != kw::Invalid && self.name != kw::Underscore &&
-        !self.is_path_segment_keyword()
+        self.name.is_path_segment_keyword()
     }
 
     /// We see this identifier in a normal identifier position, like variable name or a type.
     /// How was it written originally? Did it use the raw form? Let's try to guess.
     pub fn is_raw_guess(self) -> bool {
-        self.can_be_raw() && self.is_reserved()
+        self.name.can_be_raw() && self.is_reserved()
     }
 }
 
@@ -1087,42 +1176,16 @@ fn with_interner<T, F: FnOnce(&mut Interner) -> T>(f: F) -> T {
 // FIXME: ensure that the interner outlives any thread which uses
 // `LocalInternedString`, by creating a new thread right after constructing the
 // interner.
-#[derive(Clone, Copy, Hash, PartialOrd, Eq, Ord)]
+#[derive(Clone, Copy, Eq, PartialOrd, Ord)]
 pub struct LocalInternedString {
     string: &'static str,
-}
-
-impl LocalInternedString {
-    /// Maps a string to its interned representation.
-    pub fn intern(string: &str) -> Self {
-        let string = with_interner(|interner| {
-            let symbol = interner.intern(string);
-            interner.strings[symbol.0.as_usize()]
-        });
-        LocalInternedString {
-            string: unsafe { std::mem::transmute::<&str, &str>(string) }
-        }
-    }
-
-    pub fn as_interned_str(self) -> InternedString {
-        InternedString {
-            symbol: Symbol::intern(self.string)
-        }
-    }
-
-    pub fn get(&self) -> &str {
-        // This returns a valid string since we ensure that `self` outlives the interner
-        // by creating the interner on a thread which outlives threads which can access it.
-        // This type cannot move to a thread which outlives the interner since it does
-        // not implement Send.
-        self.string
-    }
 }
 
 impl<U: ?Sized> std::convert::AsRef<U> for LocalInternedString
 where
     str: std::convert::AsRef<U>
 {
+    #[inline]
     fn as_ref(&self) -> &U {
         self.string.as_ref()
     }
@@ -1163,6 +1226,7 @@ impl !Sync for LocalInternedString {}
 
 impl std::ops::Deref for LocalInternedString {
     type Target = str;
+    #[inline]
     fn deref(&self) -> &str { self.string }
 }
 
@@ -1175,18 +1239,6 @@ impl fmt::Debug for LocalInternedString {
 impl fmt::Display for LocalInternedString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.string, f)
-    }
-}
-
-impl Decodable for LocalInternedString {
-    fn decode<D: Decoder>(d: &mut D) -> Result<LocalInternedString, D::Error> {
-        Ok(LocalInternedString::intern(&d.read_str()?))
-    }
-}
-
-impl Encodable for LocalInternedString {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_str(self.string)
     }
 }
 
@@ -1217,28 +1269,19 @@ impl InternedString {
     }
 
     pub fn with<F: FnOnce(&str) -> R, R>(self, f: F) -> R {
-        let str = with_interner(|interner| {
-            interner.get(self.symbol) as *const str
-        });
-        // This is safe because the interner keeps string alive until it is dropped.
-        // We can access it because we know the interner is still alive since we use a
-        // scoped thread local to access it, and it was alive at the beginning of this scope
-        unsafe { f(&*str) }
+        self.symbol.with(f)
     }
 
     fn with2<F: FnOnce(&str, &str) -> R, R>(self, other: &InternedString, f: F) -> R {
-        let (self_str, other_str) = with_interner(|interner| {
-            (interner.get(self.symbol) as *const str,
-             interner.get(other.symbol) as *const str)
-        });
-        // This is safe for the same reason that `with` is safe.
-        unsafe { f(&*self_str, &*other_str) }
+        self.symbol.with2(other.symbol, f)
     }
 
     pub fn as_symbol(self) -> Symbol {
         self.symbol
     }
 
+    /// Convert to a `LocalInternedString`. This is a slowish operation because it
+    /// requires locking the symbol interner.
     pub fn as_str(self) -> LocalInternedString {
         self.symbol.as_str()
     }
@@ -1289,41 +1332,5 @@ impl Decodable for InternedString {
 impl Encodable for InternedString {
     fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         self.with(|string| s.emit_str(string))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Globals;
-    use crate::edition;
-
-    #[test]
-    fn interner_tests() {
-        let mut i: Interner = Interner::default();
-        // first one is zero:
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        // re-use gets the same entry:
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        // different string gets a different #:
-        assert_eq!(i.intern("cat"), Symbol::new(1));
-        assert_eq!(i.intern("cat"), Symbol::new(1));
-        // dog is still at zero
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        let z = i.intern("zebra");
-        assert_eq!(i.gensymed(z), Symbol::new(SymbolIndex::MAX_AS_U32));
-        // gensym of same string gets new number:
-        assert_eq!(i.gensymed(z), Symbol::new(SymbolIndex::MAX_AS_U32 - 1));
-        // gensym of *existing* string gets new number:
-        let d = i.intern("dog");
-        assert_eq!(i.gensymed(d), Symbol::new(SymbolIndex::MAX_AS_U32 - 2));
-    }
-
-    #[test]
-    fn without_first_quote_test() {
-        GLOBALS.set(&Globals::new(edition::DEFAULT_EDITION), || {
-            let i = Ident::from_str("'break");
-            assert_eq!(i.without_first_quote().name, kw::Break);
-        });
     }
 }

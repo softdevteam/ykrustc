@@ -1,11 +1,11 @@
 // compile-flags: -O
+// ignore-debug: the debug assertions get in the way
 
 #![crate_type = "lib"]
 #![no_sw_trace]
 
 // verify that LLVM recognizes a loop involving 0..=n and will const-fold it.
 
-//------------------------------------------------------------------------------
 // Example from original issue #45222
 
 fn foo2(n: u64) -> u64 {
@@ -25,7 +25,6 @@ pub fn check_foo2() -> u64 {
     foo2(100000)
 }
 
-//------------------------------------------------------------------------------
 // Simplified example of #45222
 
 fn triangle_inc(n: u64) -> u64 {
@@ -43,7 +42,6 @@ pub fn check_triangle_inc() -> u64 {
     triangle_inc(100000)
 }
 
-//------------------------------------------------------------------------------
 // Demo in #48012
 
 fn foo3r(n: u64) -> u64 {

@@ -122,7 +122,6 @@ struct Diagnostic {
 }
 
 #[derive(RustcEncodable)]
-#[allow(unused_attributes)]
 struct DiagnosticSpan {
     file_name: String,
     byte_start: u32,
@@ -170,7 +169,7 @@ struct DiagnosticSpanMacroExpansion {
     macro_decl_name: String,
 
     /// span where macro was defined (if known)
-    def_site_span: Option<DiagnosticSpan>,
+    def_site_span: DiagnosticSpan,
 }
 
 #[derive(RustcEncodable)]
@@ -220,7 +219,7 @@ impl Diagnostic {
         }
         let buf = BufWriter::default();
         let output = buf.clone();
-        je.json_rendered.new_emitter(Box::new(buf), Some(je.sm.clone()), false)
+        je.json_rendered.new_emitter(Box::new(buf), Some(je.sm.clone()), false, None)
             .ui_testing(je.ui_testing).emit_diagnostic(db);
         let output = Arc::try_unwrap(output.0).unwrap().into_inner().unwrap();
         let output = String::from_utf8(output).unwrap();
@@ -300,14 +299,13 @@ impl DiagnosticSpan {
                                      None,
                                      backtrace,
                                      je);
-            let def_site_span = bt.def_site_span.map(|sp| {
-                Self::from_span_full(sp,
+            let def_site_span =
+                Self::from_span_full(bt.def_site_span,
                                      false,
                                      None,
                                      None,
                                      vec![].into_iter(),
-                                     je)
-            });
+                                     je);
             Box::new(DiagnosticSpanMacroExpansion {
                 span: call_site,
                 macro_decl_name: bt.macro_decl_name,

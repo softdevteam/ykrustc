@@ -41,7 +41,6 @@ macro_rules! rtunwrap {
 
 pub mod alloc;
 pub mod at_exit_imp;
-#[cfg(feature = "backtrace")]
 pub mod backtrace;
 pub mod condvar;
 pub mod io;
@@ -65,10 +64,9 @@ pub mod bytestring;
 pub mod process;
 pub mod fs;
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(any(target_os = "cloudabi",
                  target_os = "l4re",
-                 target_os = "redox",
                  all(target_arch = "wasm32", not(target_os = "emscripten")),
                  all(target_vendor = "fortanix", target_env = "sgx")))] {
         pub use crate::sys::net;

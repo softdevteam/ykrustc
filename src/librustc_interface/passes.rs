@@ -2,59 +2,52 @@ use crate::interface::{Compiler, Result};
 use crate::util;
 use crate::proc_macro_decls;
 
-use log::{debug, info, warn, log_enabled};
+use log::{info, warn, log_enabled};
 use rustc::dep_graph::DepGraph;
 use rustc::hir;
 use rustc::hir::lowering::lower_crate;
 use rustc::hir::def_id::{CrateNum, LOCAL_CRATE, DefId, DefIndex};
 use rustc::lint;
 use rustc::middle::{self, reachable, resolve_lifetime, stability};
-use rustc::middle::privacy::AccessLevels;
+use rustc::middle::cstore::CrateStore;
 use rustc::ty::{self, AllArenas, Resolutions, TyCtxt, GlobalCtxt};
 use rustc::ty::steal::Steal;
 use rustc::traits;
 use rustc::util::common::{time, ErrorReported};
-use rustc::util::profiling::ProfileCategory;
-use rustc::session::{CompileResult, CrateDisambiguator, Session};
+use rustc::session::Session;
 use rustc::session::config::{self, CrateType, Input, OutputFilenames, OutputType};
 use rustc::session::search_paths::PathKind;
-use rustc_allocator as allocator;
-use rustc_borrowck as borrowck;
+use rustc_ast_borrowck as borrowck;
 use rustc_codegen_ssa::back::link::emit_metadata;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 use rustc_codegen_utils::link::filename_for_metadata;
 use rustc_data_structures::{box_region_allow_access, declare_box_region_type, parallel};
-use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_data_structures::sync::{Lrc, ParallelIterator, par_iter};
 use rustc_incremental;
-use rustc_incremental::DepGraphFuture;
 use rustc_metadata::creader::CrateLoader;
 use rustc_metadata::cstore::{self, CStore};
 use rustc_mir as mir;
-use rustc_passes::{self, ast_validation, hir_stats, loops, rvalue_promotion, layout_test};
+use rustc_passes::{self, ast_validation, hir_stats, layout_test};
 use rustc_plugin as plugin;
 use rustc_plugin::registry::Registry;
 use rustc_privacy;
 use rustc_resolve::{Resolver, ResolverArenas};
 use rustc_traits;
 use rustc_typeck as typeck;
-use syntax::{self, ast, attr, diagnostics, visit};
+use syntax::{self, ast, visit};
 use syntax::early_buffered_lints::BufferedEarlyLint;
 use syntax::ext::base::{NamedSyntaxExtension, ExtCtxt};
 use syntax::mut_visit::MutVisitor;
 use syntax::parse::{self, PResult};
 use syntax::util::node_count::NodeCounter;
-use syntax::util::lev_distance::find_best_match_for_name;
 use syntax::symbol::Symbol;
-use syntax::feature_gate::AttributeType;
-use syntax_pos::{FileName, edition::Edition, hygiene};
+use syntax_pos::FileName;
 use syntax_ext;
 use rustc_yk_sections::emit_sir::{generate_sir, SirMode};
 use rustc_codegen_utils::link::out_filename;
 use rustc::util::nodemap::DefIdSet;
 
-use serialize::json;
+use rustc_serialize::json;
 use tempfile::Builder as TempFileBuilder;
 
 use std::any::Any;
@@ -64,12 +57,10 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::iter;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::mem;
-use std::ops::Generator;
 
 pub fn parse<'a>(sess: &'a Session, input: &Input) -> PResult<'a, ast::Crate> {
     sess.diagnostic()
@@ -215,22 +206,22 @@ impl ExpansionResult {
 
 impl BoxedResolver {
     pub fn to_expansion_result(
-        mut resolver: Rc<Option<RefCell<BoxedResolver>>>,
+        resolver: Rc<RefCell<BoxedResolver>>,
     ) -> ExpansionResult {
-        if let Some(resolver) = Rc::get_mut(&mut resolver) {
-            mem::replace(resolver, None).unwrap().into_inner().complete()
-        } else {
-            let resolver = &*resolver;
-            resolver.as_ref().unwrap().borrow_mut().access(|resolver| {
-                ExpansionResult::from_resolver_ref(resolver)
-            })
+        match Rc::try_unwrap(resolver) {
+            Ok(resolver) => resolver.into_inner().complete(),
+            Err(resolver) => {
+                let resolver = &*resolver;
+                resolver.borrow_mut().access(|resolver| {
+                    ExpansionResult::from_resolver_ref(resolver)
+                })
+            }
         }
     }
 }
 
 pub struct PluginInfo {
     syntax_exts: Vec<NamedSyntaxExtension>,
-    attributes: Vec<(Symbol, AttributeType)>,
 }
 
 pub fn register_plugins<'a>(
@@ -241,10 +232,12 @@ pub fn register_plugins<'a>(
     crate_name: &str,
 ) -> Result<(ast::Crate, PluginInfo)> {
     krate = time(sess, "attributes injection", || {
-        syntax::attr::inject(krate, &sess.parse_sess, &sess.opts.debugging_opts.crate_attr)
+        syntax_ext::cmdline_attrs::inject(
+            krate, &sess.parse_sess, &sess.opts.debugging_opts.crate_attr
+        )
     });
 
-    let (mut krate, features) = syntax::config::features(
+    let (krate, features) = syntax::config::features(
         krate,
         &sess.parse_sess,
         sess.edition(),
@@ -279,11 +272,6 @@ pub fn register_plugins<'a>(
         middle::recursion_limit::update_limits(sess, &krate);
     });
 
-    krate = time(sess, "crate injection", || {
-        let alt_std_name = sess.opts.alt_std_name.as_ref().map(|s| &**s);
-        syntax::std_inject::maybe_inject_crates_ref(krate, alt_std_name, sess.edition())
-    });
-
     let registrars = time(sess, "plugin loading", || {
         plugin::load::load_plugins(
             sess,
@@ -297,21 +285,6 @@ pub fn register_plugins<'a>(
     let mut registry = Registry::new(sess, krate.span);
 
     time(sess, "plugin registration", || {
-        if sess.features_untracked().rustc_diagnostic_macros {
-            registry.register_macro(
-                "__diagnostic_used",
-                diagnostics::plugin::expand_diagnostic_used,
-            );
-            registry.register_macro(
-                "__register_diagnostic",
-                diagnostics::plugin::expand_register_diagnostic,
-            );
-            registry.register_macro(
-                "__build_diagnostic_array",
-                diagnostics::plugin::expand_build_diagnostic_array,
-            );
-        }
-
         for registrar in registrars {
             registry.args_hidden = Some(registrar.args);
             (registrar.fun)(&mut registry);
@@ -341,12 +314,9 @@ pub fn register_plugins<'a>(
     }
 
     *sess.plugin_llvm_passes.borrow_mut() = llvm_passes;
-    *sess.plugin_attributes.borrow_mut() = attributes.clone();
+    *sess.plugin_attributes.borrow_mut() = attributes;
 
-    Ok((krate, PluginInfo {
-        syntax_exts,
-        attributes,
-    }))
+    Ok((krate, PluginInfo { syntax_exts }))
 }
 
 fn configure_and_expand_inner<'a>(
@@ -358,7 +328,6 @@ fn configure_and_expand_inner<'a>(
     crate_loader: &'a mut CrateLoader<'a>,
     plugin_info: PluginInfo,
 ) -> Result<(ast::Crate, Resolver<'a>)> {
-    let attributes = plugin_info.attributes;
     time(sess, "pre ast expansion lint checks", || {
         lint::check_ast_crate(
             sess,
@@ -375,7 +344,25 @@ fn configure_and_expand_inner<'a>(
         crate_loader,
         &resolver_arenas,
     );
-    syntax_ext::register_builtins(&mut resolver, plugin_info.syntax_exts, sess.edition());
+    syntax_ext::register_builtin_macros(&mut resolver, sess.edition());
+
+    krate = time(sess, "crate injection", || {
+        let alt_std_name = sess.opts.alt_std_name.as_ref().map(|s| Symbol::intern(s));
+        let (krate, name) = syntax_ext::standard_library_imports::inject(
+            krate,
+            &mut resolver,
+            &sess.parse_sess,
+            alt_std_name,
+        );
+        if let Some(name) = name {
+            sess.parse_sess.injected_crate_name.set(name);
+        }
+        krate
+    });
+
+    syntax_ext::plugin_macro_defs::inject(
+        &mut krate, &mut resolver, plugin_info.syntax_exts, sess.edition()
+    );
 
     // Expand all macros
     sess.profiler(|p| p.start_activity("macro expansion"));
@@ -456,7 +443,7 @@ fn configure_and_expand_inner<'a>(
     sess.profiler(|p| p.end_activity("macro expansion"));
 
     time(sess, "maybe building test harness", || {
-        syntax::test::modify_for_testing(
+        syntax_ext::test_harness::inject(
             &sess.parse_sess,
             &mut resolver,
             sess.opts.test,
@@ -472,20 +459,31 @@ fn configure_and_expand_inner<'a>(
         util::ReplaceBodyWithLoop::new(sess).visit_crate(&mut krate);
     }
 
-    let (has_proc_macro_decls, has_global_allocator) = time(sess, "AST validation", || {
+    let has_proc_macro_decls = time(sess, "AST validation", || {
         ast_validation::check_crate(sess, &krate)
     });
 
-    // If we're in rustdoc we're always compiling as an rlib, but that'll trip a
-    // bunch of checks in the `modify` function below. For now just skip this
-    // step entirely if we're rustdoc as it's not too useful anyway.
-    if !sess.opts.actually_rustdoc {
+
+    let crate_types = sess.crate_types.borrow();
+    let is_proc_macro_crate = crate_types.contains(&config::CrateType::ProcMacro);
+
+    // For backwards compatibility, we don't try to run proc macro injection
+    // if rustdoc is run on a proc macro crate without '--crate-type proc-macro' being
+    // specified. This should only affect users who manually invoke 'rustdoc', as
+    // 'cargo doc' will automatically pass the proper '--crate-type' flags.
+    // However, we do emit a warning, to let such users know that they should
+    // start passing '--crate-type proc-macro'
+    if has_proc_macro_decls && sess.opts.actually_rustdoc && !is_proc_macro_crate {
+        let mut msg = sess.diagnostic().struct_warn(&"Trying to document proc macro crate \
+            without passing '--crate-type proc-macro to rustdoc");
+
+        msg.warn("The generated documentation may be incorrect");
+        msg.emit()
+    } else {
         krate = time(sess, "maybe creating a macro crate", || {
-            let crate_types = sess.crate_types.borrow();
             let num_crate_types = crate_types.len();
-            let is_proc_macro_crate = crate_types.contains(&config::CrateType::ProcMacro);
             let is_test_crate = sess.opts.test;
-            syntax_ext::proc_macro_decls::modify(
+            syntax_ext::proc_macro_harness::inject(
                 &sess.parse_sess,
                 &mut resolver,
                 krate,
@@ -493,19 +491,6 @@ fn configure_and_expand_inner<'a>(
                 has_proc_macro_decls,
                 is_test_crate,
                 num_crate_types,
-                sess.diagnostic(),
-            )
-        });
-    }
-
-    if has_global_allocator {
-        // Expand global allocators, which are treated as an in-tree proc macro
-        time(sess, "creating allocators", || {
-            allocator::expand::modify(
-                &sess.parse_sess,
-                &mut resolver,
-                &mut krate,
-                crate_name.to_string(),
                 sess.diagnostic(),
             )
         });
@@ -535,7 +520,6 @@ fn configure_and_expand_inner<'a>(
             &krate,
             &sess.parse_sess,
             &sess.features_untracked(),
-            &attributes,
             sess.opts.unstable_features,
         );
     });
@@ -576,7 +560,7 @@ pub fn lower_to_hir(
 
     // Discard hygiene data, which isn't required after lowering to HIR.
     if !sess.opts.debugging_opts.keep_hygiene_data {
-        syntax::ext::hygiene::clear_markings();
+        syntax::ext::hygiene::clear_syntax_context_map();
     }
 
     Ok(hir_forest)
@@ -661,7 +645,8 @@ fn escape_dep_filename(filename: &FileName) -> String {
     filename.to_string().replace(" ", "\\ ")
 }
 
-fn write_out_deps(sess: &Session, outputs: &OutputFilenames, out_filenames: &[PathBuf]) {
+fn write_out_deps(compiler: &Compiler, outputs: &OutputFilenames, out_filenames: &[PathBuf]) {
+    let sess = &compiler.sess;
     // Write out dependency rules to the dep-info file if requested
     if !sess.opts.output_types.contains_key(&OutputType::DepInfo) {
         return;
@@ -671,13 +656,30 @@ fn write_out_deps(sess: &Session, outputs: &OutputFilenames, out_filenames: &[Pa
     let result = (|| -> io::Result<()> {
         // Build a list of files used to compile the output and
         // write Makefile-compatible dependency rules
-        let files: Vec<String> = sess.source_map()
+        let mut files: Vec<String> = sess.source_map()
             .files()
             .iter()
             .filter(|fmap| fmap.is_real_file())
             .filter(|fmap| !fmap.is_imported())
-            .map(|fmap| escape_dep_filename(&fmap.name))
+            .map(|fmap| escape_dep_filename(&fmap.unmapped_path.as_ref().unwrap_or(&fmap.name)))
             .collect();
+
+        if sess.binary_dep_depinfo() {
+            for cnum in compiler.cstore.crates_untracked() {
+                let metadata = compiler.cstore.crate_data_as_rc_any(cnum);
+                let metadata = metadata.downcast_ref::<cstore::CrateMetadata>().unwrap();
+                if let Some((path, _)) = &metadata.source.dylib {
+                    files.push(escape_dep_filename(&FileName::Real(path.clone())));
+                }
+                if let Some((path, _)) = &metadata.source.rlib {
+                    files.push(escape_dep_filename(&FileName::Real(path.clone())));
+                }
+                if let Some((path, _)) = &metadata.source.rmeta {
+                    files.push(escape_dep_filename(&FileName::Real(path.clone())));
+                }
+            }
+        }
+
         let mut file = fs::File::create(&deps_filename)?;
         for path in out_filenames {
             writeln!(file, "{}: {}\n", path.display(), files.join(" "))?;
@@ -692,12 +694,20 @@ fn write_out_deps(sess: &Session, outputs: &OutputFilenames, out_filenames: &[Pa
         Ok(())
     })();
 
-    if let Err(e) = result {
-        sess.fatal(&format!(
-            "error writing dependencies to `{}`: {}",
-            deps_filename.display(),
-            e
-        ));
+    match result {
+        Ok(_) => {
+            if sess.opts.json_artifact_notifications {
+                 sess.parse_sess.span_diagnostic
+                    .emit_artifact_notification(&deps_filename, "dep-info");
+            }
+        },
+        Err(e) => {
+            sess.fatal(&format!(
+                "error writing dependencies to `{}`: {}",
+                deps_filename.display(),
+                e
+            ))
+        }
     }
 }
 
@@ -746,7 +756,7 @@ pub fn prepare_outputs(
         }
     }
 
-    write_out_deps(sess, &outputs, &output_paths);
+    write_out_deps(compiler, &outputs, &output_paths);
 
     let only_dep_info = sess.opts.output_types.contains_key(&OutputType::DepInfo)
         && sess.opts.output_types.len() == 1;
@@ -795,14 +805,14 @@ pub fn default_provide_extern(providers: &mut ty::query::Providers<'_>) {
 
 declare_box_region_type!(
     pub BoxedGlobalCtxt,
-    for('gcx),
-    (&'gcx GlobalCtxt<'gcx>) -> ((), ())
+    for('tcx),
+    (&'tcx GlobalCtxt<'tcx>) -> ((), ())
 );
 
 impl BoxedGlobalCtxt {
     pub fn enter<F, R>(&mut self, f: F) -> R
     where
-        F: for<'tcx> FnOnce(TyCtxt<'tcx, 'tcx, 'tcx>) -> R
+        F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> R,
     {
         self.access(|gcx| ty::tls::enter_global(gcx, |tcx| f(tcx)))
     }
@@ -815,7 +825,7 @@ pub fn create_global_ctxt(
     resolutions: Resolutions,
     outputs: OutputFilenames,
     tx: mpsc::Sender<Box<dyn Any + Send>>,
-    crate_name: &str
+    crate_name: &str,
 ) -> BoxedGlobalCtxt {
     let sess = compiler.session().clone();
     let cstore = compiler.cstore.clone();
@@ -870,7 +880,7 @@ pub fn create_global_ctxt(
         });
 
         yield BoxedGlobalCtxt::initial_yield(());
-        box_region_allow_access!(for('gcx), (&'gcx GlobalCtxt<'gcx>), (gcx));
+        box_region_allow_access!(for('tcx), (&'tcx GlobalCtxt<'tcx>), (gcx));
 
         if sess.opts.debugging_opts.query_stats {
             gcx.queries.print_stats();
@@ -882,10 +892,7 @@ pub fn create_global_ctxt(
 
 /// Runs the resolution, type-checking, region checking and other
 /// miscellaneous analysis passes on the crate.
-fn analysis<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
-    cnum: CrateNum,
-) -> Result<()> {
+fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
     assert_eq!(cnum, LOCAL_CRATE);
 
     let sess = tcx.sess;
@@ -906,9 +913,10 @@ fn analysis<'tcx>(
             });
         }, {
             par_iter(&tcx.hir().krate().modules).for_each(|(&module, _)| {
-                tcx.ensure().check_mod_loops(tcx.hir().local_def_id(module));
-                tcx.ensure().check_mod_attrs(tcx.hir().local_def_id(module));
-                tcx.ensure().check_mod_unstable_api_usage(tcx.hir().local_def_id(module));
+                tcx.ensure().check_mod_loops(tcx.hir().local_def_id_from_node_id(module));
+                tcx.ensure().check_mod_attrs(tcx.hir().local_def_id_from_node_id(module));
+                tcx.ensure().check_mod_unstable_api_usage(
+                    tcx.hir().local_def_id_from_node_id(module));
             });
         });
     });
@@ -931,9 +939,9 @@ fn analysis<'tcx>(
                     // "not all control paths return a value" is reported here.
                     //
                     // maybe move the check to a MIR pass?
-                    tcx.ensure().check_mod_liveness(tcx.hir().local_def_id(module));
+                    tcx.ensure().check_mod_liveness(tcx.hir().local_def_id_from_node_id(module));
 
-                    tcx.ensure().check_mod_intrinsics(tcx.hir().local_def_id(module));
+                    tcx.ensure().check_mod_intrinsics(tcx.hir().local_def_id_from_node_id(module));
                 });
             });
         });
@@ -966,7 +974,7 @@ fn analysis<'tcx>(
     // lot of annoying errors in the compile-fail tests (basically,
     // lint warnings and so on -- kindck used to do this abort, but
     // kindck is gone now). -nmatsakis
-    if sess.err_count() > 0 {
+    if sess.has_errors() {
         return Err(ErrorReported);
     }
 
@@ -993,7 +1001,7 @@ fn analysis<'tcx>(
         }, {
             time(sess, "privacy checking modules", || {
                 par_iter(&tcx.hir().krate().modules).for_each(|(&module, _)| {
-                    tcx.ensure().check_mod_privacy(tcx.hir().local_def_id(module));
+                    tcx.ensure().check_mod_privacy(tcx.hir().local_def_id_from_node_id(module));
                 });
             });
         });
@@ -1002,8 +1010,8 @@ fn analysis<'tcx>(
     Ok(())
 }
 
-fn encode_and_write_metadata<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+fn encode_and_write_metadata(
+    tcx: TyCtxt<'_>,
     outputs: &OutputFilenames,
 ) -> (middle::cstore::EncodedMetadata, bool) {
     #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -1051,7 +1059,7 @@ fn encode_and_write_metadata<'tcx>(
         if let Err(e) = fs::rename(&metadata_filename, &out_filename) {
             tcx.sess.fatal(&format!("failed to write {}: {}", out_filename.display(), e));
         }
-        if tcx.sess.opts.debugging_opts.emit_artifact_notifications {
+        if tcx.sess.opts.json_artifact_notifications {
             tcx.sess.parse_sess.span_diagnostic
                 .emit_artifact_notification(&out_filename, "metadata");
         }
@@ -1066,7 +1074,7 @@ fn encode_and_write_metadata<'tcx>(
 /// be discarded.
 pub fn start_codegen<'tcx>(
     codegen_backend: &dyn CodegenBackend,
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     rx: mpsc::Receiver<Box<dyn Any + Send>>,
     outputs: &OutputFilenames,
 ) -> Box<dyn Any> {
