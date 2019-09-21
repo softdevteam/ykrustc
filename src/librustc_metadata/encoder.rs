@@ -1010,7 +1010,7 @@ impl EncodeContext<'tcx> {
                     let is_const_fn = sig.header.constness == hir::Constness::Const;
                     let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir;
                     let encode_sir = self.tcx.sess.opts.cg.tracer.encode_sir();
-                    needs_inline || is_const_fn || always_encode_mir || encode_sir;
+                    needs_inline || is_const_fn || always_encode_mir || encode_sir
                 },
                 hir::ImplItemKind::OpaqueTy(..) |
                 hir::ImplItemKind::TyAlias(..) => false,

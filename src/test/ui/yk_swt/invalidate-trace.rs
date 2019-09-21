@@ -7,6 +7,9 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// compile-flags: -C tracer=sw
+// run-pass
+
 #![feature(yk_swt)]
 #![feature(libc)]
 #![feature(test)]

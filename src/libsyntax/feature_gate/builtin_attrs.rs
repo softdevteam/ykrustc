@@ -235,6 +235,10 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(export_name, Whitelisted, template!(NameValueStr: "name")),
     ungated!(link_section, Whitelisted, template!(NameValueStr: "name")),
     ungated!(no_mangle, Whitelisted, template!(Word)),
+
+    // "Don't software trace this". Disables the `AddYkSWTCalls` MIR transform.
+    ungated!(no_sw_trace, Whitelisted, template!(Word)),
+
     ungated!(used, Whitelisted, template!(Word)),
 
     // Limits:

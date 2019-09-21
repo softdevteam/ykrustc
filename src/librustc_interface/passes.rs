@@ -6,7 +6,7 @@ use log::{info, warn, log_enabled};
 use rustc::dep_graph::DepGraph;
 use rustc::hir;
 use rustc::hir::lowering::lower_crate;
-use rustc::hir::def_id::{CrateNum, LOCAL_CRATE, DefId, DefIndex};
+use rustc::hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc::lint;
 use rustc::middle::{self, reachable, resolve_lifetime, stability};
 use rustc::middle::cstore::CrateStore;
@@ -45,13 +45,11 @@ use syntax_pos::FileName;
 use syntax_ext;
 use rustc_yk_sections::emit_sir::{generate_sir, SirMode};
 use rustc_codegen_utils::link::out_filename;
-use rustc::util::nodemap::DefIdSet;
 
 use rustc_serialize::json;
 use tempfile::Builder as TempFileBuilder;
 
 use std::any::Any;
-use std::borrow::Borrow;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -1129,7 +1127,7 @@ pub fn start_codegen<'tcx>(
             SirMode::Default(out_fname)
         };
 
-        match generate_sir(&tcx, &def_ids, sir_mode) {
+        match generate_sir(tcx, &def_ids, sir_mode) {
             Ok(Some(obj)) => tcx.sess.yk_link_objects.borrow_mut().push(obj),
             Ok(None) => (),
             Err(e) => {

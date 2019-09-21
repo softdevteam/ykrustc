@@ -1187,13 +1187,13 @@ impl<'a, 'tcx> CrateMetadata {
         }
     }
 
-    pub fn defids_with_mir(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> DefIdSet {
-        if self.proc_macros.is_some() {
+    pub fn defids_with_mir(&self, tcx: TyCtxt<'tcx>) -> DefIdSet {
+        if self.is_proc_macro_crate() {
             // Following the precedent of `exported_symbols()` we skip procedural macro crates.
             DefIdSet::default()
         } else {
             let mut res = DefIdSet::default();
-            for idx in 1..self.root.entries_index.len - 1 {
+            for idx in 1..self.root.entries_index.meta - 1 {
                 let def_id = DefId{krate: self.cnum, index: DefIndex::from_usize(idx)};
                 if tcx.is_mir_available(def_id) {
                     res.insert(def_id);

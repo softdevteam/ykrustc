@@ -2291,12 +2291,12 @@ impl<'tcx> Const<'tcx> {
     }
 
     #[inline]
-    pub fn from_u32(tcx: TyCtxt<'_, '_, 'tcx>, n: u32) -> &'tcx Self {
+    pub fn from_u32(tcx: TyCtxt<'tcx>, n: u32) -> &'tcx Self {
         Self::from_bits(tcx, n as u128, ParamEnv::empty().and(tcx.types.u32))
     }
 
     #[inline]
-    pub fn from_u64(tcx: TyCtxt<'_, '_, 'tcx>, n: u64) -> &'tcx Self {
+    pub fn from_u64(tcx: TyCtxt<'tcx>, n: u64) -> &'tcx Self {
         Self::from_bits(tcx, n as u128, ParamEnv::empty().and(tcx.types.u64))
     }
 

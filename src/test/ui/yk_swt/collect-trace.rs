@@ -8,6 +8,7 @@
 // except according to those terms.
 
 // compile-flags: -C tracer=sw
+// run-pass
 
 #![feature(yk_swt)]
 #![feature(libc)]

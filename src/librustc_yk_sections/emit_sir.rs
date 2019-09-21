@@ -13,7 +13,7 @@
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
-use rustc::ty::{TyCtxt, TyS, Const, TyKind, Ty, Instance};
+use rustc::ty::{self, TyCtxt, TyS, Const, Ty, Instance};
 use syntax::ast::{UintTy, IntTy};
 use rustc::hir::def_id::DefId;
 use rustc::mir::{
@@ -47,9 +47,9 @@ pub enum SirMode {
 }
 
 /// A conversion context holds the state needed to perform the SIR lowering.
-struct ConvCx<'a, 'tcx, 'gcx> {
+struct ConvCx<'a, 'tcx> {
     /// The compiler's god struct. Needed for queries etc.
-    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>,
+    tcx: TyCtxt<'tcx>,
     /// Monotonically increasing number used to give SIR variables a unique ID.
     next_sir_var: ykpack::LocalIndex,
     /// A mapping from MIR variables to SIR variables.
@@ -62,8 +62,8 @@ struct ConvCx<'a, 'tcx, 'gcx> {
     callee_def_ids: DefIdSet,
 }
 
-impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
-    fn new(tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_id: DefId, mir: &'a Body<'tcx>) -> Self {
+impl<'a, 'tcx> ConvCx<'a, 'tcx> {
+    fn new(tcx: TyCtxt<'tcx>, def_id: DefId, mir: &'a Body<'tcx>) -> Self {
         Self {
             tcx,
             next_sir_var: 0,
@@ -165,7 +165,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                 let ser_oper = if let Operand::Constant(box Constant {
                     literal: Const {
                         ty: &TyS {
-                            sty: TyKind::FnDef(ref target_def_id, ref substs), ..
+                            sty: ty::FnDef(ref target_def_id, ref substs), ..
                         }, ..
                     }, ..
                 }, ..) = func {
@@ -174,7 +174,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
                     let sym_name = match substs.needs_subst() {
                         // If the instance isn't full instantiated, then it has no symbol name.
                         true => None,
-                        false => Some(self.tcx.symbol_name(inst).as_str().get().to_owned()),
+                        false => Some(String::from(&*self.tcx.symbol_name(inst).name.as_str())),
                     };
                     self.callee_def_ids.insert(*target_def_id);
                     ykpack::CallOperand::Fn(self.lower_def_id(target_def_id), sym_name)
@@ -215,7 +215,7 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
         };
 
         match stmt.kind {
-            StatementKind::Assign(ref place, ref rval) => {
+            StatementKind::Assign(box (ref place, ref rval)) => {
                 match self.lower_assign_stmt(place, rval) {
                     Ok(t_st) => vec![t_st],
                     _ => unimpl_stmt(stmt),
@@ -233,9 +233,10 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
     }
 
     // FIXME No possibility of error once everything is implemented.
+    // FIXME deal with the projection field.
     fn lower_place(&mut self, place: &Place<'_>) -> Result<ykpack::Local, ()> {
-        match place {
-            Place::Base(PlaceBase::Local(l)) => Ok(self.lower_local(*l)),
+        match place.base {
+            PlaceBase::Local(l) => Ok(self.lower_local(l)),
             _  => Err(()),
         }
     }
@@ -308,8 +309,8 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
 
     fn lower_scalar(&mut self, ty: Ty<'_>, sclr: &Scalar) -> Result<ykpack::Constant, ()> {
         match ty.sty {
-            TyKind::Uint(t) => Ok(ykpack::Constant::Int(self.lower_uint(t, sclr))),
-            TyKind::Int(t) => Ok(ykpack::Constant::Int(self.lower_int(t, sclr))),
+            ty::Uint(t) => Ok(ykpack::Constant::Int(self.lower_uint(t, sclr))),
+            ty::Int(t) => Ok(ykpack::Constant::Int(self.lower_int(t, sclr))),
             _ => Err(()), // FIXME Not implemented.
         }
     }
@@ -354,8 +355,8 @@ impl<'a, 'tcx, 'gcx> ConvCx<'a, 'tcx, 'gcx> {
 }
 
 /// Writes SIR to file for the specified DefIds, possibly returning a linkable ELF object.
-pub fn generate_sir<'a, 'tcx, 'gcx>(
-    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_ids: &DefIdSet, mode: SirMode)
+pub fn generate_sir<'tcx>(
+    tcx: TyCtxt<'tcx>, def_ids: &DefIdSet, mode: SirMode)
     -> Result<Option<YkExtraLinkObject>, Box<dyn Error>>
 {
     let sir_path = do_generate_sir(tcx, def_ids, &mode)?;
@@ -377,8 +378,8 @@ pub fn generate_sir<'a, 'tcx, 'gcx>(
     }
 }
 
-fn do_generate_sir<'a, 'tcx, 'gcx>(
-    tcx: &'a TyCtxt<'a, 'tcx, 'gcx>, def_ids: &DefIdSet, mode: &SirMode)
+fn do_generate_sir<'tcx>(
+    tcx: TyCtxt<'tcx>, def_ids: &DefIdSet, mode: &SirMode)
     -> Result<PathBuf, Box<dyn Error>>
 {
     let (sir_path, mut default_file, textdump_file) = match mode {
@@ -449,7 +450,7 @@ fn do_generate_sir<'a, 'tcx, 'gcx>(
     Ok(sir_path)
 }
 
-fn lower_def_id(tcx: &TyCtxt<'_, '_, '_>, &def_id: &DefId) -> ykpack::DefId {
+fn lower_def_id(tcx: TyCtxt<'_>, &def_id: &DefId) -> ykpack::DefId {
     ykpack::DefId {
         crate_hash: tcx.crate_hash(def_id.krate).as_u64(),
         def_idx: def_id.index.as_u32(),

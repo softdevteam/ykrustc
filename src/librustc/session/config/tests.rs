@@ -6,7 +6,7 @@ use crate::session::config::{
     build_session_options_and_crate_config,
     to_crate_config
 };
-use crate::session::config::{LtoCli, LinkerPluginLto, SwitchWithOptPath, ExternEntry};
+use crate::session::config::{LtoCli, LinkerPluginLto, SwitchWithOptPath, ExternEntry, TracerMode};
 use crate::session::build_session;
 use crate::session::search_paths::SearchPath;
 use std::collections::{BTreeMap, BTreeSet};
@@ -627,6 +627,10 @@ fn test_debugging_options_tracking_hash() {
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
 
     // Make sure changing a [TRACKED] option changes the hash
+    opts = reference.clone();
+    opts.cg.tracer = TracerMode::Hardware;
+    assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
+
     opts = reference.clone();
     opts.debugging_opts.asm_comments = true;
     assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
