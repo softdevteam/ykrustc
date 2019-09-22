@@ -20,10 +20,10 @@ impl From<ty::ParamConst> for Parameter {
 }
 
 /// Returns the set of parameters constrained by the impl header.
-pub fn parameters_for_impl<'tcx>(impl_self_ty: Ty<'tcx>,
-                                 impl_trait_ref: Option<ty::TraitRef<'tcx>>)
-                                 -> FxHashSet<Parameter>
-{
+pub fn parameters_for_impl<'tcx>(
+    impl_self_ty: Ty<'tcx>,
+    impl_trait_ref: Option<ty::TraitRef<'tcx>>,
+) -> FxHashSet<Parameter> {
     let vec = match impl_trait_ref {
         Some(tr) => parameters_for(&tr, false),
         None => parameters_for(&impl_self_ty, false),
@@ -36,12 +36,10 @@ pub fn parameters_for_impl<'tcx>(impl_self_ty: Ty<'tcx>,
 /// uniquely determined by `t` (see RFC 447). If it is true, return the list
 /// of parameters whose values are needed in order to constrain `ty` - these
 /// differ, with the latter being a superset, in the presence of projections.
-pub fn parameters_for<'tcx, T>(t: &T,
-                               include_nonconstraining: bool)
-                               -> Vec<Parameter>
-    where T: TypeFoldable<'tcx>
-{
-
+pub fn parameters_for<'tcx>(
+    t: &impl TypeFoldable<'tcx>,
+    include_nonconstraining: bool,
+) -> Vec<Parameter> {
     let mut collector = ParameterCollector {
         parameters: vec![],
         include_nonconstraining,
@@ -86,11 +84,12 @@ impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
     }
 }
 
-pub fn identify_constrained_generic_params<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
-                                              predicates: &ty::GenericPredicates<'tcx>,
-                                              impl_trait_ref: Option<ty::TraitRef<'tcx>>,
-                                              input_parameters: &mut FxHashSet<Parameter>)
-{
+pub fn identify_constrained_generic_params<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    predicates: &ty::GenericPredicates<'tcx>,
+    impl_trait_ref: Option<ty::TraitRef<'tcx>>,
+    input_parameters: &mut FxHashSet<Parameter>,
+) {
     let mut predicates = predicates.predicates.clone();
     setup_constraining_predicates(tcx, &mut predicates, impl_trait_ref, input_parameters);
 }
@@ -136,11 +135,12 @@ pub fn identify_constrained_generic_params<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>,
 /// which is determined by 1, which requires `U`, that is determined
 /// by 0. I should probably pick a less tangled example, but I can't
 /// think of any.
-pub fn setup_constraining_predicates<'tcx>(tcx: TyCtxt<'_, '_, '_>,
-                                           predicates: &mut [(ty::Predicate<'tcx>, Span)],
-                                           impl_trait_ref: Option<ty::TraitRef<'tcx>>,
-                                           input_parameters: &mut FxHashSet<Parameter>)
-{
+pub fn setup_constraining_predicates<'tcx>(
+    tcx: TyCtxt<'_>,
+    predicates: &mut [(ty::Predicate<'tcx>, Span)],
+    impl_trait_ref: Option<ty::TraitRef<'tcx>>,
+    input_parameters: &mut FxHashSet<Parameter>,
+) {
     // The canonical way of doing the needed topological sort
     // would be a DFS, but getting the graph and its ownership
     // right is annoying, so I am using an in-place fixed-point iteration,

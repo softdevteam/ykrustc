@@ -9,14 +9,22 @@
 //! * [`Ord`] and [`PartialOrd`] are traits that allow you to define total and
 //!   partial orderings between values, respectively. Implementing them overloads
 //!   the `<`, `<=`, `>`, and `>=` operators.
-//! * [`Ordering`][cmp::Ordering] is an enum returned by the
-//!   main functions of [`Ord`] and [`PartialOrd`], and describes an ordering.
-//! * [`Reverse`][cmp::Reverse] is a struct that allows you to easily reverse
-//!   an ordering.
-//! * [`max`][cmp::max] and [`min`][cmp::min] are functions that build off of
-//!   [`Ord`] and allow you to find the maximum or minimum of two values.
+//! * [`Ordering`] is an enum returned by the main functions of [`Ord`] and
+//!   [`PartialOrd`], and describes an ordering.
+//! * [`Reverse`] is a struct that allows you to easily reverse an ordering.
+//! * [`max`] and [`min`] are functions that build off of [`Ord`] and allow you
+//!   to find the maximum or minimum of two values.
 //!
 //! For more details, see the respective documentation of each item in the list.
+//!
+//! [`Eq`]: trait.Eq.html
+//! [`PartialEq`]: trait.PartialEq.html
+//! [`Ord`]: trait.Ord.html
+//! [`PartialOrd`]: trait.PartialOrd.html
+//! [`Ordering`]: enum.Ordering.html
+//! [`Reverse`]: struct.Reverse.html
+//! [`max`]: fn.max.html
+//! [`min`]: fn.min.html
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
@@ -200,6 +208,13 @@ pub trait PartialEq<Rhs: ?Sized = Self> {
     fn ne(&self, other: &Rhs) -> bool { !self.eq(other) }
 }
 
+/// Derive macro generating an impl of the trait `PartialEq`.
+#[rustc_builtin_macro]
+#[cfg_attr(boostrap_stdarch_ignore_this, rustc_macro_transparency = "semitransparent")]
+#[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
+#[allow_internal_unstable(core_intrinsics)]
+pub macro PartialEq($item:item) { /* compiler built-in */ }
+
 /// Trait for equality comparisons which are [equivalence relations](
 /// https://en.wikipedia.org/wiki/Equivalence_relation).
 ///
@@ -255,6 +270,13 @@ pub trait Eq: PartialEq<Self> {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn assert_receiver_is_total_eq(&self) {}
 }
+
+/// Derive macro generating an impl of the trait `Eq`.
+#[rustc_builtin_macro]
+#[cfg_attr(boostrap_stdarch_ignore_this, rustc_macro_transparency = "semitransparent")]
+#[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
+#[allow_internal_unstable(core_intrinsics, derive_eq)]
+pub macro Eq($item:item) { /* compiler built-in */ }
 
 // FIXME: this struct is used solely by #[derive] to
 // assert that every component of a type implements Eq.
@@ -319,7 +341,7 @@ impl Ordering {
     /// This method can be used to reverse a comparison:
     ///
     /// ```
-    /// let mut data: &mut [_] = &mut [2, 10, 5, 8];
+    /// let data: &mut [_] = &mut [2, 10, 5, 8];
     ///
     /// // sort the array from largest to smallest.
     /// data.sort_by(|a, b| a.cmp(b).reverse());
@@ -600,6 +622,13 @@ pub trait Ord: Eq + PartialOrd<Self> {
     }
 }
 
+/// Derive macro generating an impl of the trait `Ord`.
+#[rustc_builtin_macro]
+#[cfg_attr(boostrap_stdarch_ignore_this, rustc_macro_transparency = "semitransparent")]
+#[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
+#[allow_internal_unstable(core_intrinsics)]
+pub macro Ord($item:item) { /* compiler built-in */ }
+
 #[stable(feature = "rust1", since = "1.0.0")]
 impl Eq for Ordering {}
 
@@ -842,6 +871,13 @@ pub trait PartialOrd<Rhs: ?Sized = Self>: PartialEq<Rhs> {
     }
 }
 
+/// Derive macro generating an impl of the trait `PartialOrd`.
+#[rustc_builtin_macro]
+#[cfg_attr(boostrap_stdarch_ignore_this, rustc_macro_transparency = "semitransparent")]
+#[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
+#[allow_internal_unstable(core_intrinsics)]
+pub macro PartialOrd($item:item) { /* compiler built-in */ }
+
 /// Compares and returns the minimum of two values.
 ///
 /// Returns the first argument if the comparison determines them to be equal.
@@ -984,8 +1020,10 @@ mod impls {
             impl Ord for $t {
                 #[inline]
                 fn cmp(&self, other: &$t) -> Ordering {
-                    if *self == *other { Equal }
-                    else if *self < *other { Less }
+                    // The order here is important to generate more optimal assembly.
+                    // See <https://github.com/rust-lang/rust/issues/63758> for more info.
+                    if *self < *other { Less }
+                    else if *self == *other { Equal }
                     else { Greater }
                 }
             }

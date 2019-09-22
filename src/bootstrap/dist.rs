@@ -469,7 +469,6 @@ impl Step for Rustc {
         fn prepare_image(builder: &Builder<'_>, compiler: Compiler, image: &Path) {
             let host = compiler.host;
             let src = builder.sysroot(compiler);
-            let libdir = builder.rustc_libdir(compiler);
 
             // Copy rustc/rustdoc binaries
             t!(fs::create_dir_all(image.join("bin")));
@@ -481,11 +480,14 @@ impl Step for Rustc {
 
             // Copy runtime DLLs needed by the compiler
             if libdir_relative.to_str() != Some("bin") {
+                let libdir = builder.rustc_libdir(compiler);
                 for entry in builder.read_dir(&libdir) {
                     let name = entry.file_name();
                     if let Some(s) = name.to_str() {
                         if is_dylib(s) {
-                            builder.install(&entry.path(), &image.join(&libdir_relative), 0o644);
+                            // Don't use custom libdir here because ^lib/ will be resolved again
+                            // with installer
+                            builder.install(&entry.path(), &image.join("lib"), 0o644);
                         }
                     }
                 }
@@ -493,8 +495,11 @@ impl Step for Rustc {
 
             // Copy over the codegen backends
             let backends_src = builder.sysroot_codegen_backends(compiler);
-            let backends_rel = backends_src.strip_prefix(&src).unwrap();
-            let backends_dst = image.join(&backends_rel);
+            let backends_rel = backends_src.strip_prefix(&src).unwrap()
+                .strip_prefix(builder.sysroot_libdir_relative(compiler)).unwrap();
+            // Don't use custom libdir here because ^lib/ will be resolved again with installer
+            let backends_dst = image.join("lib").join(&backends_rel);
+
             t!(fs::create_dir_all(&backends_dst));
             builder.cp_r(&backends_src, &backends_dst);
 
@@ -673,12 +678,7 @@ impl Step for Std {
         if builder.hosts.iter().any(|t| t == target) {
             builder.ensure(compile::Rustc { compiler, target });
         } else {
-            if builder.no_std(target) == Some(true) {
-                // the `test` doesn't compile for no-std targets
-                builder.ensure(compile::Std { compiler, target });
-            } else {
-                builder.ensure(compile::Test { compiler, target });
-            }
+            builder.ensure(compile::Std { compiler, target });
         }
 
         let image = tmpdir(builder).join(format!("{}-{}-image", name, target));
@@ -762,7 +762,7 @@ impl Step for Analysis {
             return distdir(builder).join(format!("{}-{}.tar.gz", name, target));
         }
 
-        builder.ensure(Std { compiler, target });
+        builder.ensure(compile::Std { compiler, target });
 
         let image = tmpdir(builder).join(format!("{}-{}-image", name, target));
 
@@ -804,9 +804,11 @@ fn copy_src_dirs(builder: &Builder<'_>, src_dirs: &[&str], exclude_dirs: &[&str]
 
         const LLVM_PROJECTS: &[&str] = &[
             "llvm-project/clang", "llvm-project\\clang",
+            "llvm-project/libunwind", "llvm-project\\libunwind",
             "llvm-project/lld", "llvm-project\\lld",
             "llvm-project/lldb", "llvm-project\\lldb",
             "llvm-project/llvm", "llvm-project\\llvm",
+            "llvm-project/compiler-rt", "llvm-project\\compiler-rt",
         ];
         if spath.contains("llvm-project") && !spath.ends_with("llvm-project")
             && !LLVM_PROJECTS.iter().any(|path| spath.contains(path))
@@ -902,10 +904,11 @@ impl Step for Src {
             "src/libtest",
             "src/libterm",
             "src/libprofiler_builtins",
-            "src/stdsimd",
+            "src/stdarch",
             "src/libproc_macro",
             "src/tools/rustc-std-workspace-core",
             "src/tools/rustc-std-workspace-alloc",
+            "src/tools/rustc-std-workspace-std",
             "src/librustc",
             "src/libsyntax",
         ];
@@ -933,8 +936,6 @@ impl Step for Src {
         distdir(builder).join(&format!("{}.tar.gz", name))
     }
 }
-
-const CARGO_VENDOR_VERSION: &str = "0.1.22";
 
 #[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct PlainSourceTarball;
@@ -997,26 +998,6 @@ impl Step for PlainSourceTarball {
 
         // If we're building from git sources, we need to vendor a complete distribution.
         if builder.rust_info.is_git() {
-            // Get cargo-vendor installed, if it isn't already.
-            let mut has_cargo_vendor = false;
-            let mut cmd = Command::new(&builder.initial_cargo);
-            for line in output(cmd.arg("install").arg("--list")).lines() {
-                has_cargo_vendor |= line.starts_with("cargo-vendor ");
-            }
-            if !has_cargo_vendor {
-                let mut cmd = builder.cargo(
-                    builder.compiler(0, builder.config.build),
-                    Mode::ToolBootstrap,
-                    builder.config.build,
-                    "install"
-                );
-                cmd.arg("--force")
-                   .arg("--debug")
-                   .arg("--vers").arg(CARGO_VENDOR_VERSION)
-                   .arg("cargo-vendor");
-                builder.run(&mut cmd);
-            }
-
             // Vendor all Cargo dependencies
             let mut cmd = Command::new(&builder.initial_cargo);
             cmd.arg("vendor")
@@ -2019,6 +2000,8 @@ impl Step for HashSign {
     }
 
     fn run(self, builder: &Builder<'_>) {
+        // This gets called by `promote-release`
+        // (https://github.com/rust-lang/rust-central-station/tree/master/promote-release).
         let mut cmd = builder.tool_cmd(Tool::BuildManifest);
         if builder.config.dry_run {
             return;
@@ -2029,10 +2012,14 @@ impl Step for HashSign {
         let addr = builder.config.dist_upload_addr.as_ref().unwrap_or_else(|| {
             panic!("\n\nfailed to specify `dist.upload-addr` in `config.toml`\n\n")
         });
-        let file = builder.config.dist_gpg_password_file.as_ref().unwrap_or_else(|| {
-            panic!("\n\nfailed to specify `dist.gpg-password-file` in `config.toml`\n\n")
-        });
-        let pass = t!(fs::read_to_string(&file));
+        let pass = if env::var("BUILD_MANIFEST_DISABLE_SIGNING").is_err() {
+            let file = builder.config.dist_gpg_password_file.as_ref().unwrap_or_else(|| {
+                panic!("\n\nfailed to specify `dist.gpg-password-file` in `config.toml`\n\n")
+            });
+            t!(fs::read_to_string(&file))
+        } else {
+            String::new()
+        };
 
         let today = output(Command::new("date").arg("+%Y-%m-%d"));
 

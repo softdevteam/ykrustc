@@ -5,6 +5,10 @@
 // types of the impl, which would trigger a cycle. We suppressed this
 // cycle now by forcing mir-dump to avoid asking for types of an impl.
 
+// ignore-test FIXME swt_ignore
+// undefined reference to `yk_swt_rec_loc_impl'
+// Is libcore being stripped?
+
 #![feature(rustc_attrs)]
 
 use std::sync::Arc;

@@ -13,7 +13,7 @@ use std::fmt::Write;
 use std::ops::Range;
 
 pub(super) fn mangle(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     instance: Instance<'tcx>,
     instantiating_crate: Option<CrateNum>,
 ) -> String {
@@ -75,14 +75,14 @@ struct BinderLevel {
     lifetime_depths: Range<u32>,
 }
 
-struct SymbolMangler<'a, 'tcx> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct SymbolMangler<'tcx> {
+    tcx: TyCtxt<'tcx>,
     compress: Option<Box<CompressionCaches<'tcx>>>,
     binders: Vec<BinderLevel>,
     out: String,
 }
 
-impl SymbolMangler<'_, 'tcx> {
+impl SymbolMangler<'tcx> {
     fn push(&mut self, s: &str) {
         self.out.push_str(s);
     }
@@ -198,10 +198,14 @@ impl SymbolMangler<'_, 'tcx> {
 
         let lifetimes = regions.into_iter().map(|br| {
             match br {
-                ty::BrAnon(i) => i + 1,
+                ty::BrAnon(i) => {
+                    // FIXME(eddyb) for some reason, `anonymize_late_bound_regions` starts at `1`.
+                    assert_ne!(i, 0);
+                    i - 1
+                },
                 _ => bug!("symbol_names: non-anonymized region `{:?}` in `{:?}`", br, value),
             }
-        }).max().unwrap_or(0);
+        }).max().map_or(0, |max| max + 1);
 
         self.push_opt_integer_62("G", lifetimes as u64);
         lifetime_depths.end += lifetimes;
@@ -214,7 +218,7 @@ impl SymbolMangler<'_, 'tcx> {
     }
 }
 
-impl Printer<'tcx, 'tcx> for SymbolMangler<'_, 'tcx> {
+impl Printer<'tcx> for SymbolMangler<'tcx> {
     type Error = !;
 
     type Path = Self;
@@ -223,7 +227,7 @@ impl Printer<'tcx, 'tcx> for SymbolMangler<'_, 'tcx> {
     type DynExistential = Self;
     type Const = Self;
 
-    fn tcx<'a>(&'a self) -> TyCtxt<'a, 'tcx, 'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
@@ -297,6 +301,10 @@ impl Printer<'tcx, 'tcx> for SymbolMangler<'_, 'tcx> {
             // Late-bound lifetimes use indices starting at 1,
             // see `BinderLevel` for more details.
             ty::ReLateBound(debruijn, ty::BrAnon(i)) => {
+                // FIXME(eddyb) for some reason, `anonymize_late_bound_regions` starts at `1`.
+                assert_ne!(i, 0);
+                let i = i - 1;
+
                 let binder = &self.binders[self.binders.len() - 1 - debruijn.index()];
                 let depth = binder.lifetime_depths.start + i;
 
@@ -512,7 +520,7 @@ impl Printer<'tcx, 'tcx> for SymbolMangler<'_, 'tcx> {
         }
         self = ct.ty.print(self)?;
 
-        if let Some(bits) = ct.assert_bits(self.tcx, ty::ParamEnv::empty().and(ct.ty)) {
+        if let Some(bits) = ct.try_eval_bits(self.tcx, ty::ParamEnv::reveal_all(), ct.ty) {
             let _ = write!(self.out, "{:x}_", bits);
         } else {
             // NOTE(eddyb) despite having the path, we need to

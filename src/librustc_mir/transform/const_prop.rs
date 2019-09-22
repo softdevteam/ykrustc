@@ -1,41 +1,40 @@
 //! Propagates constants for early reporting of statically known
 //! assertion failures
 
+use std::cell::Cell;
+
 use rustc::hir::def::DefKind;
 use rustc::mir::{
     AggregateKind, Constant, Location, Place, PlaceBase, Body, Operand, Rvalue,
     Local, NullOp, UnOp, StatementKind, Statement, LocalKind, Static, StaticKind,
     TerminatorKind, Terminator,  ClearCrossCrate, SourceInfo, BinOp, ProjectionElem,
-    SourceScope, SourceScopeLocalData, LocalDecl, Promoted,
+    SourceScope, SourceScopeLocalData, LocalDecl,
 };
 use rustc::mir::visit::{
     Visitor, PlaceContext, MutatingUseContext, MutVisitor, NonMutatingUseContext,
 };
-use rustc::mir::interpret::{InterpError, Scalar, GlobalId, EvalResult};
+use rustc::mir::interpret::{Scalar, GlobalId, InterpResult, PanicInfo};
 use rustc::ty::{self, Instance, ParamEnv, Ty, TyCtxt};
 use syntax_pos::{Span, DUMMY_SP};
 use rustc::ty::subst::InternalSubsts;
 use rustc_data_structures::indexed_vec::IndexVec;
 use rustc::ty::layout::{
-    LayoutOf, TyLayout, LayoutError,
-    HasTyCtxt, TargetDataLayout, HasDataLayout,
+    LayoutOf, TyLayout, LayoutError, HasTyCtxt, TargetDataLayout, HasDataLayout,
 };
 
 use crate::interpret::{
-    self, InterpretCx, ScalarMaybeUndef, Immediate, OpTy, ImmTy, MemoryKind,
+    self, InterpCx, ScalarMaybeUndef, Immediate, OpTy,
+    ImmTy, MemoryKind, StackPopCleanup, LocalValue, LocalState,
 };
 use crate::const_eval::{
-    CompileTimeInterpreter, error_to_const_error, eval_promoted, mk_eval_cx,
+    CompileTimeInterpreter, error_to_const_error, mk_eval_cx,
 };
 use crate::transform::{MirPass, MirSource};
 
 pub struct ConstProp;
 
-impl MirPass for ConstProp {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          source: MirSource<'tcx>,
-                          mir: &mut Body<'tcx>) {
+impl<'tcx> MirPass<'tcx> for ConstProp {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut Body<'tcx>) {
         // will be evaluated by miri and produce its errors there
         if source.promoted.is_some() {
             return;
@@ -45,7 +44,7 @@ impl MirPass for ConstProp {
         let hir_id = tcx.hir().as_local_hir_id(source.def_id())
                               .expect("Non-local call to local provider is_const_fn");
 
-        let is_fn_like = FnLikeNode::from_node(tcx.hir().get_by_hir_id(hir_id)).is_some();
+        let is_fn_like = FnLikeNode::from_node(tcx.hir().get(hir_id)).is_some();
         let is_assoc_const = match tcx.def_kind(source.def_id()) {
             Some(DefKind::AssocConst) => true,
             _ => false,
@@ -60,21 +59,44 @@ impl MirPass for ConstProp {
 
         trace!("ConstProp starting for {:?}", source.def_id());
 
+        // Steal some data we need from `body`.
+        let source_scope_local_data = std::mem::replace(
+            &mut body.source_scope_local_data,
+            ClearCrossCrate::Clear
+        );
+
+        let dummy_body =
+            &Body::new(
+                body.basic_blocks().clone(),
+                Default::default(),
+                ClearCrossCrate::Clear,
+                None,
+                body.local_decls.clone(),
+                Default::default(),
+                body.arg_count,
+                Default::default(),
+                tcx.def_span(source.def_id()),
+                Default::default(),
+            );
+
         // FIXME(oli-obk, eddyb) Optimize locals (or even local paths) to hold
         // constants, instead of just checking for const-folding succeeding.
         // That would require an uniform one-def no-mutation analysis
         // and RPO (or recursing when needing the value of a local).
-        let mut optimization_finder = ConstPropagator::new(mir, tcx, source);
-        optimization_finder.visit_body(mir);
+        let mut optimization_finder = ConstPropagator::new(
+            body,
+            dummy_body,
+            source_scope_local_data,
+            tcx,
+            source
+        );
+        optimization_finder.visit_body(body);
 
         // put back the data we stole from `mir`
+        let source_scope_local_data = optimization_finder.release_stolen_data();
         std::mem::replace(
-            &mut mir.source_scope_local_data,
-            optimization_finder.source_scope_local_data
-        );
-        std::mem::replace(
-            &mut mir.promoted,
-            optimization_finder.promoted
+            &mut body.source_scope_local_data,
+            source_scope_local_data
         );
 
         trace!("ConstProp done for {:?}", source.def_id());
@@ -84,19 +106,17 @@ impl MirPass for ConstProp {
 type Const<'tcx> = OpTy<'tcx>;
 
 /// Finds optimization opportunities on the MIR.
-struct ConstPropagator<'a, 'mir, 'tcx:'a+'mir> {
-    ecx: InterpretCx<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct ConstPropagator<'mir, 'tcx> {
+    ecx: InterpCx<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
+    tcx: TyCtxt<'tcx>,
     source: MirSource<'tcx>,
-    places: IndexVec<Local, Option<Const<'tcx>>>,
     can_const_prop: IndexVec<Local, bool>,
     param_env: ParamEnv<'tcx>,
     source_scope_local_data: ClearCrossCrate<IndexVec<SourceScope, SourceScopeLocalData>>,
     local_decls: IndexVec<Local, LocalDecl<'tcx>>,
-    promoted: IndexVec<Promoted, Body<'tcx>>,
 }
 
-impl<'a, 'b, 'tcx> LayoutOf for ConstPropagator<'a, 'b, 'tcx> {
+impl<'mir, 'tcx> LayoutOf for ConstPropagator<'mir, 'tcx> {
     type Ty = Ty<'tcx>;
     type TyLayout = Result<TyLayout<'tcx>, LayoutError<'tcx>>;
 
@@ -105,37 +125,43 @@ impl<'a, 'b, 'tcx> LayoutOf for ConstPropagator<'a, 'b, 'tcx> {
     }
 }
 
-impl<'a, 'b, 'tcx> HasDataLayout for ConstPropagator<'a, 'b, 'tcx> {
+impl<'mir, 'tcx> HasDataLayout for ConstPropagator<'mir, 'tcx> {
     #[inline]
     fn data_layout(&self) -> &TargetDataLayout {
         &self.tcx.data_layout
     }
 }
 
-impl<'a, 'b, 'tcx> HasTyCtxt<'tcx> for ConstPropagator<'a, 'b, 'tcx> {
+impl<'mir, 'tcx> HasTyCtxt<'tcx> for ConstPropagator<'mir, 'tcx> {
     #[inline]
-    fn tcx<'c>(&'c self) -> TyCtxt<'c, 'tcx, 'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
 }
 
-impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
+impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
     fn new(
-        mir: &mut Body<'tcx>,
-        tcx: TyCtxt<'a, 'tcx, 'tcx>,
+        body: &Body<'tcx>,
+        dummy_body: &'mir Body<'tcx>,
+        source_scope_local_data: ClearCrossCrate<IndexVec<SourceScope, SourceScopeLocalData>>,
+        tcx: TyCtxt<'tcx>,
         source: MirSource<'tcx>,
-    ) -> ConstPropagator<'a, 'mir, 'tcx> {
-        let param_env = tcx.param_env(source.def_id());
-        let ecx = mk_eval_cx(tcx, tcx.def_span(source.def_id()), param_env);
-        let can_const_prop = CanConstProp::check(mir);
-        let source_scope_local_data = std::mem::replace(
-            &mut mir.source_scope_local_data,
-            ClearCrossCrate::Clear
-        );
-        let promoted = std::mem::replace(
-            &mut mir.promoted,
-            IndexVec::new()
-        );
+    ) -> ConstPropagator<'mir, 'tcx> {
+        let def_id = source.def_id();
+        let param_env = tcx.param_env(def_id);
+        let span = tcx.def_span(def_id);
+        let mut ecx = mk_eval_cx(tcx, span, param_env);
+        let can_const_prop = CanConstProp::check(body);
+
+        ecx.push_stack_frame(
+            Instance::new(def_id, &InternalSubsts::identity_for_item(tcx, def_id)),
+            span,
+            dummy_body,
+            None,
+            StackPopCleanup::None {
+                cleanup: false,
+            },
+        ).expect("failed to push initial stack frame");
 
         ConstPropagator {
             ecx,
@@ -143,12 +169,50 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
             source,
             param_env,
             can_const_prop,
-            places: IndexVec::from_elem(None, &mir.local_decls),
             source_scope_local_data,
             //FIXME(wesleywiser) we can't steal this because `Visitor::super_visit_body()` needs it
-            local_decls: mir.local_decls.clone(),
-            promoted,
+            local_decls: body.local_decls.clone(),
         }
+    }
+
+    fn release_stolen_data(self) -> ClearCrossCrate<IndexVec<SourceScope, SourceScopeLocalData>> {
+        self.source_scope_local_data
+    }
+
+    fn get_const(&self, local: Local) -> Option<Const<'tcx>> {
+        let l = &self.ecx.frame().locals[local];
+
+        // If the local is `Unitialized` or `Dead` then we haven't propagated a value into it.
+        //
+        // `InterpCx::access_local()` mostly takes care of this for us however, for ZSTs,
+        // it will synthesize a value for us. In doing so, that will cause the
+        // `get_const(l).is_empty()` assert right before we call `set_const()` in `visit_statement`
+        // to fail.
+        if let LocalValue::Uninitialized | LocalValue::Dead = l.value {
+            return None;
+        }
+
+        self.ecx.access_local(self.ecx.frame(), local, None).ok()
+    }
+
+    fn set_const(&mut self, local: Local, c: Const<'tcx>) {
+        let frame = self.ecx.frame_mut();
+
+        if let Some(layout) = frame.locals[local].layout.get() {
+            debug_assert_eq!(c.layout, layout);
+        }
+
+        frame.locals[local] = LocalState {
+            value: LocalValue::Live(*c),
+            layout: Cell::new(Some(c.layout)),
+        };
+    }
+
+    fn remove_const(&mut self, local: Local) {
+        self.ecx.frame_mut().locals[local] = LocalState {
+            value: LocalValue::Uninitialized,
+            layout: Cell::new(None),
+        };
     }
 
     fn use_ecx<F, T>(
@@ -157,7 +221,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         f: F
     ) -> Option<T>
     where
-        F: FnOnce(&mut Self) -> EvalResult<'tcx, T>,
+        F: FnOnce(&mut Self) -> InterpResult<'tcx, T>,
     {
         self.ecx.tcx.span = source_info.span;
         let lint_root = match self.source_scope_local_data {
@@ -173,97 +237,17 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         let r = match f(self) {
             Ok(val) => Some(val),
             Err(error) => {
-                let diagnostic = error_to_const_error(&self.ecx, error);
                 use rustc::mir::interpret::InterpError::*;
-                match diagnostic.error {
-                    // don't report these, they make no sense in a const prop context
-                    | MachineError(_)
-                    | Exit(_)
-                    // at runtime these transformations might make sense
-                    // FIXME: figure out the rules and start linting
-                    | FunctionAbiMismatch(..)
-                    | FunctionArgMismatch(..)
-                    | FunctionRetMismatch(..)
-                    | FunctionArgCountMismatch
-                    // fine at runtime, might be a register address or sth
-                    | ReadBytesAsPointer
-                    // fine at runtime
-                    | ReadForeignStatic
-                    | Unimplemented(_)
-                    // don't report const evaluator limits
-                    | StackFrameLimitReached
-                    | NoMirFor(..)
-                    | InlineAsm
-                    => {},
-
-                    | InvalidMemoryAccess
-                    | DanglingPointerDeref
-                    | DoubleFree
-                    | InvalidFunctionPointer
-                    | InvalidBool
-                    | InvalidDiscriminant(..)
-                    | PointerOutOfBounds { .. }
-                    | InvalidNullPointerUsage
-                    | ValidationFailure(..)
-                    | InvalidPointerMath
-                    | ReadUndefBytes(_)
-                    | DeadLocal
-                    | InvalidBoolOp(_)
-                    | DerefFunctionPointer
-                    | ExecuteMemory
-                    | Intrinsic(..)
-                    | InvalidChar(..)
-                    | AbiViolation(_)
-                    | AlignmentCheckFailed{..}
-                    | CalledClosureAsFunction
-                    | VtableForArgumentlessMethod
-                    | ModifiedConstantMemory
-                    | ModifiedStatic
-                    | AssumptionNotHeld
-                    // FIXME: should probably be removed and turned into a bug! call
-                    | TypeNotPrimitive(_)
-                    | ReallocatedWrongMemoryKind(_, _)
-                    | DeallocatedWrongMemoryKind(_, _)
-                    | ReallocateNonBasePtr
-                    | DeallocateNonBasePtr
-                    | IncorrectAllocationInformation(..)
-                    | UnterminatedCString(_)
-                    | HeapAllocZeroBytes
-                    | HeapAllocNonPowerOfTwoAlignment(_)
-                    | Unreachable
-                    | ReadFromReturnPointer
-                    | GeneratorResumedAfterReturn
-                    | GeneratorResumedAfterPanic
-                    | ReferencedConstant
-                    | InfiniteLoop
-                    => {
-                        // FIXME: report UB here
-                    },
-
-                    | OutOfTls
-                    | TlsOutOfBounds
-                    | PathNotFound(_)
-                    => bug!("these should not be in rustc, but in miri's machine errors"),
-
-                    | Layout(_)
-                    | UnimplementedTraitSelection
-                    | TypeckError
-                    | TooGeneric
-                    // these are just noise
-                    => {},
-
-                    // non deterministic
-                    | ReadPointerAsBytes
-                    // FIXME: implement
-                    => {},
-
-                    | Panic { .. }
-                    | BoundsCheck{..}
-                    | Overflow(_)
-                    | OverflowNeg
-                    | DivisionByZero
-                    | RemainderByZero
-                    => {
+                match error.kind {
+                    Exit(_) => bug!("the CTFE program cannot exit"),
+                    Unsupported(_)
+                    | UndefinedBehavior(_)
+                    | InvalidProgram(_)
+                    | ResourceExhaustion(_) => {
+                        // Ignore these errors.
+                    }
+                    Panic(_) => {
+                        let diagnostic = error_to_const_error(&self.ecx, error);
                         diagnostic.report_as_lint(
                             self.ecx.tcx,
                             "this expression will panic at runtime",
@@ -298,50 +282,53 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
 
     fn eval_place(&mut self, place: &Place<'tcx>, source_info: SourceInfo) -> Option<Const<'tcx>> {
         trace!("eval_place(place={:?})", place);
-        place.iterate(|place_base, place_projection| {
-            let mut eval = match place_base {
-                PlaceBase::Local(loc) => self.places[*loc].clone()?,
-                PlaceBase::Static(box Static {kind: StaticKind::Promoted(promoted), ..}) => {
-                    let generics = self.tcx.generics_of(self.source.def_id());
-                    if generics.requires_monomorphization(self.tcx) {
-                        // FIXME: can't handle code with generics
-                        return None;
-                    }
-                    let substs = InternalSubsts::identity_for_item(self.tcx, self.source.def_id());
-                    let instance = Instance::new(self.source.def_id(), substs);
-                    let cid = GlobalId {
-                        instance,
-                        promoted: Some(*promoted),
-                    };
-                    // cannot use `const_eval` here, because that would require having the MIR
-                    // for the current function available, but we're producing said MIR right now
-                    let res = self.use_ecx(source_info, |this| {
-                        let mir = &this.promoted[*promoted];
-                        eval_promoted(this.tcx, cid, mir, this.param_env)
-                    })?;
-                    trace!("evaluated promoted {:?} to {:?}", promoted, res);
-                    res.into()
+        let mut eval = match place.base {
+            PlaceBase::Local(loc) => self.get_const(loc).clone()?,
+            PlaceBase::Static(box Static {kind: StaticKind::Promoted(promoted, _), ..}) => {
+                let generics = self.tcx.generics_of(self.source.def_id());
+                if generics.requires_monomorphization(self.tcx) {
+                    // FIXME: can't handle code with generics
+                    return None;
                 }
-                _ => return None,
-            };
-
-            for proj in place_projection {
-                match proj.elem {
-                    ProjectionElem::Field(field, _) => {
-                        trace!("field proj on {:?}", proj.base);
-                        eval = self.use_ecx(source_info, |this| {
-                            this.ecx.operand_field(eval, field.index() as u64)
-                        })?;
-                    },
-                    // We could get more projections by using e.g., `operand_projection`,
-                    // but we do not even have the stack frame set up properly so
-                    // an `Index` projection would throw us off-track.
-                    _ => return None,
-                }
+                let substs = InternalSubsts::identity_for_item(self.tcx, self.source.def_id());
+                let instance = Instance::new(self.source.def_id(), substs);
+                let cid = GlobalId {
+                    instance,
+                    promoted: Some(promoted),
+                };
+                let res = self.use_ecx(source_info, |this| {
+                    this.ecx.const_eval_raw(cid)
+                })?;
+                trace!("evaluated promoted {:?} to {:?}", promoted, res);
+                res.into()
             }
+            _ => return None,
+        };
 
-            Some(eval)
-        })
+        for (i, elem) in place.projection.iter().enumerate() {
+            let proj_base = &place.projection[..i];
+
+            match elem {
+                ProjectionElem::Field(field, _) => {
+                    trace!("field proj on {:?}", proj_base);
+                    eval = self.use_ecx(source_info, |this| {
+                        this.ecx.operand_field(eval, field.index() as u64)
+                    })?;
+                },
+                ProjectionElem::Deref => {
+                    trace!("processing deref");
+                    eval = self.use_ecx(source_info, |this| {
+                        this.ecx.deref_operand(eval)
+                    })?.into();
+                }
+                // We could get more projections by using e.g., `operand_projection`,
+                // but we do not even have the stack frame set up properly so
+                // an `Index` projection would throw us off-track.
+                _ => return None,
+            }
+        }
+
+        Some(eval)
     }
 
     fn eval_operand(&mut self, op: &Operand<'tcx>, source_info: SourceInfo) -> Option<Const<'tcx>> {
@@ -363,8 +350,12 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
             Rvalue::Use(ref op) => {
                 self.eval_operand(op, source_info)
             },
+            Rvalue::Ref(_, _, ref place) => {
+                let src = self.eval_place(place, source_info)?;
+                let mplace = src.try_as_mplace().ok()?;
+                Some(ImmTy::from_scalar(mplace.ptr.into(), place_layout).into())
+            },
             Rvalue::Repeat(..) |
-            Rvalue::Ref(..) |
             Rvalue::Aggregate(..) |
             Rvalue::NullaryOp(NullOp::Box, _) |
             Rvalue::Discriminant(..) => None,
@@ -376,18 +367,29 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                     this.ecx.cast(op, kind, dest.into())?;
                     Ok(dest.into())
                 })
-            }
+            },
+            Rvalue::Len(ref place) => {
+                let place = self.eval_place(&place, source_info)?;
+                let mplace = place.try_as_mplace().ok()?;
 
-            // FIXME(oli-obk): evaluate static/constant slice lengths
-            Rvalue::Len(_) => None,
+                if let ty::Slice(_) = mplace.layout.ty.sty {
+                    let len = mplace.meta.unwrap().to_usize(&self.ecx).unwrap();
+
+                    Some(ImmTy::from_uint(
+                        len,
+                        self.tcx.layout_of(self.param_env.and(self.tcx.types.usize)).ok()?,
+                    ).into())
+                } else {
+                    trace!("not slice: {:?}", mplace.layout.ty.sty);
+                    None
+                }
+            },
             Rvalue::NullaryOp(NullOp::SizeOf, ty) => {
                 type_size_of(self.tcx, self.param_env, ty).and_then(|n| Some(
-                    ImmTy {
-                        imm: Immediate::Scalar(
-                            Scalar::from_uint(n, self.tcx.data_layout.pointer_size).into()
-                        ),
-                        layout: self.tcx.layout_of(self.param_env.and(self.tcx.types.usize)).ok()?,
-                    }.into()
+                    ImmTy::from_uint(
+                        n,
+                        self.tcx.layout_of(self.param_env.and(self.tcx.types.usize)).ok()?,
+                    ).into()
                 ))
             }
             Rvalue::UnaryOp(op, ref arg) => {
@@ -403,14 +405,17 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                 }
 
                 let arg = self.eval_operand(arg, source_info)?;
+                let oflo_check = self.tcx.sess.overflow_checks();
                 let val = self.use_ecx(source_info, |this| {
                     let prim = this.ecx.read_immediate(arg)?;
                     match op {
                         UnOp::Neg => {
-                            // Need to do overflow check here: For actual CTFE, MIR
-                            // generation emits code that does this before calling the op.
-                            if prim.to_bits()? == (1 << (prim.layout.size.bits() - 1)) {
-                                return err!(OverflowNeg);
+                            // We check overflow in debug mode already
+                            // so should only check in release mode.
+                            if !oflo_check
+                            && prim.layout.ty.is_signed()
+                            && prim.to_bits()? == (1 << (prim.layout.size.bits() - 1)) {
+                                throw_panic!(OverflowNeg)
                             }
                         }
                         UnOp::Not => {
@@ -420,11 +425,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                     // Now run the actual operation.
                     this.ecx.unary_op(op, prim)
                 })?;
-                let res = ImmTy {
-                    imm: Immediate::Scalar(val.into()),
-                    layout: place_layout,
-                };
-                Some(res.into())
+                Some(val.into())
             }
             Rvalue::CheckedBinaryOp(op, ref left, ref right) |
             Rvalue::BinaryOp(op, ref left, ref right) => {
@@ -478,8 +479,8 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                     this.ecx.read_immediate(left)
                 })?;
                 trace!("const evaluating {:?} for {:?} and {:?}", op, left, right);
-                let (val, overflow) = self.use_ecx(source_info, |this| {
-                    this.ecx.binary_op(op, l, r)
+                let (val, overflow, _ty) = self.use_ecx(source_info, |this| {
+                    this.ecx.overflowing_binary_op(op, l, r)
                 })?;
                 let val = if let Rvalue::CheckedBinaryOp(..) = *rvalue {
                     Immediate::ScalarPair(
@@ -487,8 +488,10 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                         Scalar::from_bool(overflow).into(),
                     )
                 } else {
-                    if overflow {
-                        let err = InterpError::Overflow(op).into();
+                    // We check overflow in debug mode already
+                    // so should only check in release mode.
+                    if !self.tcx.sess.overflow_checks() && overflow {
+                        let err = err_panic!(Overflow(op)).into();
                         let _: Option<()> = self.use_ecx(source_info, |_| Err(err));
                         return None;
                     }
@@ -507,7 +510,6 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         Operand::Constant(Box::new(
             Constant {
                 span,
-                ty,
                 user_ty: None,
                 literal: self.tcx.mk_const(*ty::Const::from_scalar(
                     self.tcx,
@@ -525,12 +527,15 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         source_info: SourceInfo,
     ) {
         trace!("attepting to replace {:?} with {:?}", rval, value);
-        self.ecx.validate_operand(
+        if let Err(e) = self.ecx.validate_operand(
             value,
             vec![],
-            None,
-            true,
-        ).expect("value should already be a valid const");
+            // FIXME: is ref tracking too expensive?
+            Some(&mut interpret::RefTracking::empty()),
+        ) {
+            trace!("validation error, attempt failed: {:?}", e);
+            return;
+        }
 
         // FIXME> figure out what tho do when try_read_immediate fails
         let imm = self.use_ecx(source_info, |this| {
@@ -538,7 +543,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         });
 
         if let Some(Ok(imm)) = imm {
-            match imm {
+            match *imm {
                 interpret::Immediate::Scalar(ScalarMaybeUndef::Scalar(scalar)) => {
                     *rval = Rvalue::Use(
                         self.operand_from_scalar(scalar, value.layout.ty, source_info.span));
@@ -572,9 +577,11 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
     }
 }
 
-fn type_size_of<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          param_env: ty::ParamEnv<'tcx>,
-                          ty: Ty<'tcx>) -> Option<u64> {
+fn type_size_of<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    ty: Ty<'tcx>,
+) -> Option<u64> {
     tcx.layout_of(param_env.and(ty)).ok().map(|layout| layout.size.bytes())
 }
 
@@ -586,10 +593,10 @@ struct CanConstProp {
 
 impl CanConstProp {
     /// returns true if `local` can be propagated
-    fn check(mir: &Body<'_>) -> IndexVec<Local, bool> {
+    fn check(body: &Body<'_>) -> IndexVec<Local, bool> {
         let mut cpv = CanConstProp {
-            can_const_prop: IndexVec::from_elem(true, &mir.local_decls),
-            found_assignment: IndexVec::from_elem(false, &mir.local_decls),
+            can_const_prop: IndexVec::from_elem(true, &body.local_decls),
+            found_assignment: IndexVec::from_elem(false, &body.local_decls),
         };
         for (local, val) in cpv.can_const_prop.iter_enumerated_mut() {
             // cannot use args at all
@@ -597,13 +604,13 @@ impl CanConstProp {
             //        lint for x != y
             // FIXME(oli-obk): lint variables until they are used in a condition
             // FIXME(oli-obk): lint if return value is constant
-            *val = mir.local_kind(local) == LocalKind::Temp;
+            *val = body.local_kind(local) == LocalKind::Temp;
 
             if !*val {
                 trace!("local {:?} can't be propagated because it's not a temporary", local);
             }
         }
-        cpv.visit_body(mir);
+        cpv.visit_body(body);
         cpv.can_const_prop
     }
 }
@@ -641,7 +648,7 @@ impl<'tcx> Visitor<'tcx> for CanConstProp {
     }
 }
 
-impl<'b, 'a, 'tcx> MutVisitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
+impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
     fn visit_constant(
         &mut self,
         constant: &mut Constant<'tcx>,
@@ -658,18 +665,21 @@ impl<'b, 'a, 'tcx> MutVisitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
         location: Location,
     ) {
         trace!("visit_statement: {:?}", statement);
-        if let StatementKind::Assign(ref place, ref mut rval) = statement.kind {
+        if let StatementKind::Assign(box(ref place, ref mut rval)) = statement.kind {
             let place_ty: Ty<'tcx> = place
                 .ty(&self.local_decls, self.tcx)
                 .ty;
             if let Ok(place_layout) = self.tcx.layout_of(self.param_env.and(place_ty)) {
                 if let Some(value) = self.const_prop(rval, place_layout, statement.source_info) {
-                    if let Place::Base(PlaceBase::Local(local)) = *place {
+                    if let Place {
+                        base: PlaceBase::Local(local),
+                        projection: box [],
+                    } = *place {
                         trace!("checking whether {:?} can be stored to {:?}", value, local);
                         if self.can_const_prop[local] {
                             trace!("storing {:?} to {:?}", value, local);
-                            assert!(self.places[local].is_none());
-                            self.places[local] = Some(value);
+                            assert!(self.get_const(local).is_none());
+                            self.set_const(local, value);
 
                             if self.should_const_prop() {
                                 self.replace_with_const(
@@ -694,7 +704,7 @@ impl<'b, 'a, 'tcx> MutVisitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
         self.super_terminator(terminator, location);
         let source_info = terminator.source_info;
         match &mut terminator.kind {
-            TerminatorKind::Assert { expected, msg, ref mut cond, .. } => {
+            TerminatorKind::Assert { expected, ref msg, ref mut cond, .. } => {
                 if let Some(value) = self.eval_operand(&cond, source_info) {
                     trace!("assertion on {:?} should be {:?}", value, expected);
                     let expected = ScalarMaybeUndef::from(Scalar::from_bool(*expected));
@@ -704,12 +714,8 @@ impl<'b, 'a, 'tcx> MutVisitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
                         // doesn't use the invalid value
                         match cond {
                             Operand::Move(ref place) | Operand::Copy(ref place) => {
-                                let mut place = place;
-                                while let Place::Projection(ref proj) = *place {
-                                    place = &proj.base;
-                                }
-                                if let Place::Base(PlaceBase::Local(local)) = *place {
-                                    self.places[local] = None;
+                                if let PlaceBase::Local(local) = place.base {
+                                    self.remove_const(local);
                                 }
                             },
                             Operand::Constant(_) => {}
@@ -720,13 +726,13 @@ impl<'b, 'a, 'tcx> MutVisitor<'tcx> for ConstPropagator<'b, 'a, 'tcx> {
                             .hir()
                             .as_local_hir_id(self.source.def_id())
                             .expect("some part of a failing const eval must be local");
-                        use rustc::mir::interpret::InterpError::*;
                         let msg = match msg {
-                            Overflow(_) |
-                            OverflowNeg |
-                            DivisionByZero |
-                            RemainderByZero => msg.description().to_owned(),
-                            BoundsCheck { ref len, ref index } => {
+                            PanicInfo::Overflow(_) |
+                            PanicInfo::OverflowNeg |
+                            PanicInfo::DivisionByZero |
+                            PanicInfo::RemainderByZero =>
+                                msg.description().to_owned(),
+                            PanicInfo::BoundsCheck { ref len, ref index } => {
                                 let len = self
                                     .eval_operand(len, source_info)
                                     .expect("len must be const");

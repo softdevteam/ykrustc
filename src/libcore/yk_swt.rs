@@ -40,8 +40,8 @@ impl SirLoc {
 /// The software trace recorder function.
 /// This is implemented in C so that: the `yk_swt_calls` MIR pass doesn't see inside.
 #[allow(dead_code)] // Used only indirectly in a MIR pass.
-#[cfg_attr(not(stage0), lang="yk_swt_rec_loc")]
-#[cfg_attr(not(stage0), no_sw_trace)]
+#[cfg_attr(not(boostrap_stdarch_ignore_this), lang="yk_swt_rec_loc")]
+#[cfg_attr(not(boostrap_stdarch_ignore_this), no_sw_trace)]
 #[cfg(not(test))]
 fn yk_swt_rec_loc(crate_hash: u64, def_idx: u32, bb_idx: u32) {
     extern "C" { fn yk_swt_rec_loc_impl(crate_hash: u64, def_idx: u32, bb_idx: u32); }
@@ -49,7 +49,7 @@ fn yk_swt_rec_loc(crate_hash: u64, def_idx: u32, bb_idx: u32) {
 }
 
 /// Start software tracing on the current thread. The current thread must not already be tracing.
-#[cfg_attr(not(stage0), no_sw_trace)]
+#[cfg_attr(not(boostrap_stdarch_ignore_this), no_sw_trace)]
 pub fn start_tracing() {
     extern "C" { fn yk_swt_start_tracing_impl(); }
     unsafe { yk_swt_start_tracing_impl(); }
@@ -58,7 +58,7 @@ pub fn start_tracing() {
 /// Stop software tracing and on success return a tuple containing a pointer to the raw trace
 /// buffer, and the number of items inside. Returns `None` if the trace was invalidated, or if an
 /// error occurred. The current thread must already be tracing.
-#[cfg_attr(not(stage0), no_sw_trace)]
+#[cfg_attr(not(boostrap_stdarch_ignore_this), no_sw_trace)]
 pub fn stop_tracing() -> Option<(*mut SirLoc, usize)> {
     let len: usize = 0;
 
@@ -73,7 +73,7 @@ pub fn stop_tracing() -> Option<(*mut SirLoc, usize)> {
 }
 
 /// Invalidate the software trace, if one is being collected.
-#[cfg_attr(not(stage0), no_sw_trace)]
+#[cfg_attr(not(boostrap_stdarch_ignore_this), no_sw_trace)]
 pub fn invalidate_trace() {
     extern "C" { fn yk_swt_invalidate_trace_impl(); }
     unsafe { yk_swt_invalidate_trace_impl(); }

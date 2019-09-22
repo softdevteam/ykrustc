@@ -1,15 +1,13 @@
+//! Diagnostics creation and emission for `rustc`.
+//!
+//! This module contains the code for creating and emitting diagnostics.
+
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
-#![feature(custom_attribute)]
-#![allow(unused_attributes)]
+#![feature(crate_visibility_modifier)]
 #![cfg_attr(unix, feature(libc))]
 #![feature(nll)]
 #![feature(optin_builtin_traits)]
-#![deny(rust_2018_idioms)]
-#![deny(internal)]
-
-#[allow(unused_extern_crates)]
-extern crate serialize as rustc_serialize; // used by deriving
 
 pub use emitter::ColorConfig;
 
@@ -33,7 +31,7 @@ use termcolor::{ColorSpec, Color};
 mod diagnostic;
 mod diagnostic_builder;
 pub mod emitter;
-pub mod annotate_rs_emitter;
+pub mod annotate_snippet_emitter_writer;
 mod snippet;
 pub mod registry;
 mod styled_buffer;
@@ -45,8 +43,7 @@ use syntax_pos::{BytePos,
                  SourceFile,
                  FileName,
                  MultiSpan,
-                 Span,
-                 NO_EXPANSION};
+                 Span};
 
 /// Indicates the confidence in the correctness of a suggestion.
 ///
@@ -191,7 +188,7 @@ impl CodeSuggestion {
             // Find the bounding span.
             let lo = substitution.parts.iter().map(|part| part.span.lo()).min().unwrap();
             let hi = substitution.parts.iter().map(|part| part.span.hi()).min().unwrap();
-            let bounding_span = Span::new(lo, hi, NO_EXPANSION);
+            let bounding_span = Span::with_root_ctxt(lo, hi);
             let lines = cm.span_to_lines(bounding_span).unwrap();
             assert!(!lines.lines.is_empty());
 
@@ -225,7 +222,8 @@ impl CodeSuggestion {
                         }
                     }
                     if let Some(cur_line) = fm.get_line(cur_lo.line - 1) {
-                        buf.push_str(&cur_line[..cur_lo.col.to_usize()]);
+                        let end = std::cmp::min(cur_line.len(), cur_lo.col.to_usize());
+                        buf.push_str(&cur_line[..end]);
                     }
                 }
                 buf.push_str(&part.snippet);
@@ -302,7 +300,12 @@ pub use diagnostic_builder::DiagnosticBuilder;
 pub struct Handler {
     pub flags: HandlerFlags,
 
+    /// The number of errors that have been emitted, including duplicates.
+    ///
+    /// This is not necessarily the count that's reported to the user once
+    /// compilation ends.
     err_count: AtomicUsize,
+    deduplicated_err_count: AtomicUsize,
     emitter: Lock<Box<dyn Emitter + sync::Send>>,
     continue_after_error: AtomicBool,
     delayed_span_bugs: Lock<Vec<Diagnostic>>,
@@ -347,7 +350,7 @@ pub struct HandlerFlags {
 
 impl Drop for Handler {
     fn drop(&mut self) {
-        if self.err_count() == 0 {
+        if !self.has_errors() {
             let mut bugs = self.delayed_span_bugs.borrow_mut();
             let has_bugs = !bugs.is_empty();
             for bug in bugs.drain(..) {
@@ -380,7 +383,7 @@ impl Handler {
                                       cm: Option<Lrc<SourceMapperDyn>>,
                                       flags: HandlerFlags)
                                       -> Handler {
-        let emitter = Box::new(EmitterWriter::stderr(color_config, cm, false, false));
+        let emitter = Box::new(EmitterWriter::stderr(color_config, cm, false, false, None));
         Handler::with_emitter_and_flags(emitter, flags)
     }
 
@@ -402,6 +405,7 @@ impl Handler {
         Handler {
             flags,
             err_count: AtomicUsize::new(0),
+            deduplicated_err_count: AtomicUsize::new(0),
             emitter: Lock::new(e),
             continue_after_error: AtomicBool::new(true),
             delayed_span_bugs: Lock::new(Vec::new()),
@@ -423,17 +427,18 @@ impl Handler {
     pub fn reset_err_count(&self) {
         // actually frees the underlying memory (which `clear` would not do)
         *self.emitted_diagnostics.borrow_mut() = Default::default();
+        self.deduplicated_err_count.store(0, SeqCst);
         self.err_count.store(0, SeqCst);
     }
 
-    pub fn struct_dummy<'a>(&'a self) -> DiagnosticBuilder<'a> {
+    pub fn struct_dummy(&self) -> DiagnosticBuilder<'_> {
         DiagnosticBuilder::new(self, Level::Cancelled, "")
     }
 
-    pub fn struct_span_warn<'a, S: Into<MultiSpan>>(&'a self,
-                                                    sp: S,
-                                                    msg: &str)
-                                                    -> DiagnosticBuilder<'a> {
+    pub fn struct_span_warn<S: Into<MultiSpan>>(&self,
+                                                sp: S,
+                                                msg: &str)
+                                                -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Warning, msg);
         result.set_span(sp);
         if !self.flags.can_emit_warnings {
@@ -441,11 +446,11 @@ impl Handler {
         }
         result
     }
-    pub fn struct_span_warn_with_code<'a, S: Into<MultiSpan>>(&'a self,
-                                                              sp: S,
-                                                              msg: &str,
-                                                              code: DiagnosticId)
-                                                              -> DiagnosticBuilder<'a> {
+    pub fn struct_span_warn_with_code<S: Into<MultiSpan>>(&self,
+                                                          sp: S,
+                                                          msg: &str,
+                                                          code: DiagnosticId)
+                                                          -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Warning, msg);
         result.set_span(sp);
         result.code(code);
@@ -454,63 +459,63 @@ impl Handler {
         }
         result
     }
-    pub fn struct_warn<'a>(&'a self, msg: &str) -> DiagnosticBuilder<'a> {
+    pub fn struct_warn(&self, msg: &str) -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Warning, msg);
         if !self.flags.can_emit_warnings {
             result.cancel();
         }
         result
     }
-    pub fn struct_span_err<'a, S: Into<MultiSpan>>(&'a self,
-                                                   sp: S,
-                                                   msg: &str)
-                                                   -> DiagnosticBuilder<'a> {
+    pub fn struct_span_err<S: Into<MultiSpan>>(&self,
+                                               sp: S,
+                                               msg: &str)
+                                               -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.set_span(sp);
         result
     }
-    pub fn struct_span_err_with_code<'a, S: Into<MultiSpan>>(&'a self,
-                                                             sp: S,
-                                                             msg: &str,
-                                                             code: DiagnosticId)
-                                                             -> DiagnosticBuilder<'a> {
+    pub fn struct_span_err_with_code<S: Into<MultiSpan>>(&self,
+                                                         sp: S,
+                                                         msg: &str,
+                                                         code: DiagnosticId)
+                                                         -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.set_span(sp);
         result.code(code);
         result
     }
     // FIXME: This method should be removed (every error should have an associated error code).
-    pub fn struct_err<'a>(&'a self, msg: &str) -> DiagnosticBuilder<'a> {
+    pub fn struct_err(&self, msg: &str) -> DiagnosticBuilder<'_> {
         DiagnosticBuilder::new(self, Level::Error, msg)
     }
-    pub fn struct_err_with_code<'a>(
-        &'a self,
+    pub fn struct_err_with_code(
+        &self,
         msg: &str,
         code: DiagnosticId,
-    ) -> DiagnosticBuilder<'a> {
+    ) -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.code(code);
         result
     }
-    pub fn struct_span_fatal<'a, S: Into<MultiSpan>>(&'a self,
-                                                     sp: S,
-                                                     msg: &str)
-                                                     -> DiagnosticBuilder<'a> {
+    pub fn struct_span_fatal<S: Into<MultiSpan>>(&self,
+                                                 sp: S,
+                                                 msg: &str)
+                                                 -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Fatal, msg);
         result.set_span(sp);
         result
     }
-    pub fn struct_span_fatal_with_code<'a, S: Into<MultiSpan>>(&'a self,
-                                                               sp: S,
-                                                               msg: &str,
-                                                               code: DiagnosticId)
-                                                               -> DiagnosticBuilder<'a> {
+    pub fn struct_span_fatal_with_code<S: Into<MultiSpan>>(&self,
+                                                           sp: S,
+                                                           msg: &str,
+                                                           code: DiagnosticId)
+                                                           -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Fatal, msg);
         result.set_span(sp);
         result.code(code);
         result
     }
-    pub fn struct_fatal<'a>(&'a self, msg: &str) -> DiagnosticBuilder<'a> {
+    pub fn struct_fatal(&self, msg: &str) -> DiagnosticBuilder<'_> {
         DiagnosticBuilder::new(self, Level::Fatal, msg)
     }
 
@@ -551,10 +556,10 @@ impl Handler {
     pub fn span_err<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.emit(&sp.into(), msg, Error);
     }
-    pub fn mut_span_err<'a, S: Into<MultiSpan>>(&'a self,
-                                                sp: S,
-                                                msg: &str)
-                                                -> DiagnosticBuilder<'a> {
+    pub fn mut_span_err<S: Into<MultiSpan>>(&self,
+                                            sp: S,
+                                            msg: &str)
+                                            -> DiagnosticBuilder<'_> {
         let mut result = DiagnosticBuilder::new(self, Level::Error, msg);
         result.set_span(sp);
         result
@@ -593,10 +598,10 @@ impl Handler {
     pub fn span_note_without_error<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.emit(&sp.into(), msg, Note);
     }
-    pub fn span_note_diag<'a>(&'a self,
-                              sp: Span,
-                              msg: &str)
-                              -> DiagnosticBuilder<'a> {
+    pub fn span_note_diag(&self,
+                          sp: Span,
+                          msg: &str)
+                          -> DiagnosticBuilder<'_> {
         let mut db = DiagnosticBuilder::new(self, Note, msg);
         db.set_span(sp);
         db
@@ -655,10 +660,10 @@ impl Handler {
     }
 
     pub fn print_error_count(&self, registry: &Registry) {
-        let s = match self.err_count() {
+        let s = match self.deduplicated_err_count.load(SeqCst) {
             0 => return,
             1 => "aborting due to previous error".to_string(),
-            _ => format!("aborting due to {} previous errors", self.err_count())
+            count => format!("aborting due to {} previous errors", count)
         };
         if self.treat_err_as_bug() {
             return;
@@ -700,10 +705,9 @@ impl Handler {
     }
 
     pub fn abort_if_errors(&self) {
-        if self.err_count() == 0 {
-            return;
+        if self.has_errors() {
+            FatalError.raise();
         }
-        FatalError.raise();
     }
     pub fn emit(&self, msp: &MultiSpan, msg: &str, lvl: Level) {
         if lvl == Warning && !self.flags.can_emit_warnings {
@@ -765,8 +769,11 @@ impl Handler {
         if self.emitted_diagnostics.borrow_mut().insert(diagnostic_hash) {
             self.emitter.borrow_mut().emit_diagnostic(db);
             if db.is_error() {
-                self.bump_err_count();
+                self.deduplicated_err_count.fetch_add(1, SeqCst);
             }
+        }
+        if db.is_error() {
+            self.bump_err_count();
         }
     }
 
@@ -779,9 +786,6 @@ impl Handler {
 pub enum Level {
     Bug,
     Fatal,
-    // An error which while not immediately fatal, should stop the compiler
-    // progressing beyond the current phase.
-    PhaseFatal,
     Error,
     Warning,
     Note,
@@ -800,7 +804,7 @@ impl Level {
     fn color(self) -> ColorSpec {
         let mut spec = ColorSpec::new();
         match self {
-            Bug | Fatal | PhaseFatal | Error => {
+            Bug | Fatal | Error => {
                 spec.set_fg(Some(Color::Red))
                     .set_intense(true);
             }
@@ -825,11 +829,11 @@ impl Level {
     pub fn to_str(self) -> &'static str {
         match self {
             Bug => "error: internal compiler error",
-            Fatal | PhaseFatal | Error => "error",
+            Fatal | Error => "error",
             Warning => "warning",
             Note => "note",
             Help => "help",
-            FailureNote => "",
+            FailureNote => "failure-note",
             Cancelled => panic!("Shouldn't call on cancelled error"),
         }
     }
@@ -840,4 +844,11 @@ impl Level {
             _ => false,
         }
     }
+}
+
+#[macro_export]
+macro_rules! pluralise {
+    ($x:expr) => {
+        if $x != 1 { "s" } else { "" }
+    };
 }

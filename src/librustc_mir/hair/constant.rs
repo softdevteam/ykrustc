@@ -9,16 +9,16 @@ crate enum LitToConstError {
     Reported,
 }
 
-crate fn lit_to_const<'a, 'gcx, 'tcx>(
+crate fn lit_to_const<'tcx>(
     lit: &'tcx ast::LitKind,
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
     neg: bool,
 ) -> Result<&'tcx ty::Const<'tcx>, LitToConstError> {
     use syntax::ast::*;
 
     let trunc = |n| {
-        let param_ty = ParamEnv::reveal_all().and(tcx.lift_to_global(&ty).unwrap());
+        let param_ty = ParamEnv::reveal_all().and(ty);
         let width = tcx.layout_of(param_ty).map_err(|_| LitToConstError::Reported)?.size;
         trace!("trunc {} with size {} and shift {}", n, width.bits(), 128 - width.bits());
         let result = truncate(n, width);
@@ -33,15 +33,6 @@ crate fn lit_to_const<'a, 'gcx, 'tcx>(
             let allocation = Allocation::from_byte_aligned_bytes(s.as_bytes());
             let allocation = tcx.intern_const_alloc(allocation);
             ConstValue::Slice { data: allocation, start: 0, end: s.len() }
-        },
-        LitKind::Err(ref s) => {
-            let s = s.as_str();
-            let allocation = Allocation::from_byte_aligned_bytes(s.as_bytes());
-            let allocation = tcx.intern_const_alloc(allocation);
-            return Ok(tcx.mk_const(ty::Const {
-                val: ConstValue::Slice{ data: allocation, start: 0, end: s.len() },
-                ty: tcx.types.err,
-            }));
         },
         LitKind::ByteStr(ref data) => {
             let id = tcx.allocate_bytes(data);
@@ -66,6 +57,7 @@ crate fn lit_to_const<'a, 'gcx, 'tcx>(
         }
         LitKind::Bool(b) => ConstValue::Scalar(Scalar::from_bool(b)),
         LitKind::Char(c) => ConstValue::Scalar(Scalar::from_char(c)),
+        LitKind::Err(_) => unreachable!(),
     };
     Ok(tcx.mk_const(ty::Const { val: lit, ty }))
 }
@@ -77,8 +69,7 @@ fn parse_float<'tcx>(
 ) -> Result<ConstValue<'tcx>, ()> {
     let num = num.as_str();
     use rustc_apfloat::ieee::{Single, Double};
-    use rustc_apfloat::Float;
-    let (data, size) = match fty {
+    let scalar = match fty {
         ast::FloatTy::F32 => {
             num.parse::<f32>().map_err(|_| ())?;
             let mut f = num.parse::<Single>().unwrap_or_else(|e| {
@@ -87,19 +78,19 @@ fn parse_float<'tcx>(
             if neg {
                 f = -f;
             }
-            (f.to_bits(), 4)
+            Scalar::from_f32(f)
         }
         ast::FloatTy::F64 => {
             num.parse::<f64>().map_err(|_| ())?;
             let mut f = num.parse::<Double>().unwrap_or_else(|e| {
-                panic!("apfloat::ieee::Single failed to parse `{}`: {:?}", num, e)
+                panic!("apfloat::ieee::Double failed to parse `{}`: {:?}", num, e)
             });
             if neg {
                 f = -f;
             }
-            (f.to_bits(), 8)
+            Scalar::from_f64(f)
         }
     };
 
-    Ok(ConstValue::Scalar(Scalar::from_uint(data, Size::from_bytes(size))))
+    Ok(ConstValue::Scalar(scalar))
 }

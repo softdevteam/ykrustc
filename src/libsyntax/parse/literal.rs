@@ -1,10 +1,9 @@
 //! Code related to parsing literals.
 
-use crate::ast::{self, Ident, Lit, LitKind};
+use crate::ast::{self, Lit, LitKind};
 use crate::parse::parser::Parser;
 use crate::parse::PResult;
-use crate::parse::token::{self, Token};
-use crate::parse::unescape::{unescape_str, unescape_char, unescape_byte_str, unescape_byte};
+use crate::parse::token::{self, Token, TokenKind};
 use crate::print::pprust;
 use crate::symbol::{kw, sym, Symbol};
 use crate::tokenstream::{TokenStream, TokenTree};
@@ -13,6 +12,9 @@ use errors::{Applicability, Handler};
 use log::debug;
 use rustc_data_structures::sync::Lrc;
 use syntax_pos::Span;
+use rustc_lexer::unescape::{unescape_char, unescape_byte};
+use rustc_lexer::unescape::{unescape_str, unescape_byte_str};
+use rustc_lexer::unescape::{unescape_raw_str, unescape_raw_byte_str};
 
 use std::ascii;
 
@@ -102,7 +104,7 @@ impl LitKind {
 
         Ok(match kind {
             token::Bool => {
-                assert!(symbol == kw::True || symbol == kw::False);
+                assert!(symbol.is_bool_lit());
                 LitKind::Bool(symbol == kw::True)
             }
             token::Byte => return unescape_byte(&symbol.as_str())
@@ -141,7 +143,17 @@ impl LitKind {
                 // Ditto.
                 let s = symbol.as_str();
                 let symbol = if s.contains('\r') {
-                    Symbol::intern(&raw_str_lit(&s))
+                    let mut buf = String::with_capacity(s.len());
+                    let mut error = Ok(());
+                    unescape_raw_str(&s, &mut |_, unescaped_char| {
+                        match unescaped_char {
+                            Ok(c) => buf.push(c),
+                            Err(_) => error = Err(LitError::LexerError),
+                        }
+                    });
+                    error?;
+                    buf.shrink_to_fit();
+                    Symbol::intern(&buf)
                 } else {
                     symbol
                 };
@@ -161,7 +173,26 @@ impl LitKind {
                 buf.shrink_to_fit();
                 LitKind::ByteStr(Lrc::new(buf))
             }
-            token::ByteStrRaw(_) => LitKind::ByteStr(Lrc::new(symbol.to_string().into_bytes())),
+            token::ByteStrRaw(_) => {
+                let s = symbol.as_str();
+                let bytes = if s.contains('\r') {
+                    let mut buf = Vec::with_capacity(s.len());
+                    let mut error = Ok(());
+                    unescape_raw_byte_str(&s, &mut |_, unescaped_byte| {
+                        match unescaped_byte {
+                            Ok(c) => buf.push(c),
+                            Err(_) => error = Err(LitError::LexerError),
+                        }
+                    });
+                    error?;
+                    buf.shrink_to_fit();
+                    buf
+                } else {
+                    symbol.to_string().into_bytes()
+                };
+
+                LitKind::ByteStr(Lrc::new(bytes))
+            },
             token::Err => LitKind::Err(symbol),
         })
     }
@@ -228,10 +259,10 @@ impl Lit {
     }
 
     /// Converts arbitrary token into an AST literal.
-    crate fn from_token(token: &Token, span: Span) -> Result<Lit, LitError> {
-        let lit = match *token {
-            token::Ident(ident, false) if ident.name == kw::True || ident.name == kw::False =>
-                token::Lit::new(token::Bool, ident.name, None),
+    crate fn from_token(token: &Token) -> Result<Lit, LitError> {
+        let lit = match token.kind {
+            token::Ident(name, false) if name.is_bool_lit() =>
+                token::Lit::new(token::Bool, name, None),
             token::Literal(lit) =>
                 lit,
             token::Interpolated(ref nt) => {
@@ -245,7 +276,7 @@ impl Lit {
             _ => return Err(LitError::NotLiteral)
         };
 
-        Lit::from_lit_token(lit, span)
+        Lit::from_lit_token(lit, token.span)
     }
 
     /// Attempts to recover an AST literal from semantic literal.
@@ -258,10 +289,10 @@ impl Lit {
     /// Losslessly convert an AST literal into a token stream.
     crate fn tokens(&self) -> TokenStream {
         let token = match self.token.kind {
-            token::Bool => token::Ident(Ident::new(self.token.symbol, self.span), false),
+            token::Bool => token::Ident(self.token.symbol, false),
             _ => token::Literal(self.token),
         };
-        TokenTree::Token(self.span, token).into()
+        TokenTree::token(token, self.span).into()
     }
 }
 
@@ -271,48 +302,50 @@ impl<'a> Parser<'a> {
         let mut recovered = None;
         if self.token == token::Dot {
             // Attempt to recover `.4` as `0.4`.
-            recovered = self.look_ahead(1, |t| {
-                if let token::Literal(token::Lit { kind: token::Integer, symbol, suffix }) = *t {
-                    let next_span = self.look_ahead_span(1);
-                    if self.span.hi() == next_span.lo() {
+            recovered = self.look_ahead(1, |next_token| {
+                if let token::Literal(token::Lit { kind: token::Integer, symbol, suffix })
+                        = next_token.kind {
+                    if self.token.span.hi() == next_token.span.lo() {
                         let s = String::from("0.") + &symbol.as_str();
-                        let token = Token::lit(token::Float, Symbol::intern(&s), suffix);
-                        return Some((token, self.span.to(next_span)));
+                        let kind = TokenKind::lit(token::Float, Symbol::intern(&s), suffix);
+                        return Some(Token::new(kind, self.token.span.to(next_token.span)));
                     }
                 }
                 None
             });
-            if let Some((ref token, span)) = recovered {
+            if let Some(token) = &recovered {
                 self.bump();
                 self.diagnostic()
-                    .struct_span_err(span, "float literals must have an integer part")
+                    .struct_span_err(token.span, "float literals must have an integer part")
                     .span_suggestion(
-                        span,
+                        token.span,
                         "must have an integer part",
-                        pprust::token_to_string(&token),
+                        pprust::token_to_string(token),
                         Applicability::MachineApplicable,
                     )
                     .emit();
             }
         }
 
-        let (token, span) = recovered.as_ref().map_or((&self.token, self.span),
-                                                      |(token, span)| (token, *span));
-
-        match Lit::from_token(token, span) {
+        let token = recovered.as_ref().unwrap_or(&self.token);
+        match Lit::from_token(token) {
             Ok(lit) => {
                 self.bump();
                 Ok(lit)
             }
             Err(LitError::NotLiteral) => {
                 let msg = format!("unexpected token: {}", self.this_token_descr());
-                Err(self.span_fatal(span, &msg))
+                Err(self.span_fatal(token.span, &msg))
             }
             Err(err) => {
-                let lit = token.expect_lit();
+                let (lit, span) = (token.expect_lit(), token.span);
                 self.bump();
                 err.report(&self.sess.span_diagnostic, lit, span);
-                let lit = token::Lit::new(token::Err, lit.symbol, lit.suffix);
+                // Pack possible quotes and prefixes from the original literal into
+                // the error literal's symbol so they can be pretty-printed faithfully.
+                let suffixless_lit = token::Lit::new(lit.kind, lit.symbol, None);
+                let symbol = Symbol::intern(&suffixless_lit.to_string());
+                let lit = token::Lit::new(token::Err, symbol, lit.suffix);
                 Lit::from_lit_token(lit, span).map_err(|_| unreachable!())
             }
         }
@@ -349,29 +382,6 @@ crate fn expect_no_suffix(diag: &Handler, sp: Span, kind: &str, suffix: Option<S
         err.span_label(sp, format!("invalid suffix `{}`", suf));
         err.emit();
     }
-}
-
-/// Parses a string representing a raw string literal into its final form. The
-/// only operation this does is convert embedded CRLF into a single LF.
-fn raw_str_lit(lit: &str) -> String {
-    debug!("raw_str_lit: {:?}", lit);
-    let mut res = String::with_capacity(lit.len());
-
-    let mut chars = lit.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\r' {
-            if *chars.peek().unwrap() != '\n' {
-                panic!("lexer accepted bare CR");
-            }
-            chars.next();
-            res.push('\n');
-        } else {
-            res.push(c);
-        }
-    }
-
-    res.shrink_to_fit();
-    res
 }
 
 // Checks if `s` looks like i32 or u1234 etc.

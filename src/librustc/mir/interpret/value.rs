@@ -1,11 +1,12 @@
 use std::fmt;
 use rustc_macros::HashStable;
+use rustc_apfloat::{Float, ieee::{Double, Single}};
 
 use crate::ty::{Ty, InferConst, ParamConst, layout::{HasDataLayout, Size}, subst::SubstsRef};
 use crate::ty::PlaceholderConst;
 use crate::hir::def_id::DefId;
 
-use super::{EvalResult, Pointer, PointerArithmetic, Allocation, AllocId, sign_extend, truncate};
+use super::{InterpResult, Pointer, PointerArithmetic, Allocation, AllocId, sign_extend, truncate};
 
 /// Represents the result of a raw const operation, pre-validation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable, Hash, HashStable)]
@@ -16,8 +17,8 @@ pub struct RawConst<'tcx> {
     pub ty: Ty<'tcx>,
 }
 
-/// Represents a constant value in Rust. `Scalar` and `ScalarPair` are optimizations that
-/// match the `LocalState` optimizations for easy conversions between `Value` and `ConstValue`.
+/// Represents a constant value in Rust. `Scalar` and `Slice` are optimizations for
+/// array length computations, enum discriminants and the pattern matching logic.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord,
          RustcEncodable, RustcDecodable, Hash, HashStable)]
 pub enum ConstValue<'tcx> {
@@ -42,9 +43,14 @@ pub enum ConstValue<'tcx> {
         end: usize,
     },
 
-    /// An allocation together with a pointer into the allocation.
-    /// Invariant: the pointer's `AllocId` resolves to the allocation.
-    ByRef(Pointer, &'tcx Allocation),
+    /// A value not represented/representable by `Scalar` or `Slice`
+    ByRef {
+        /// The backing memory of the value, may contain more memory than needed for just the value
+        /// in order to share `Allocation`s between values
+        alloc: &'tcx Allocation,
+        /// Offset into `alloc`
+        offset: Size,
+    },
 
     /// Used in the HIR by using `Unevaluated` everywhere and later normalizing to one of the other
     /// variants when the code is monomorphic enough for that.
@@ -61,7 +67,7 @@ impl<'tcx> ConstValue<'tcx> {
             ConstValue::Param(_) |
             ConstValue::Infer(_) |
             ConstValue::Placeholder(_) |
-            ConstValue::ByRef(..) |
+            ConstValue::ByRef{ .. } |
             ConstValue::Unevaluated(..) |
             ConstValue::Slice { .. } => None,
             ConstValue::Scalar(val) => Some(val),
@@ -85,7 +91,7 @@ impl<'tcx> ConstValue<'tcx> {
 /// of a simple value or a pointer into another `Allocation`
 #[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd,
          RustcEncodable, RustcDecodable, Hash, HashStable)]
-pub enum Scalar<Tag=(), Id=AllocId> {
+pub enum Scalar<Tag = (), Id = AllocId> {
     /// The raw bytes of a simple value.
     Raw {
         /// The first `size` bytes of `data` are the value.
@@ -131,7 +137,21 @@ impl<Tag> fmt::Display for Scalar<Tag> {
     }
 }
 
-impl<'tcx> Scalar<()> {
+impl<Tag> From<Single> for Scalar<Tag> {
+    #[inline(always)]
+    fn from(f: Single) -> Self {
+        Scalar::from_f32(f)
+    }
+}
+
+impl<Tag> From<Double> for Scalar<Tag> {
+    #[inline(always)]
+    fn from(f: Double) -> Self {
+        Scalar::from_f64(f)
+    }
+}
+
+impl Scalar<()> {
     #[inline(always)]
     fn check_data(data: u128, size: u8) {
         debug_assert_eq!(truncate(data, Size::from_bytes(size as u64)), data,
@@ -176,7 +196,7 @@ impl<'tcx, Tag> Scalar<Tag> {
     }
 
     #[inline]
-    pub fn ptr_offset(self, i: Size, cx: &impl HasDataLayout) -> EvalResult<'tcx, Self> {
+    pub fn ptr_offset(self, i: Size, cx: &impl HasDataLayout) -> InterpResult<'tcx, Self> {
         let dl = cx.data_layout();
         match self {
             Scalar::Raw { data, size } => {
@@ -206,7 +226,7 @@ impl<'tcx, Tag> Scalar<Tag> {
     }
 
     #[inline]
-    pub fn ptr_signed_offset(self, i: i64, cx: &impl HasDataLayout) -> EvalResult<'tcx, Self> {
+    pub fn ptr_signed_offset(self, i: i64, cx: &impl HasDataLayout) -> InterpResult<'tcx, Self> {
         let dl = cx.data_layout();
         match self {
             Scalar::Raw { data, size } => {
@@ -235,30 +255,6 @@ impl<'tcx, Tag> Scalar<Tag> {
         }
     }
 
-    /// Returns this pointer's offset from the allocation base, or from NULL (for
-    /// integer pointers).
-    #[inline]
-    pub fn get_ptr_offset(self, cx: &impl HasDataLayout) -> Size {
-        match self {
-            Scalar::Raw { data, size } => {
-                assert_eq!(size as u64, cx.pointer_size().bytes());
-                Size::from_bytes(data as u64)
-            }
-            Scalar::Ptr(ptr) => ptr.offset,
-        }
-    }
-
-    #[inline]
-    pub fn is_null_ptr(self, cx: &impl HasDataLayout) -> bool {
-        match self {
-            Scalar::Raw { data, size } => {
-                assert_eq!(size as u64, cx.data_layout().pointer_size.bytes());
-                data == 0
-            },
-            Scalar::Ptr(_) => false,
-        }
-    }
-
     #[inline]
     pub fn from_bool(b: bool) -> Self {
         Scalar::Raw { data: b as u128, size: 1 }
@@ -280,6 +276,26 @@ impl<'tcx, Tag> Scalar<Tag> {
     }
 
     #[inline]
+    pub fn from_u8(i: u8) -> Self {
+        Scalar::Raw { data: i as u128, size: 1 }
+    }
+
+    #[inline]
+    pub fn from_u16(i: u16) -> Self {
+        Scalar::Raw { data: i as u128, size: 2 }
+    }
+
+    #[inline]
+    pub fn from_u32(i: u32) -> Self {
+        Scalar::Raw { data: i as u128, size: 4 }
+    }
+
+    #[inline]
+    pub fn from_u64(i: u64) -> Self {
+        Scalar::Raw { data: i as u128, size: 8 }
+    }
+
+    #[inline]
     pub fn from_int(i: impl Into<i128>, size: Size) -> Self {
         let i = i.into();
         // `into` performed sign extension, we have to truncate
@@ -292,15 +308,21 @@ impl<'tcx, Tag> Scalar<Tag> {
     }
 
     #[inline]
-    pub fn from_f32(f: f32) -> Self {
-        Scalar::Raw { data: f.to_bits() as u128, size: 4 }
+    pub fn from_f32(f: Single) -> Self {
+        // We trust apfloat to give us properly truncated data.
+        Scalar::Raw { data: f.to_bits(), size: 4 }
     }
 
     #[inline]
-    pub fn from_f64(f: f64) -> Self {
-        Scalar::Raw { data: f.to_bits() as u128, size: 8 }
+    pub fn from_f64(f: Double) -> Self {
+        // We trust apfloat to give us properly truncated data.
+        Scalar::Raw { data: f.to_bits(), size: 8 }
     }
 
+    /// This is very rarely the method you want!  You should dispatch on the type
+    /// and use `force_bits`/`assert_bits`/`force_ptr`/`assert_ptr`.
+    /// This method only exists for the benefit of low-level memory operations
+    /// as well as the implementation of the `force_*` methods.
     #[inline]
     pub fn to_bits_or_ptr(
         self,
@@ -321,8 +343,9 @@ impl<'tcx, Tag> Scalar<Tag> {
         }
     }
 
+    /// Do not call this method!  Use either `assert_bits` or `force_bits`.
     #[inline]
-    pub fn to_bits(self, target_size: Size) -> EvalResult<'tcx, u128> {
+    pub fn to_bits(self, target_size: Size) -> InterpResult<'tcx, u128> {
         match self {
             Scalar::Raw { data, size } => {
                 assert_eq!(target_size.bytes(), size as u64);
@@ -330,19 +353,31 @@ impl<'tcx, Tag> Scalar<Tag> {
                 Scalar::check_data(data, size);
                 Ok(data)
             }
-            Scalar::Ptr(_) => err!(ReadPointerAsBytes),
+            Scalar::Ptr(_) => throw_unsup!(ReadPointerAsBytes),
         }
     }
 
+    #[inline(always)]
+    pub fn assert_bits(self, target_size: Size) -> u128 {
+        self.to_bits(target_size).expect("expected Raw bits but got a Pointer")
+    }
+
+    /// Do not call this method!  Use either `assert_ptr` or `force_ptr`.
     #[inline]
-    pub fn to_ptr(self) -> EvalResult<'tcx, Pointer<Tag>> {
+    pub fn to_ptr(self) -> InterpResult<'tcx, Pointer<Tag>> {
         match self {
-            Scalar::Raw { data: 0, .. } => err!(InvalidNullPointerUsage),
-            Scalar::Raw { .. } => err!(ReadBytesAsPointer),
+            Scalar::Raw { data: 0, .. } => throw_unsup!(InvalidNullPointerUsage),
+            Scalar::Raw { .. } => throw_unsup!(ReadBytesAsPointer),
             Scalar::Ptr(p) => Ok(p),
         }
     }
 
+    #[inline(always)]
+    pub fn assert_ptr(self) -> Pointer<Tag> {
+        self.to_ptr().expect("expected a Pointer but got Raw bits")
+    }
+
+    /// Do not call this method!  Dispatch based on the type instead.
     #[inline]
     pub fn is_bits(self) -> bool {
         match self {
@@ -351,6 +386,7 @@ impl<'tcx, Tag> Scalar<Tag> {
         }
     }
 
+    /// Do not call this method!  Dispatch based on the type instead.
     #[inline]
     pub fn is_ptr(self) -> bool {
         match self {
@@ -359,67 +395,67 @@ impl<'tcx, Tag> Scalar<Tag> {
         }
     }
 
-    pub fn to_bool(self) -> EvalResult<'tcx, bool> {
+    pub fn to_bool(self) -> InterpResult<'tcx, bool> {
         match self {
             Scalar::Raw { data: 0, size: 1 } => Ok(false),
             Scalar::Raw { data: 1, size: 1 } => Ok(true),
-            _ => err!(InvalidBool),
+            _ => throw_unsup!(InvalidBool),
         }
     }
 
-    pub fn to_char(self) -> EvalResult<'tcx, char> {
+    pub fn to_char(self) -> InterpResult<'tcx, char> {
         let val = self.to_u32()?;
         match ::std::char::from_u32(val) {
             Some(c) => Ok(c),
-            None => err!(InvalidChar(val as u128)),
+            None => throw_unsup!(InvalidChar(val as u128)),
         }
     }
 
-    pub fn to_u8(self) -> EvalResult<'static, u8> {
+    pub fn to_u8(self) -> InterpResult<'static, u8> {
         let sz = Size::from_bits(8);
         let b = self.to_bits(sz)?;
         Ok(b as u8)
     }
 
-    pub fn to_u32(self) -> EvalResult<'static, u32> {
+    pub fn to_u32(self) -> InterpResult<'static, u32> {
         let sz = Size::from_bits(32);
         let b = self.to_bits(sz)?;
         Ok(b as u32)
     }
 
-    pub fn to_u64(self) -> EvalResult<'static, u64> {
+    pub fn to_u64(self) -> InterpResult<'static, u64> {
         let sz = Size::from_bits(64);
         let b = self.to_bits(sz)?;
         Ok(b as u64)
     }
 
-    pub fn to_usize(self, cx: &impl HasDataLayout) -> EvalResult<'static, u64> {
+    pub fn to_usize(self, cx: &impl HasDataLayout) -> InterpResult<'static, u64> {
         let b = self.to_bits(cx.data_layout().pointer_size)?;
         Ok(b as u64)
     }
 
-    pub fn to_i8(self) -> EvalResult<'static, i8> {
+    pub fn to_i8(self) -> InterpResult<'static, i8> {
         let sz = Size::from_bits(8);
         let b = self.to_bits(sz)?;
         let b = sign_extend(b, sz) as i128;
         Ok(b as i8)
     }
 
-    pub fn to_i32(self) -> EvalResult<'static, i32> {
+    pub fn to_i32(self) -> InterpResult<'static, i32> {
         let sz = Size::from_bits(32);
         let b = self.to_bits(sz)?;
         let b = sign_extend(b, sz) as i128;
         Ok(b as i32)
     }
 
-    pub fn to_i64(self) -> EvalResult<'static, i64> {
+    pub fn to_i64(self) -> InterpResult<'static, i64> {
         let sz = Size::from_bits(64);
         let b = self.to_bits(sz)?;
         let b = sign_extend(b, sz) as i128;
         Ok(b as i64)
     }
 
-    pub fn to_isize(self, cx: &impl HasDataLayout) -> EvalResult<'static, i64> {
+    pub fn to_isize(self, cx: &impl HasDataLayout) -> InterpResult<'static, i64> {
         let sz = cx.data_layout().pointer_size;
         let b = self.to_bits(sz)?;
         let b = sign_extend(b, sz) as i128;
@@ -427,13 +463,15 @@ impl<'tcx, Tag> Scalar<Tag> {
     }
 
     #[inline]
-    pub fn to_f32(self) -> EvalResult<'static, f32> {
-        Ok(f32::from_bits(self.to_u32()?))
+    pub fn to_f32(self) -> InterpResult<'static, Single> {
+        // Going through `u32` to check size and truncation.
+        Ok(Single::from_bits(self.to_u32()? as u128))
     }
 
     #[inline]
-    pub fn to_f64(self) -> EvalResult<'static, f64> {
-        Ok(f64::from_bits(self.to_u64()?))
+    pub fn to_f64(self) -> InterpResult<'static, Double> {
+        // Going through `u64` to check size and truncation.
+        Ok(Double::from_bits(self.to_u64()? as u128))
     }
 }
 
@@ -444,8 +482,8 @@ impl<Tag> From<Pointer<Tag>> for Scalar<Tag> {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, RustcEncodable, RustcDecodable, Hash)]
-pub enum ScalarMaybeUndef<Tag=(), Id=AllocId> {
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, RustcEncodable, RustcDecodable)]
+pub enum ScalarMaybeUndef<Tag = (), Id = AllocId> {
     Scalar(Scalar<Tag, Id>),
     Undef,
 }
@@ -489,80 +527,82 @@ impl<'tcx, Tag> ScalarMaybeUndef<Tag> {
     }
 
     #[inline]
-    pub fn not_undef(self) -> EvalResult<'static, Scalar<Tag>> {
+    pub fn not_undef(self) -> InterpResult<'static, Scalar<Tag>> {
         match self {
             ScalarMaybeUndef::Scalar(scalar) => Ok(scalar),
-            ScalarMaybeUndef::Undef => err!(ReadUndefBytes(Size::from_bytes(0))),
+            ScalarMaybeUndef::Undef => throw_unsup!(ReadUndefBytes(Size::ZERO)),
         }
     }
 
+    /// Do not call this method!  Use either `assert_ptr` or `force_ptr`.
     #[inline(always)]
-    pub fn to_ptr(self) -> EvalResult<'tcx, Pointer<Tag>> {
+    pub fn to_ptr(self) -> InterpResult<'tcx, Pointer<Tag>> {
         self.not_undef()?.to_ptr()
     }
 
+    /// Do not call this method!  Use either `assert_bits` or `force_bits`.
     #[inline(always)]
-    pub fn to_bits(self, target_size: Size) -> EvalResult<'tcx, u128> {
+    pub fn to_bits(self, target_size: Size) -> InterpResult<'tcx, u128> {
         self.not_undef()?.to_bits(target_size)
     }
 
     #[inline(always)]
-    pub fn to_bool(self) -> EvalResult<'tcx, bool> {
+    pub fn to_bool(self) -> InterpResult<'tcx, bool> {
         self.not_undef()?.to_bool()
     }
 
     #[inline(always)]
-    pub fn to_char(self) -> EvalResult<'tcx, char> {
+    pub fn to_char(self) -> InterpResult<'tcx, char> {
         self.not_undef()?.to_char()
     }
 
     #[inline(always)]
-    pub fn to_f32(self) -> EvalResult<'tcx, f32> {
+    pub fn to_f32(self) -> InterpResult<'tcx, Single> {
         self.not_undef()?.to_f32()
     }
 
     #[inline(always)]
-    pub fn to_f64(self) -> EvalResult<'tcx, f64> {
+    pub fn to_f64(self) -> InterpResult<'tcx, Double> {
         self.not_undef()?.to_f64()
     }
 
     #[inline(always)]
-    pub fn to_u8(self) -> EvalResult<'tcx, u8> {
+    pub fn to_u8(self) -> InterpResult<'tcx, u8> {
         self.not_undef()?.to_u8()
     }
 
     #[inline(always)]
-    pub fn to_u32(self) -> EvalResult<'tcx, u32> {
+    pub fn to_u32(self) -> InterpResult<'tcx, u32> {
         self.not_undef()?.to_u32()
     }
 
     #[inline(always)]
-    pub fn to_u64(self) -> EvalResult<'tcx, u64> {
+    pub fn to_u64(self) -> InterpResult<'tcx, u64> {
         self.not_undef()?.to_u64()
     }
 
     #[inline(always)]
-    pub fn to_usize(self, cx: &impl HasDataLayout) -> EvalResult<'tcx, u64> {
+    pub fn to_usize(self, cx: &impl HasDataLayout) -> InterpResult<'tcx, u64> {
         self.not_undef()?.to_usize(cx)
     }
 
     #[inline(always)]
-    pub fn to_i8(self) -> EvalResult<'tcx, i8> {
+    pub fn to_i8(self) -> InterpResult<'tcx, i8> {
         self.not_undef()?.to_i8()
     }
 
     #[inline(always)]
-    pub fn to_i32(self) -> EvalResult<'tcx, i32> {
+    pub fn to_i32(self) -> InterpResult<'tcx, i32> {
         self.not_undef()?.to_i32()
     }
 
     #[inline(always)]
-    pub fn to_i64(self) -> EvalResult<'tcx, i64> {
+    pub fn to_i64(self) -> InterpResult<'tcx, i64> {
         self.not_undef()?.to_i64()
     }
 
     #[inline(always)]
-    pub fn to_isize(self, cx: &impl HasDataLayout) -> EvalResult<'tcx, i64> {
+    pub fn to_isize(self, cx: &impl HasDataLayout) -> InterpResult<'tcx, i64> {
         self.not_undef()?.to_isize(cx)
     }
 }
