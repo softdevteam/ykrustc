@@ -2297,8 +2297,6 @@ pub fn build_session_options_and_crate_config(
         debugging_opts.tls_model = None;
     }
 
-    let cg = cg;
-
     let sysroot_opt = matches.opt_str("sysroot").map(|m| PathBuf::from(&m));
     let target_triple = if let Some(target) = matches.opt_str("target") {
         if target.ends_with(".json") {
@@ -2350,6 +2348,15 @@ pub fn build_session_options_and_crate_config(
             }
         }
     };
+
+    // Disable hardware tracing when optimisations are enabled, switching to software tracing
+    // instead.
+    if opt_level != OptLevel::No && cg.tracer == TracerMode::Hardware {
+       cg.tracer = TracerMode::Software;
+    }
+
+    let cg = cg;
+
     // The `-g` and `-C debuginfo` flags specify the same setting, so we want to be able
     // to use them interchangeably. See the note above (regarding `-O` and `-C opt-level`)
     // for more details.
@@ -2362,7 +2369,8 @@ pub fn build_session_options_and_crate_config(
             None
         }
     }).max();
-    let debuginfo = if max_g > max_c {
+    let debuginfo = if max_g > max_c ||
+                       cg.tracer == TracerMode::Hardware {
         DebugInfo::Full
     } else {
         match cg.debuginfo {
