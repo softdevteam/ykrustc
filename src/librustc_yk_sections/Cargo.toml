@@ -17,3 +17,4 @@ ykpack = { git = "https://github.com/softdevteam/yk" }
 rustc_codegen_utils = { path = "../librustc_codegen_utils" }
 rustc_data_structures = { path = "../librustc_data_structures" }
 syntax = { path = "../libsyntax" }
+syntax_pos = { path = "../libsyntax_pos" }
