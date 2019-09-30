@@ -15,7 +15,7 @@
 
 use rustc::ty::{self, TyCtxt, TyS, Const, Ty, Instance};
 use syntax::ast::{UintTy, IntTy};
-use rustc::hir::def_id::DefId;
+use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::{
     Body, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
     Terminator, TerminatorKind, Constant, BinOp, NullOp
@@ -32,6 +32,7 @@ use std::mem::size_of;
 use rustc_data_structures::indexed_vec::IndexVec;
 use ykpack;
 use rustc::ty::fold::TypeFoldable;
+use syntax_pos::sym;
 
 const SECTION_NAME: &'static str = ".yk_sir";
 const TMP_EXT: &'static str = ".yk_sir.tmp";
@@ -99,10 +100,26 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     }
 
     /// Entry point for the lowering process.
-    fn lower(mut self) -> ykpack::Body {
+    fn lower(mut self, is_yktrace: bool) -> ykpack::Body {
         let dps = self.tcx.def_path_str(self.def_id);
-        ykpack::Body::new(self.lower_def_id(&self.def_id.to_owned()),
-            dps, self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect())
+        let mut flags = 0;
+
+        if is_yktrace {
+            for attr in self.tcx.get_attrs(self.def_id).iter() {
+                if attr.check_name(sym::trace_head) {
+                    flags |= ykpack::bodyflags::TRACE_HEAD;
+                } else if attr.check_name(sym::trace_tail) {
+                    flags |= ykpack::bodyflags::TRACE_TAIL;
+                }
+            }
+        }
+
+        ykpack::Body::new(
+            self.lower_def_id(&self.def_id.to_owned()),
+            dps,
+            self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect(),
+            flags,
+        )
     }
 
     fn lower_def_id(&mut self, def_id: &DefId) -> ykpack::DefId {
@@ -399,11 +416,13 @@ fn do_generate_sir<'tcx>(
     let mut def_ids: Vec<&DefId> = def_ids.iter().collect();
     def_ids.sort();
 
+    let is_yktrace = tcx.crate_name(LOCAL_CRATE).as_str() == "yktrace";
+
     for def_id in def_ids {
         if tcx.is_mir_available(*def_id) {
             let mir = tcx.optimized_mir(*def_id);
             let ccx = ConvCx::new(tcx, *def_id, mir);
-            let pack = ccx.lower();
+            let pack = ccx.lower(is_yktrace);
 
             if let Some(ref mut e) = enc {
                 e.serialise(ykpack::Pack::Body(pack))?;

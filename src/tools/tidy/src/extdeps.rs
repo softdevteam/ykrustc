@@ -30,7 +30,13 @@ pub fn check(path: &Path, bad: &mut bool) {
         let source = line.splitn(2, '=').nth(1).unwrap().trim();
 
         // Allow all soft-dev repos.
-        if source.starts_with("\"git+https://github.com/softdevteam") {
+        // We also allow our personal forks for scenarios where we are breaking a CI cycle and need
+        // to temporarily use one of our personal feature branches.
+        if source.starts_with("\"git+https://github.com/softdevteam/") ||
+            source.starts_with("\"git+https://github.com/vext01/") ||
+            source.starts_with("\"git+https://github.com/ltratt/") ||
+            source.starts_with("\"git+https://github.com/ptersilie/")
+        {
             continue;
         }
 

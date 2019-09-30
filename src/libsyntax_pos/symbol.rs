@@ -447,6 +447,8 @@ symbols! {
         no_implicit_prelude,
         no_inline,
         no_sw_trace,
+        trace_head,
+        trace_tail,
         no_link,
         no_main,
         no_mangle,

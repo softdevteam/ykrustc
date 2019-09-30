@@ -239,6 +239,10 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // "Don't software trace this". Disables the `AddYkSWTCalls` MIR transform.
     ungated!(no_sw_trace, Whitelisted, template!(Word)),
 
+    // Markers for trimming traces.
+    ungated!(trace_head, Whitelisted, template!(Word)),
+    ungated!(trace_tail, Whitelisted, template!(Word)),
+
     ungated!(used, Whitelisted, template!(Word)),
 
     // Limits:

@@ -3778,6 +3778,7 @@ dependencies = [
  "rustc_data_structures",
  "rustc_yk_link",
  "syntax",
+ "syntax_pos",
  "ykpack",
 ]
 
@@ -5080,7 +5081,6 @@ checksum = "e66366e18dc58b46801afbf2ca7661a9f59cc8c5962c29892b6039b4f86fa992"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#0ff2fb8799120c9b77660c5b6de922aa206c0f43"
 dependencies = [
  "fallible-iterator",
  "rmp-serde",
