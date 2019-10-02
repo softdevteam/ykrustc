@@ -15,7 +15,7 @@
 
 use rustc::ty::{self, TyCtxt, TyS, Const, Ty, Instance};
 use syntax::ast::{UintTy, IntTy};
-use rustc::hir::def_id::{DefId, LOCAL_CRATE};
+use rustc::hir::def_id::DefId;
 use rustc::mir::{
     Body, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
     Terminator, TerminatorKind, Constant, BinOp, NullOp
@@ -100,17 +100,15 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     }
 
     /// Entry point for the lowering process.
-    fn lower(mut self, is_yktrace: bool) -> ykpack::Body {
+    fn lower(mut self) -> ykpack::Body {
         let dps = self.tcx.def_path_str(self.def_id);
         let mut flags = 0;
 
-        if is_yktrace {
-            for attr in self.tcx.get_attrs(self.def_id).iter() {
-                if attr.check_name(sym::trace_head) {
-                    flags |= ykpack::bodyflags::TRACE_HEAD;
-                } else if attr.check_name(sym::trace_tail) {
-                    flags |= ykpack::bodyflags::TRACE_TAIL;
-                }
+        for attr in self.tcx.get_attrs(self.def_id).iter() {
+            if attr.check_name(sym::trace_head) {
+                flags |= ykpack::bodyflags::TRACE_HEAD;
+            } else if attr.check_name(sym::trace_tail) {
+                flags |= ykpack::bodyflags::TRACE_TAIL;
             }
         }
 
@@ -416,13 +414,11 @@ fn do_generate_sir<'tcx>(
     let mut def_ids: Vec<&DefId> = def_ids.iter().collect();
     def_ids.sort();
 
-    let is_yktrace = tcx.crate_name(LOCAL_CRATE).as_str() == "yktrace";
-
     for def_id in def_ids {
         if tcx.is_mir_available(*def_id) {
             let mir = tcx.optimized_mir(*def_id);
             let ccx = ConvCx::new(tcx, *def_id, mir);
-            let pack = ccx.lower(is_yktrace);
+            let pack = ccx.lower();
 
             if let Some(ref mut e) = enc {
                 e.serialise(ykpack::Pack::Body(pack))?;
