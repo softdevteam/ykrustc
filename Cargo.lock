@@ -108,6 +108,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "autocfg"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b671c8fb71b457dd4ae18c4ba1e59aa81793daacc361d82fcd410cef0d491875"
+
+[[package]]
 name = "backtrace"
 version = "0.3.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -405,7 +411,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45912881121cb26fad7c38c17ba7daa18764771836b34fab7d3fbd93ed633878"
 dependencies = [
  "num-integer",
- "num-traits 0.2.6",
+ "num-traits 0.2.8",
  "time",
 ]
 
@@ -2096,7 +2102,7 @@ dependencies = [
  "getrandom",
  "hex 0.3.2",
  "log",
- "num-traits 0.2.6",
+ "num-traits 0.1.43",
  "rand 0.7.0",
  "rustc-workspace-hack",
  "rustc_version",
@@ -2151,7 +2157,7 @@ version = "0.1.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e83d528d2677f0518c570baf2b7abdcf0cd2d248860b68507bdcb3e91d4c0cea"
 dependencies = [
- "num-traits 0.2.6",
+ "num-traits 0.2.8",
 ]
 
 [[package]]
@@ -2160,14 +2166,17 @@ version = "0.1.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92e5113e9fd4cc14ded8e499429f396a20f98c772a47cc8622a736e1ec843c31"
 dependencies = [
- "num-traits 0.2.6",
+ "num-traits 0.2.8",
 ]
 
 [[package]]
 name = "num-traits"
-version = "0.2.6"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b3a5d7cc97d6d30d8b9bc8fa19bf45349ffe46241e8816f50f62f6d6aaabee1"
+checksum = "6ba9a427cfca2be13aa6f6403b0b7e7368fe982bfa16fccc450ce74c46cd9b32"
+dependencies = [
+ "autocfg",
+]
 
 [[package]]
 name = "num_cpus"
@@ -3035,17 +3044,19 @@ dependencies = [
 
 [[package]]
 name = "rmp"
-version = "0.8.7"
-source = "git+https://github.com/3Hren/msgpack-rust?rev=40b3d480b20961e6eeceb416b32bcd0a3383846a#40b3d480b20961e6eeceb416b32bcd0a3383846a"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f594cb7ff8f1c5a7907f6be91f15795c8301e0d5718eb007fb5832723dd716e"
 dependencies = [
  "byteorder",
- "num-traits 0.1.43",
+ "num-traits 0.2.8",
 ]
 
 [[package]]
 name = "rmp-serde"
 version = "0.14.0"
-source = "git+https://github.com/3Hren/msgpack-rust?rev=40b3d480b20961e6eeceb416b32bcd0a3383846a#40b3d480b20961e6eeceb416b32bcd0a3383846a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a31c0798045f039ace94e0166f76478b3ba83116ec7c9d4bc934c5b13b8df21"
 dependencies = [
  "byteorder",
  "rmp",
@@ -4855,7 +4866,7 @@ checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
 name = "unstable-book-gen"
 version = "0.1.0"
 dependencies = [
- "num-traits 0.2.6",
+ "num-traits 0.2.8",
  "tidy",
 ]
 
@@ -5081,7 +5092,7 @@ checksum = "e66366e18dc58b46801afbf2ca7661a9f59cc8c5962c29892b6039b4f86fa992"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#191021183cbe764095bcfd10aead0f39fcf02c9f"
+source = "git+https://github.com/softdevteam/yk#43290b0a52c9c24be72d36ff99cd361d67c757e0"
 dependencies = [
  "fallible-iterator",
  "rmp-serde",
