@@ -38,6 +38,10 @@ use rustc::hir::map::blocks::FnLikeNode;
 ///  * 'Rec' is the trace recorder function.
 ///  * The block indices match the indices in the backing vector in the MIR.
 ///
+/// After the transformation, the first half of the vector store contains the shadow blocks, and
+/// the second half contains the corresponding user blocks. If there are N blocks, the user block
+/// for shadow block B resides at B + N / 2.
+///
 /// The extra calls we insert mean that we have to allocate new local decls for the (unit) return
 /// values: one new decl for each call.
 pub struct AddYkSWTCalls(pub DefIndex);
