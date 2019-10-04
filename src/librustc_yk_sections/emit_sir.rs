@@ -15,13 +15,14 @@
 
 use rustc::ty::{self, TyCtxt, TyS, Const, Ty, Instance};
 use syntax::ast::{UintTy, IntTy};
-use rustc::hir::def_id::DefId;
+use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::{
     Body, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
     Terminator, TerminatorKind, Constant, BinOp, NullOp
 };
 use rustc::mir::interpret::{ConstValue, Scalar};
 use rustc::util::nodemap::DefIdSet;
+use rustc::session::config::TracerMode;
 use std::path::PathBuf;
 use std::fs::File;
 use rustc_yk_link::YkExtraLinkObject;
@@ -29,6 +30,7 @@ use std::fs;
 use std::io::Write;
 use std::error::Error;
 use std::mem::size_of;
+use std::convert::{TryFrom, TryInto};
 use rustc_data_structures::indexed_vec::IndexVec;
 use ykpack;
 use rustc::ty::fold::TypeFoldable;
@@ -121,10 +123,29 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
             }
         }
 
+        // If we are using the software tracer, then we don't want to serialise the "shadow blocks"
+        // which are just calls to the software trace recorder. We therefore skip the first half of
+        // the iterator, thus skipping all of the shadow blocks.
+        //
+        // Note that it is not necessary to adjust the successor block indices in the SIR
+        // terminators due to this transformation. The user blocks will be pushed at new indices
+        // which are already correct for the existing successor indices.
+        let skip;
+        if self.tcx.sess.opts.cg.tracer == TracerMode::Software &&
+            was_annotated(self.tcx, self.mir)
+        {
+            let num_mir_blks = self.mir.basic_blocks().len();
+            debug_assert!(num_mir_blks % 2 == 0);
+            skip = num_mir_blks / 2;
+        } else {
+            skip = 0;
+        };
+
         ykpack::Body {
             def_id: self.lower_def_id(&self.def_id.to_owned()),
             def_path_str: dps,
-            blocks: self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect(),
+            blocks: self.mir.basic_blocks().iter().skip(skip)
+                .map(|b| self.lower_block(b)).collect(),
             num_args: self.mir.arg_count,
             num_locals: self.mir.local_decls.len(),
             flags,
@@ -458,4 +479,29 @@ fn lower_def_id(tcx: TyCtxt<'_>, &def_id: &DefId) -> ykpack::DefId {
         crate_hash: tcx.crate_hash(def_id.krate).as_u64(),
         def_idx: def_id.index.as_u32(),
     }
+}
+
+/// Was this MIR annotated with calls the the software tracer?
+/// We decide this by inspecting the terminator if the first block.
+fn was_annotated(tcx: TyCtxt<'_>, body: &Body<'_>) -> bool {
+    let first_block = match body.basic_blocks().iter().next() {
+        Some(b) => b,
+        None => return false, // No blocks. Couldn't have annotated this then.
+    };
+
+    if let TerminatorKind::Call{func: Operand::Constant(box Constant {
+        literal: Const {
+            ty: &TyS {
+                sty: ty::FnDef(ref def_id, _), ..
+            }, ..
+        }, ..
+    }, ..), ..} = first_block.terminator.as_ref().unwrap().kind {
+        // Block is terminated by a static call. So is it the trace recorder?
+        let rec_fn_defid = tcx.get_lang_items(LOCAL_CRATE).yk_swt_rec_loc()
+            .expect("couldn't find software trace recorder function");
+        return *def_id == rec_fn_defid;
+    }
+
+    // Block wasn't terminated by a static call.
+    false
 }
