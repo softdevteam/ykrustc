@@ -62,10 +62,19 @@ struct ConvCx<'a, 'tcx> {
 
 impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     fn new(tcx: TyCtxt<'tcx>, def_id: DefId, mir: &'a Body<'tcx>) -> Self {
+        let mut var_map = IndexVec::new();
+        // For simplicity and parity with MIR, ensure the return value at position 0.
+        var_map.push(Some(ykpack::Local::new(0, 0)));
+
+        // Allocate local indices for the function arguments next.
+        for i in 0..mir.arg_count {
+            var_map.push(Some(ykpack::Local::new((i + 1).try_into().unwrap(), 0)));
+        }
+
         Self {
             tcx,
-            next_sir_var: 0,
-            var_map: IndexVec::new(),
+            next_sir_var: u32::try_from(var_map.len()).unwrap(),
+            var_map,
             mir,
             def_id,
         }
