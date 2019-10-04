@@ -121,12 +121,14 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
             }
         }
 
-        ykpack::Body::new(
-            self.lower_def_id(&self.def_id.to_owned()),
-            dps,
-            self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect(),
+        ykpack::Body {
+            def_id: self.lower_def_id(&self.def_id.to_owned()),
+            def_path_str: dps,
+            blocks: self.mir.basic_blocks().iter().map(|b| self.lower_block(b)).collect(),
+            num_args: self.mir.arg_count,
+            num_locals: self.mir.local_decls.len(),
             flags,
-        )
+        }
     }
 
     fn lower_def_id(&mut self, def_id: &DefId) -> ykpack::DefId {
