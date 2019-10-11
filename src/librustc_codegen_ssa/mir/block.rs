@@ -143,6 +143,15 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
             }
 
             if let Some((ret_dest, target)) = destination {
+                // Generate YK debug label to match hardware traces with blocks in the MIR.
+                if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
+                    let did = fx.instance.def.def_id();
+                    let lbl_name = CString::new(format!("__YK_RET_{}_{}_{}", did.krate.as_u32(),
+                                                did.index.as_u32(), self.bb.index())).unwrap();
+                    let di_sp = fx.fn_metadata(self.terminator.source_info.span);
+                    bx.add_yk_block_label_at_end(*di_sp, lbl_name);
+                }
+
                 fx.store_return(bx, ret_dest, &fn_ty.ret, llret);
                 self.funclet_br(fx, bx, target);
             } else {
