@@ -18,7 +18,7 @@ use syntax::ast::{UintTy, IntTy};
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::{
     Body, Local, BasicBlockData, Statement, StatementKind, Place, PlaceBase, Rvalue, Operand,
-    Terminator, TerminatorKind, Constant, BinOp, NullOp
+    Terminator, TerminatorKind, Constant, BinOp, NullOp, PlaceElem,
 };
 use rustc::mir::interpret::{ConstValue, Scalar};
 use rustc::util::nodemap::DefIdSet;
@@ -171,7 +171,7 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
                 Ok(ykpack::Terminator::Goto(u32::from(target_bb))),
             TerminatorKind::SwitchInt{ref discr, ref values, ref targets, ..} => {
                 match self.lower_operand(discr) {
-                    Ok(ykpack::Operand::Local(local)) => {
+                    Ok(ykpack::Operand::Place(place)) => {
                         let mut target_bbs: Vec<ykpack::BasicBlockIndex> =
                             targets.iter().map(|bb| u32::from(*bb)).collect();
                         // In the `SwitchInt` MIR terminator the last block index in the targets
@@ -179,7 +179,7 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
                         // values. In SIR, we use a dedicated field to avoid confusion.
                         let otherwise_bb = target_bbs.pop().expect("no otherwise block");
                         Ok(ykpack::Terminator::SwitchInt{
-                            local,
+                            discr: place,
                             values: values.iter().map(|u| ykpack::SerU128::new(*u)).collect(),
                             target_bbs,
                             otherwise_bb,
@@ -194,12 +194,12 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
             TerminatorKind::Unreachable => Ok(ykpack::Terminator::Unreachable),
             TerminatorKind::Drop{target: target_bb, ref location, ..} =>
                 Ok(ykpack::Terminator::Drop{
-                    location: self.lower_place(location)?,
+                    location: self.lower_place(location),
                     target_bb: u32::from(target_bb),
                 }),
             TerminatorKind::DropAndReplace{target: target_bb, ref location, ref value, ..} =>
                 Ok(ykpack::Terminator::DropAndReplace{
-                    location: self.lower_place(location)?,
+                    location: self.lower_place(location),
                     value: self.lower_operand(value)?,
                     target_bb: u32::from(target_bb),
                 }),
@@ -231,13 +231,14 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
                 })
             },
             TerminatorKind::Assert{target: target_bb, ref cond, expected, ..} => {
-                let local = match self.lower_operand(cond)? {
-                    ykpack::Operand::Local(l) => l,
-                    // Constant assertions will have been optimised out.
+                let place = match self.lower_operand(cond)? {
+                    ykpack::Operand::Place(p) => p,
+                    // Constant assertions will have been optimised out, so in SIR the they can be
+                    // a `Place` instead of an `Operand`.
                     ykpack::Operand::Constant(_) => panic!("constant assertion"),
                 };
                 Ok(ykpack::Terminator::Assert{
-                    cond: local,
+                    cond: place,
                     expected,
                     target_bb: u32::from(target_bb),
                 })
@@ -270,31 +271,39 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     fn lower_assign_stmt(&mut self, place: &Place<'_>, rval: &Rvalue<'_>)
         -> Result<ykpack::Statement, ()>
     {
-        Ok(ykpack::Statement::Assign(self.lower_place(place)?, self.lower_rval(rval)?))
+        Ok(ykpack::Statement::Assign(self.lower_place(place), self.lower_rval(rval)?))
     }
 
     // FIXME No possibility of error once everything is implemented.
-    // FIXME deal with the projection field.
-    fn lower_place(&mut self, place: &Place<'_>) -> Result<ykpack::Local, ()> {
-        match place.base {
-            PlaceBase::Local(l) => Ok(self.lower_local(l)),
-            _  => Err(()),
+    fn lower_place(&mut self, place: &Place<'_>) -> ykpack::Place {
+        let base = match place.base {
+            PlaceBase::Local(l) => ykpack::PlaceBase::Local(self.lower_local(l)),
+            PlaceBase::Static(_) => ykpack::PlaceBase::Static,
+        };
+        let projections = place.projection.iter().map(|p| self.lower_place_elem(p)).collect();
+
+        ykpack::Place{base, projections}
+    }
+
+    fn lower_place_elem(&self, p: &PlaceElem<'_>) -> ykpack::PlaceProjection {
+        match p {
+            PlaceElem::Field(idx, _) => ykpack::PlaceProjection::Field(idx.as_u32()),
+            _ => ykpack::PlaceProjection::Unimplemented, // FIXME implement other projections.
         }
     }
 
     // FIXME No possibility of error once everything is implemented.
     fn lower_rval(&mut self, rval: &Rvalue<'_>) -> Result<ykpack::Rvalue, ()> {
         match rval {
-            Rvalue::Use(ref oper) => {
-                match self.lower_operand(oper) {
-                    Ok(ykpack::Operand::Local(l)) => Ok(ykpack::Rvalue::Local(l)),
-                    Ok(ykpack::Operand::Constant(c)) => Ok(ykpack::Rvalue::Constant(c)),
-                    _ => Err(()),
-                }
-            },
+            Rvalue::Use(ref oper) => Ok(ykpack::Rvalue::Use(self.lower_operand(oper)?)),
             Rvalue::BinaryOp(bin_op, o1, o2) =>
                 Ok(ykpack::Rvalue::BinaryOp(self.lower_binary_op(*bin_op), self.lower_operand(o1)?,
                     self.lower_operand(o2)?)),
+            Rvalue::CheckedBinaryOp(bin_op, o1, o2) =>
+                Ok(ykpack::Rvalue::CheckedBinaryOp(
+                        self.lower_binary_op(*bin_op),
+                        self.lower_operand(o1)?,
+                        self.lower_operand(o2)?)),
             Rvalue::NullaryOp(NullOp::Box, _) => {
                 // This is actually a call to ExchangeMallocFnLangItem.
                 Err(()) // FIXME: decide how to lower boxes.
@@ -328,7 +337,7 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     fn lower_operand(&mut self, oper: &Operand<'_>) -> Result<ykpack::Operand, ()> {
         match oper {
             Operand::Copy(ref place) | Operand::Move(ref place) =>
-                Ok(ykpack::Operand::Local(self.lower_place(place)?)),
+                Ok(ykpack::Operand::Place(self.lower_place(place))),
             Operand::Constant(ref cnst) =>
                 Ok(ykpack::Operand::Constant(self.lower_constant(cnst)?)),
         }
@@ -349,7 +358,16 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
         match ty.sty {
             ty::Uint(t) => Ok(ykpack::Constant::Int(self.lower_uint(t, sclr))),
             ty::Int(t) => Ok(ykpack::Constant::Int(self.lower_int(t, sclr))),
+            ty::Bool => Ok(ykpack::Constant::Int(self.lower_bool(sclr))),
             _ => Err(()), // FIXME Not implemented.
+        }
+    }
+
+    fn lower_bool(&mut self, sclr: &Scalar) -> ykpack::ConstantInt {
+        match sclr {
+            Scalar::Raw{data: 0, size: 1} => ykpack::ConstantInt::from(false),
+            Scalar::Raw{data: 1, size: 1} => ykpack::ConstantInt::from(true),
+            _ => panic!("bogus cast from MIR raw scalar to SIR boolean"),
         }
     }
 
