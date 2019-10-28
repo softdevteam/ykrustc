@@ -1107,7 +1107,7 @@ pub fn start_codegen<'tcx>(
         }
     }
 
-    // Output Yorick debug sections into binary targets if necessary.
+    // Output Yorick sections into binary targets if necessary.
     if tcx.sess.opts.cg.tracer.encode_sir() &&
         tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) &&
         tcx.crate_name(LOCAL_CRATE).as_str() != "build_script_build"
