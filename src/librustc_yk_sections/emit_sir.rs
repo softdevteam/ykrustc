@@ -66,11 +66,11 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     fn new(tcx: TyCtxt<'tcx>, def_id: DefId, mir: &'a Body<'tcx>) -> Self {
         let mut var_map = IndexVec::new();
         // For simplicity and parity with MIR, ensure the return value at position 0.
-        var_map.push(Some(ykpack::Local::new(0, 0)));
+        var_map.push(Some(ykpack::Local(0)));
 
         // Allocate local indices for the function arguments next.
         for i in 0..mir.arg_count {
-            var_map.push(Some(ykpack::Local::new((i + 1).try_into().unwrap(), 0)));
+            var_map.push(Some(ykpack::Local((i + 1).try_into().unwrap())));
         }
 
         Self {
@@ -103,8 +103,7 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
 
         self.var_map[local].unwrap_or_else(|| {
             let idx = self.new_sir_var();
-            let ty = 0; // FIXME notimplemented.
-            let sir_local = ykpack::Local::new(idx, ty);
+            let sir_local = ykpack::Local(idx);
             self.var_map[local] = Some(sir_local);
             sir_local
         })
