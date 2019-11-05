@@ -146,7 +146,8 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
                 // Generate YK debug label to match hardware traces with blocks in the MIR.
                 if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
                     let did = fx.instance.def.def_id();
-                    let lbl_name = CString::new(format!("__YK_RET_{}_{}_{}", did.krate.as_u32(),
+                    let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
+                    let lbl_name = CString::new(format!("__YK_RET_{}_{}_{}", crate_hash,
                                                 did.index.as_u32(), self.bb.index())).unwrap();
                     let di_sp = fx.fn_metadata(self.terminator.source_info.span);
                     bx.add_yk_block_label_at_end(*di_sp, lbl_name);
@@ -815,7 +816,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
             let did = self.instance.def.def_id();
-            let lbl_name = CString::new(format!("__YK_BLK_{}_{}_{}", did.krate.as_u32(),
+            let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
+            let lbl_name = CString::new(format!("__YK_BLK_{}_{}_{}", crate_hash,
                                         did.index.as_u32(), bb.index())).unwrap();
             let di_sp = self.fn_metadata(data.terminator().source_info.span);
             bx.add_yk_block_label_at_end(*di_sp, lbl_name);
