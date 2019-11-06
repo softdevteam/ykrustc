@@ -696,6 +696,10 @@ extern "rust-intrinsic" {
     /// This will statically either panic, or do nothing.
     pub fn panic_if_uninhabited<T>();
 
+    /// Gets a reference to a static `Location` indicating where it was called.
+    #[cfg(not(bootstrap))]
+    pub fn caller_location() -> &'static crate::panic::Location<'static>;
+
     /// Creates a value initialized to zero.
     ///
     /// `init` is unsafe because it returns a zeroed-out datum,
@@ -874,6 +878,7 @@ extern "rust-intrinsic" {
     /// // the original inner type (`&i32`) to the converted inner type
     /// // (`Option<&i32>`), so read the nomicon pages linked above.
     /// let v_from_raw = unsafe {
+    // FIXME Update this when vec_into_raw_parts is stabilized
     ///     // Ensure the original vector is not dropped.
     ///     let mut v_clone = std::mem::ManuallyDrop::new(v_clone);
     ///     Vec::from_raw_parts(v_clone.as_mut_ptr() as *mut Option<&i32>,
@@ -1299,38 +1304,16 @@ extern "rust-intrinsic" {
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `wrapping_add` method. For example,
     /// [`std::u32::wrapping_add`](../../std/primitive.u32.html#method.wrapping_add)
-    #[cfg(boostrap_stdarch_ignore_this)]
-    pub fn overflowing_add<T>(a: T, b: T) -> T;
-    /// Returns (a - b) mod 2<sup>N</sup>, where N is the width of T in bits.
-    /// The stabilized versions of this intrinsic are available on the integer
-    /// primitives via the `wrapping_sub` method. For example,
-    /// [`std::u32::wrapping_sub`](../../std/primitive.u32.html#method.wrapping_sub)
-    #[cfg(boostrap_stdarch_ignore_this)]
-    pub fn overflowing_sub<T>(a: T, b: T) -> T;
-    /// Returns (a * b) mod 2<sup>N</sup>, where N is the width of T in bits.
-    /// The stabilized versions of this intrinsic are available on the integer
-    /// primitives via the `wrapping_mul` method. For example,
-    /// [`std::u32::wrapping_mul`](../../std/primitive.u32.html#method.wrapping_mul)
-    #[cfg(boostrap_stdarch_ignore_this)]
-    pub fn overflowing_mul<T>(a: T, b: T) -> T;
-
-    /// Returns (a + b) mod 2<sup>N</sup>, where N is the width of T in bits.
-    /// The stabilized versions of this intrinsic are available on the integer
-    /// primitives via the `wrapping_add` method. For example,
-    /// [`std::u32::wrapping_add`](../../std/primitive.u32.html#method.wrapping_add)
-    #[cfg(not(boostrap_stdarch_ignore_this))]
     pub fn wrapping_add<T>(a: T, b: T) -> T;
     /// Returns (a - b) mod 2<sup>N</sup>, where N is the width of T in bits.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `wrapping_sub` method. For example,
     /// [`std::u32::wrapping_sub`](../../std/primitive.u32.html#method.wrapping_sub)
-    #[cfg(not(boostrap_stdarch_ignore_this))]
     pub fn wrapping_sub<T>(a: T, b: T) -> T;
     /// Returns (a * b) mod 2<sup>N</sup>, where N is the width of T in bits.
     /// The stabilized versions of this intrinsic are available on the integer
     /// primitives via the `wrapping_mul` method. For example,
     /// [`std::u32::wrapping_mul`](../../std/primitive.u32.html#method.wrapping_mul)
-    #[cfg(not(boostrap_stdarch_ignore_this))]
     pub fn wrapping_mul<T>(a: T, b: T) -> T;
 
     /// Computes `a + b`, while saturating at numeric bounds.
@@ -1361,6 +1344,10 @@ extern "rust-intrinsic" {
     /// Emits a `!nontemporal` store according to LLVM (see their docs).
     /// Probably will never become stable.
     pub fn nontemporal_store<T>(ptr: *mut T, val: T);
+
+    /// See documentation of `<*const T>::offset_from` for details.
+    #[cfg(not(bootstrap))]
+    pub fn ptr_offset_from<T>(ptr: *const T, base: *const T) -> isize;
 }
 
 // Some functions are defined here because they accidentally got made

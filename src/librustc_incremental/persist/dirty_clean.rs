@@ -303,7 +303,7 @@ impl DirtyCleanVisitor<'tcx> {
         for item in attr.meta_item_list().unwrap_or_else(Vec::new) {
             if item.check_name(LABEL) {
                 let value = expect_associated_value(self.tcx, &item);
-                return Some(self.resolve_labels(&item, value.as_str().as_ref()));
+                return Some(self.resolve_labels(&item, &value.as_str()));
             }
         }
         None
@@ -314,7 +314,7 @@ impl DirtyCleanVisitor<'tcx> {
         for item in attr.meta_item_list().unwrap_or_else(Vec::new) {
             if item.check_name(EXCEPT) {
                 let value = expect_associated_value(self.tcx, &item);
-                return self.resolve_labels(&item, value.as_str().as_ref());
+                return self.resolve_labels(&item, &value.as_str());
             }
         }
         // if no `label` or `except` is given, only the node's group are asserted
@@ -327,7 +327,7 @@ impl DirtyCleanVisitor<'tcx> {
         let node = self.tcx.hir().get(item_id);
         let (name, labels) = match node {
             HirNode::Item(item) => {
-                match item.node {
+                match item.kind {
                     // note: these are in the same order as hir::Item_;
                     // FIXME(michaelwoerister): do commented out ones
 
@@ -391,20 +391,20 @@ impl DirtyCleanVisitor<'tcx> {
                         &format!(
                             "clean/dirty auto-assertions not yet defined \
                              for Node::Item.node={:?}",
-                            item.node
+                            item.kind
                         )
                     ),
                 }
             },
             HirNode::TraitItem(item) => {
-                match item.node {
+                match item.kind {
                     TraitItemKind::Method(..) => ("Node::TraitItem", LABELS_FN_IN_TRAIT),
                     TraitItemKind::Const(..) => ("NodeTraitConst", LABELS_CONST_IN_TRAIT),
                     TraitItemKind::Type(..) => ("NodeTraitType", LABELS_CONST_IN_TRAIT),
                 }
             },
             HirNode::ImplItem(item) => {
-                match item.node {
+                match item.kind {
                     ImplItemKind::Method(..) => ("Node::ImplItem", LABELS_FN_IN_IMPL),
                     ImplItemKind::Const(..) => ("NodeImplConst", LABELS_CONST_IN_IMPL),
                     ImplItemKind::TyAlias(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),

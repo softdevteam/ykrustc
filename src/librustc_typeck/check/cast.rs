@@ -93,7 +93,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return Ok(Some(PointerKind::Thin));
         }
 
-        Ok(match t.sty {
+        Ok(match t.kind {
             ty::Slice(_) | ty::Str => Some(PointerKind::Length),
             ty::Dynamic(ref tty, ..) =>
                 Some(PointerKind::Vtable(tty.principal_def_id())),
@@ -192,7 +192,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
         // For better error messages, check for some obviously unsized
         // cases now. We do a more thorough check at the end, once
         // inference is more completely known.
-        match cast_ty.sty {
+        match cast_ty.kind {
             ty::Dynamic(..) | ty::Slice(..) => {
                 check.report_cast_to_unsized_type(fcx);
                 Err(ErrorReported)
@@ -339,7 +339,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
                                          "cast to unsized type: `{}` as `{}`",
                                          fcx.resolve_vars_if_possible(&self.expr_ty),
                                          tstr);
-        match self.expr_ty.sty {
+        match self.expr_ty.kind {
             ty::Ref(_, _, mt) => {
                 let mtstr = match mt {
                     hir::MutMutable => "mut ",
@@ -428,19 +428,34 @@ impl<'a, 'tcx> CastCheck<'tcx> {
             self.report_cast_to_unsized_type(fcx);
         } else if self.expr_ty.references_error() || self.cast_ty.references_error() {
             // No sense in giving duplicate error messages
-        } else if self.try_coercion_cast(fcx) {
-            self.trivial_cast_lint(fcx);
-            debug!(" -> CoercionCast");
-            fcx.tables.borrow_mut().set_coercion_cast(self.expr.hir_id.local_id);
-
         } else {
-            match self.do_check(fcx) {
-                Ok(k) => {
-                    debug!(" -> {:?}", k);
+            match self.try_coercion_cast(fcx) {
+                Ok(()) => {
+                    self.trivial_cast_lint(fcx);
+                    debug!(" -> CoercionCast");
+                    fcx.tables.borrow_mut()
+                        .set_coercion_cast(self.expr.hir_id.local_id);
                 }
-                Err(e) => self.report_cast_error(fcx, e),
+                Err(ty::error::TypeError::ObjectUnsafeCoercion(did)) => {
+                    self.report_object_unsafe_cast(&fcx, did);
+                }
+                Err(_) => {
+                    match self.do_check(fcx) {
+                        Ok(k) => {
+                            debug!(" -> {:?}", k);
+                        }
+                        Err(e) => self.report_cast_error(fcx, e),
+                    };
+                }
             };
         }
+    }
+
+    fn report_object_unsafe_cast(&self, fcx: &FnCtxt<'a, 'tcx>, did: DefId) {
+        let violations = fcx.tcx.object_safety_violations(did);
+        let mut err = fcx.tcx.report_object_safety_error(self.cast_span, did, violations);
+        err.note(&format!("required by cast to type '{}'", fcx.ty_to_string(self.cast_ty)));
+        err.emit();
     }
 
     /// Checks a cast, and report an error if one exists. In some cases, this
@@ -455,7 +470,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
             (Some(t_from), Some(t_cast)) => (t_from, t_cast),
             // Function item types may need to be reified before casts.
             (None, Some(t_cast)) => {
-                if let ty::FnDef(..) = self.expr_ty.sty {
+                if let ty::FnDef(..) = self.expr_ty.kind {
                     // Attempt a coercion to a fn pointer type.
                     let f = self.expr_ty.fn_sig(fcx.tcx);
                     let res = fcx.try_coerce(self.expr,
@@ -505,7 +520,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
             (FnPtr, Int(_)) => Ok(CastKind::FnPtrAddrCast),
             (RPtr(p), Int(_)) |
             (RPtr(p), Float) => {
-                match p.ty.sty {
+                match p.ty.kind {
                     ty::Int(_) |
                     ty::Uint(_) |
                     ty::Float(_) => {
@@ -616,7 +631,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
         // array-ptr-cast.
 
         if m_expr.mutbl == hir::MutImmutable && m_cast.mutbl == hir::MutImmutable {
-            if let ty::Array(ety, _) = m_expr.ty.sty {
+            if let ty::Array(ety, _) = m_expr.ty.kind {
                 // Due to the limitations of LLVM global constants,
                 // region pointers end up pointing at copies of
                 // vector elements instead of the original values.
@@ -646,8 +661,14 @@ impl<'a, 'tcx> CastCheck<'tcx> {
         }
     }
 
-    fn try_coercion_cast(&self, fcx: &FnCtxt<'a, 'tcx>) -> bool {
-        fcx.try_coerce(self.expr, self.expr_ty, self.cast_ty, AllowTwoPhase::No).is_ok()
+    fn try_coercion_cast(
+        &self,
+        fcx: &FnCtxt<'a, 'tcx>,
+    ) -> Result<(), ty::error::TypeError<'_>> {
+        match fcx.try_coerce(self.expr, self.expr_ty, self.cast_ty, AllowTwoPhase::No) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 }
 

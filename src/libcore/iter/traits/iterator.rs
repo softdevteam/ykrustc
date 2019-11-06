@@ -1,4 +1,4 @@
-use crate::cmp::Ordering;
+use crate::cmp::{self, Ordering};
 use crate::ops::{Add, Try};
 
 use super::super::LoopState;
@@ -384,6 +384,9 @@ pub trait Iterator {
     ///
     /// In other words, it links two iterators together, in a chain. 🔗
     ///
+    /// [`once`] is commonly used to adapt a single value into a chain of
+    /// other kinds of iteration.
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -408,9 +411,6 @@ pub trait Iterator {
     /// [`Iterator`] itself. For example, slices (`&[T]`) implement
     /// [`IntoIterator`], and so can be passed to `chain()` directly:
     ///
-    /// [`IntoIterator`]: trait.IntoIterator.html
-    /// [`Iterator`]: trait.Iterator.html
-    ///
     /// ```
     /// let s1 = &[1, 2, 3];
     /// let s2 = &[4, 5, 6];
@@ -425,6 +425,21 @@ pub trait Iterator {
     /// assert_eq!(iter.next(), Some(&6));
     /// assert_eq!(iter.next(), None);
     /// ```
+    ///
+    /// If you work with Windows API, you may wish to convert [`OsStr`] to `Vec<u16>`:
+    ///
+    /// ```
+    /// #[cfg(windows)]
+    /// fn os_str_to_utf16(s: &std::ffi::OsStr) -> Vec<u16> {
+    ///     use std::os::windows::ffi::OsStrExt;
+    ///     s.encode_wide().chain(std::iter::once(0)).collect()
+    /// }
+    /// ```
+    ///
+    /// [`once`]: fn.once.html
+    /// [`Iterator`]: trait.Iterator.html
+    /// [`IntoIterator`]: trait.IntoIterator.html
+    /// [`OsStr`]: ../../std/ffi/struct.OsStr.html
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     fn chain<U>(self, other: U) -> Chain<Self, U::IntoIter> where
@@ -1859,14 +1874,13 @@ pub trait Iterator {
         Self: Sized, F: FnMut(Self::Item) -> bool
     {
         #[inline]
-        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut(T) -> LoopState<(), ()> {
-            move |x| {
+        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut((), T) -> LoopState<(), ()> {
+            move |(), x| {
                 if f(x) { LoopState::Continue(()) }
                 else { LoopState::Break(()) }
             }
         }
-
-        self.try_for_each(check(f)) == LoopState::Continue(())
+        self.try_fold((), check(f)) == LoopState::Continue(())
     }
 
     /// Tests if any element of the iterator matches a predicate.
@@ -1913,14 +1927,14 @@ pub trait Iterator {
         F: FnMut(Self::Item) -> bool
     {
         #[inline]
-        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut(T) -> LoopState<(), ()> {
-            move |x| {
+        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut((), T) -> LoopState<(), ()> {
+            move |(), x| {
                 if f(x) { LoopState::Break(()) }
                 else { LoopState::Continue(()) }
             }
         }
 
-        self.try_for_each(check(f)) == LoopState::Break(())
+        self.try_fold((), check(f)) == LoopState::Break(())
     }
 
     /// Searches for an element of an iterator that satisfies a predicate.
@@ -1972,14 +1986,16 @@ pub trait Iterator {
         P: FnMut(&Self::Item) -> bool,
     {
         #[inline]
-        fn check<T>(mut predicate: impl FnMut(&T) -> bool) -> impl FnMut(T) -> LoopState<(), T> {
-            move |x| {
+        fn check<T>(
+            mut predicate: impl FnMut(&T) -> bool
+        ) -> impl FnMut((), T) -> LoopState<(), T> {
+            move |(), x| {
                 if predicate(&x) { LoopState::Break(x) }
                 else { LoopState::Continue(()) }
             }
         }
 
-        self.try_for_each(check(predicate)).break_value()
+        self.try_fold((), check(predicate)).break_value()
     }
 
     /// Applies function to the elements of iterator and returns
@@ -2004,14 +2020,14 @@ pub trait Iterator {
         F: FnMut(Self::Item) -> Option<B>,
     {
         #[inline]
-        fn check<T, B>(mut f: impl FnMut(T) -> Option<B>) -> impl FnMut(T) -> LoopState<(), B> {
-            move |x| match f(x) {
+        fn check<T, B>(mut f: impl FnMut(T) -> Option<B>) -> impl FnMut((), T) -> LoopState<(), B> {
+            move |(), x| match f(x) {
                 Some(x) => LoopState::Break(x),
                 None => LoopState::Continue(()),
             }
         }
 
-        self.try_for_each(check(f)).break_value()
+        self.try_fold((), check(f)).break_value()
     }
 
     /// Searches for an element in an iterator, returning its index.
@@ -2223,13 +2239,12 @@ pub trait Iterator {
             move |x| (f(&x), x)
         }
 
-        // switch to y even if it is only equal, to preserve stability.
         #[inline]
-        fn select<T, B: Ord>((x_p, _): &(B, T), (y_p, _): &(B, T)) -> bool {
-            x_p <= y_p
+        fn compare<T, B: Ord>((x_p, _): &(B, T), (y_p, _): &(B, T)) -> Ordering {
+            x_p.cmp(y_p)
         }
 
-        let (_, x) = select_fold1(self.map(key(f)), select)?;
+        let (_, x) = self.map(key(f)).max_by(compare)?;
         Some(x)
     }
 
@@ -2252,13 +2267,12 @@ pub trait Iterator {
     fn max_by<F>(self, compare: F) -> Option<Self::Item>
         where Self: Sized, F: FnMut(&Self::Item, &Self::Item) -> Ordering,
     {
-        // switch to y even if it is only equal, to preserve stability.
         #[inline]
-        fn select<T>(mut compare: impl FnMut(&T, &T) -> Ordering) -> impl FnMut(&T, &T) -> bool {
-            move |x, y| compare(x, y) != Ordering::Greater
+        fn fold<T>(mut compare: impl FnMut(&T, &T) -> Ordering) -> impl FnMut(T, T) -> T {
+            move |x, y| cmp::max_by(x, y, &mut compare)
         }
 
-        select_fold1(self, select(compare))
+        fold1(self, fold(compare))
     }
 
     /// Returns the element that gives the minimum value from the
@@ -2285,13 +2299,12 @@ pub trait Iterator {
             move |x| (f(&x), x)
         }
 
-        // only switch to y if it is strictly smaller, to preserve stability.
         #[inline]
-        fn select<T, B: Ord>((x_p, _): &(B, T), (y_p, _): &(B, T)) -> bool {
-            x_p > y_p
+        fn compare<T, B: Ord>((x_p, _): &(B, T), (y_p, _): &(B, T)) -> Ordering {
+            x_p.cmp(y_p)
         }
 
-        let (_, x) = select_fold1(self.map(key(f)), select)?;
+        let (_, x) = self.map(key(f)).min_by(compare)?;
         Some(x)
     }
 
@@ -2314,13 +2327,12 @@ pub trait Iterator {
     fn min_by<F>(self, compare: F) -> Option<Self::Item>
         where Self: Sized, F: FnMut(&Self::Item, &Self::Item) -> Ordering,
     {
-        // only switch to y if it is strictly smaller, to preserve stability.
         #[inline]
-        fn select<T>(mut compare: impl FnMut(&T, &T) -> Ordering) -> impl FnMut(&T, &T) -> bool {
-            move |x, y| compare(x, y) == Ordering::Greater
+        fn fold<T>(mut compare: impl FnMut(&T, &T) -> Ordering) -> impl FnMut(T, T) -> T {
+            move |x, y| cmp::min_by(x, y, &mut compare)
         }
 
-        select_fold1(self, select(compare))
+        fold1(self, fold(compare))
     }
 
 
@@ -2585,7 +2597,7 @@ pub trait Iterator {
     /// assert_eq!(xs.iter().cmp_by(&ys, |&x, &y| (x * x).cmp(&y)), Ordering::Equal);
     /// assert_eq!(xs.iter().cmp_by(&ys, |&x, &y| (2 * x).cmp(&y)), Ordering::Greater);
     /// ```
-    #[unstable(feature = "iter_order_by", issue = "0")]
+    #[unstable(feature = "iter_order_by", issue = "64295")]
     fn cmp_by<I, F>(mut self, other: I, mut cmp: F) -> Ordering
     where
         Self: Sized,
@@ -2668,7 +2680,7 @@ pub trait Iterator {
     ///     Some(Ordering::Greater)
     /// );
     /// ```
-    #[unstable(feature = "iter_order_by", issue = "0")]
+    #[unstable(feature = "iter_order_by", issue = "64295")]
     fn partial_cmp_by<I, F>(mut self, other: I, mut partial_cmp: F) -> Option<Ordering>
     where
         Self: Sized,
@@ -2733,7 +2745,7 @@ pub trait Iterator {
     ///
     /// assert!(xs.iter().eq_by(&ys, |&x, &y| x * x == y));
     /// ```
-    #[unstable(feature = "iter_order_by", issue = "0")]
+    #[unstable(feature = "iter_order_by", issue = "64295")]
     fn eq_by<I, F>(mut self, other: I, mut eq: F) -> bool
     where
         Self: Sized,
@@ -2958,28 +2970,18 @@ pub trait Iterator {
     }
 }
 
-/// Select an element from an iterator based on the given "comparison"
-/// function.
-///
-/// This is an idiosyncratic helper to try to factor out the
-/// commonalities of {max,min}{,_by}. In particular, this avoids
-/// having to implement optimizations several times.
+/// Fold an iterator without having to provide an initial value.
 #[inline]
-fn select_fold1<I, F>(mut it: I, f: F) -> Option<I::Item>
+fn fold1<I, F>(mut it: I, f: F) -> Option<I::Item>
     where
         I: Iterator,
-        F: FnMut(&I::Item, &I::Item) -> bool,
+        F: FnMut(I::Item, I::Item) -> I::Item,
 {
-    #[inline]
-    fn select<T>(mut f: impl FnMut(&T, &T) -> bool) -> impl FnMut(T, T) -> T {
-        move |sel, x| if f(&sel, &x) { x } else { sel }
-    }
-
     // start with the first element as our selection. This avoids
     // having to use `Option`s inside the loop, translating to a
     // sizeable performance gain (6x in one case).
     let first = it.next()?;
-    Some(it.fold(first, select(f)))
+    Some(it.fold(first, f))
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]

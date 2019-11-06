@@ -7,10 +7,8 @@
 // ignore-wasm32-bare compiled with panic=abort by default
 
 #![no_std]
-#![feature(lang_items)]
+#![no_main]
 
 extern crate wants_panic_runtime_unwind;
 extern crate wants_panic_runtime_abort;
 extern crate panic_runtime_lang_items;
-
-fn main() {}

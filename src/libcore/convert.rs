@@ -438,16 +438,16 @@ pub trait TryInto<T>: Sized {
 /// ```
 /// use std::convert::TryFrom;
 ///
-/// struct SuperiorThanZero(i32);
+/// struct GreaterThanZero(i32);
 ///
-/// impl TryFrom<i32> for SuperiorThanZero {
+/// impl TryFrom<i32> for GreaterThanZero {
 ///     type Error = &'static str;
 ///
 ///     fn try_from(value: i32) -> Result<Self, Self::Error> {
-///         if value < 0 {
-///             Err("SuperiorThanZero only accepts value superior than zero!")
+///         if value <= 0 {
+///             Err("GreaterThanZero only accepts value superior than zero!")
 ///         } else {
-///             Ok(SuperiorThanZero(value))
+///             Ok(GreaterThanZero(value))
 ///         }
 ///     }
 /// }
@@ -554,6 +554,18 @@ impl<T> From<T> for T {
     fn from(t: T) -> T { t }
 }
 
+/// **Stability note:** This impl does not yet exist, but we are
+/// "reserving space" to add it in the future. See
+/// [rust-lang/rust#64715][#64715] for details.
+///
+/// [#64715]: https://github.com/rust-lang/rust/issues/64715
+#[stable(feature = "convert_infallible", since = "1.34.0")]
+#[cfg(not(bootstrap))]
+#[rustc_reservation_impl="permitting this impl would forbid us from adding \
+`impl<T> From<!> for T` later; see rust-lang/rust#64715 for details"]
+impl<T> From<!> for T {
+    fn from(t: !) -> T { t }
+}
 
 // TryFrom implies TryInto
 #[stable(feature = "try_from", since = "1.34.0")]

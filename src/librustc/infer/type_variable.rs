@@ -1,4 +1,4 @@
-use syntax::symbol::InternedString;
+use syntax::symbol::Symbol;
 use syntax_pos::Span;
 use crate::ty::{self, Ty, TyVid};
 
@@ -49,7 +49,7 @@ pub enum TypeVariableOriginKind {
     MiscVariable,
     NormalizeProjectionType,
     TypeInference,
-    TypeParameterDefinition(InternedString),
+    TypeParameterDefinition(Symbol),
 
     /// One of the upvars or closure kind parameters in a `ClosureSubsts`
     /// (before it has been determined).
@@ -234,14 +234,20 @@ impl<'tcx> TypeVariableTable<'tcx> {
     /// Retrieves the type to which `vid` has been instantiated, if
     /// any.
     pub fn probe(&mut self, vid: ty::TyVid) -> TypeVariableValue<'tcx> {
-        self.eq_relations.probe_value(vid)
+        self.inlined_probe(vid)
+    }
+
+    /// An always-inlined variant of `probe`, for very hot call sites.
+    #[inline(always)]
+    pub fn inlined_probe(&mut self, vid: ty::TyVid) -> TypeVariableValue<'tcx> {
+        self.eq_relations.inlined_probe_value(vid)
     }
 
     /// If `t` is a type-inference variable, and it has been
     /// instantiated, then return the with which it was
     /// instantiated. Otherwise, returns `t`.
     pub fn replace_if_possible(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
-        match t.sty {
+        match t.kind {
             ty::Infer(ty::TyVar(v)) => {
                 match self.probe(v) {
                     TypeVariableValue::Unknown { .. } => t,

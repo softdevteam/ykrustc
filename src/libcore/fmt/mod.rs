@@ -108,10 +108,10 @@ pub struct Error;
 /// [`io::Write`]: ../../std/io/trait.Write.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Write {
-    /// Writes a slice of bytes into this writer, returning whether the write
+    /// Writes a string slice into this writer, returning whether the write
     /// succeeded.
     ///
-    /// This method can only succeed if the entire byte slice was successfully
+    /// This method can only succeed if the entire string slice was successfully
     /// written, and this method will not return until all data has been
     /// written or an error occurs.
     ///
@@ -518,8 +518,7 @@ impl Display for Arguments<'_> {
     label="`{Self}` cannot be formatted using `{{:?}}` because it doesn't implement `{Debug}`",
 )]
 #[doc(alias = "{:?}")]
-#[cfg_attr(boostrap_stdarch_ignore_this, lang = "debug_trait")]
-#[cfg_attr(not(boostrap_stdarch_ignore_this), rustc_diagnostic_item = "debug_trait")]
+#[rustc_diagnostic_item = "debug_trait"]
 pub trait Debug {
     /// Formats the value using the given formatter.
     ///
@@ -550,7 +549,6 @@ pub trait Debug {
 pub(crate) mod macros {
     /// Derive macro generating an impl of the trait `Debug`.
     #[rustc_builtin_macro]
-    #[cfg_attr(boostrap_stdarch_ignore_this, rustc_macro_transparency = "semitransparent")]
     #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
     #[allow_internal_unstable(core_intrinsics)]
     pub macro Debug($item:item) { /* compiler built-in */ }
@@ -1534,12 +1532,10 @@ impl<'a> Formatter<'a> {
     ///     }
     /// }
     ///
-    /// fn main() {
-    ///     assert_eq!(&format!("{:<}", Foo), "left");
-    ///     assert_eq!(&format!("{:>}", Foo), "right");
-    ///     assert_eq!(&format!("{:^}", Foo), "center");
-    ///     assert_eq!(&format!("{}", Foo), "into the void");
-    /// }
+    /// assert_eq!(&format!("{:<}", Foo), "left");
+    /// assert_eq!(&format!("{:>}", Foo), "right");
+    /// assert_eq!(&format!("{:^}", Foo), "center");
+    /// assert_eq!(&format!("{}", Foo), "into the void");
     /// ```
     #[stable(feature = "fmt_flags_align", since = "1.28.0")]
     pub fn align(&self) -> Option<Alignment> {
@@ -2029,7 +2025,7 @@ impl<T: ?Sized> Pointer for *const T {
         if f.alternate() {
             f.flags |= 1 << (FlagV1::SignAwareZeroPad as u32);
 
-            if let None = f.width {
+            if f.width.is_none() {
                 f.width = Some(((mem::size_of::<usize>() * 8) / 4) + 2);
             }
         }

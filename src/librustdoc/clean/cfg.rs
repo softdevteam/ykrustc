@@ -9,7 +9,7 @@ use std::ops;
 
 use syntax::symbol::{Symbol, sym};
 use syntax::ast::{MetaItem, MetaItemKind, NestedMetaItem, LitKind};
-use syntax::parse::ParseSess;
+use syntax::sess::ParseSess;
 use syntax::feature_gate::Features;
 
 use syntax_pos::Span;
@@ -68,9 +68,9 @@ impl Cfg {
                 span: cfg.span
             }),
         };
-        match cfg.node {
+        match cfg.kind {
             MetaItemKind::Word => Ok(Cfg::Cfg(name, None)),
-            MetaItemKind::NameValue(ref lit) => match lit.node {
+            MetaItemKind::NameValue(ref lit) => match lit.kind {
                 LitKind::Str(value, _) => Ok(Cfg::Cfg(name, Some(value))),
                 _ => Err(InvalidCfgError {
                     // FIXME: if the main #[cfg] syntax decided to support non-string literals,
@@ -346,6 +346,7 @@ impl<'a> fmt::Display for Html<'a> {
                         "freebsd" => "FreeBSD",
                         "fuchsia" => "Fuchsia",
                         "haiku" => "Haiku",
+                        "hermit" => "HermitCore",
                         "ios" => "iOS",
                         "l4re" => "L4Re",
                         "linux" => "Linux",
@@ -360,7 +361,7 @@ impl<'a> fmt::Display for Html<'a> {
                     ("target_arch", Some(arch)) => match &*arch.as_str() {
                         "aarch64" => "AArch64",
                         "arm" => "ARM",
-                        "asmjs" => "asm.js",
+                        "asmjs" => "JavaScript",
                         "mips" => "MIPS",
                         "mips64" => "MIPS-64",
                         "msp430" => "MSP430",
@@ -403,7 +404,7 @@ impl<'a> fmt::Display for Html<'a> {
                 if !human_readable.is_empty() {
                     fmt.write_str(human_readable)
                 } else if let Some(v) = value {
-                    write!(fmt, "<code>{}=\"{}\"</code>", Escape(n), Escape(&*v.as_str()))
+                    write!(fmt, "<code>{}=\"{}\"</code>", Escape(n), Escape(&v.as_str()))
                 } else {
                     write!(fmt, "<code>{}</code>", Escape(n))
                 }

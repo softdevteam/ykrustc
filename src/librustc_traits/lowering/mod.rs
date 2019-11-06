@@ -4,7 +4,7 @@ use rustc::hir::def::DefKind;
 use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc::hir::map::definitions::DefPathData;
-use rustc::hir::{self, ImplPolarity};
+use rustc::hir;
 use rustc::traits::{
     Clause,
     Clauses,
@@ -218,7 +218,7 @@ fn program_clauses_for_trait(tcx: TyCtxt<'_>, def_id: DefId) -> Clauses<'_> {
 
     let implemented_from_env = Clause::ForAll(ty::Binder::bind(implemented_from_env));
 
-    let predicates = &tcx.predicates_defined_on(def_id).predicates;
+    let predicates = tcx.predicates_defined_on(def_id).predicates;
 
     // Warning: these where clauses are not substituted for bound vars yet,
     // so that we don't need to adjust binders in the `FromEnv` rules below
@@ -295,7 +295,7 @@ fn program_clauses_for_trait(tcx: TyCtxt<'_>, def_id: DefId) -> Clauses<'_> {
 }
 
 fn program_clauses_for_impl(tcx: TyCtxt<'tcx>, def_id: DefId) -> Clauses<'tcx> {
-    if let ImplPolarity::Negative = tcx.impl_polarity(def_id) {
+    if let ty::ImplPolarity::Negative = tcx.impl_polarity(def_id) {
         return List::empty();
     }
 
@@ -319,7 +319,7 @@ fn program_clauses_for_impl(tcx: TyCtxt<'tcx>, def_id: DefId) -> Clauses<'tcx> {
     let trait_pred = ty::TraitPredicate { trait_ref }.lower();
 
     // `WC`
-    let predicates = &tcx.predicates_of(def_id).predicates;
+    let predicates = tcx.predicates_of(def_id).predicates;
     let where_clauses = predicates
         .iter()
         .map(|(wc, _)| wc.lower())

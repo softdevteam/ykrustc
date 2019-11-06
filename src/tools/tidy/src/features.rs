@@ -307,7 +307,7 @@ fn collect_lang_features_in(base: &Path, file: &str, bad: &mut bool) -> Features
                 if prev_since > since {
                     tidy_error!(
                         bad,
-                        "{}:{}: feature {} is not sorted by since",
+                        "{}:{}: feature {} is not sorted by \"since\" (version number)",
                         path.display(),
                         line_number,
                         name,
@@ -384,7 +384,7 @@ fn map_lib_features(base_src_path: &Path,
         let file = entry.path();
         let filename = file.file_name().unwrap().to_string_lossy();
         if !filename.ends_with(".rs") || filename == "features.rs" ||
-           filename == "diagnostic_list.rs" {
+           filename == "diagnostic_list.rs" || filename == "error_codes.rs" {
             return;
         }
 

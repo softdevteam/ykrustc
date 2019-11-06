@@ -188,7 +188,7 @@ unsafe fn real_drop_in_place<T: ?Sized>(to_drop: &mut T) {
 /// let p: *const i32 = ptr::null();
 /// assert!(p.is_null());
 /// ```
-#[inline]
+#[inline(always)]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_promotable]
 pub const fn null<T>() -> *const T { 0 as *const T }
@@ -203,7 +203,7 @@ pub const fn null<T>() -> *const T { 0 as *const T }
 /// let p: *mut i32 = ptr::null_mut();
 /// assert!(p.is_null());
 /// ```
-#[inline]
+#[inline(always)]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[rustc_promotable]
 pub const fn null_mut<T>() -> *mut T { 0 as *mut T }
@@ -1286,7 +1286,22 @@ impl<T: ?Sized> *const T {
     /// }
     /// ```
     #[unstable(feature = "ptr_offset_from", issue = "41079")]
+    #[cfg(not(bootstrap))]
+    #[rustc_const_unstable(feature = "const_ptr_offset_from")]
     #[inline]
+    pub const unsafe fn offset_from(self, origin: *const T) -> isize where T: Sized {
+        let pointee_size = mem::size_of::<T>();
+        let ok = 0 < pointee_size && pointee_size <= isize::max_value() as usize;
+        // assert that the pointee size is valid in a const eval compatible way
+        // FIXME: do this with a real assert at some point
+        [()][(!ok) as usize];
+        intrinsics::ptr_offset_from(self, origin)
+    }
+
+    #[unstable(feature = "ptr_offset_from", issue = "41079")]
+    #[inline]
+    #[cfg(bootstrap)]
+    /// bootstrap
     pub unsafe fn offset_from(self, origin: *const T) -> isize where T: Sized {
         let pointee_size = mem::size_of::<T>();
         assert!(0 < pointee_size && pointee_size <= isize::max_value() as usize);
@@ -2013,8 +2028,9 @@ impl<T: ?Sized> *mut T {
     /// }
     /// ```
     #[unstable(feature = "ptr_offset_from", issue = "41079")]
+    #[rustc_const_unstable(feature = "const_ptr_offset_from")]
     #[inline]
-    pub unsafe fn offset_from(self, origin: *const T) -> isize where T: Sized {
+    pub const unsafe fn offset_from(self, origin: *const T) -> isize where T: Sized {
         (self as *const T).offset_from(origin)
     }
 
@@ -2732,31 +2748,29 @@ impl<T: ?Sized> Eq for *mut T {}
 /// impl Trait for Wrapper {}
 /// impl Trait for i32 {}
 ///
-/// fn main() {
-///     let wrapper = Wrapper { member: 10 };
+/// let wrapper = Wrapper { member: 10 };
 ///
-///     // Pointers have equal addresses.
-///     assert!(std::ptr::eq(
-///         &wrapper as *const Wrapper as *const u8,
-///         &wrapper.member as *const i32 as *const u8
-///     ));
+/// // Pointers have equal addresses.
+/// assert!(std::ptr::eq(
+///     &wrapper as *const Wrapper as *const u8,
+///     &wrapper.member as *const i32 as *const u8
+/// ));
 ///
-///     // Objects have equal addresses, but `Trait` has different implementations.
-///     assert!(!std::ptr::eq(
-///         &wrapper as &dyn Trait,
-///         &wrapper.member as &dyn Trait,
-///     ));
-///     assert!(!std::ptr::eq(
-///         &wrapper as &dyn Trait as *const dyn Trait,
-///         &wrapper.member as &dyn Trait as *const dyn Trait,
-///     ));
+/// // Objects have equal addresses, but `Trait` has different implementations.
+/// assert!(!std::ptr::eq(
+///     &wrapper as &dyn Trait,
+///     &wrapper.member as &dyn Trait,
+/// ));
+/// assert!(!std::ptr::eq(
+///     &wrapper as &dyn Trait as *const dyn Trait,
+///     &wrapper.member as &dyn Trait as *const dyn Trait,
+/// ));
 ///
-///     // Converting the reference to a `*const u8` compares by address.
-///     assert!(std::ptr::eq(
-///         &wrapper as &dyn Trait as *const dyn Trait as *const u8,
-///         &wrapper.member as &dyn Trait as *const dyn Trait as *const u8,
-///     ));
-/// }
+/// // Converting the reference to a `*const u8` compares by address.
+/// assert!(std::ptr::eq(
+///     &wrapper as &dyn Trait as *const dyn Trait as *const u8,
+///     &wrapper.member as &dyn Trait as *const dyn Trait as *const u8,
+/// ));
 /// ```
 #[stable(feature = "ptr_eq", since = "1.17.0")]
 #[inline]

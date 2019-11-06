@@ -3,7 +3,7 @@ use crate::deriving::generic::*;
 use crate::deriving::generic::ty::*;
 
 use syntax::ast::{self, Expr, GenericArg, Generics, ItemKind, MetaItem, VariantData};
-use syntax::ext::base::{Annotatable, ExtCtxt, SpecialDerives};
+use syntax_expand::base::{Annotatable, ExtCtxt};
 use syntax::ptr::P;
 use syntax::symbol::{kw, sym, Symbol};
 use syntax_pos::Span;
@@ -32,11 +32,11 @@ pub fn expand_deriving_clone(cx: &mut ExtCtxt<'_>,
     let is_shallow;
     match *item {
         Annotatable::Item(ref annitem) => {
-            match annitem.node {
+            match annitem.kind {
                 ItemKind::Struct(_, Generics { ref params, .. }) |
                 ItemKind::Enum(_, Generics { ref params, .. }) => {
                     let container_id = cx.current_expansion.id.expn_data().parent;
-                    if cx.resolver.has_derives(container_id, SpecialDerives::COPY) &&
+                    if cx.resolver.has_derive_copy(container_id) &&
                         !params.iter().any(|param| match param.kind {
                             ast::GenericParamKind::Type { .. } => true,
                             _ => false,
@@ -115,7 +115,7 @@ fn cs_clone_shallow(name: &str,
         let span = cx.with_def_site_ctxt(span);
         let assert_path = cx.path_all(span, true,
                                         cx.std_path(&[sym::clone, Symbol::intern(helper_name)]),
-                                        vec![GenericArg::Type(ty)], vec![]);
+                                        vec![GenericArg::Type(ty)]);
         stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
     }
     fn process_variant(cx: &mut ExtCtxt<'_>, stmts: &mut Vec<ast::Stmt>, variant: &VariantData) {
@@ -174,14 +174,12 @@ fn cs_clone(name: &str,
             all_fields = af;
             vdata = &variant.data;
         }
-        EnumNonMatchingCollapsed(..) => {
-            cx.span_bug(trait_span,
-                        &format!("non-matching enum variants in \
-                                 `derive({})`",
-                                 name))
-        }
+        EnumNonMatchingCollapsed(..) => cx.span_bug(trait_span, &format!(
+            "non-matching enum variants in `derive({})`",
+            name,
+        )),
         StaticEnum(..) | StaticStruct(..) => {
-            cx.span_bug(trait_span, &format!("static method in `derive({})`", name))
+            cx.span_bug(trait_span, &format!("associated function in `derive({})`", name))
         }
     }
 
@@ -191,12 +189,10 @@ fn cs_clone(name: &str,
                 .map(|field| {
                     let ident = match field.name {
                         Some(i) => i,
-                        None => {
-                            cx.span_bug(trait_span,
-                                        &format!("unnamed field in normal struct in \
-                                                `derive({})`",
-                                                    name))
-                        }
+                        None => cx.span_bug(trait_span, &format!(
+                            "unnamed field in normal struct in `derive({})`",
+                            name,
+                        )),
                     };
                     let call = subcall(cx, field);
                     cx.field_imm(field.span, ident, call)

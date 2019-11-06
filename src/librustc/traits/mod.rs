@@ -176,6 +176,9 @@ pub enum ObligationCauseCode<'tcx> {
     /// also implement all supertraits of `X`.
     ItemObligation(DefId),
 
+    /// Like `ItemObligation`, but with extra detail on the source of the obligation.
+    BindingObligation(DefId, Span),
+
     /// A type like `&'a T` is WF only if `T: 'a`.
     ReferenceOutlivesReferent(Ty<'tcx>),
 
@@ -184,6 +187,9 @@ pub enum ObligationCauseCode<'tcx> {
 
     /// Obligation incurred due to an object cast.
     ObjectCastObligation(/* Object type */ Ty<'tcx>),
+
+    /// Obligation incurred due to a coercion.
+    Coercion { source: Ty<'tcx>, target: Ty<'tcx> },
 
     // Various cases where expressions must be sized/copy/etc:
     /// L = X implies that L is Sized
@@ -200,8 +206,9 @@ pub enum ObligationCauseCode<'tcx> {
     SizedReturnType,
     /// Yield type must be Sized
     SizedYieldType,
-    /// [T,..n] --> T must be Copy
-    RepeatVec,
+    /// [T,..n] --> T must be Copy. If `true`, suggest `const_in_array_repeat_expression` feature
+    /// flag.
+    RepeatVec(bool),
 
     /// Types of fields (other than the last, except for packed structs) in a struct must be sized.
     FieldSized { adt_kind: AdtKind, last: bool },
@@ -209,14 +216,14 @@ pub enum ObligationCauseCode<'tcx> {
     /// Constant expressions must be sized.
     ConstSized,
 
-    /// static items must have `Sync` type
+    /// Static items must have `Sync` type
     SharedStatic,
 
     BuiltinDerivedObligation(DerivedObligationCause<'tcx>),
 
     ImplDerivedObligation(DerivedObligationCause<'tcx>),
 
-    /// error derived when matching traits/impls; see ObligationCause for more details
+    /// Error derived when matching traits/impls; see ObligationCause for more details
     CompareImplMethodObligation {
         item_name: ast::Name,
         impl_item_def_id: DefId,
@@ -233,6 +240,9 @@ pub enum ObligationCauseCode<'tcx> {
     /// Computing common supertype in the pattern guard for the arms of a match expression
     MatchExpressionArmPattern { span: Span, ty: Ty<'tcx> },
 
+    /// Constants in patterns must have `Structural` type.
+    ConstPatternStructural,
+
     /// Computing common supertype in an if expression
     IfExpression(Box<IfExpressionCause>),
 
@@ -245,23 +255,28 @@ pub enum ObligationCauseCode<'tcx> {
     /// `start` has wrong type
     StartFunctionType,
 
-    /// intrinsic has wrong type
+    /// Intrinsic has wrong type
     IntrinsicType,
 
-    /// method receiver
+    /// Method receiver
     MethodReceiver,
 
     /// `return` with no expression
     ReturnNoExpression,
 
     /// `return` with an expression
-    ReturnType(hir::HirId),
+    ReturnValue(hir::HirId),
+
+    /// Return type of this function
+    ReturnType,
 
     /// Block implicit return
     BlockTailExpression(hir::HirId),
 
     /// #[feature(trivial_bounds)] is not enabled
     TrivialBound,
+
+    AssocTypeBound(/*impl*/ Option<Span>, /*original*/ Span),
 }
 
 // `ObligationCauseCode` is used a lot. Make sure it doesn't unintentionally get bigger.
@@ -484,7 +499,11 @@ EnumTypeFoldableImpl! {
 
 pub struct FulfillmentError<'tcx> {
     pub obligation: PredicateObligation<'tcx>,
-    pub code: FulfillmentErrorCode<'tcx>
+    pub code: FulfillmentErrorCode<'tcx>,
+    /// Diagnostics only: we opportunistically change the `code.span` when we encounter an
+    /// obligation error caused by a call argument. When this is the case, we also signal that in
+    /// this field to ensure accuracy of suggestions.
+    pub points_at_arg_span: bool,
 }
 
 #[derive(Clone)]
@@ -600,7 +619,7 @@ pub struct VtableImplData<'tcx, N> {
 #[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
 pub struct VtableGeneratorData<'tcx, N> {
     pub generator_def_id: DefId,
-    pub substs: ty::GeneratorSubsts<'tcx>,
+    pub substs: SubstsRef<'tcx>,
     /// Nested obligations. This can be non-empty if the generator
     /// signature contains associated types.
     pub nested: Vec<N>
@@ -609,7 +628,7 @@ pub struct VtableGeneratorData<'tcx, N> {
 #[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
 pub struct VtableClosureData<'tcx, N> {
     pub closure_def_id: DefId,
-    pub substs: ty::ClosureSubsts<'tcx>,
+    pub substs: SubstsRef<'tcx>,
     /// Nested obligations. This can be non-empty if the closure
     /// signature contains associated types.
     pub nested: Vec<N>
@@ -655,11 +674,11 @@ pub struct VtableTraitAliasData<'tcx, N> {
 }
 
 /// Creates predicate obligations from the generic bounds.
-pub fn predicates_for_generics<'tcx>(cause: ObligationCause<'tcx>,
-                                     param_env: ty::ParamEnv<'tcx>,
-                                     generic_bounds: &ty::InstantiatedPredicates<'tcx>)
-                                     -> PredicateObligations<'tcx>
-{
+pub fn predicates_for_generics<'tcx>(
+    cause: ObligationCause<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
+    generic_bounds: &ty::InstantiatedPredicates<'tcx>,
+) -> PredicateObligations<'tcx> {
     util::predicates_for_generics(cause, 0, param_env, generic_bounds)
 }
 
@@ -1183,7 +1202,7 @@ impl<'tcx> FulfillmentError<'tcx> {
            code: FulfillmentErrorCode<'tcx>)
            -> FulfillmentError<'tcx>
     {
-        FulfillmentError { obligation: obligation, code: code }
+        FulfillmentError { obligation: obligation, code: code, points_at_arg_span: false }
     }
 }
 

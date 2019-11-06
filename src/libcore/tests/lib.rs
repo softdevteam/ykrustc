@@ -31,9 +31,11 @@
 #![feature(slice_partition_dedup)]
 #![feature(int_error_matching)]
 #![feature(const_fn)]
+#![feature(array_value_iter)]
 #![feature(iter_partition_in_place)]
 #![feature(iter_is_partitioned)]
 #![feature(iter_order_by)]
+#![feature(cmp_min_max_by)]
 
 extern crate test;
 

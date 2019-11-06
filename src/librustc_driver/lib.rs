@@ -36,11 +36,11 @@ use rustc::session::config::nightly_options;
 use rustc::session::{early_error, early_warn};
 use rustc::lint::Lint;
 use rustc::lint;
+use rustc::middle::cstore::MetadataLoader;
 use rustc::hir::def_id::LOCAL_CRATE;
 use rustc::ty::TyCtxt;
 use rustc::util::common::{set_time_depth, time, print_time_passes_entry, ErrorReported};
 use rustc_metadata::locator;
-use rustc_metadata::cstore::CStore;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 use rustc_interface::interface;
 use rustc_interface::util::get_codegen_sysroot;
@@ -66,7 +66,7 @@ use syntax::source_map::FileLoader;
 use syntax::feature_gate::{GatedCfg, UnstableFeatures};
 use syntax::parse::{self, PResult};
 use syntax::symbol::sym;
-use syntax_pos::{DUMMY_SP, MultiSpan, FileName};
+use syntax_pos::{DUMMY_SP, FileName};
 
 pub mod pretty;
 mod args;
@@ -166,7 +166,8 @@ pub fn run_compiler(
         None => return Ok(()),
     };
 
-    let (sopts, cfg) = config::build_session_options_and_crate_config(&matches);
+    let sopts = config::build_session_options(&matches);
+    let cfg = interface::parse_cfgspecs(matches.opt_strs("cfg"));
 
     let mut dummy_config = |sopts, cfg, diagnostic_output| {
         let mut config = interface::Config {
@@ -181,6 +182,7 @@ pub fn run_compiler(
             stderr: None,
             crate_name: None,
             lint_caps: Default::default(),
+            register_lints: None,
         };
         callbacks.config(&mut config);
         config
@@ -201,9 +203,13 @@ pub fn run_compiler(
                     interface::run_compiler(config, |compiler| {
                         let sopts = &compiler.session().opts;
                         if sopts.describe_lints {
+                            let lint_store = rustc_lint::new_lint_store(
+                                sopts.debugging_opts.no_interleave_lints,
+                                compiler.session().unstable_options(),
+                            );
                             describe_lints(
                                 compiler.session(),
-                                &*compiler.session().lint_store.borrow(),
+                                &lint_store,
                                 false
                             );
                             return;
@@ -254,6 +260,7 @@ pub fn run_compiler(
         stderr: None,
         crate_name: None,
         lint_caps: Default::default(),
+        register_lints: None,
     };
 
     callbacks.config(&mut config);
@@ -268,7 +275,7 @@ pub fn run_compiler(
             compiler.output_file(),
         ).and_then(|| RustcDefaultCalls::list_metadata(
             sess,
-            compiler.cstore(),
+            &*compiler.codegen_backend().metadata_loader(),
             &matches,
             compiler.input()
         ));
@@ -296,7 +303,6 @@ pub fn run_compiler(
                     );
                     Ok(())
                 })?;
-                return sess.compile_status();
             } else {
                 let mut krate = compiler.parse()?.take();
                 pretty::visit_crate(sess, &mut krate, ppm);
@@ -307,8 +313,8 @@ pub fn run_compiler(
                     ppm,
                     compiler.output_file().as_ref().map(|p| &**p),
                 );
-                return sess.compile_status();
             }
+            return sess.compile_status();
         }
 
         if callbacks.after_parsing(compiler) == Compilation::Stop {
@@ -321,12 +327,14 @@ pub fn run_compiler(
             return sess.compile_status();
         }
 
-        compiler.register_plugins()?;
+        {
+            let (_, _, lint_store) = &*compiler.register_plugins()?.peek();
 
-        // Lint plugins are registered; now we can process command line flags.
-        if sess.opts.describe_lints {
-            describe_lints(&sess, &sess.lint_store.borrow(), true);
-            return sess.compile_status();
+            // Lint plugins are registered; now we can process command line flags.
+            if sess.opts.describe_lints {
+                describe_lints(&sess, &lint_store, true);
+                return sess.compile_status();
+            }
         }
 
         compiler.expansion()?;
@@ -604,7 +612,7 @@ fn show_content_with_pager(content: &String) {
 
 impl RustcDefaultCalls {
     pub fn list_metadata(sess: &Session,
-                         cstore: &CStore,
+                         metadata_loader: &dyn MetadataLoader,
                          matches: &getopts::Matches,
                          input: &Input)
                          -> Compilation {
@@ -616,7 +624,7 @@ impl RustcDefaultCalls {
                     let mut v = Vec::new();
                     locator::list_file_metadata(&sess.target.target,
                                                 path,
-                                                &*cstore.metadata_loader,
+                                                metadata_loader,
                                                 &mut v)
                             .unwrap();
                     println!("{}", String::from_utf8(v).unwrap());
@@ -701,7 +709,7 @@ impl RustcDefaultCalls {
                     let mut cfgs = sess.parse_sess.config.iter().filter_map(|&(name, ref value)| {
                         let gated_cfg = GatedCfg::gate(&ast::MetaItem {
                             path: ast::Path::from_ident(ast::Ident::with_dummy_span(name)),
-                            node: ast::MetaItemKind::Word,
+                            kind: ast::MetaItemKind::Word,
                             span: DUMMY_SP,
                         });
 
@@ -835,8 +843,7 @@ Available lint options:
 
 ");
 
-    fn sort_lints(sess: &Session, lints: Vec<(&'static Lint, bool)>) -> Vec<&'static Lint> {
-        let mut lints: Vec<_> = lints.into_iter().map(|(x, _)| x).collect();
+    fn sort_lints(sess: &Session, mut lints: Vec<&'static Lint>) -> Vec<&'static Lint> {
         // The sort doesn't case-fold but it's doubtful we care.
         lints.sort_by_cached_key(|x: &&Lint| (x.default_level(sess), x.name));
         lints
@@ -852,7 +859,7 @@ Available lint options:
     let (plugin, builtin): (Vec<_>, _) = lint_store.get_lints()
                                                    .iter()
                                                    .cloned()
-                                                   .partition(|&(_, p)| p);
+                                                   .partition(|&lint| lint.is_plugin);
     let plugin = sort_lints(sess, plugin);
     let builtin = sort_lints(sess, builtin);
 
@@ -1196,15 +1203,16 @@ pub fn report_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
         false,
         false,
         None,
+        false,
     ));
     let handler = errors::Handler::with_emitter(true, None, emitter);
 
     // a .span_bug or .bug call has already printed what
     // it wants to print.
     if !info.payload().is::<errors::ExplicitBug>() {
-        handler.emit(&MultiSpan::new(),
-                     "unexpected panic",
-                     errors::Level::Bug);
+        let d = errors::Diagnostic::new(errors::Level::Bug, "unexpected panic");
+        handler.emit_diagnostic(&d);
+        handler.abort_if_errors_and_should_abort();
     }
 
     let mut xs: Vec<Cow<'static, str>> = vec![
@@ -1224,16 +1232,14 @@ pub fn report_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
     }
 
     for note in &xs {
-        handler.emit(&MultiSpan::new(),
-                     note,
-                     errors::Level::Note);
+        handler.note_without_error(&note);
     }
 
     // If backtraces are enabled, also print the query stack
     let backtrace = env::var_os("RUST_BACKTRACE").map(|x| &x != "0").unwrap_or(false);
 
     if backtrace {
-        TyCtxt::try_print_query_stack();
+        TyCtxt::try_print_query_stack(&handler);
     }
 
     #[cfg(windows)]

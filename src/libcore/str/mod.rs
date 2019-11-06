@@ -176,7 +176,7 @@ Section: Creating a string
 /// ```
 /// fn from_utf8_lossy<F>(mut input: &[u8], mut push: F) where F: FnMut(&str) {
 ///     loop {
-///         match ::std::str::from_utf8(input) {
+///         match std::str::from_utf8(input) {
 ///             Ok(valid) => {
 ///                 push(valid);
 ///                 break
@@ -184,7 +184,7 @@ Section: Creating a string
 ///             Err(error) => {
 ///                 let (valid, after_valid) = input.split_at(error.valid_up_to());
 ///                 unsafe {
-///                     push(::std::str::from_utf8_unchecked(valid))
+///                     push(std::str::from_utf8_unchecked(valid))
 ///                 }
 ///                 push("\u{FFFD}");
 ///
@@ -2085,12 +2085,11 @@ impl str {
     /// let len = "foo".len();
     /// assert_eq!(3, len);
     ///
-    /// let len = "ƒoo".len(); // fancy f!
-    /// assert_eq!(4, len);
+    /// assert_eq!("ƒoo".len(), 4); // fancy f!
+    /// assert_eq!("ƒoo".chars().count(), 3);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    #[rustc_const_unstable(feature = "const_str_len")]
     pub const fn len(&self) -> usize {
         self.as_bytes().len()
     }
@@ -2110,7 +2109,6 @@ impl str {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    #[rustc_const_unstable(feature = "const_str_len")]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -2168,7 +2166,9 @@ impl str {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline(always)]
-    #[rustc_const_unstable(feature="const_str_as_bytes")]
+    // SAFETY: const sound because we transmute two types with the same layout
+    #[allow(unused_attributes)]
+    #[allow_internal_unstable(const_fn_union)]
     pub const fn as_bytes(&self) -> &[u8] {
         #[repr(C)]
         union Slices<'a> {

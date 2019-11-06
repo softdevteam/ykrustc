@@ -31,7 +31,7 @@ use std::io::Write;
 use std::error::Error;
 use std::mem::size_of;
 use std::convert::{TryFrom, TryInto};
-use rustc_data_structures::indexed_vec::IndexVec;
+use rustc_index::vec::IndexVec;
 use ykpack;
 use rustc::ty::fold::TypeFoldable;
 use syntax_pos::sym;
@@ -206,7 +206,7 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
                 let ser_oper = if let Operand::Constant(box Constant {
                     literal: Const {
                         ty: &TyS {
-                            sty: ty::FnDef(ref target_def_id, ref substs), ..
+                            kind: ty::FnDef(ref target_def_id, ref substs), ..
                         }, ..
                     }, ..
                 }, ..) = func {
@@ -354,7 +354,7 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
     }
 
     fn lower_scalar(&mut self, ty: Ty<'_>, sclr: &Scalar) -> Result<ykpack::Constant, ()> {
-        match ty.sty {
+        match ty.kind {
             ty::Uint(t) => Ok(ykpack::Constant::Int(self.lower_uint(t, sclr))),
             ty::Int(t) => Ok(ykpack::Constant::Int(self.lower_int(t, sclr))),
             ty::Bool => Ok(ykpack::Constant::Int(self.lower_bool(sclr))),
@@ -509,7 +509,7 @@ fn was_annotated(tcx: TyCtxt<'_>, body: &Body<'_>) -> bool {
     if let TerminatorKind::Call{func: Operand::Constant(box Constant {
         literal: Const {
             ty: &TyS {
-                sty: ty::FnDef(ref def_id, _), ..
+                kind: ty::FnDef(ref def_id, _), ..
             }, ..
         }, ..
     }, ..), ..} = first_block.terminator.as_ref().unwrap().kind {

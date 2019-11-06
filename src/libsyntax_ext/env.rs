@@ -4,7 +4,7 @@
 //
 
 use syntax::ast::{self, Ident, GenericArg};
-use syntax::ext::base::{self, *};
+use syntax_expand::base::{self, *};
 use syntax::symbol::{kw, sym, Symbol};
 use syntax_pos::Span;
 use syntax::tokenstream::TokenStream;
@@ -21,7 +21,7 @@ pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt<'_>,
     };
 
     let sp = cx.with_def_site_ctxt(sp);
-    let e = match env::var(&*var.as_str()) {
+    let e = match env::var(&var.as_str()) {
         Err(..) => {
             let lt = cx.lifetime(sp, Ident::new(kw::StaticLifetime, sp));
             cx.expr_path(cx.path_all(sp,
@@ -32,7 +32,7 @@ pub fn expand_option_env<'cx>(cx: &'cx mut ExtCtxt<'_>,
                                                                  Ident::new(sym::str, sp)),
                                                      Some(lt),
                                                      ast::Mutability::Immutable))],
-                                     vec![]))
+                                     ))
         }
         Ok(s) => {
             cx.expr_call_global(sp,

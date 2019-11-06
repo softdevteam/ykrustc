@@ -55,7 +55,7 @@ struct ParameterCollector {
 
 impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
     fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
-        match t.sty {
+        match t.kind {
             ty::Projection(..) | ty::Opaque(..) if !self.include_nonconstraining => {
                 // projections are not injective
                 return false;
@@ -86,11 +86,11 @@ impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
 
 pub fn identify_constrained_generic_params<'tcx>(
     tcx: TyCtxt<'tcx>,
-    predicates: &ty::GenericPredicates<'tcx>,
+    predicates: ty::GenericPredicates<'tcx>,
     impl_trait_ref: Option<ty::TraitRef<'tcx>>,
     input_parameters: &mut FxHashSet<Parameter>,
 ) {
-    let mut predicates = predicates.predicates.clone();
+    let mut predicates = predicates.predicates.to_vec();
     setup_constraining_predicates(tcx, &mut predicates, impl_trait_ref, input_parameters);
 }
 

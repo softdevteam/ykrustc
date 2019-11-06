@@ -24,7 +24,6 @@ use std::ffi::{CStr, CString};
 use std::ops::{Deref, Range};
 use std::ptr;
 use std::iter::TrustedLen;
-use syntax::symbol::Symbol;
 
 // All Builders must have an llfn associated with them
 #[must_use]
@@ -53,6 +52,7 @@ const UNNAMED: *const c_char = EMPTY_C_STR.as_ptr();
 
 impl BackendTypes for Builder<'_, 'll, 'tcx> {
     type Value = <CodegenCx<'ll, 'tcx> as BackendTypes>::Value;
+    type Function = <CodegenCx<'ll, 'tcx> as BackendTypes>::Function;
     type BasicBlock = <CodegenCx<'ll, 'tcx> as BackendTypes>::BasicBlock;
     type Type = <CodegenCx<'ll, 'tcx> as BackendTypes>::Type;
     type Funclet = <CodegenCx<'ll, 'tcx> as BackendTypes>::Funclet;
@@ -365,7 +365,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         use syntax::ast::UintTy::*;
         use rustc::ty::{Int, Uint};
 
-        let new_sty = match ty.sty {
+        let new_kind = match ty.kind {
             Int(Isize) => Int(self.tcx.sess.target.isize_ty),
             Uint(Usize) => Uint(self.tcx.sess.target.usize_ty),
             ref t @ Uint(_) | ref t @ Int(_) => t.clone(),
@@ -373,7 +373,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         };
 
         let name = match oop {
-            OverflowOp::Add => match new_sty {
+            OverflowOp::Add => match new_kind {
                 Int(I8) => "llvm.sadd.with.overflow.i8",
                 Int(I16) => "llvm.sadd.with.overflow.i16",
                 Int(I32) => "llvm.sadd.with.overflow.i32",
@@ -388,7 +388,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
 
                 _ => unreachable!(),
             },
-            OverflowOp::Sub => match new_sty {
+            OverflowOp::Sub => match new_kind {
                 Int(I8) => "llvm.ssub.with.overflow.i8",
                 Int(I16) => "llvm.ssub.with.overflow.i16",
                 Int(I32) => "llvm.ssub.with.overflow.i32",
@@ -403,7 +403,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
 
                 _ => unreachable!(),
             },
-            OverflowOp::Mul => match new_sty {
+            OverflowOp::Mul => match new_kind {
                 Int(I8) => "llvm.smul.with.overflow.i8",
                 Int(I16) => "llvm.smul.with.overflow.i16",
                 Int(I32) => "llvm.smul.with.overflow.i32",
@@ -1106,36 +1106,6 @@ impl StaticBuilderMethods for Builder<'a, 'll, 'tcx> {
     fn get_static(&mut self, def_id: DefId) -> &'ll Value {
         // Forward to the `get_static` method of `CodegenCx`
         self.cx().get_static(def_id)
-    }
-
-    fn static_panic_msg(
-        &mut self,
-        msg: Option<Symbol>,
-        filename: Symbol,
-        line: Self::Value,
-        col: Self::Value,
-        kind: &str,
-    ) -> Self::Value {
-        let align = self.tcx.data_layout.aggregate_align.abi
-            .max(self.tcx.data_layout.i32_align.abi)
-            .max(self.tcx.data_layout.pointer_align.abi);
-
-        let filename = self.const_str_slice(filename);
-
-        let with_msg_components;
-        let without_msg_components;
-
-        let components = if let Some(msg) = msg {
-            let msg = self.const_str_slice(msg);
-            with_msg_components = [msg, filename, line, col];
-            &with_msg_components as &[_]
-        } else {
-            without_msg_components = [filename, line, col];
-            &without_msg_components as &[_]
-        };
-
-        let struct_ = self.const_struct(&components, false);
-        self.static_addr_of(struct_, align, Some(kind))
     }
 }
 

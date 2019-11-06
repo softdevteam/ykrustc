@@ -1,9 +1,10 @@
 use rustc::hir::{self, Node};
 use rustc::hir::def_id::DefId;
 use rustc::hir::itemlikevisit::ItemLikeVisitor;
-use rustc::ty::subst::{Kind, Subst, UnpackedKind};
+use rustc::ty::subst::{GenericArg, Subst, GenericArgKind};
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::util::nodemap::FxHashMap;
+use syntax_pos::Span;
 
 use super::explicit::ExplicitPredicatesMap;
 use super::utils::*;
@@ -66,7 +67,7 @@ impl<'cx, 'tcx> ItemLikeVisitor<'tcx> for InferVisitor<'cx, 'tcx> {
         };
 
         let mut item_required_predicates = RequiredPredicates::default();
-        match item.node {
+        match item.kind {
             hir::ItemKind::Union(..) | hir::ItemKind::Enum(..) | hir::ItemKind::Struct(..) => {
                 let adt_def = self.tcx.adt_def(item_did);
 
@@ -79,9 +80,11 @@ impl<'cx, 'tcx> ItemLikeVisitor<'tcx> for InferVisitor<'cx, 'tcx> {
                     // (struct/enum/union) there will be outlive
                     // requirements for adt_def.
                     let field_ty = self.tcx.type_of(field_def.did);
+                    let field_span = self.tcx.def_span(field_def.did);
                     insert_required_predicates_to_be_wf(
                         self.tcx,
                         field_ty,
+                        field_span,
                         self.global_inferred_outlives,
                         &mut item_required_predicates,
                         &mut self.explicit_map,
@@ -118,19 +121,20 @@ impl<'cx, 'tcx> ItemLikeVisitor<'tcx> for InferVisitor<'cx, 'tcx> {
 fn insert_required_predicates_to_be_wf<'tcx>(
     tcx: TyCtxt<'tcx>,
     field_ty: Ty<'tcx>,
+    field_span: Span,
     global_inferred_outlives: &FxHashMap<DefId, RequiredPredicates<'tcx>>,
     required_predicates: &mut RequiredPredicates<'tcx>,
     explicit_map: &mut ExplicitPredicatesMap<'tcx>,
 ) {
     for ty in field_ty.walk() {
-        match ty.sty {
+        match ty.kind {
             // The field is of type &'a T which means that we will have
             // a predicate requirement of T: 'a (T outlives 'a).
             //
             // We also want to calculate potential predicates for the T
             ty::Ref(region, rty, _) => {
                 debug!("Ref");
-                insert_outlives_predicate(tcx, rty.into(), region, required_predicates);
+                insert_outlives_predicate(tcx, rty.into(), region, field_span, required_predicates);
             }
 
             // For each Adt (struct/enum/union) type `Foo<'a, T>`, we
@@ -158,7 +162,7 @@ fn insert_required_predicates_to_be_wf<'tcx>(
                 // 'a` holds for `Foo`.
                 debug!("Adt");
                 if let Some(unsubstituted_predicates) = global_inferred_outlives.get(&def.did) {
-                    for unsubstituted_predicate in unsubstituted_predicates {
+                    for (unsubstituted_predicate, &span) in unsubstituted_predicates {
                         // `unsubstituted_predicate` is `U: 'b` in the
                         // example above.  So apply the substitution to
                         // get `T: 'a` (or `predicate`):
@@ -167,6 +171,7 @@ fn insert_required_predicates_to_be_wf<'tcx>(
                             tcx,
                             predicate.0,
                             predicate.1,
+                            span,
                             required_predicates,
                         );
                     }
@@ -253,7 +258,7 @@ fn insert_required_predicates_to_be_wf<'tcx>(
 pub fn check_explicit_predicates<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: DefId,
-    substs: &[Kind<'tcx>],
+    substs: &[GenericArg<'tcx>],
     required_predicates: &mut RequiredPredicates<'tcx>,
     explicit_map: &mut ExplicitPredicatesMap<'tcx>,
     ignored_self_ty: Option<Ty<'tcx>>,
@@ -272,7 +277,7 @@ pub fn check_explicit_predicates<'tcx>(
     );
     let explicit_predicates = explicit_map.explicit_predicates_of(tcx, def_id);
 
-    for outlives_predicate in explicit_predicates.iter() {
+    for (outlives_predicate, &span) in explicit_predicates {
         debug!("outlives_predicate = {:?}", &outlives_predicate);
 
         // Careful: If we are inferring the effects of a `dyn Trait<..>`
@@ -310,7 +315,7 @@ pub fn check_explicit_predicates<'tcx>(
         // binding) and thus infer an outlives requirement that `X:
         // 'b`.
         if let Some(self_ty) = ignored_self_ty {
-            if let UnpackedKind::Type(ty) = outlives_predicate.0.unpack() {
+            if let GenericArgKind::Type(ty) = outlives_predicate.0.unpack() {
                 if ty.walk().any(|ty| ty == self_ty) {
                     debug!("skipping self ty = {:?}", &ty);
                     continue;
@@ -320,6 +325,6 @@ pub fn check_explicit_predicates<'tcx>(
 
         let predicate = outlives_predicate.subst(tcx, substs);
         debug!("predicate = {:?}", &predicate);
-        insert_outlives_predicate(tcx, predicate.0.into(), predicate.1, required_predicates);
+        insert_outlives_predicate(tcx, predicate.0.into(), predicate.1, span, required_predicates);
     }
 }

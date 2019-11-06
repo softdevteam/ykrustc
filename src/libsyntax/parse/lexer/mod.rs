@@ -1,5 +1,5 @@
-use crate::parse::ParseSess;
 use crate::parse::token::{self, Token, TokenKind};
+use crate::sess::ParseSess;
 use crate::symbol::{sym, Symbol};
 use crate::parse::unescape_error_reporting::{emit_unescape_error, push_escaped_char};
 
@@ -23,7 +23,7 @@ mod unicode_chars;
 #[derive(Clone, Debug)]
 pub struct UnmatchedBrace {
     pub expected_delim: token::DelimToken,
-    pub found_delim: token::DelimToken,
+    pub found_delim: Option<token::DelimToken>,
     pub found_span: Span,
     pub unclosed_span: Option<Span>,
     pub candidate_span: Option<Span>,
@@ -47,7 +47,7 @@ impl<'a> StringReader<'a> {
                source_file: Lrc<syntax_pos::SourceFile>,
                override_span: Option<Span>) -> Self {
         if source_file.src.is_none() {
-            sess.span_diagnostic.bug(&format!("Cannot lex source_file without source: {}",
+            sess.span_diagnostic.bug(&format!("cannot lex `source_file` without source: {}",
                                               source_file.name));
         }
 
@@ -68,7 +68,7 @@ impl<'a> StringReader<'a> {
         let end = sess.source_map().lookup_byte_offset(span.hi());
 
         // Make the range zero-length if the span is invalid.
-        if span.lo() > span.hi() || begin.sf.start_pos != end.sf.start_pos {
+        if begin.sf.start_pos != end.sf.start_pos {
             span = span.shrink_to_lo();
         }
 

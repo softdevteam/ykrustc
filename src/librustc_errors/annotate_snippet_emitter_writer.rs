@@ -7,7 +7,7 @@
 
 use syntax_pos::{SourceFile, MultiSpan, Loc};
 use crate::{
-    Level, CodeSuggestion, DiagnosticBuilder, Emitter,
+    Level, CodeSuggestion, Diagnostic, Emitter,
     SourceMapperDyn, SubDiagnostic, DiagnosticId
 };
 use crate::emitter::FileWithAnnotatedLines;
@@ -25,26 +25,32 @@ pub struct AnnotateSnippetEmitterWriter {
     short_message: bool,
     /// If true, will normalize line numbers with `LL` to prevent noise in UI test diffs.
     ui_testing: bool,
+
+    external_macro_backtrace: bool,
 }
 
 impl Emitter for AnnotateSnippetEmitterWriter {
     /// The entry point for the diagnostics generation
-    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>) {
-        let mut children = db.children.clone();
-        let (mut primary_span, suggestions) = self.primary_span_formatted(&db);
+    fn emit_diagnostic(&mut self, diag: &Diagnostic) {
+        let mut children = diag.children.clone();
+        let (mut primary_span, suggestions) = self.primary_span_formatted(&diag);
 
         self.fix_multispans_in_std_macros(&self.source_map,
                                           &mut primary_span,
                                           &mut children,
-                                          &db.level,
-                                          db.handler().flags.external_macro_backtrace);
+                                          &diag.level,
+                                          self.external_macro_backtrace);
 
-        self.emit_messages_default(&db.level,
-                                   db.message(),
-                                   &db.code,
+        self.emit_messages_default(&diag.level,
+                                   diag.message(),
+                                   &diag.code,
                                    &primary_span,
                                    &children,
                                    &suggestions);
+    }
+
+    fn source_map(&self) -> Option<&Lrc<SourceMapperDyn>> {
+        self.source_map.as_ref()
     }
 
     fn should_show_explain(&self) -> bool {
@@ -163,12 +169,14 @@ impl<'a>  DiagnosticConverter<'a> {
 impl AnnotateSnippetEmitterWriter {
     pub fn new(
         source_map: Option<Lrc<SourceMapperDyn>>,
-        short_message: bool
+        short_message: bool,
+        external_macro_backtrace: bool,
     ) -> Self {
         Self {
             source_map,
             short_message,
             ui_testing: false,
+            external_macro_backtrace,
         }
     }
 

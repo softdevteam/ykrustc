@@ -50,7 +50,7 @@ pub enum CallConv {
 }
 
 /// LLVMRustLinkage
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq)]
 #[repr(C)]
 pub enum Linkage {
     ExternalLinkage = 0,
@@ -67,7 +67,6 @@ pub enum Linkage {
 }
 
 // LLVMRustVisibility
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(C)]
 pub enum Visibility {
     Default = 0,
@@ -510,6 +509,7 @@ extern { pub type Module; }
 extern { pub type Context; }
 extern { pub type Type; }
 extern { pub type Value; }
+extern { pub type ConstantInt; }
 extern { pub type Metadata; }
 extern { pub type BasicBlock; }
 #[repr(C)]
@@ -719,8 +719,8 @@ extern "C" {
     pub fn LLVMConstInt(IntTy: &Type, N: c_ulonglong, SignExtend: Bool) -> &Value;
     pub fn LLVMConstIntOfArbitraryPrecision(IntTy: &Type, Wn: c_uint, Ws: *const u64) -> &Value;
     pub fn LLVMConstReal(RealTy: &Type, N: f64) -> &Value;
-    pub fn LLVMConstIntGetZExtValue(ConstantVal: &Value) -> c_ulonglong;
-    pub fn LLVMRustConstInt128Get(ConstantVal: &Value, SExt: bool,
+    pub fn LLVMConstIntGetZExtValue(ConstantVal: &ConstantInt) -> c_ulonglong;
+    pub fn LLVMRustConstInt128Get(ConstantVal: &ConstantInt, SExt: bool,
                                   high: &mut u64, low: &mut u64) -> bool;
 
 
@@ -1676,7 +1676,7 @@ extern "C" {
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteValueToString(value_ref: &Value, s: &RustString);
 
-    pub fn LLVMIsAConstantInt(value_ref: &Value) -> Option<&Value>;
+    pub fn LLVMIsAConstantInt(value_ref: &Value) -> Option<&ConstantInt>;
 
     pub fn LLVMRustPassKind(Pass: &Pass) -> PassKind;
     pub fn LLVMRustFindAndCreatePass(Pass: *const c_char) -> Option<&'static mut Pass>;
@@ -1694,6 +1694,7 @@ extern "C" {
     pub fn LLVMRustCreateTargetMachine(Triple: *const c_char,
                                        CPU: *const c_char,
                                        Features: *const c_char,
+                                       Abi: *const c_char,
                                        Model: CodeModel,
                                        Reloc: RelocMode,
                                        Level: CodeGenOptLevel,
@@ -1739,6 +1740,7 @@ extern "C" {
                                ) -> LLVMRustResult;
     pub fn LLVMRustSetLLVMOptions(Argc: c_int, Argv: *const *const c_char);
     pub fn LLVMRustPrintPasses();
+    pub fn LLVMRustGetInstructionCount(M: &Module) -> u32;
     pub fn LLVMRustSetNormalizedTarget(M: &Module, triple: *const c_char);
     pub fn LLVMRustAddAlwaysInlinePass(P: &PassManagerBuilder, AddLifetimes: bool);
     pub fn LLVMRustRunRestrictionPass(M: &Module, syms: *const *const c_char, len: size_t);
@@ -1815,6 +1817,7 @@ extern "C" {
 
     pub fn LLVMRustSetComdat(M: &'a Module, V: &'a Value, Name: *const c_char);
     pub fn LLVMRustUnsetComdat(V: &Value);
+    pub fn LLVMRustSetModulePICLevel(M: &Module);
     pub fn LLVMRustSetModulePIELevel(M: &Module);
     pub fn LLVMRustModuleBufferCreate(M: &Module) -> &'static mut ModuleBuffer;
     pub fn LLVMRustModuleBufferPtr(p: &ModuleBuffer) -> *const u8;

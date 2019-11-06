@@ -141,14 +141,24 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
     ///////////////////////////////////////////////////////////////////////////
     // ADJUSTMENTS
 
-    fn adjust_self_ty(&mut self,
-                      unadjusted_self_ty: Ty<'tcx>,
-                      pick: &probe::Pick<'tcx>)
-                      -> Ty<'tcx> {
+    fn adjust_self_ty(
+        &mut self,
+        unadjusted_self_ty: Ty<'tcx>,
+        pick: &probe::Pick<'tcx>,
+    ) -> Ty<'tcx> {
         // Commit the autoderefs by calling `autoderef` again, but this
         // time writing the results into the various tables.
         let mut autoderef = self.autoderef(self.span, unadjusted_self_ty);
-        let (_, n) = autoderef.nth(pick.autoderefs).unwrap();
+        let (_, n) = match autoderef.nth(pick.autoderefs) {
+            Some(n) => n,
+            None => {
+                self.tcx.sess.delay_span_bug(
+                    syntax_pos::DUMMY_SP,
+                    &format!("failed autoderef {}", pick.autoderefs),
+                );
+                return self.tcx.types.err;
+            }
+        };
         assert_eq!(n, pick.autoderefs);
 
         let mut adjustments = autoderef.adjust_steps(self, Needs::None);
@@ -277,7 +287,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
             .autoderef(self.span, self_ty)
             .include_raw_pointers()
             .filter_map(|(ty, _)|
-                match ty.sty {
+                match ty.kind {
                     ty::Dynamic(ref data, ..) => {
                         Some(closure(self, ty, data.principal().unwrap_or_else(|| {
                             span_bug!(self.span, "calling trait method on empty object?")
@@ -436,7 +446,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         let mut exprs = vec![self.self_expr];
 
         loop {
-            match exprs.last().unwrap().node {
+            match exprs.last().unwrap().kind {
                 hir::ExprKind::Field(ref expr, _) |
                 hir::ExprKind::Index(ref expr, _) |
                 hir::ExprKind::Unary(hir::UnDeref, ref expr) => exprs.push(&expr),
@@ -467,7 +477,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                     if let Adjust::Deref(Some(ref mut deref)) = adjustment.kind {
                         if let Some(ok) = self.try_overloaded_deref(expr.span, source, needs) {
                             let method = self.register_infer_ok_obligations(ok);
-                            if let ty::Ref(region, _, mutbl) = method.sig.output().sty {
+                            if let ty::Ref(region, _, mutbl) = method.sig.output().kind {
                                 *deref = OverloadedDeref {
                                     region,
                                     mutbl,
@@ -480,7 +490,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                 self.tables.borrow_mut().adjustments_mut().insert(expr.hir_id, adjustments);
             }
 
-            match expr.node {
+            match expr.kind {
                 hir::ExprKind::Index(ref base_expr, ref index_expr) => {
                     let index_expr_ty = self.node_ty(index_expr.hir_id);
                     self.convert_place_op_to_mutable(
@@ -526,7 +536,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         debug!("convert_place_op_to_mutable: method={:?}", method);
         self.write_method_call(expr.hir_id, method);
 
-        let (region, mutbl) = if let ty::Ref(r, _, mutbl) = method.sig.inputs()[0].sty {
+        let (region, mutbl) = if let ty::Ref(r, _, mutbl) = method.sig.inputs()[0].kind {
             (r, mutbl)
         } else {
             span_bug!(expr.span, "input to place op is not a ref?");
@@ -592,7 +602,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                 }
             })
             .any(|trait_pred| {
-                match trait_pred.skip_binder().self_ty().sty {
+                match trait_pred.skip_binder().self_ty().kind {
                     ty::Dynamic(..) => true,
                     _ => false,
                 }

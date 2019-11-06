@@ -29,7 +29,7 @@ pub(super) struct Prefixes<'cx, 'tcx> {
     body: &'cx Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     kind: PrefixSet,
-    next: Option<(PlaceRef<'cx, 'tcx>)>,
+    next: Option<PlaceRef<'cx, 'tcx>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -144,7 +144,7 @@ impl<'cx, 'tcx> Iterator for Prefixes<'cx, 'tcx> {
                     // reference.
 
                     let ty = Place::ty_from(cursor.base, proj_base, self.body, self.tcx).ty;
-                    match ty.sty {
+                    match ty.kind {
                         ty::RawPtr(_) |
                         ty::Ref(
                             _, /*rgn*/

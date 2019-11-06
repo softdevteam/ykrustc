@@ -1,3 +1,127 @@
+Version 1.39.0 (2019-11-07)
+===========================
+
+Language
+--------
+- [You can now create `async` functions and blocks with `async fn`, `async move {}`, and
+  `async {}` respectively, and you can now call `.await` on async expressions.][63209]
+- [You can now use certain attributes on function, closure, and function pointer
+  parameters.][64010] These attributes include `cfg`, `cfg_attr`, `allow`, `warn`,
+  `deny`, `forbid` as well as inert helper attributes used by procedural macro
+  attributes applied to items. e.g.
+  ```rust
+  fn len(
+      #[cfg(windows)] slice: &[u16],
+      #[cfg(not(windows))] slice: &[u8],
+  ) -> usize {
+      slice.len()
+  }
+  ```
+- [You can now take shared references to bind-by-move patterns in the `if` guards
+  of `match` arms.][63118] e.g.
+  ```rust
+  fn main() {
+      let array: Box<[u8; 4]> = Box::new([1, 2, 3, 4]);
+
+      match array {
+          nums
+  //      ---- `nums` is bound by move.
+              if nums.iter().sum::<u8>() == 10
+  //                 ^------ `.iter()` implicitly takes a reference to `nums`.
+          => {
+              drop(nums);
+  //          ----------- Legal as `nums` was bound by move and so we have ownership.
+          }
+          _ => unreachable!(),
+      }
+  }
+  ```
+
+
+
+Compiler
+--------
+- [Added tier 3\* support for the `i686-unknown-uefi` target.][64334]
+- [Added tier 3 support for the `sparc64-unknown-openbsd` target.][63595]
+- [rustc will now trim code snippets in diagnostics to fit in your terminal.][63402]
+  **Note** Cargo currently doesn't use this feature. Refer to
+  [cargo#7315][cargo/7315] to track this feature's progress.
+- [You can now pass `--show-output` argument to test binaries to print the
+  output of successful tests.][62600]
+
+
+\* Refer to Rust's [platform support page][forge-platform-support] for more
+information on Rust's tiered platform support.
+
+Libraries
+---------
+- [`Vec::new` and `String::new` are now `const` functions.][64028]
+- [`LinkedList::new` is now a `const` function.][63684]
+- [`str::len`, `[T]::len` and `str::as_bytes` are now `const` functions.][63770]
+- [The `abs`, `wrapping_abs`, and `overflowing_abs` numeric functions are
+  now `const`.][63786]
+
+Stabilized APIs
+---------------
+- [`Pin::into_inner`]
+- [`Instant::checked_duration_since`]
+- [`Instant::saturating_duration_since`]
+
+Cargo
+-----
+- [You can now publish git dependencies if supplied with a `version`.][cargo/7237]
+- [The `--all` flag has been renamed to `--workspace`.][cargo/7241] Using
+  `--all` is now deprecated.
+
+Misc
+----
+- [You can now pass `-Clinker` to rustdoc to control the linker used
+  for compiling doctests.][63834]
+
+Compatibility Notes
+-------------------
+- [Code that was previously accepted by the old borrow checker, but rejected by
+  the NLL borrow checker is now a hard error in Rust 2018.][63565] This was
+  previously a warning, and will also become a hard error in the Rust 2015
+  edition in the 1.40.0 release.
+- [`rustdoc` now requires `rustc` to be installed and in the same directory to
+  run tests.][63827] This should improve performance when running a large
+  amount of doctests.
+- [The `try!` macro will now issue a deprecation warning.][62672] It is
+  recommended to use the `?` operator instead.
+- [`asinh(-0.0)` now correctly returns `-0.0`.][63698] Previously this
+  returned `0.0`.
+
+[62600]: https://github.com/rust-lang/rust/pull/62600/
+[62672]: https://github.com/rust-lang/rust/pull/62672/
+[63118]: https://github.com/rust-lang/rust/pull/63118/
+[63209]: https://github.com/rust-lang/rust/pull/63209/
+[63402]: https://github.com/rust-lang/rust/pull/63402/
+[63565]: https://github.com/rust-lang/rust/pull/63565/
+[63595]: https://github.com/rust-lang/rust/pull/63595/
+[63684]: https://github.com/rust-lang/rust/pull/63684/
+[63698]: https://github.com/rust-lang/rust/pull/63698/
+[63770]: https://github.com/rust-lang/rust/pull/63770/
+[63786]: https://github.com/rust-lang/rust/pull/63786/
+[63827]: https://github.com/rust-lang/rust/pull/63827/
+[63834]: https://github.com/rust-lang/rust/pull/63834/
+[63927]: https://github.com/rust-lang/rust/pull/63927/
+[63933]: https://github.com/rust-lang/rust/pull/63933/
+[63934]: https://github.com/rust-lang/rust/pull/63934/
+[63938]: https://github.com/rust-lang/rust/pull/63938/
+[63940]: https://github.com/rust-lang/rust/pull/63940/
+[63941]: https://github.com/rust-lang/rust/pull/63941/
+[63945]: https://github.com/rust-lang/rust/pull/63945/
+[64010]: https://github.com/rust-lang/rust/pull/64010/
+[64028]: https://github.com/rust-lang/rust/pull/64028/
+[64334]: https://github.com/rust-lang/rust/pull/64334/
+[cargo/7237]: https://github.com/rust-lang/cargo/pull/7237/
+[cargo/7241]: https://github.com/rust-lang/cargo/pull/7241/
+[cargo/7315]: https://github.com/rust-lang/cargo/pull/7315/
+[`Pin::into_inner`]: https://doc.rust-lang.org/std/pin/struct.Pin.html#method.into_inner
+[`Instant::checked_duration_since`]: https://doc.rust-lang.org/std/time/struct.Instant.html#method.checked_duration_since
+[`Instant::saturating_duration_since`]: https://doc.rust-lang.org/std/time/struct.Instant.html#method.saturating_duration_since
+
 Version 1.38.0 (2019-09-26)
 ==========================
 
@@ -47,8 +171,6 @@ Stabilized APIs
 - [`<*mut T>::cast`]
 - [`Duration::as_secs_f32`]
 - [`Duration::as_secs_f64`]
-- [`Duration::div_duration_f32`]
-- [`Duration::div_duration_f64`]
 - [`Duration::div_f32`]
 - [`Duration::div_f64`]
 - [`Duration::from_secs_f32`]
@@ -68,6 +190,13 @@ Misc
 - [`rustc` will now warn about some incorrect uses of
   `mem::{uninitialized, zeroed}` that are known to cause undefined behaviour.][63346]
 
+Compatibility Notes
+-------------------
+- The [`x86_64-unknown-uefi` platform can not be built][62785] with rustc
+  1.38.0.
+- The [`armv7-unknown-linux-gnueabihf` platform is known to have
+  issues][62896] with certain crates such as libc.
+
 [60260]: https://github.com/rust-lang/rust/pull/60260/
 [61457]: https://github.com/rust-lang/rust/pull/61457/
 [61491]: https://github.com/rust-lang/rust/pull/61491/
@@ -79,7 +208,9 @@ Misc
 [62735]: https://github.com/rust-lang/rust/pull/62735/
 [62766]: https://github.com/rust-lang/rust/pull/62766/
 [62784]: https://github.com/rust-lang/rust/pull/62784/
+[62785]: https://github.com/rust-lang/rust/issues/62785/
 [62814]: https://github.com/rust-lang/rust/pull/62814/
+[62896]: https://github.com/rust-lang/rust/issues/62896/
 [63000]: https://github.com/rust-lang/rust/pull/63000/
 [63056]: https://github.com/rust-lang/rust/pull/63056/
 [63107]: https://github.com/rust-lang/rust/pull/63107/
@@ -91,8 +222,6 @@ Misc
 [`<*mut T>::cast`]: https://doc.rust-lang.org/std/primitive.pointer.html#method.cast
 [`Duration::as_secs_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.as_secs_f32
 [`Duration::as_secs_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.as_secs_f64
-[`Duration::div_duration_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_duration_f32
-[`Duration::div_duration_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_duration_f64
 [`Duration::div_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_f32
 [`Duration::div_f64`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.div_f64
 [`Duration::from_secs_f32`]: https://doc.rust-lang.org/std/time/struct.Duration.html#method.from_secs_f32

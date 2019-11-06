@@ -115,15 +115,17 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
         F: FnOnce(&mut Self),
     {
         let item_def_id = self.tcx.hir().local_def_id_from_node_id(item_id);
-        if self.tcx.has_typeck_tables(item_def_id) {
-            let tables = self.tcx.typeck_tables_of(item_def_id);
-            let old_tables = self.save_ctxt.tables;
-            self.save_ctxt.tables = tables;
-            f(self);
-            self.save_ctxt.tables = old_tables;
+
+        let tables = if self.tcx.has_typeck_tables(item_def_id) {
+            self.tcx.typeck_tables_of(item_def_id)
         } else {
-            f(self);
-        }
+            self.save_ctxt.empty_tables
+        };
+
+        let old_tables = self.save_ctxt.tables;
+        self.save_ctxt.tables = tables;
+        f(self);
+        self.save_ctxt.tables = old_tables;
     }
 
     fn span_from_span(&self, span: Span) -> SpanData {
@@ -298,7 +300,16 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
             }
 
             if let ast::FunctionRetTy::Ty(ref ret_ty) = sig.decl.output {
-                v.visit_ty(ret_ty);
+                // In async functions, return types are desugared and redefined
+                // as an `impl Trait` existential type. Because of this, to match
+                // the definition paths when resolving nested types we need to
+                // start walking from the newly-created definition.
+                match sig.header.asyncness.node {
+                    ast::IsAsync::Async { return_impl_trait_id, .. } => {
+                        v.nest_tables(return_impl_trait_id, |v| v.visit_ty(ret_ty))
+                    }
+                    _ => v.visit_ty(ret_ty)
+                }
             }
 
             // walk the fn body
@@ -367,6 +378,7 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
         &mut self,
         item: &'l ast::Item,
         decl: &'l ast::FnDecl,
+        header: &'l ast::FnHeader,
         ty_params: &'l ast::Generics,
         body: &'l ast::Block,
     ) {
@@ -385,11 +397,20 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
             }
 
             if let ast::FunctionRetTy::Ty(ref ret_ty) = decl.output {
-                if let ast::TyKind::ImplTrait(..) = ret_ty.node {
+                if let ast::TyKind::ImplTrait(..) = ret_ty.kind {
                     // FIXME: Opaque type desugaring prevents us from easily
                     // processing trait bounds. See `visit_ty` for more details.
                 } else {
-                    v.visit_ty(&ret_ty);
+                    // In async functions, return types are desugared and redefined
+                    // as an `impl Trait` existential type. Because of this, to match
+                    // the definition paths when resolving nested types we need to
+                    // start walking from the newly-created definition.
+                    match header.asyncness.node {
+                        ast::IsAsync::Async { return_impl_trait_id, .. } => {
+                            v.nest_tables(return_impl_trait_id, |v| v.visit_ty(ret_ty))
+                        }
+                        _ => v.visit_ty(ret_ty)
+                    }
                 }
             }
 
@@ -472,13 +493,13 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
         let qualname = format!("::{}",
             self.tcx.def_path_str(self.tcx.hir().local_def_id_from_node_id(item.id)));
 
-        let kind = match item.node {
+        let kind = match item.kind {
             ast::ItemKind::Struct(_, _) => DefKind::Struct,
             ast::ItemKind::Union(_, _) => DefKind::Union,
             _ => unreachable!(),
         };
 
-        let (value, fields) = match item.node {
+        let (value, fields) = match item.kind {
             ast::ItemKind::Struct(ast::VariantData::Struct(ref fields, ..), ..) |
             ast::ItemKind::Union(ast::VariantData::Struct(ref fields, ..), ..) => {
                 let include_priv_fields = !self.save_ctxt.config.pub_only;
@@ -530,12 +551,14 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
             );
         }
 
-        for field in def.fields() {
-            self.process_struct_field_def(field, item.id);
-            self.visit_ty(&field.ty);
-        }
+        self.nest_tables(item.id, |v| {
+            for field in def.fields() {
+                v.process_struct_field_def(field, item.id);
+                v.visit_ty(&field.ty);
+            }
 
-        self.process_generic_params(ty_params, &qualname, item.id);
+            v.process_generic_params(ty_params, &qualname, item.id);
+        });
     }
 
     fn process_enum(
@@ -665,15 +688,18 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
                 }
             }
         }
-        self.visit_ty(&typ);
-        if let &Some(ref trait_ref) = trait_ref {
-            self.process_path(trait_ref.ref_id, &trait_ref.path);
-        }
-        self.process_generic_params(generics, "", item.id);
-        for impl_item in impl_items {
-            let map = &self.tcx.hir();
-            self.process_impl_item(impl_item, map.local_def_id_from_node_id(item.id));
-        }
+
+        let map = &self.tcx.hir();
+        self.nest_tables(item.id, |v| {
+            v.visit_ty(&typ);
+            if let &Some(ref trait_ref) = trait_ref {
+                v.process_path(trait_ref.ref_id, &trait_ref.path);
+            }
+            v.process_generic_params(generics, "", item.id);
+            for impl_item in impl_items {
+                v.process_impl_item(impl_item, map.local_def_id_from_node_id(item.id));
+            }
+        });
     }
 
     fn process_trait(
@@ -864,7 +890,7 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
     }
 
     fn process_pat(&mut self, p: &'l ast::Pat) {
-        match p.node {
+        match p.kind {
             PatKind::Struct(ref _path, ref fields, _) => {
                 // FIXME do something with _path?
                 let hir_id = self.tcx.hir().node_to_hir_id(p.id);
@@ -1007,7 +1033,7 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
     fn process_trait_item(&mut self, trait_item: &'l ast::TraitItem, trait_id: DefId) {
         self.process_macro_use(trait_item.span);
         let vis_span = trait_item.span.shrink_to_lo();
-        match trait_item.node {
+        match trait_item.kind {
             ast::TraitItemKind::Const(ref ty, ref expr) => {
                 self.process_assoc_const(
                     trait_item.id,
@@ -1078,7 +1104,7 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
 
     fn process_impl_item(&mut self, impl_item: &'l ast::ImplItem, impl_id: DefId) {
         self.process_macro_use(impl_item.span);
-        match impl_item.node {
+        match impl_item.kind {
             ast::ImplItemKind::Const(ref ty, ref expr) => {
                 self.process_assoc_const(
                     impl_item.id,
@@ -1276,7 +1302,7 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
     fn visit_item(&mut self, item: &'l ast::Item) {
         use syntax::ast::ItemKind::*;
         self.process_macro_use(item.span);
-        match item.node {
+        match item.kind {
             Use(ref use_tree) => {
                 let prefix = ast::Path {
                     segments: vec![],
@@ -1308,8 +1334,8 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
                     );
                 }
             }
-            Fn(ref decl, .., ref ty_params, ref body) => {
-                self.process_fn(item, &decl, ty_params, &body)
+            Fn(ref decl, ref header, ref ty_params, ref body) => {
+                self.process_fn(item, &decl, &header, ty_params, &body)
             }
             Static(ref typ, _, ref expr) => self.process_static_or_const_item(item, typ, expr),
             Const(ref typ, ref expr) => self.process_static_or_const_item(item, &typ, &expr),
@@ -1421,7 +1447,7 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
 
     fn visit_ty(&mut self, t: &'l ast::Ty) {
         self.process_macro_use(t.span);
-        match t.node {
+        match t.kind {
             ast::TyKind::Path(_, ref path) => {
                 if generated_code(t.span) {
                     return;
@@ -1461,9 +1487,9 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
     }
 
     fn visit_expr(&mut self, ex: &'l ast::Expr) {
-        debug!("visit_expr {:?}", ex.node);
+        debug!("visit_expr {:?}", ex.kind);
         self.process_macro_use(ex.span);
-        match ex.node {
+        match ex.kind {
             ast::ExprKind::Struct(ref path, ref fields, ref base) => {
                 let expr_hir_id = self.save_ctxt.tcx.hir().node_to_hir_id(ex.id);
                 let hir_expr = self.save_ctxt.tcx.hir().expect_expr(expr_hir_id);
@@ -1509,7 +1535,7 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
             }
             ast::ExprKind::ForLoop(ref pattern, ref subexpression, ref block, _) => {
                 self.process_var_decl(pattern);
-                debug!("for loop, walk sub-expr: {:?}", subexpression.node);
+                debug!("for loop, walk sub-expr: {:?}", subexpression.kind);
                 self.visit_expr(subexpression);
                 visit::walk_block(self, block);
             }
@@ -1570,7 +1596,7 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
         let hir_id = self.tcx.hir().node_to_hir_id(item.id);
         let access = access_from!(self.save_ctxt, item, hir_id);
 
-        match item.node {
+        match item.kind {
             ast::ForeignItemKind::Fn(ref decl, ref generics) => {
                 if let Some(fn_data) = self.save_ctxt.get_extern_item_data(item) {
                     down_cast_data!(fn_data, DefData, item.span);

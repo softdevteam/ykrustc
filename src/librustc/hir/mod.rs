@@ -19,7 +19,7 @@ use crate::ty::query::Providers;
 use crate::util::nodemap::{NodeMap, FxHashSet};
 
 use errors::FatalError;
-use syntax_pos::{Span, DUMMY_SP, symbol::InternedString, MultiSpan};
+use syntax_pos::{Span, DUMMY_SP, MultiSpan};
 use syntax::source_map::Spanned;
 use syntax::ast::{self, CrateSugar, Ident, Name, NodeId, AsmDialect};
 use syntax::ast::{Attribute, Label, LitKind, StrStyle, FloatTy, IntTy, UintTy};
@@ -122,9 +122,9 @@ impl fmt::Display for HirId {
 
 // Hack to ensure that we don't try to access the private parts of `ItemLocalId` in this module.
 mod item_local_id_inner {
-    use rustc_data_structures::indexed_vec::Idx;
+    use rustc_index::vec::Idx;
     use rustc_macros::HashStable;
-    newtype_index! {
+    rustc_index::newtype_index! {
         /// An `ItemLocalId` uniquely identifies something within a given "item-like";
         /// that is, within a `hir::Item`, `hir::TraitItem`, or `hir::ImplItem`. There is no
         /// guarantee that the numerical value of a given `ItemLocalId` corresponds to
@@ -479,7 +479,7 @@ impl GenericArgs {
                 match arg {
                     GenericArg::Lifetime(_) => {}
                     GenericArg::Type(ref ty) => {
-                        if let TyKind::Tup(ref tys) = ty.node {
+                        if let TyKind::Tup(ref tys) = ty.kind {
                             return tys;
                         }
                         break;
@@ -628,9 +628,9 @@ impl Generics {
         own_counts
     }
 
-    pub fn get_named(&self, name: InternedString) -> Option<&GenericParam> {
+    pub fn get_named(&self, name: Symbol) -> Option<&GenericParam> {
         for param in &self.params {
-            if name == param.name.ident().as_interned_str() {
+            if name == param.name.ident().name {
                 return Some(param);
             }
         }
@@ -668,6 +668,12 @@ impl WhereClause {
         } else {
             Some(self.span)
         }
+    }
+
+    /// The `WhereClause` under normal circumstances points at either the predicates or the empty
+    /// space where the `where` clause should be. Only of use for diagnostic suggestions.
+    pub fn span_for_predicates_or_empty_place(&self) -> Span {
+        self.span
     }
 }
 
@@ -766,7 +772,7 @@ pub struct Crate {
 
     /// A list of modules written out in the order in which they
     /// appear in the crate. This includes the main crate module.
-    pub modules: BTreeMap<NodeId, ModuleItems>,
+    pub modules: BTreeMap<HirId, ModuleItems>,
 }
 
 impl Crate {
@@ -861,7 +867,7 @@ pub struct Block {
     pub span: Span,
     /// If true, then there may exist `break 'a` values that aim to
     /// break out of this block early.
-    /// Used by `'label: {}` blocks and by `catch` statements.
+    /// Used by `'label: {}` blocks and by `try {}` blocks.
     pub targeted_by_break: bool,
 }
 
@@ -869,7 +875,7 @@ pub struct Block {
 pub struct Pat {
     #[stable_hasher(ignore)]
     pub hir_id: HirId,
-    pub node: PatKind,
+    pub kind: PatKind,
     pub span: Span,
 }
 
@@ -882,44 +888,61 @@ impl fmt::Debug for Pat {
 
 impl Pat {
     // FIXME(#19596) this is a workaround, but there should be a better way
-    fn walk_<G>(&self, it: &mut G) -> bool
-        where G: FnMut(&Pat) -> bool
-    {
+    fn walk_short_(&self, it: &mut impl FnMut(&Pat) -> bool) -> bool {
         if !it(self) {
             return false;
         }
 
-        match self.node {
-            PatKind::Binding(.., Some(ref p)) => p.walk_(it),
-            PatKind::Struct(_, ref fields, _) => {
-                fields.iter().all(|field| field.pat.walk_(it))
-            }
-            PatKind::TupleStruct(_, ref s, _) | PatKind::Tuple(ref s, _) => {
-                s.iter().all(|p| p.walk_(it))
-            }
-            PatKind::Or(ref pats) => pats.iter().all(|p| p.walk_(it)),
-            PatKind::Box(ref s) | PatKind::Ref(ref s, _) => {
-                s.walk_(it)
-            }
-            PatKind::Slice(ref before, ref slice, ref after) => {
+        use PatKind::*;
+        match &self.kind {
+            Wild | Lit(_) | Range(..) | Binding(.., None) | Path(_) => true,
+            Box(s) | Ref(s, _) | Binding(.., Some(s)) => s.walk_short_(it),
+            Struct(_, fields, _) => fields.iter().all(|field| field.pat.walk_short_(it)),
+            TupleStruct(_, s, _) | Tuple(s, _) | Or(s) => s.iter().all(|p| p.walk_short_(it)),
+            Slice(before, slice, after) => {
                 before.iter()
                       .chain(slice.iter())
                       .chain(after.iter())
-                      .all(|p| p.walk_(it))
-            }
-            PatKind::Wild |
-            PatKind::Lit(_) |
-            PatKind::Range(..) |
-            PatKind::Binding(..) |
-            PatKind::Path(_) => {
-                true
+                      .all(|p| p.walk_short_(it))
             }
         }
     }
 
-    pub fn walk<F>(&self, mut it: F) -> bool
-        where F: FnMut(&Pat) -> bool
-    {
+    /// Walk the pattern in left-to-right order,
+    /// short circuiting (with `.all(..)`) if `false` is returned.
+    ///
+    /// Note that when visiting e.g. `Tuple(ps)`,
+    /// if visiting `ps[0]` returns `false`,
+    /// then `ps[1]` will not be visited.
+    pub fn walk_short(&self, mut it: impl FnMut(&Pat) -> bool) -> bool {
+        self.walk_short_(&mut it)
+    }
+
+    // FIXME(#19596) this is a workaround, but there should be a better way
+    fn walk_(&self, it: &mut impl FnMut(&Pat) -> bool) {
+        if !it(self) {
+            return;
+        }
+
+        use PatKind::*;
+        match &self.kind {
+            Wild | Lit(_) | Range(..) | Binding(.., None) | Path(_) => {},
+            Box(s) | Ref(s, _) | Binding(.., Some(s)) => s.walk_(it),
+            Struct(_, fields, _) => fields.iter().for_each(|field| field.pat.walk_(it)),
+            TupleStruct(_, s, _) | Tuple(s, _) | Or(s) => s.iter().for_each(|p| p.walk_(it)),
+            Slice(before, slice, after) => {
+                before.iter()
+                      .chain(slice.iter())
+                      .chain(after.iter())
+                      .for_each(|p| p.walk_(it))
+            }
+        }
+    }
+
+    /// Walk the pattern in left-to-right order.
+    ///
+    /// If `it(pat)` returns `false`, the children are not visited.
+    pub fn walk(&self, mut it: impl FnMut(&Pat) -> bool) {
         self.walk_(&mut it)
     }
 }
@@ -970,6 +993,15 @@ pub enum BindingAnnotation {
 pub enum RangeEnd {
     Included,
     Excluded,
+}
+
+impl fmt::Display for RangeEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RangeEnd::Included => "..=",
+            RangeEnd::Excluded => "..",
+        })
+    }
 }
 
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -1036,9 +1068,16 @@ impl Mutability {
             MutImmutable => MutImmutable,
         }
     }
+
+    pub fn invert(self) -> Self {
+        match self {
+            MutMutable => MutImmutable,
+            MutImmutable => MutMutable,
+        }
+    }
 }
 
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, Hash, HashStable)]
+#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub enum BinOpKind {
     /// The `+` operator (addition).
     Add,
@@ -1172,7 +1211,7 @@ impl Into<ast::BinOpKind> for BinOpKind {
 
 pub type BinOp = Spanned<BinOpKind>;
 
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, Hash, HashStable)]
+#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub enum UnOp {
     /// The `*` operator (deferencing).
     UnDeref,
@@ -1204,7 +1243,7 @@ impl UnOp {
 #[derive(RustcEncodable, RustcDecodable)]
 pub struct Stmt {
     pub hir_id: HirId,
-    pub node: StmtKind,
+    pub kind: StmtKind,
     pub span: Span,
 }
 
@@ -1259,15 +1298,15 @@ pub struct Local {
 }
 
 /// Represents a single arm of a `match` expression, e.g.
-/// `<pats> (if <guard>) => <body>`.
+/// `<pat> (if <guard>) => <body>`.
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub struct Arm {
     #[stable_hasher(ignore)]
     pub hir_id: HirId,
     pub span: Span,
     pub attrs: HirVec<Attribute>,
-    /// Multiple patterns can be combined with `|`
-    pub pats: HirVec<P<Pat>>,
+    /// If this pattern and the optional guard matches, then `body` is evaluated.
+    pub pat: P<Pat>,
     /// Optional guard clause.
     pub guard: Option<Guard>,
     /// The expression the arm evaluates to if this arm matches.
@@ -1342,24 +1381,54 @@ impl Body {
             hir_id: self.value.hir_id,
         }
     }
+
+    pub fn generator_kind(&self) -> Option<GeneratorKind> {
+        self.generator_kind
+    }
 }
 
 /// The type of source expression that caused this generator to be created.
-// Not `IsAsync` because we want to eventually add support for `AsyncGen`
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, HashStable,
-         RustcEncodable, RustcDecodable, Hash, Debug, Copy)]
+#[derive(Clone, PartialEq, Eq, HashStable, RustcEncodable, RustcDecodable, Debug, Copy)]
 pub enum GeneratorKind {
-    /// An `async` block or function.
-    Async,
+    /// An explicit `async` block or the body of an async function.
+    Async(AsyncGeneratorKind),
+
     /// A generator literal created via a `yield` inside a closure.
     Gen,
 }
 
 impl fmt::Display for GeneratorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GeneratorKind::Async(k) => fmt::Display::fmt(k, f),
+            GeneratorKind::Gen => f.write_str("generator"),
+        }
+    }
+}
+
+/// In the case of a generator created as part of an async construct,
+/// which kind of async construct caused it to be created?
+///
+/// This helps error messages but is also used to drive coercions in
+/// type-checking (see #60424).
+#[derive(Clone, PartialEq, Eq, HashStable, RustcEncodable, RustcDecodable, Debug, Copy)]
+pub enum AsyncGeneratorKind {
+    /// An explicit `async` block written by the user.
+    Block,
+
+    /// An explicit `async` block written by the user.
+    Closure,
+
+    /// The `async` block generated as the body of an async function.
+    Fn,
+}
+
+impl fmt::Display for AsyncGeneratorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            GeneratorKind::Async => "`async` object",
-            GeneratorKind::Gen => "generator",
+            AsyncGeneratorKind::Block => "`async` block",
+            AsyncGeneratorKind::Closure => "`async` closure body",
+            AsyncGeneratorKind::Fn => "`async fn` body",
         })
     }
 }
@@ -1406,7 +1475,7 @@ pub struct AnonConst {
 #[derive(RustcEncodable, RustcDecodable)]
 pub struct Expr {
     pub hir_id: HirId,
-    pub node: ExprKind,
+    pub kind: ExprKind,
     pub attrs: ThinVec<Attribute>,
     pub span: Span,
 }
@@ -1417,7 +1486,7 @@ static_assert_size!(Expr, 72);
 
 impl Expr {
     pub fn precedence(&self) -> ExprPrecedence {
-        match self.node {
+        match self.kind {
             ExprKind::Box(_) => ExprPrecedence::Box,
             ExprKind::Array(_) => ExprPrecedence::Array,
             ExprKind::Call(..) => ExprPrecedence::Call,
@@ -1450,7 +1519,7 @@ impl Expr {
     }
 
     pub fn is_place_expr(&self) -> bool {
-         match self.node {
+         match self.kind {
             ExprKind::Path(QPath::Resolved(_, ref path)) => {
                 match path.res {
                     Res::Local(..)
@@ -1503,6 +1572,19 @@ impl Expr {
             }
         }
     }
+
+    /// If `Self.kind` is `ExprKind::DropTemps(expr)`, drill down until we get a non-`DropTemps`
+    /// `Expr`. This is used in suggestions to ignore this `ExprKind` as it is semantically
+    /// silent, only signaling the ownership system. By doing this, suggestions that check the
+    /// `ExprKind` of any given `Expr` for presentation don't have to care about `DropTemps`
+    /// beyond remembering to call this function before doing analysis on it.
+    pub fn peel_drop_temps(&self) -> &Self {
+        let mut expr = self;
+        while let ExprKind::DropTemps(inner) = &expr.kind {
+            expr = inner;
+        }
+        expr
+    }
 }
 
 impl fmt::Debug for Expr {
@@ -1535,7 +1617,7 @@ pub enum ExprKind {
     /// Thus, `x.foo::<Bar, Baz>(a, b, c, d)` is represented as
     /// `ExprKind::MethodCall(PathSegment { foo, [Bar, Baz] }, [x, a, b, c, d])`.
     MethodCall(P<PathSegment>, Span, HirVec<Expr>),
-    /// A tuple (e.g., `(a, b, c ,d)`).
+    /// A tuple (e.g., `(a, b, c, d)`).
     Tup(HirVec<Expr>),
     /// A binary operation (e.g., `a + b`, `a * b`).
     Binary(BinOp, P<Expr>, P<Expr>),
@@ -1741,6 +1823,7 @@ pub struct Destination {
 pub enum GeneratorMovability {
     /// May contain self-references, `!Unpin`.
     Static,
+
     /// Must not contain self-references, `Unpin`.
     Movable,
 }
@@ -1802,7 +1885,7 @@ pub struct TraitItem {
     pub hir_id: HirId,
     pub attrs: HirVec<Attribute>,
     pub generics: Generics,
-    pub node: TraitItemKind,
+    pub kind: TraitItemKind,
     pub span: Span,
 }
 
@@ -1845,7 +1928,7 @@ pub struct ImplItem {
     pub defaultness: Defaultness,
     pub attrs: HirVec<Attribute>,
     pub generics: Generics,
-    pub node: ImplItemKind,
+    pub kind: ImplItemKind,
     pub span: Span,
 }
 
@@ -1911,7 +1994,7 @@ impl TypeBinding {
 #[derive(RustcEncodable, RustcDecodable)]
 pub struct Ty {
     pub hir_id: HirId,
-    pub node: TyKind,
+    pub kind: TyKind,
     pub span: Span,
 }
 
@@ -1999,9 +2082,6 @@ pub enum TyKind {
     Infer,
     /// Placeholder for a type that has failed to be defined.
     Err,
-    /// Placeholder for C-variadic arguments. We "spoof" the `VaListImpl` created
-    /// from the variadic arguments. This type is only valid up to typeck.
-    CVarArgs(Lifetime),
 }
 
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -2388,7 +2468,7 @@ pub struct Item {
     pub ident: Ident,
     pub hir_id: HirId,
     pub attrs: HirVec<Attribute>,
-    pub node: ItemKind,
+    pub kind: ItemKind,
     pub vis: Visibility,
     pub span: Span,
 }
@@ -2432,7 +2512,7 @@ pub enum ItemKind {
     Fn(P<FnDecl>, FnHeader, Generics, BodyId),
     /// A module.
     Mod(Mod),
-    /// An external module.
+    /// An external module, e.g. `extern { .. }`.
     ForeignMod(ForeignMod),
     /// Module-level inline assembly (from `global_asm!`).
     GlobalAsm(P<GlobalAsm>),
@@ -2553,7 +2633,7 @@ pub struct ForeignItem {
     #[stable_hasher(project(name))]
     pub ident: Ident,
     pub attrs: HirVec<Attribute>,
-    pub node: ForeignItemKind,
+    pub kind: ForeignItemKind,
     pub hir_id: HirId,
     pub span: Span,
     pub vis: Visibility,
@@ -2626,6 +2706,11 @@ pub struct CodegenFnAttrs {
     /// probably isn't set when this is set, this is for foreign items while
     /// `#[export_name]` is for Rust-defined functions.
     pub link_name: Option<Symbol>,
+    /// The `#[link_ordinal = "..."]` attribute, indicating an ordinal an
+    /// imported function has in the dynamic library. Note that this must not
+    /// be set when `link_name` is set. This is for foreign items with the
+    /// "raw-dylib" kind.
+    pub link_ordinal: Option<usize>,
     /// The `#[target_feature(enable = "...")]` attribute and the enabled
     /// features (only enabled features are supported right now).
     pub target_features: Vec<Symbol>,
@@ -2671,9 +2756,11 @@ bitflags! {
         /// `#[used]`: indicates that LLVM can't eliminate this function (but the
         /// linker can!).
         const USED                      = 1 << 9;
-        /// #[ffi_returns_twice], indicates that an extern function can return
+        /// `#[ffi_returns_twice]`, indicates that an extern function can return
         /// multiple times
-        const FFI_RETURNS_TWICE = 1 << 10;
+        const FFI_RETURNS_TWICE         = 1 << 10;
+        /// `#[track_caller]`: allow access to the caller location
+        const TRACK_CALLER              = 1 << 11;
     }
 }
 
@@ -2685,6 +2772,7 @@ impl CodegenFnAttrs {
             optimize: OptimizeAttr::None,
             export_name: None,
             link_name: None,
+            link_ordinal: None,
             target_features: vec![],
             linkage: None,
             link_section: None,
@@ -2749,4 +2837,16 @@ pub enum Node<'hir> {
     Visibility(&'hir Visibility),
 
     Crate,
+}
+
+impl Node<'_> {
+    pub fn ident(&self) -> Option<Ident> {
+        match self {
+            Node::TraitItem(TraitItem { ident, .. }) |
+            Node::ImplItem(ImplItem { ident, .. }) |
+            Node::ForeignItem(ForeignItem { ident, .. }) |
+            Node::Item(Item { ident, .. }) => Some(*ident),
+            _ => None,
+        }
+    }
 }
