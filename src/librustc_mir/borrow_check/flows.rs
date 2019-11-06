@@ -5,7 +5,7 @@
 
 use rustc::mir::{BasicBlock, Local, Location};
 use rustc::ty::RegionVid;
-use rustc_data_structures::bit_set::BitIter;
+use rustc_index::bit_set::BitIter;
 
 use crate::borrow_check::location::LocationIndex;
 
@@ -23,7 +23,6 @@ use std::rc::Rc;
 
 crate type PoloniusOutput = Output<RegionVid, BorrowIndex, LocationIndex, Local, MovePathIndex>;
 
-// (forced to be `pub` due to its use as an associated type below.)
 crate struct Flows<'b, 'tcx> {
     borrows: FlowAtLocation<'tcx, Borrows<'b, 'tcx>>,
     pub uninits: FlowAtLocation<'tcx, MaybeUninitializedPlaces<'b, 'tcx>>,

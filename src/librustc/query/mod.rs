@@ -15,7 +15,7 @@ use crate::traits::query::{
 };
 
 use std::borrow::Cow;
-use syntax_pos::symbol::InternedString;
+use syntax_pos::symbol::Symbol;
 
 // Each of these queries corresponds to a function pointer field in the
 // `Providers` struct for requesting a value of that type, and a method
@@ -61,7 +61,7 @@ rustc_queries! {
         /// predicate gets in the way of some checks, which are intended
         /// to operate over only the actual where-clauses written by the
         /// user.)
-        query predicates_of(key: DefId) -> &'tcx ty::GenericPredicates<'tcx> {
+        query predicates_of(key: DefId) -> ty::GenericPredicates<'tcx> {
             cache_on_disk_if { key.is_local() }
         }
 
@@ -94,6 +94,7 @@ rustc_queries! {
         /// of the MIR qualify_consts pass. The actual meaning of
         /// the value isn't known except to the pass itself.
         query mir_const_qualif(key: DefId) -> (u8, &'tcx BitSet<mir::Local>) {
+            desc { |tcx| "const checking `{}`", tcx.def_path_str(key) }
             cache_on_disk_if { key.is_local() }
         }
 
@@ -132,7 +133,7 @@ rustc_queries! {
             cache_on_disk_if { key.is_local() }
             load_cached(tcx, id) {
                 let promoted: Option<
-                    rustc_data_structures::indexed_vec::IndexVec<
+                    rustc_index::vec::IndexVec<
                         crate::mir::Promoted,
                         crate::mir::Body<'tcx>
                     >> = tcx.queries.on_disk_cache.try_load_query_result(tcx, id);
@@ -183,16 +184,14 @@ rustc_queries! {
         /// predicates (where-clauses) directly defined on it. This is
         /// equal to the `explicit_predicates_of` predicates plus the
         /// `inferred_outlives_of` predicates.
-        query predicates_defined_on(_: DefId)
-            -> &'tcx ty::GenericPredicates<'tcx> {}
+        query predicates_defined_on(_: DefId) -> ty::GenericPredicates<'tcx> {}
 
         /// Returns the predicates written explicitly by the user.
-        query explicit_predicates_of(_: DefId)
-            -> &'tcx ty::GenericPredicates<'tcx> {}
+        query explicit_predicates_of(_: DefId) -> ty::GenericPredicates<'tcx> {}
 
         /// Returns the inferred outlives predicates (e.g., for `struct
         /// Foo<'a, T> { x: &'a T }`, this would return `T: 'a`).
-        query inferred_outlives_of(_: DefId) -> &'tcx [ty::Predicate<'tcx>] {}
+        query inferred_outlives_of(_: DefId) -> &'tcx [(ty::Predicate<'tcx>, Span)] {}
 
         /// Maps from the `DefId` of a trait to the list of
         /// super-predicates. This is a subset of the full list of
@@ -200,14 +199,13 @@ rustc_queries! {
         /// evaluate them even during type conversion, often before the
         /// full predicates are available (note that supertraits have
         /// additional acyclicity requirements).
-        query super_predicates_of(key: DefId) -> &'tcx ty::GenericPredicates<'tcx> {
+        query super_predicates_of(key: DefId) -> ty::GenericPredicates<'tcx> {
             desc { |tcx| "computing the supertraits of `{}`", tcx.def_path_str(key) }
         }
 
         /// To avoid cycles within the predicates of a single item we compute
         /// per-type-parameter predicates for resolving `T::AssocTy`.
-        query type_param_predicates(key: (DefId, DefId))
-            -> &'tcx ty::GenericPredicates<'tcx> {
+        query type_param_predicates(key: (DefId, DefId)) -> ty::GenericPredicates<'tcx> {
             no_force
             desc { |tcx| "computing the bounds for type parameter `{}`", {
                 let id = tcx.hir().as_local_hir_id(key.1).unwrap();
@@ -242,6 +240,10 @@ rustc_queries! {
         /// `is_const_fn` function.
         query is_const_fn_raw(key: DefId) -> bool {
             desc { |tcx| "checking if item is const fn: `{}`", tcx.def_path_str(key) }
+        }
+
+        query asyncness(key: DefId) -> hir::IsAsync {
+            desc { |tcx| "checking if the function is async: `{}`", tcx.def_path_str(key) }
         }
 
         /// Returns `true` if calls to the function may be promoted.
@@ -286,7 +288,7 @@ rustc_queries! {
         query associated_item(_: DefId) -> ty::AssocItem {}
 
         query impl_trait_ref(_: DefId) -> Option<ty::TraitRef<'tcx>> {}
-        query impl_polarity(_: DefId) -> hir::ImplPolarity {}
+        query impl_polarity(_: DefId) -> ty::ImplPolarity {}
 
         query issue33140_self_ty(_: DefId) -> Option<ty::Ty<'tcx>> {}
     }
@@ -393,10 +395,6 @@ rustc_queries! {
     }
 
     BorrowChecking {
-        query borrowck(key: DefId) -> &'tcx BorrowCheckResult {
-            cache_on_disk_if { key.is_local() }
-        }
-
         /// Borrow-checks the function body. If this is a closure, returns
         /// additional requirements that the closure's creator must verify.
         query mir_borrowck(key: DefId) -> mir::BorrowCheckResult<'tcx> {
@@ -458,14 +456,18 @@ rustc_queries! {
         query const_field(
             key: ty::ParamEnvAnd<'tcx, (&'tcx ty::Const<'tcx>, mir::Field)>
         ) -> &'tcx ty::Const<'tcx> {
-            eval_always
             no_force
             desc { "extract field of const" }
+        }
+
+        query const_caller_location(key: (syntax_pos::Symbol, u32, u32)) -> &'tcx ty::Const<'tcx> {
+            no_force
+            desc { "get a &core::panic::Location referring to a span" }
         }
     }
 
     TypeChecking {
-        query check_match(key: DefId) -> SignalledError {
+        query check_match(key: DefId) {
             cache_on_disk_if { key.is_local() }
         }
 
@@ -530,19 +532,6 @@ rustc_queries! {
 
     TypeChecking {
         query trait_of_item(_: DefId) -> Option<DefId> {}
-        query const_is_rvalue_promotable_to_static(key: DefId) -> bool {
-            desc { |tcx|
-                "const checking if rvalue is promotable to static `{}`",
-                tcx.def_path_str(key)
-            }
-            cache_on_disk_if { true }
-        }
-        query rvalue_promotable_map(key: DefId) -> &'tcx ItemLocalSet {
-            desc { |tcx|
-                "checking which parts of `{}` are promotable to static",
-                tcx.def_path_str(key)
-            }
-        }
     }
 
     Codegen {
@@ -629,6 +618,12 @@ rustc_queries! {
         query dylib_dependency_formats(_: CrateNum)
                                         -> &'tcx [(CrateNum, LinkagePreference)] {
             desc { "dylib dependency formats of crate" }
+        }
+
+        query dependency_formats(_: CrateNum)
+            -> Lrc<crate::middle::dependency_format::Dependencies>
+        {
+            desc { "get the linkage format of all dependencies" }
         }
     }
 
@@ -755,6 +750,10 @@ rustc_queries! {
         query crate_hash(_: CrateNum) -> Svh {
             eval_always
             desc { "looking up the hash a crate" }
+        }
+        query crate_host_hash(_: CrateNum) -> Option<Svh> {
+            eval_always
+            desc { "looking up the hash of a host version of a crate" }
         }
         query original_crate_name(_: CrateNum) -> Symbol {
             eval_always
@@ -930,7 +929,7 @@ rustc_queries! {
             desc { "collect_and_partition_mono_items" }
         }
         query is_codegened_item(_: DefId) -> bool {}
-        query codegen_unit(_: InternedString) -> Arc<CodegenUnit<'tcx>> {
+        query codegen_unit(_: Symbol) -> Arc<CodegenUnit<'tcx>> {
             no_force
             desc { "codegen_unit" }
         }

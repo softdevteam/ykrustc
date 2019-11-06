@@ -3,11 +3,11 @@
 //! The `LinkedList` allows pushing and popping elements at either end
 //! in constant time.
 //!
-//! Almost always it is better to use `Vec` or [`VecDeque`] instead of
-//! [`LinkedList`]. In general, array-based containers are faster,
-//! more memory efficient and make better use of CPU cache.
+//! NOTE: It is almost always better to use [`Vec`] or [`VecDeque`] because
+//! array-based containers are generally faster,
+//! more memory efficient, and make better use of CPU cache.
 //!
-//! [`LinkedList`]: ../linked_list/struct.LinkedList.html
+//! [`Vec`]: ../../vec/struct.Vec.html
 //! [`VecDeque`]: ../vec_deque/struct.VecDeque.html
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -31,9 +31,9 @@ mod tests;
 /// The `LinkedList` allows pushing and popping elements at either end
 /// in constant time.
 ///
-/// Almost always it is better to use `Vec` or `VecDeque` instead of
-/// `LinkedList`. In general, array-based containers are faster,
-/// more memory efficient and make better use of CPU cache.
+/// NOTE: It is almost always better to use `Vec` or `VecDeque` because
+/// array-based containers are generally faster,
+/// more memory efficient, and make better use of CPU cache.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct LinkedList<T> {
     head: Option<NonNull<Node<T>>>,
@@ -1196,6 +1196,19 @@ impl<T: Ord> Ord for LinkedList<T> {
 impl<T: Clone> Clone for LinkedList<T> {
     fn clone(&self) -> Self {
         self.iter().cloned().collect()
+    }
+
+    fn clone_from(&mut self, other: &Self) {
+        let mut iter_other = other.iter();
+        if self.len() > other.len() {
+            self.split_off(other.len());
+        }
+        for (elem, elem_other) in self.iter_mut().zip(&mut iter_other) {
+            elem.clone_from(elem_other);
+        }
+        if !iter_other.is_empty() {
+            self.extend(iter_other.cloned());
+        }
     }
 }
 

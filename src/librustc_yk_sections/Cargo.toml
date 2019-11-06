@@ -14,6 +14,7 @@ test = false
 rustc = { path = "../librustc" }
 rustc_yk_link = { path = "../librustc_yk_link" }
 ykpack = { git = "https://github.com/softdevteam/yk" }
+rustc_index = { path = "../librustc_index" }
 rustc_codegen_utils = { path = "../librustc_codegen_utils" }
 rustc_data_structures = { path = "../librustc_data_structures" }
 syntax = { path = "../libsyntax" }

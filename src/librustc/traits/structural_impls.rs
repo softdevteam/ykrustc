@@ -4,7 +4,7 @@ use crate::traits;
 use crate::traits::project::Normalized;
 use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 use crate::ty::{self, Lift, Ty, TyCtxt};
-use syntax::symbol::InternedString;
+use syntax::symbol::Symbol;
 
 use std::fmt;
 use std::rc::Rc;
@@ -261,11 +261,11 @@ impl fmt::Display for traits::QuantifierKind {
 /// for debug output in tests anyway.
 struct BoundNamesCollector {
     // Just sort by name because `BoundRegion::BrNamed` does not have a `BoundVar` index anyway.
-    regions: BTreeSet<InternedString>,
+    regions: BTreeSet<Symbol>,
 
     // Sort by `BoundVar` index, so usually this should be equivalent to the order given
     // by the list of type parameters.
-    types: BTreeMap<u32, InternedString>,
+    types: BTreeMap<u32, Symbol>,
 
     binder_index: ty::DebruijnIndex,
 }
@@ -312,14 +312,14 @@ impl<'tcx> TypeVisitor<'tcx> for BoundNamesCollector {
     }
 
     fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
-        match t.sty {
+        match t.kind {
             ty::Bound(debruijn, bound_ty) if debruijn == self.binder_index => {
                 self.types.insert(
                     bound_ty.var.as_u32(),
                     match bound_ty.kind {
                         ty::BoundTyKind::Param(name) => name,
                         ty::BoundTyKind::Anon =>
-                            InternedString::intern(&format!("^{}", bound_ty.var.as_u32()),
+                            Symbol::intern(&format!("^{}", bound_ty.var.as_u32()),
                         ),
                     }
                 );
@@ -340,7 +340,7 @@ impl<'tcx> TypeVisitor<'tcx> for BoundNamesCollector {
                     }
 
                     ty::BoundRegion::BrAnon(var) => {
-                        self.regions.insert(InternedString::intern(&format!("'^{}", var)));
+                        self.regions.insert(Symbol::intern(&format!("'^{}", var)));
                     }
 
                     _ => (),
@@ -472,6 +472,7 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::TupleElem => Some(super::TupleElem),
             super::ProjectionWf(proj) => tcx.lift(&proj).map(super::ProjectionWf),
             super::ItemObligation(def_id) => Some(super::ItemObligation(def_id)),
+            super::BindingObligation(def_id, span) => Some(super::BindingObligation(def_id, span)),
             super::ReferenceOutlivesReferent(ty) => {
                 tcx.lift(&ty).map(super::ReferenceOutlivesReferent)
             }
@@ -480,17 +481,23 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
                    .and_then(|r| Some(super::ObjectTypeBound(ty, r)))
             ),
             super::ObjectCastObligation(ty) => tcx.lift(&ty).map(super::ObjectCastObligation),
+            super::Coercion { source, target } => Some(super::Coercion {
+                source: tcx.lift(&source)?,
+                target: tcx.lift(&target)?,
+            }),
             super::AssignmentLhsSized => Some(super::AssignmentLhsSized),
             super::TupleInitializerSized => Some(super::TupleInitializerSized),
             super::StructInitializerSized => Some(super::StructInitializerSized),
             super::VariableType(id) => Some(super::VariableType(id)),
-            super::ReturnType(id) => Some(super::ReturnType(id)),
+            super::ReturnValue(id) => Some(super::ReturnValue(id)),
+            super::ReturnType => Some(super::ReturnType),
             super::SizedArgumentType => Some(super::SizedArgumentType),
             super::SizedReturnType => Some(super::SizedReturnType),
             super::SizedYieldType => Some(super::SizedYieldType),
-            super::RepeatVec => Some(super::RepeatVec),
+            super::RepeatVec(suggest_flag) => Some(super::RepeatVec(suggest_flag)),
             super::FieldSized { adt_kind, last } => Some(super::FieldSized { adt_kind, last }),
             super::ConstSized => Some(super::ConstSized),
+            super::ConstPatternStructural => Some(super::ConstPatternStructural),
             super::SharedStatic => Some(super::SharedStatic),
             super::BuiltinDerivedObligation(ref cause) => {
                 tcx.lift(cause).map(super::BuiltinDerivedObligation)
@@ -542,6 +549,7 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::MethodReceiver => Some(super::MethodReceiver),
             super::BlockTailExpression(id) => Some(super::BlockTailExpression(id)),
             super::TrivialBound => Some(super::TrivialBound),
+            super::AssocTypeBound(impl_sp, sp) => Some(super::AssocTypeBound(impl_sp, sp)),
         }
     }
 }

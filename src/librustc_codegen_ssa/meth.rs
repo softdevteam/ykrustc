@@ -1,6 +1,5 @@
-use rustc_target::abi::call::FnType;
+use rustc_target::abi::call::FnAbi;
 
-use crate::callee;
 use crate::traits::*;
 
 use rustc::ty::{self, Ty, Instance};
@@ -21,14 +20,14 @@ impl<'a, 'tcx> VirtualIndex {
         self,
         bx: &mut Bx,
         llvtable: Bx::Value,
-        fn_ty: &FnType<'tcx, Ty<'tcx>>
+        fn_abi: &FnAbi<'tcx, Ty<'tcx>>
     ) -> Bx::Value {
         // Load the data pointer from the object.
         debug!("get_fn({:?}, {:?})", llvtable, self);
 
         let llvtable = bx.pointercast(
             llvtable,
-            bx.type_ptr_to(bx.fn_ptr_backend_type(fn_ty))
+            bx.type_ptr_to(bx.fn_ptr_backend_type(fn_abi))
         );
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
         let gep = bx.inbounds_gep(llvtable, &[bx.const_usize(self.0)]);
@@ -92,7 +91,14 @@ pub fn get_vtable<'tcx, Cx: CodegenMethods<'tcx>>(
 
     let methods = methods.cloned().map(|opt_mth| {
         opt_mth.map_or(nullptr, |(def_id, substs)| {
-            callee::resolve_and_get_fn_for_vtable(cx, def_id, substs)
+            cx.get_fn_addr(
+                ty::Instance::resolve_for_vtable(
+                    cx.tcx(),
+                    ty::ParamEnv::reveal_all(),
+                    def_id,
+                    substs,
+                ).unwrap()
+            )
         })
     });
 
@@ -102,7 +108,7 @@ pub fn get_vtable<'tcx, Cx: CodegenMethods<'tcx>>(
     // `get_vtable` in rust_mir/interpret/traits.rs
     // /////////////////////////////////////////////////////////////////////////////////////////////
     let components: Vec<_> = [
-        cx.get_fn(Instance::resolve_drop_in_place(cx.tcx(), ty)),
+        cx.get_fn_addr(Instance::resolve_drop_in_place(cx.tcx(), ty)),
         cx.const_usize(layout.size.bytes()),
         cx.const_usize(layout.align.abi.bytes())
     ].iter().cloned().chain(methods).collect();

@@ -1,6 +1,5 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(nll)]
-#![feature(inner_deref)]
 
 #![recursion_limit="256"]
 
@@ -49,6 +48,9 @@ use log::{debug, error, info};
 pub struct SaveContext<'l, 'tcx> {
     tcx: TyCtxt<'tcx>,
     tables: &'l ty::TypeckTables<'tcx>,
+    /// Used as a fallback when nesting the typeck tables during item processing
+    /// (if these are not available for that item, e.g. don't own a body)
+    empty_tables: &'l ty::TypeckTables<'tcx>,
     access_levels: &'l AccessLevels,
     span_utils: SpanUtils<'tcx>,
     config: Config,
@@ -130,7 +132,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
     pub fn get_extern_item_data(&self, item: &ast::ForeignItem) -> Option<Data> {
         let qualname = format!("::{}",
             self.tcx.def_path_str(self.tcx.hir().local_def_id_from_node_id(item.id)));
-        match item.node {
+        match item.kind {
             ast::ForeignItemKind::Fn(ref decl, ref generics) => {
                 filter!(self.span_utils, item.ident.span);
 
@@ -177,7 +179,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
     }
 
     pub fn get_item_data(&self, item: &ast::Item) -> Option<Data> {
-        match item.node {
+        match item.kind {
             ast::ItemKind::Fn(ref decl, .., ref generics, _) => {
                 let qualname = format!("::{}",
                     self.tcx.def_path_str(self.tcx.hir().local_def_id_from_node_id(item.id)));
@@ -301,7 +303,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                 }))
             }
             ast::ItemKind::Impl(.., ref trait_ref, ref typ, ref impls) => {
-                if let ast::TyKind::Path(None, ref path) = typ.node {
+                if let ast::TyKind::Path(None, ref path) = typ.kind {
                     // Common case impl for a struct or something basic.
                     if generated_code(path.span) {
                         return None;
@@ -396,7 +398,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
         let (qualname, parent_scope, decl_id, docs, attributes) =
             match self.tcx.impl_of_method(self.tcx.hir().local_def_id_from_node_id(id)) {
                 Some(impl_id) => match self.tcx.hir().get_if_local(impl_id) {
-                    Some(Node::Item(item)) => match item.node {
+                    Some(Node::Item(item)) => match item.kind {
                         hir::ItemKind::Impl(.., ref ty, _) => {
                             let mut qualname = String::from("<");
                             qualname.push_str(&self.tcx.hir().hir_to_pretty_string(ty.hir_id));
@@ -515,10 +517,10 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
         let expr_hir_id = self.tcx.hir().node_to_hir_id(expr.id);
         let hir_node = self.tcx.hir().expect_expr(expr_hir_id);
         let ty = self.tables.expr_ty_adjusted_opt(&hir_node);
-        if ty.is_none() || ty.unwrap().sty == ty::Error {
+        if ty.is_none() || ty.unwrap().kind == ty::Error {
             return None;
         }
-        match expr.node {
+        match expr.kind {
             ast::ExprKind::Field(ref sub_ex, ident) => {
                 let sub_ex_hir_id = self.tcx.hir().node_to_hir_id(sub_ex.id);
                 let hir_node = match self.tcx.hir().find(sub_ex_hir_id) {
@@ -532,7 +534,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                         return None;
                     }
                 };
-                match self.tables.expr_ty_adjusted(&hir_node).sty {
+                match self.tables.expr_ty_adjusted(&hir_node).kind {
                     ty::Adt(def, _) if !def.is_enum() => {
                         let variant = &def.non_enum_variant();
                         let index = self.tcx.find_field_index(ident, variant).unwrap();
@@ -552,7 +554,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                 }
             }
             ast::ExprKind::Struct(ref path, ..) => {
-                match self.tables.expr_ty_adjusted(&hir_node).sty {
+                match self.tables.expr_ty_adjusted(&hir_node).kind {
                     ty::Adt(def, _) if !def.is_enum() => {
                         let sub_span = path.segments.last().unwrap().ident.span;
                         filter!(self.span_utils, sub_span);
@@ -612,7 +614,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
             Node::TraitRef(tr) => tr.path.res,
 
             Node::Item(&hir::Item {
-                node: hir::ItemKind::Use(ref path, _),
+                kind: hir::ItemKind::Use(ref path, _),
                 ..
             }) |
             Node::Visibility(&Spanned {
@@ -629,37 +631,37 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
             }
 
             Node::Expr(&hir::Expr {
-                node: hir::ExprKind::Struct(ref qpath, ..),
+                kind: hir::ExprKind::Struct(ref qpath, ..),
                 ..
             }) => {
                 self.tables.qpath_res(qpath, hir_id)
             }
 
             Node::Expr(&hir::Expr {
-                node: hir::ExprKind::Path(ref qpath),
+                kind: hir::ExprKind::Path(ref qpath),
                 ..
             }) |
             Node::Pat(&hir::Pat {
-                node: hir::PatKind::Path(ref qpath),
+                kind: hir::PatKind::Path(ref qpath),
                 ..
             }) |
             Node::Pat(&hir::Pat {
-                node: hir::PatKind::Struct(ref qpath, ..),
+                kind: hir::PatKind::Struct(ref qpath, ..),
                 ..
             }) |
             Node::Pat(&hir::Pat {
-                node: hir::PatKind::TupleStruct(ref qpath, ..),
+                kind: hir::PatKind::TupleStruct(ref qpath, ..),
                 ..
             }) |
             Node::Ty(&hir::Ty {
-                node: hir::TyKind::Path(ref qpath),
+                kind: hir::TyKind::Path(ref qpath),
                 ..
             }) => {
                 self.tables.qpath_res(qpath, hir_id)
             }
 
             Node::Binding(&hir::Pat {
-                node: hir::PatKind::Binding(_, canonical_id, ..),
+                kind: hir::PatKind::Binding(_, canonical_id, ..),
                 ..
             }) => Res::Local(canonical_id),
 
@@ -965,7 +967,7 @@ impl<'l> PathCollector<'l> {
 
 impl<'l> Visitor<'l> for PathCollector<'l> {
     fn visit_pat(&mut self, p: &'l ast::Pat) {
-        match p.node {
+        match p.kind {
             PatKind::Struct(ref path, ..) => {
                 self.collected_paths.push((p.id, path));
             }
@@ -1115,6 +1117,7 @@ pub fn process_crate<'l, 'tcx, H: SaveHandler>(
         let save_ctxt = SaveContext {
             tcx,
             tables: &ty::TypeckTables::empty(None),
+            empty_tables: &ty::TypeckTables::empty(None),
             access_levels: &access_levels,
             span_utils: SpanUtils::new(&tcx.sess),
             config: find_config(config),

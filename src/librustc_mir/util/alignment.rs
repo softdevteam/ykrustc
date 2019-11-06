@@ -38,8 +38,8 @@ fn is_within_packed<'tcx, L>(tcx: TyCtxt<'tcx>, local_decls: &L, place: &Place<'
 where
     L: HasLocalDecls<'tcx>,
 {
-    let mut cursor = &*place.projection;
-    while let [proj_base @ .., elem] = cursor {
+    let mut cursor = place.projection.as_ref();
+    while let &[ref proj_base @ .., elem] = cursor {
         cursor = proj_base;
 
         match elem {
@@ -47,7 +47,7 @@ where
             ProjectionElem::Deref => break,
             ProjectionElem::Field(..) => {
                 let ty = Place::ty_from(&place.base, proj_base, local_decls, tcx).ty;
-                match ty.sty {
+                match ty.kind {
                     ty::Adt(def, _) if def.repr.packed() => {
                         return true
                     }

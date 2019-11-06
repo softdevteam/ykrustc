@@ -1092,18 +1092,31 @@ fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
         }
     }
 
-    let formats = tcx.sess.dependency_formats.borrow();
-    let deps = formats[&crate_type].iter();
+    let formats = tcx.dependency_formats(LOCAL_CRATE);
+    let deps = formats.iter().filter_map(|(t, list)| {
+        if *t == crate_type {
+            Some(list)
+        } else {
+            None
+        }
+    }).next().unwrap();
 
-    for (index, dep_format) in deps.enumerate() {
+    for (index, dep_format) in deps.iter().enumerate() {
         let cnum = CrateNum::new(index + 1);
         // For each dependency that we are linking to statically ...
         if *dep_format == Linkage::Static {
             // ... we add its symbol list to our export list.
             for &(symbol, level) in tcx.exported_symbols(cnum).iter() {
-                if level.is_below_threshold(export_threshold) {
-                    symbols.push(symbol.symbol_name(tcx).to_string());
+                if !level.is_below_threshold(export_threshold) {
+                    continue;
                 }
+
+                // FIXME rust-lang/rust#64319, rust-lang/rust#64872:
+                // We want to block export of generics from dylibs,
+                // but we must fix rust-lang/rust#65890 before we can
+                // do that robustly.
+
+                symbols.push(symbol.symbol_name(tcx).to_string());
             }
         }
     }

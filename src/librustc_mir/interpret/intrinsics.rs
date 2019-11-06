@@ -3,6 +3,7 @@
 //! and miri.
 
 use syntax::symbol::Symbol;
+use syntax_pos::Span;
 use rustc::ty;
 use rustc::ty::layout::{LayoutOf, Primitive, Size};
 use rustc::ty::subst::SubstsRef;
@@ -12,9 +13,10 @@ use rustc::mir::BinOp;
 use rustc::mir::interpret::{InterpResult, Scalar, GlobalId, ConstValue};
 
 use super::{
-    Machine, PlaceTy, OpTy, InterpCx,
+    Machine, PlaceTy, OpTy, InterpCx, ImmTy,
 };
 
+mod caller_location;
 mod type_name;
 
 fn numeric_intrinsic<'tcx, Tag>(
@@ -86,14 +88,26 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     /// Returns `true` if emulation happened.
     pub fn emulate_intrinsic(
         &mut self,
+        span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, M::PointerTag>],
         dest: PlaceTy<'tcx, M::PointerTag>,
     ) -> InterpResult<'tcx, bool> {
         let substs = instance.substs;
 
-        let intrinsic_name = &self.tcx.item_name(instance.def_id()).as_str()[..];
+        let intrinsic_name = &*self.tcx.item_name(instance.def_id()).as_str();
         match intrinsic_name {
+            "caller_location" => {
+                let topmost = span.ctxt().outer_expn().expansion_cause().unwrap_or(span);
+                let caller = self.tcx.sess.source_map().lookup_char_pos(topmost.lo());
+                let location = self.alloc_caller_location(
+                    Symbol::intern(&caller.file.name.to_string()),
+                    caller.line as u32,
+                    caller.col_display as u32 + 1,
+                )?;
+                self.write_scalar(location.ptr, dest)?;
+            }
+
             "min_align_of" |
             "pref_align_of" |
             "needs_drop" |
@@ -236,10 +250,97 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let result = Scalar::from_uint(truncated_bits, layout.size);
                 self.write_scalar(result, dest)?;
             }
+
+            "ptr_offset_from" => {
+                let isize_layout = self.layout_of(self.tcx.types.isize)?;
+                let a = self.read_immediate(args[0])?.to_scalar()?;
+                let b = self.read_immediate(args[1])?.to_scalar()?;
+
+                // Special case: if both scalars are *equal integers*
+                // and not NULL, we pretend there is an allocation of size 0 right there,
+                // and their offset is 0. (There's never a valid object at NULL, making it an
+                // exception from the exception.)
+                // This is the dual to the special exception for offset-by-0
+                // in the inbounds pointer offset operation (see the Miri code, `src/operator.rs`).
+                if a.is_bits() && b.is_bits() {
+                    let a = a.to_usize(self)?;
+                    let b = b.to_usize(self)?;
+                    if a == b && a != 0 {
+                        self.write_scalar(Scalar::from_int(0, isize_layout.size), dest)?;
+                        return Ok(true);
+                    }
+                }
+
+                // General case: we need two pointers.
+                let a = self.force_ptr(a)?;
+                let b = self.force_ptr(b)?;
+                if a.alloc_id != b.alloc_id {
+                    throw_ub_format!(
+                        "ptr_offset_from cannot compute offset of pointers into different \
+                        allocations.",
+                    );
+                }
+                let usize_layout = self.layout_of(self.tcx.types.usize)?;
+                let a_offset = ImmTy::from_uint(a.offset.bytes(), usize_layout);
+                let b_offset = ImmTy::from_uint(b.offset.bytes(), usize_layout);
+                let (val, _overflowed, _ty) = self.overflowing_binary_op(
+                    BinOp::Sub, a_offset, b_offset,
+                )?;
+                let pointee_layout = self.layout_of(substs.type_at(0))?;
+                let val = ImmTy::from_scalar(val, isize_layout);
+                let size = ImmTy::from_int(pointee_layout.size.bytes(), isize_layout);
+                self.exact_div(val, size, dest)?;
+            }
+
             "transmute" => {
                 self.copy_op_transmute(args[0], dest)?;
             }
+            "simd_insert" => {
+                let index = self.read_scalar(args[1])?.to_u32()? as u64;
+                let scalar = args[2];
+                let input = args[0];
+                let (len, e_ty) = self.read_vector_ty(input);
+                assert!(
+                    index < len,
+                    "Index `{}` must be in bounds of vector type `{}`: `[0, {})`",
+                    index, e_ty, len
+                );
+                assert_eq!(
+                    input.layout, dest.layout,
+                    "Return type `{}` must match vector type `{}`",
+                    dest.layout.ty, input.layout.ty
+                );
+                assert_eq!(
+                    scalar.layout.ty, e_ty,
+                    "Scalar type `{}` must match vector element type `{}`",
+                    scalar.layout.ty, e_ty
+                );
 
+                for i in 0..len {
+                    let place = self.place_field(dest, i)?;
+                    let value = if i == index {
+                        scalar
+                    } else {
+                        self.operand_field(input, i)?
+                    };
+                    self.copy_op(value, place)?;
+                }
+            }
+            "simd_extract" => {
+                let index = self.read_scalar(args[1])?.to_u32()? as _;
+                let (len, e_ty) = self.read_vector_ty(args[0]);
+                assert!(
+                    index < len,
+                    "index `{}` is out-of-bounds of vector type `{}` with length `{}`",
+                    index, e_ty, len
+                );
+                assert_eq!(
+                    e_ty, dest.layout.ty,
+                    "Return type `{}` must match vector element type `{}`",
+                    dest.layout.ty, e_ty
+                );
+                self.copy_op(self.operand_field(args[0], index)?, dest)?;
+            }
             _ => return Ok(false),
         }
 
@@ -256,18 +357,19 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     ) -> InterpResult<'tcx, bool> {
         let def_id = instance.def_id();
         if Some(def_id) == self.tcx.lang_items().panic_fn() {
-            assert!(args.len() == 1);
-            // &(&'static str, &'static str, u32, u32)
-            let place = self.deref_operand(args[0])?;
-            let (msg, file, line, col) = (
-                self.mplace_field(place, 0)?,
-                self.mplace_field(place, 1)?,
-                self.mplace_field(place, 2)?,
-                self.mplace_field(place, 3)?,
+            // &'static str, &core::panic::Location { &'static str, u32, u32 }
+            assert!(args.len() == 2);
+
+            let msg_place = self.deref_operand(args[0])?;
+            let msg = Symbol::intern(self.read_str(msg_place)?);
+
+            let location = self.deref_operand(args[1])?;
+            let (file, line, col) = (
+                self.mplace_field(location, 0)?,
+                self.mplace_field(location, 1)?,
+                self.mplace_field(location, 2)?,
             );
 
-            let msg_place = self.deref_operand(msg.into())?;
-            let msg = Symbol::intern(self.read_str(msg_place)?);
             let file_place = self.deref_operand(file.into())?;
             let file = Symbol::intern(self.read_str(file_place)?);
             let line = self.read_scalar(line.into())?.to_u32()?;
@@ -294,5 +396,31 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         } else {
             return Ok(false);
         }
+    }
+
+    pub fn exact_div(
+        &mut self,
+        a: ImmTy<'tcx, M::PointerTag>,
+        b: ImmTy<'tcx, M::PointerTag>,
+        dest: PlaceTy<'tcx, M::PointerTag>,
+    ) -> InterpResult<'tcx> {
+        // Performs an exact division, resulting in undefined behavior where
+        // `x % y != 0` or `y == 0` or `x == T::min_value() && y == -1`.
+        // First, check x % y != 0.
+        if self.binary_op(BinOp::Rem, a, b)?.to_bits()? != 0 {
+            // Then, check if `b` is -1, which is the "min_value / -1" case.
+            let minus1 = Scalar::from_int(-1, dest.layout.size);
+            let b = b.to_scalar().unwrap();
+            if b == minus1 {
+                throw_ub_format!("exact_div: result of dividing MIN by -1 cannot be represented")
+            } else {
+                throw_ub_format!(
+                    "exact_div: {} cannot be divided by {} without remainder",
+                    a.to_scalar().unwrap(),
+                    b,
+                )
+            }
+        }
+        self.binop_ignore_overflow(BinOp::Div, a, b, dest)
     }
 }

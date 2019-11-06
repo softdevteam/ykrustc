@@ -1,6 +1,7 @@
 use rustc::hir;
 use rustc::hir::def::Namespace;
 use rustc::hir::def_id::DefId;
+use rustc::hir::GeneratorKind;
 use rustc::mir::{
     AggregateKind, Constant, Field, Local, LocalKind, Location, Operand,
     Place, PlaceBase, PlaceRef, ProjectionElem, Rvalue, Statement, StatementKind,
@@ -14,7 +15,7 @@ use syntax_pos::Span;
 use syntax::symbol::sym;
 
 use super::borrow_set::BorrowData;
-use super::{MirBorrowckCtxt};
+use super::MirBorrowckCtxt;
 use crate::dataflow::move_paths::{InitLocation, LookupResult};
 
 pub(super) struct IncludingDowncast(pub(super) bool);
@@ -58,7 +59,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         if let TerminatorKind::Call {
             func: Operand::Constant(box Constant {
                 literal: ty::Const {
-                    ty: &ty::TyS { sty: ty::FnDef(id, _), ..  },
+                    ty: &ty::TyS { kind: ty::FnDef(id, _), ..  },
                     ..
                 },
                 ..
@@ -76,7 +77,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 };
 
                 debug!("add_moved_or_invoked_closure_note: closure={:?}", closure);
-                if let ty::Closure(did, _) = self.body.local_decls[closure].ty.sty {
+                if let ty::Closure(did, _) = self.body.local_decls[closure].ty.kind {
                     let hir_id = self.infcx.tcx.hir().as_local_hir_id(did).unwrap();
 
                     if let Some((span, name)) = self.infcx.tcx.typeck_tables_of(did)
@@ -99,7 +100,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
 
         // Check if we are just moving a closure after it has been invoked.
         if let Some(target) = target {
-            if let ty::Closure(did, _) = self.body.local_decls[target].ty.sty {
+            if let ty::Closure(did, _) = self.body.local_decls[target].ty.kind {
                 let hir_id = self.infcx.tcx.hir().as_local_hir_id(did).unwrap();
 
                 if let Some((span, name)) = self.infcx.tcx.typeck_tables_of(did)
@@ -400,7 +401,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             // If the type is a box, the field is described from the boxed type
             self.describe_field_from_ty(&ty.boxed_ty(), field, variant_index)
         } else {
-            match ty.sty {
+            match ty.kind {
                 ty::Adt(def, _) => {
                     let variant = if let Some(idx) = variant_index {
                         assert!(def.is_enum());
@@ -558,7 +559,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         // We need to add synthesized lifetimes where appropriate. We do
         // this by hooking into the pretty printer and telling it to label the
         // lifetimes without names with the value `'0`.
-        match ty.sty {
+        match ty.kind {
             ty::Ref(ty::RegionKind::ReLateBound(_, br), _, _)
             | ty::Ref(
                 ty::RegionKind::RePlaceholder(ty::PlaceholderRegion { name: br, .. }),
@@ -578,7 +579,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         let mut s = String::new();
         let mut printer = ty::print::FmtPrinter::new(self.infcx.tcx, &mut s, Namespace::TypeNS);
 
-        let region = match ty.sty {
+        let region = match ty.kind {
             ty::Ref(region, _, _) => {
                 match region {
                     ty::RegionKind::ReLateBound(_, br)
@@ -604,7 +605,7 @@ pub(super) enum UseSpans {
     // The access is caused by capturing a variable for a closure.
     ClosureUse {
         // This is true if the captured variable was from a generator.
-        is_generator: bool,
+        generator_kind: Option<GeneratorKind>,
         // The span of the args of the closure, including the `move` keyword if
         // it's present.
         args_span: Span,
@@ -628,6 +629,13 @@ impl UseSpans {
     pub(super) fn var_or_use(self) -> Span {
         match self {
             UseSpans::ClosureUse { var_span: span, .. } | UseSpans::OtherUse(span) => span,
+        }
+    }
+
+    pub(super) fn generator_kind(self) -> Option<GeneratorKind> {
+        match self {
+            UseSpans::ClosureUse { generator_kind, .. } => generator_kind,
+            _ => None,
         }
     }
 
@@ -656,7 +664,7 @@ impl UseSpans {
     /// Returns `false` if this place is not used in a closure.
     pub(super) fn for_closure(&self) -> bool {
         match *self {
-            UseSpans::ClosureUse { is_generator, .. } => !is_generator,
+            UseSpans::ClosureUse { generator_kind, .. } => generator_kind.is_none(),
             _ => false,
         }
     }
@@ -664,7 +672,7 @@ impl UseSpans {
     /// Returns `false` if this place is not used in a generator.
     pub(super) fn for_generator(&self) -> bool {
         match *self {
-            UseSpans::ClosureUse { is_generator, .. } => is_generator,
+            UseSpans::ClosureUse { generator_kind, .. } => generator_kind.is_some(),
             _ => false,
         }
     }
@@ -672,7 +680,7 @@ impl UseSpans {
     /// Describe the span associated with a use of a place.
     pub(super) fn describe(&self) -> String {
         match *self {
-            UseSpans::ClosureUse { is_generator, .. } => if is_generator {
+            UseSpans::ClosureUse { generator_kind, .. } => if generator_kind.is_some() {
                 " in generator".to_string()
             } else {
                 " in closure".to_string()
@@ -754,7 +762,7 @@ impl BorrowedContentSource<'tcx> {
     }
 
     fn from_call(func: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> Option<Self> {
-        match func.sty {
+        match func.kind {
             ty::FnDef(def_id, substs) => {
                 let trait_id = tcx.trait_of_item(def_id)?;
 
@@ -794,19 +802,20 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         if let  StatementKind::Assign(
             box(_, Rvalue::Aggregate(ref kind, ref places))
         ) = stmt.kind {
-            let (def_id, is_generator) = match kind {
-                box AggregateKind::Closure(def_id, _) => (def_id, false),
-                box AggregateKind::Generator(def_id, _, _) => (def_id, true),
+            let def_id = match kind {
+                box AggregateKind::Closure(def_id, _)
+                | box AggregateKind::Generator(def_id, _, _) => def_id,
                 _ => return OtherUse(stmt.source_info.span),
             };
 
             debug!(
-                "move_spans: def_id={:?} is_generator={:?} places={:?}",
-                def_id, is_generator, places
+                "move_spans: def_id={:?} places={:?}",
+                def_id, places
             );
-            if let Some((args_span, var_span)) = self.closure_span(*def_id, moved_place, places) {
+            if let Some((args_span, generator_kind, var_span))
+                = self.closure_span(*def_id, moved_place, places) {
                 return ClosureUse {
-                    is_generator,
+                    generator_kind,
                     args_span,
                     var_span,
                 };
@@ -829,12 +838,15 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             .get(location.statement_index)
         {
             Some(&Statement {
-                kind: StatementKind::Assign(box(Place {
-                    base: PlaceBase::Local(local),
-                    projection: box [],
-                }, _)),
+                kind: StatementKind::Assign(box(ref place, _)),
                 ..
-            }) => local,
+            }) => {
+                if let Some(local) = place.as_local() {
+                    local
+                } else {
+                    return OtherUse(use_span);
+                }
+            }
             _ => return OtherUse(use_span),
         };
 
@@ -857,11 +869,11 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                     "borrow_spans: def_id={:?} is_generator={:?} places={:?}",
                     def_id, is_generator, places
                 );
-                if let Some((args_span, var_span)) = self.closure_span(
+                if let Some((args_span, generator_kind, var_span)) = self.closure_span(
                     *def_id, Place::from(target).as_ref(), places
                 ) {
                     return ClosureUse {
-                        is_generator,
+                        generator_kind,
                         args_span,
                         var_span,
                     };
@@ -884,23 +896,25 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         def_id: DefId,
         target_place: PlaceRef<'cx, 'tcx>,
         places: &Vec<Operand<'tcx>>,
-    ) -> Option<(Span, Span)> {
+    ) -> Option<(Span, Option<GeneratorKind>, Span)> {
         debug!(
             "closure_span: def_id={:?} target_place={:?} places={:?}",
             def_id, target_place, places
         );
         let hir_id = self.infcx.tcx.hir().as_local_hir_id(def_id)?;
-        let expr = &self.infcx.tcx.hir().expect_expr(hir_id).node;
+        let expr = &self.infcx.tcx.hir().expect_expr(hir_id).kind;
         debug!("closure_span: hir_id={:?} expr={:?}", hir_id, expr);
         if let hir::ExprKind::Closure(
-            .., args_span, _
+            .., body_id, args_span, _
         ) = expr {
             for (upvar, place) in self.infcx.tcx.upvars(def_id)?.values().zip(places) {
                 match place {
                     Operand::Copy(place) |
                     Operand::Move(place) if target_place == place.as_ref() => {
                         debug!("closure_span: found captured local {:?}", place);
-                        return Some((*args_span, upvar.span));
+                        let body = self.infcx.tcx.hir().body(*body_id);
+                        let generator_kind = body.generator_kind();
+                        return Some((*args_span, generator_kind, upvar.span));
                     },
                     _ => {}
                 }

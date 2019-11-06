@@ -196,7 +196,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 exit_block.unit()
             }
             ExprKind::Call { ty, fun, args, from_hir_call } => {
-                let intrinsic = match ty.sty {
+                let intrinsic = match ty.kind {
                     ty::FnDef(def_id, _) => {
                         let f = ty.fn_sig(this.hir.tcx());
                         if f.abi() == Abi::RustIntrinsic || f.abi() == Abi::PlatformIntrinsic {
@@ -235,7 +235,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     });
                     let ptr_temp = Place::from(ptr_temp);
                     let block = unpack!(this.into(&ptr_temp, block, ptr));
-                    this.into(&ptr_temp.deref(), block, val)
+                    this.into(&this.hir.tcx().mk_place_deref(ptr_temp), block, val)
                 } else {
                     let args: Vec<_> = args
                         .into_iter()
@@ -244,6 +244,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                     let success = this.cfg.start_new_block();
                     let cleanup = this.diverge_cleanup();
+
+                    this.record_operands_moved(&args);
+
                     this.cfg.terminate(
                         block,
                         source_info,

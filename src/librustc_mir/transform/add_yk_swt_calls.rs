@@ -10,7 +10,7 @@
 use rustc::ty::{self, TyCtxt, List};
 use rustc::mir::{Operand, LocalDecl, Place, SourceInfo, BasicBlock, Local, BasicBlockData,
     TerminatorKind, Terminator, OUTERMOST_SOURCE_SCOPE, Constant, Body, PlaceBase};
-use rustc_data_structures::indexed_vec::Idx;
+use rustc_index::vec::Idx;
 use syntax_pos::{DUMMY_SP, sym};
 use syntax::attr;
 use crate::transform::{MirPass, MirSource};
@@ -77,7 +77,7 @@ impl MirPass<'_> for AddYkSWTCalls {
             let ret_val = LocalDecl::new_temp(unit_ty, DUMMY_SP);
             let ret_place = Place {
                 base: PlaceBase::Local(Local::new(num_orig_local_decls + new_local_decls.len())),
-                projection: Box::new([]),
+                projection: List::empty(),
             };
             new_local_decls.push(ret_val);
 

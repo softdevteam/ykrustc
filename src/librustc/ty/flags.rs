@@ -1,4 +1,4 @@
-use crate::ty::subst::{SubstsRef, UnpackedKind};
+use crate::ty::subst::{SubstsRef, GenericArgKind};
 use crate::ty::{self, Ty, TypeFlags, InferConst};
 use crate::mir::interpret::ConstValue;
 
@@ -19,9 +19,9 @@ impl FlagComputation {
     }
 
     #[allow(rustc::usage_of_ty_tykind)]
-    pub fn for_sty(st: &ty::TyKind<'_>) -> FlagComputation {
+    pub fn for_kind(kind: &ty::TyKind<'_>) -> FlagComputation {
         let mut result = FlagComputation::new();
-        result.add_sty(st);
+        result.add_kind(kind);
         result
     }
 
@@ -63,8 +63,8 @@ impl FlagComputation {
     }
 
     #[allow(rustc::usage_of_ty_tykind)]
-    fn add_sty(&mut self, st: &ty::TyKind<'_>) {
-        match st {
+    fn add_kind(&mut self, kind: &ty::TyKind<'_>) {
+        match kind {
             &ty::Bool |
             &ty::Char |
             &ty::Int(_) |
@@ -94,7 +94,7 @@ impl FlagComputation {
             &ty::Generator(_, ref substs, _) => {
                 self.add_flags(TypeFlags::HAS_TY_CLOSURE);
                 self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES);
-                self.add_substs(&substs.substs);
+                self.add_substs(substs);
             }
 
             &ty::GeneratorWitness(ref ts) => {
@@ -106,7 +106,7 @@ impl FlagComputation {
             &ty::Closure(_, ref substs) => {
                 self.add_flags(TypeFlags::HAS_TY_CLOSURE);
                 self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES);
-                self.add_substs(&substs.substs);
+                self.add_substs(substs);
             }
 
             &ty::Bound(debruijn, _) => {
@@ -114,6 +114,7 @@ impl FlagComputation {
             }
 
             &ty::Placeholder(..) => {
+                self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES);
                 self.add_flags(TypeFlags::HAS_TY_PLACEHOLDER);
             }
 
@@ -123,8 +124,7 @@ impl FlagComputation {
                 match infer {
                     ty::FreshTy(_) |
                     ty::FreshIntTy(_) |
-                    ty::FreshFloatTy(_) => {
-                    }
+                    ty::FreshFloatTy(_) => {}
 
                     ty::TyVar(_) |
                     ty::IntVar(_) |
@@ -240,17 +240,21 @@ impl FlagComputation {
                 self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES | TypeFlags::HAS_CT_INFER);
                 match infer {
                     InferConst::Fresh(_) => {}
-                    InferConst::Canonical(debruijn, _) => self.add_binder(debruijn),
                     InferConst::Var(_) => self.add_flags(TypeFlags::KEEP_IN_LOCAL_TCX),
                 }
             }
+            ConstValue::Bound(debruijn, _) => self.add_binder(debruijn),
             ConstValue::Param(_) => {
-                self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES | TypeFlags::HAS_PARAMS);
+                self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES);
+                self.add_flags(TypeFlags::HAS_PARAMS);
             }
             ConstValue::Placeholder(_) => {
-                self.add_flags(TypeFlags::HAS_FREE_REGIONS | TypeFlags::HAS_CT_PLACEHOLDER);
+                self.add_flags(TypeFlags::HAS_FREE_LOCAL_NAMES);
+                self.add_flags(TypeFlags::HAS_CT_PLACEHOLDER);
             }
-            _ => {},
+            ConstValue::Scalar(_) => {}
+            ConstValue::Slice { .. } => {}
+            ConstValue::ByRef { .. } => {}
         }
     }
 
@@ -266,9 +270,9 @@ impl FlagComputation {
     fn add_substs(&mut self, substs: SubstsRef<'_>) {
         for kind in substs {
             match kind.unpack() {
-                UnpackedKind::Type(ty) => self.add_ty(ty),
-                UnpackedKind::Lifetime(lt) => self.add_region(lt),
-                UnpackedKind::Const(ct) => self.add_const(ct),
+                GenericArgKind::Type(ty) => self.add_ty(ty),
+                GenericArgKind::Lifetime(lt) => self.add_region(lt),
+                GenericArgKind::Const(ct) => self.add_const(ct),
             }
         }
     }

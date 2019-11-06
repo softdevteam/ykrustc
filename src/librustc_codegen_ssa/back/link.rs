@@ -3,7 +3,7 @@
 
 use rustc::session::{Session, filesearch};
 use rustc::session::config::{
-    self, RUST_CGU_EXT, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer
+    self, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer
 };
 use rustc::session::search_paths::PathKind;
 use rustc::middle::dependency_format::Linkage;
@@ -15,7 +15,8 @@ use rustc_fs_util::fix_windows_verbatim_for_gcc;
 use rustc_target::spec::{PanicStrategy, RelroLevel, LinkerFlavor};
 use syntax::symbol::Symbol;
 
-use crate::{METADATA_FILENAME, RLIB_BYTECODE_EXTENSION, CrateInfo, CodegenResults};
+use crate::{METADATA_FILENAME, RLIB_BYTECODE_EXTENSION, CrateInfo,
+    looks_like_rust_object_file, CodegenResults};
 use super::archive::ArchiveBuilder;
 use super::command::Command;
 use super::linker::Linker;
@@ -219,15 +220,24 @@ pub fn get_linker(sess: &Session, linker: &Path, flavor: LinkerFlavor) -> (PathB
     (linker.to_path_buf(), cmd)
 }
 
-pub fn each_linked_rlib(sess: &Session,
-                               info: &CrateInfo,
-                               f: &mut dyn FnMut(CrateNum, &Path)) -> Result<(), String> {
+pub fn each_linked_rlib(
+    info: &CrateInfo,
+    f: &mut dyn FnMut(CrateNum, &Path),
+) -> Result<(), String> {
     let crates = info.used_crates_static.iter();
-    let fmts = sess.dependency_formats.borrow();
-    let fmts = fmts.get(&config::CrateType::Executable)
-                   .or_else(|| fmts.get(&config::CrateType::Staticlib))
-                   .or_else(|| fmts.get(&config::CrateType::Cdylib))
-                   .or_else(|| fmts.get(&config::CrateType::ProcMacro));
+    let mut fmts = None;
+    for (ty, list) in info.dependency_formats.iter() {
+        match ty {
+            config::CrateType::Executable |
+            config::CrateType::Staticlib |
+            config::CrateType::Cdylib |
+            config::CrateType::ProcMacro => {
+                fmts = Some(list);
+                break;
+            }
+            _ => {}
+        }
+    }
     let fmts = match fmts {
         Some(f) => f,
         None => return Err("could not find formats for rlibs".to_string())
@@ -314,6 +324,7 @@ fn link_rlib<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
             NativeLibraryKind::NativeStatic => {}
             NativeLibraryKind::NativeStaticNobundle |
             NativeLibraryKind::NativeFramework |
+            NativeLibraryKind::NativeRawDylib |
             NativeLibraryKind::NativeUnknown => continue,
         }
         if let Some(name) = lib.name {
@@ -406,7 +417,7 @@ fn link_staticlib<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
                            tempdir);
     let mut all_native_libs = vec![];
 
-    let res = each_linked_rlib(sess, &codegen_results.crate_info, &mut |cnum, path| {
+    let res = each_linked_rlib(&codegen_results.crate_info, &mut |cnum, path| {
         let name = &codegen_results.crate_info.crate_name[&cnum];
         let native_libs = &codegen_results.crate_info.native_libraries[&cnum];
 
@@ -881,7 +892,8 @@ pub fn print_native_static_libs(sess: &Session, all_native_libs: &[NativeLibrary
                     Some(format!("-framework {}", name))
                 },
                 // These are included, no need to print them
-                NativeLibraryKind::NativeStatic => None,
+                NativeLibraryKind::NativeStatic |
+                NativeLibraryKind::NativeRawDylib => None,
             }
         })
         .collect();
@@ -1291,7 +1303,11 @@ pub fn add_local_native_libraries(cmd: &mut dyn Linker,
             NativeLibraryKind::NativeUnknown => cmd.link_dylib(name),
             NativeLibraryKind::NativeFramework => cmd.link_framework(name),
             NativeLibraryKind::NativeStaticNobundle => cmd.link_staticlib(name),
-            NativeLibraryKind::NativeStatic => cmd.link_whole_staticlib(name, &search_path)
+            NativeLibraryKind::NativeStatic => cmd.link_whole_staticlib(name, &search_path),
+            NativeLibraryKind::NativeRawDylib => {
+                // FIXME(#58713): Proper handling for raw dylibs.
+                bug!("raw_dylib feature not yet implemented");
+            },
         }
     }
 }
@@ -1301,11 +1317,13 @@ pub fn add_local_native_libraries(cmd: &mut dyn Linker,
 // Rust crates are not considered at all when creating an rlib output. All
 // dependencies will be linked when producing the final output (instead of
 // the intermediate rlib version)
-fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
-                            sess: &'a Session,
-                            codegen_results: &CodegenResults,
-                            crate_type: config::CrateType,
-                            tmpdir: &Path) {
+fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
+    cmd: &mut dyn Linker,
+    sess: &'a Session,
+    codegen_results: &CodegenResults,
+    crate_type: config::CrateType,
+    tmpdir: &Path,
+) {
     // All of the heavy lifting has previously been accomplished by the
     // dependency_format module of the compiler. This is just crawling the
     // output of that module, adding crates as necessary.
@@ -1314,8 +1332,10 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
     // will slurp up the object files inside), and linking to a dynamic library
     // involves just passing the right -l flag.
 
-    let formats = sess.dependency_formats.borrow();
-    let data = formats.get(&crate_type).unwrap();
+    let (_, data) = codegen_results.crate_info.dependency_formats
+        .iter()
+        .find(|(ty, _)| *ty == crate_type)
+        .expect("failed to find crate type in dependency format list");
 
     // Invoke get_used_crates to ensure that we get a topological sorting of
     // crates.
@@ -1379,7 +1399,9 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
             _ if codegen_results.crate_info.profiler_runtime == Some(cnum) => {
                 add_static_crate::<B>(cmd, sess, codegen_results, tmpdir, crate_type, cnum);
             }
-            _ if codegen_results.crate_info.sanitizer_runtime == Some(cnum) => {
+            _ if codegen_results.crate_info.sanitizer_runtime == Some(cnum) &&
+                  crate_type == config::CrateType::Executable => {
+                // Link the sanitizer runtimes only if we are actually producing an executable
                 link_sanitizer_runtime::<B>(cmd, sess, codegen_results, tmpdir, cnum);
             }
             // compiler-builtins are always placed last to ensure that they're
@@ -1521,7 +1543,7 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
         let name = cratepath.file_name().unwrap().to_str().unwrap();
         let name = &name[3..name.len() - 5]; // chop off lib/.rlib
 
-        time_ext(sess.time_extended(), Some(sess), &format!("altering {}.rlib", name), || {
+        time_ext(sess.time_extended(), &format!("altering {}.rlib", name), || {
             let mut archive = <B as ArchiveBuilder>::new(sess, &dst, Some(cratepath));
             archive.update_symbols();
 
@@ -1535,23 +1557,9 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
                 let canonical = f.replace("-", "_");
                 let canonical_name = name.replace("-", "_");
 
-                // Look for `.rcgu.o` at the end of the filename to conclude
-                // that this is a Rust-related object file.
-                fn looks_like_rust(s: &str) -> bool {
-                    let path = Path::new(s);
-                    let ext = path.extension().and_then(|s| s.to_str());
-                    if ext != Some(OutputType::Object.extension()) {
-                        return false
-                    }
-                    let ext2 = path.file_stem()
-                        .and_then(|s| Path::new(s).extension())
-                        .and_then(|s| s.to_str());
-                    ext2 == Some(RUST_CGU_EXT)
-                }
-
                 let is_rust_object =
                     canonical.starts_with(&canonical_name) &&
-                    looks_like_rust(&f);
+                    looks_like_rust_object_file(&f);
 
                 // If we've been requested to skip all native object files
                 // (those not generated by the rust compiler) then we can skip
@@ -1627,10 +1635,12 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
 // generic function calls a native function, then the generic function must
 // be instantiated in the target crate, meaning that the native symbol must
 // also be resolved in the target crate.
-pub fn add_upstream_native_libraries(cmd: &mut dyn Linker,
-                                 sess: &Session,
-                                 codegen_results: &CodegenResults,
-                                 crate_type: config::CrateType) {
+pub fn add_upstream_native_libraries(
+    cmd: &mut dyn Linker,
+    sess: &Session,
+    codegen_results: &CodegenResults,
+    crate_type: config::CrateType,
+) {
     // Be sure to use a topological sorting of crates because there may be
     // interdependencies between native libraries. When passing -nodefaultlibs,
     // for example, almost all native libraries depend on libc, so we have to
@@ -1640,8 +1650,10 @@ pub fn add_upstream_native_libraries(cmd: &mut dyn Linker,
     // This passes RequireStatic, but the actual requirement doesn't matter,
     // we're just getting an ordering of crate numbers, we're not worried about
     // the paths.
-    let formats = sess.dependency_formats.borrow();
-    let data = formats.get(&crate_type).unwrap();
+    let (_, data) = codegen_results.crate_info.dependency_formats
+        .iter()
+        .find(|(ty, _)| *ty == crate_type)
+        .expect("failed to find crate type in dependency format list");
 
     let crates = &codegen_results.crate_info.used_crates_static;
     for &(cnum, _) in crates {
@@ -1668,7 +1680,11 @@ pub fn add_upstream_native_libraries(cmd: &mut dyn Linker,
                 // ignore statically included native libraries here as we've
                 // already included them when we included the rust library
                 // previously
-                NativeLibraryKind::NativeStatic => {}
+                NativeLibraryKind::NativeStatic => {},
+                NativeLibraryKind::NativeRawDylib => {
+                    // FIXME(#58713): Proper handling for raw dylibs.
+                    bug!("raw_dylib feature not yet implemented");
+                },
             }
         }
     }

@@ -1,11 +1,16 @@
 error[E0308]: mismatched types
   --> $DIR/enum-variant-generic-args.rs:13:25
    |
+LL | impl<T> Enum<T> {
+   |      - this type parameter
+LL |     fn ts_variant() {
 LL |         Self::TSVariant(());
-   |                         ^^ expected type parameter, found ()
+   |                         ^^ expected type parameter `T`, found ()
    |
    = note: expected type `T`
               found type `()`
+   = help: type parameters must be constrained to match other types
+   = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
 error[E0109]: type arguments are not allowed for this type
   --> $DIR/enum-variant-generic-args.rs:15:27
@@ -22,11 +27,16 @@ LL |         Self::<()>::TSVariant(());
 error[E0308]: mismatched types
   --> $DIR/enum-variant-generic-args.rs:17:31
    |
+LL | impl<T> Enum<T> {
+   |      - this type parameter
+...
 LL |         Self::<()>::TSVariant(());
-   |                               ^^ expected type parameter, found ()
+   |                               ^^ expected type parameter `T`, found ()
    |
    = note: expected type `T`
               found type `()`
+   = help: type parameters must be constrained to match other types
+   = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
 error[E0109]: type arguments are not allowed for this type
   --> $DIR/enum-variant-generic-args.rs:20:16
@@ -43,11 +53,16 @@ LL |         Self::<()>::TSVariant::<()>(());
 error[E0308]: mismatched types
   --> $DIR/enum-variant-generic-args.rs:26:29
    |
+LL | impl<T> Enum<T> {
+   |      - this type parameter
+...
 LL |         Self::SVariant { v: () };
-   |                             ^^ expected type parameter, found ()
+   |                             ^^ expected type parameter `T`, found ()
    |
    = note: expected type `T`
               found type `()`
+   = help: type parameters must be constrained to match other types
+   = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
 error[E0109]: type arguments are not allowed for this type
   --> $DIR/enum-variant-generic-args.rs:28:26
@@ -58,11 +73,16 @@ LL |         Self::SVariant::<()> { v: () };
 error[E0308]: mismatched types
   --> $DIR/enum-variant-generic-args.rs:28:35
    |
+LL | impl<T> Enum<T> {
+   |      - this type parameter
+...
 LL |         Self::SVariant::<()> { v: () };
-   |                                   ^^ expected type parameter, found ()
+   |                                   ^^ expected type parameter `T`, found ()
    |
    = note: expected type `T`
               found type `()`
+   = help: type parameters must be constrained to match other types
+   = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
 error[E0109]: type arguments are not allowed for this type
   --> $DIR/enum-variant-generic-args.rs:31:16
@@ -73,11 +93,16 @@ LL |         Self::<()>::SVariant { v: () };
 error[E0308]: mismatched types
   --> $DIR/enum-variant-generic-args.rs:31:35
    |
+LL | impl<T> Enum<T> {
+   |      - this type parameter
+...
 LL |         Self::<()>::SVariant { v: () };
-   |                                   ^^ expected type parameter, found ()
+   |                                   ^^ expected type parameter `T`, found ()
    |
    = note: expected type `T`
               found type `()`
+   = help: type parameters must be constrained to match other types
+   = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
 error[E0109]: type arguments are not allowed for this type
   --> $DIR/enum-variant-generic-args.rs:34:16
@@ -94,11 +119,16 @@ LL |         Self::<()>::SVariant::<()> { v: () };
 error[E0308]: mismatched types
   --> $DIR/enum-variant-generic-args.rs:34:41
    |
+LL | impl<T> Enum<T> {
+   |      - this type parameter
+...
 LL |         Self::<()>::SVariant::<()> { v: () };
-   |                                         ^^ expected type parameter, found ()
+   |                                         ^^ expected type parameter `T`, found ()
    |
    = note: expected type `T`
               found type `()`
+   = help: type parameters must be constrained to match other types
+   = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
 error[E0109]: type arguments are not allowed for this type
   --> $DIR/enum-variant-generic-args.rs:41:26

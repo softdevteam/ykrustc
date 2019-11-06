@@ -32,7 +32,7 @@ pub fn push_debuginfo_type_name<'tcx>(
     // .natvis visualizers (and perhaps other existing native debuggers?)
     let cpp_like_names = tcx.sess.target.target.options.is_like_msvc;
 
-    match t.sty {
+    match t.kind {
         ty::Bool => output.push_str("bool"),
         ty::Char => output.push_str("char"),
         ty::Str => output.push_str("str"),
@@ -221,7 +221,7 @@ pub fn push_debuginfo_type_name<'tcx>(
             output.push_str(&tcx.crate_name(def_id.krate).as_str());
             for path_element in tcx.def_path(def_id).data {
                 output.push_str("::");
-                output.push_str(&path_element.data.as_interned_str().as_str());
+                output.push_str(&path_element.data.as_symbol().as_str());
             }
         } else {
             output.push_str(&tcx.item_name(def_id).as_str());

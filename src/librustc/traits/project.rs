@@ -337,7 +337,7 @@ impl<'a, 'b, 'tcx> TypeFolder<'tcx> for AssocTypeNormalizer<'a, 'b, 'tcx> {
         // should occur eventually).
 
         let ty = ty.super_fold_with(self);
-        match ty.sty {
+        match ty.kind {
             ty::Opaque(def_id, substs) if !substs.has_escaping_bound_vars() => { // (*)
                 // Only normalize `impl Trait` after type-checking, usually in codegen.
                 match self.param_env.reveal {
@@ -921,7 +921,7 @@ fn assemble_candidates_from_trait_def<'cx, 'tcx>(
 
     let tcx = selcx.tcx();
     // Check whether the self-type is itself a projection.
-    let (def_id, substs) = match obligation_trait_ref.self_ty().sty {
+    let (def_id, substs) = match obligation_trait_ref.self_ty().kind {
         ty::Projection(ref data) => {
             (data.trait_ref(tcx).def_id, data.substs)
         }
@@ -1199,7 +1199,7 @@ fn confirm_object_candidate<'cx, 'tcx>(
     let object_ty = selcx.infcx().shallow_resolve(self_ty);
     debug!("confirm_object_candidate(object_ty={:?})",
            object_ty);
-    let data = match object_ty.sty {
+    let data = match object_ty.kind {
         ty::Dynamic(ref data, ..) => data,
         _ => {
             span_bug!(
@@ -1259,7 +1259,7 @@ fn confirm_generator_candidate<'cx, 'tcx>(
     obligation: &ProjectionTyObligation<'tcx>,
     vtable: VtableGeneratorData<'tcx, PredicateObligation<'tcx>>,
 ) -> Progress<'tcx> {
-    let gen_sig = vtable.substs.poly_sig(vtable.generator_def_id, selcx.tcx());
+    let gen_sig = vtable.substs.as_generator().poly_sig(vtable.generator_def_id, selcx.tcx());
     let Normalized {
         value: gen_sig,
         obligations
@@ -1334,7 +1334,8 @@ fn confirm_closure_candidate<'cx, 'tcx>(
 ) -> Progress<'tcx> {
     let tcx = selcx.tcx();
     let infcx = selcx.infcx();
-    let closure_sig_ty = vtable.substs.closure_sig_ty(vtable.closure_def_id, tcx);
+    let closure_sig_ty = vtable.substs
+        .as_closure().sig_ty(vtable.closure_def_id, tcx);
     let closure_sig = infcx.shallow_resolve(closure_sig_ty).fn_sig(tcx);
     let Normalized {
         value: closure_sig,
@@ -1504,8 +1505,8 @@ fn assoc_ty_def(
 
     if let Some(assoc_item) = trait_def
         .ancestors(tcx, impl_def_id)
-        .defs(tcx, assoc_ty_name, ty::AssocKind::Type, trait_def_id)
-        .next() {
+        .leaf_def(tcx, assoc_ty_name, ty::AssocKind::Type) {
+
         assoc_item
     } else {
         // This is saying that neither the trait nor

@@ -14,7 +14,7 @@ use rustc::session::Session;
 use rustc_data_structures::fx::FxHashMap;
 use syntax::ast::*;
 use syntax::attr;
-use syntax::ext::proc_macro::is_proc_macro_attr;
+use syntax::expand::is_proc_macro_attr;
 use syntax::feature_gate::is_builtin_attr;
 use syntax::source_map::Spanned;
 use syntax::symbol::{kw, sym};
@@ -73,6 +73,8 @@ struct AstValidator<'a> {
     /// these booleans.
     warning_period_57979_didnt_record_next_impl_trait: bool,
     warning_period_57979_impl_trait_in_proj: bool,
+
+    lint_buffer: &'a mut lint::LintBuffer,
 }
 
 impl<'a> AstValidator<'a> {
@@ -107,7 +109,7 @@ impl<'a> AstValidator<'a> {
                 // rust-lang/rust#57979: bug in old `visit_generic_args` called
                 // `walk_ty` rather than `visit_ty`, skipping outer `impl Trait`
                 // if it happened to occur at `ty`.
-                if let TyKind::ImplTrait(..) = ty.node {
+                if let TyKind::ImplTrait(..) = ty.kind {
                     self.warning_period_57979_didnt_record_next_impl_trait = true;
                 }
             }
@@ -126,7 +128,7 @@ impl<'a> AstValidator<'a> {
         // rust-lang/rust#57979: bug in old `visit_generic_args` called
         // `walk_ty` rather than `visit_ty`, skippping outer `impl Trait`
         // if it happened to occur at `ty`.
-        if let TyKind::ImplTrait(..) = ty.node {
+        if let TyKind::ImplTrait(..) = ty.kind {
             self.warning_period_57979_didnt_record_next_impl_trait = true;
         }
         self.visit_ty(ty);
@@ -149,7 +151,7 @@ impl<'a> AstValidator<'a> {
 
     // Mirrors `visit::walk_ty`, but tracks relevant state.
     fn walk_ty(&mut self, t: &'a Ty) {
-        match t.node {
+        match t.kind {
             TyKind::ImplTrait(..) => {
                 let outer_impl_trait = self.outer_impl_trait(t.span);
                 self.with_impl_trait(Some(outer_impl_trait), |this| visit::walk_ty(this, t))
@@ -229,9 +231,9 @@ impl<'a> AstValidator<'a> {
         err.emit();
     }
 
-    fn check_decl_no_pat<ReportFn: Fn(Span, bool)>(&self, decl: &FnDecl, report_err: ReportFn) {
+    fn check_decl_no_pat<F: FnMut(Span, bool)>(decl: &FnDecl, mut report_err: F) {
         for arg in &decl.inputs {
-            match arg.pat.node {
+            match arg.pat.kind {
                 PatKind::Ident(BindingMode::ByValue(Mutability::Immutable), _, None) |
                 PatKind::Wild => {}
                 PatKind::Ident(BindingMode::ByValue(Mutability::Mutable), _, None) =>
@@ -263,7 +265,8 @@ impl<'a> AstValidator<'a> {
                 let mut err = self.err_handler().struct_span_err(poly.span,
                     &format!("`?Trait` is not permitted in {}", where_));
                 if is_trait {
-                    err.note(&format!("traits are `?{}` by default", poly.trait_ref.path));
+                    let path_str = pprust::path_to_string(&poly.trait_ref.path);
+                    err.note(&format!("traits are `?{}` by default", path_str));
                 }
                 err.emit();
             }
@@ -286,11 +289,11 @@ impl<'a> AstValidator<'a> {
     // m!(S);
     // ```
     fn check_expr_within_pat(&self, expr: &Expr, allow_paths: bool) {
-        match expr.node {
+        match expr.kind {
             ExprKind::Lit(..) | ExprKind::Err => {}
             ExprKind::Path(..) if allow_paths => {}
             ExprKind::Unary(UnOp::Neg, ref inner)
-                if match inner.node { ExprKind::Lit(_) => true, _ => false } => {}
+                if match inner.kind { ExprKind::Lit(_) => true, _ => false } => {}
             _ => self.err_handler().span_err(expr.span, "arbitrary expressions aren't allowed \
                                                          in patterns")
         }
@@ -442,7 +445,7 @@ fn validate_generics_order<'a>(
 
 impl<'a> Visitor<'a> for AstValidator<'a> {
     fn visit_expr(&mut self, expr: &'a Expr) {
-        match &expr.node {
+        match &expr.kind {
             ExprKind::Closure(_, _, _, fn_decl, _, _) => {
                 self.check_fn_decl(fn_decl);
             }
@@ -456,10 +459,10 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
     }
 
     fn visit_ty(&mut self, ty: &'a Ty) {
-        match ty.node {
+        match ty.kind {
             TyKind::BareFn(ref bfty) => {
                 self.check_fn_decl(&bfty.decl);
-                self.check_decl_no_pat(&bfty.decl, |span, _| {
+                Self::check_decl_no_pat(&bfty.decl, |span, _| {
                     struct_span_err!(self.session, span, E0561,
                                      "patterns aren't allowed in function pointer types").emit();
                 });
@@ -482,7 +485,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             TyKind::ImplTrait(_, ref bounds) => {
                 if self.is_impl_trait_banned {
                     if self.warning_period_57979_impl_trait_in_proj {
-                        self.session.buffer_lint(
+                        self.lint_buffer.buffer_lint(
                             NESTED_IMPL_TRAIT, ty.id, ty.span,
                             "`impl Trait` is not allowed in path parameters");
                     } else {
@@ -493,7 +496,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
 
                 if let Some(outer_impl_trait) = self.outer_impl_trait {
                     if outer_impl_trait.should_warn_instead_of_error() {
-                        self.session.buffer_lint_with_diagnostic(
+                        self.lint_buffer.buffer_lint_with_diagnostic(
                             NESTED_IMPL_TRAIT, ty.id, ty.span,
                             "nested `impl Trait` is not allowed",
                             BuiltinLintDiagnostics::NestedImplTrait {
@@ -538,10 +541,10 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             self.has_proc_macro_decls = true;
         }
 
-        match item.node {
+        match item.kind {
             ItemKind::Impl(unsafety, polarity, _, _, Some(..), ref ty, ref impl_items) => {
                 self.invalid_visibility(&item.vis, None);
-                if let TyKind::Err = ty.node {
+                if let TyKind::Err = ty.kind {
                     self.err_handler()
                         .struct_span_err(item.span, "`impl Trait for .. {}` is an obsolete syntax")
                         .help("use `auto trait Trait {}` instead").emit();
@@ -551,7 +554,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                 }
                 for impl_item in impl_items {
                     self.invalid_visibility(&impl_item.vis, None);
-                    if let ImplItemKind::Method(ref sig, _) = impl_item.node {
+                    if let ImplItemKind::Method(ref sig, _) = impl_item.kind {
                         self.check_trait_fn_not_const(sig.header.constness);
                         self.check_trait_fn_not_async(impl_item.span, sig.header.asyncness.node);
                     }
@@ -628,14 +631,14 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                 }
                 self.no_questions_in_bounds(bounds, "supertraits", true);
                 for trait_item in trait_items {
-                    if let TraitItemKind::Method(ref sig, ref block) = trait_item.node {
+                    if let TraitItemKind::Method(ref sig, ref block) = trait_item.kind {
                         self.check_fn_decl(&sig.decl);
                         self.check_trait_fn_not_async(trait_item.span, sig.header.asyncness.node);
                         self.check_trait_fn_not_const(sig.header.constness);
                         if block.is_none() {
-                            self.check_decl_no_pat(&sig.decl, |span, mut_ident| {
+                            Self::check_decl_no_pat(&sig.decl, |span, mut_ident| {
                                 if mut_ident {
-                                    self.session.buffer_lint(
+                                    self.lint_buffer.buffer_lint(
                                         lint::builtin::PATTERNS_IN_FNS_WITHOUT_BODY,
                                         trait_item.id, span,
                                         "patterns aren't allowed in methods without bodies");
@@ -654,7 +657,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                 if attr::contains_name(&item.attrs, sym::warn_directory_ownership) {
                     let lint = lint::builtin::LEGACY_DIRECTORY_OWNERSHIP;
                     let msg = "cannot declare a new module at this location";
-                    self.session.buffer_lint(lint, item.id, item.span, msg);
+                    self.lint_buffer.buffer_lint(lint, item.id, item.span, msg);
                 }
             }
             ItemKind::Union(ref vdata, _) => {
@@ -682,10 +685,10 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
     }
 
     fn visit_foreign_item(&mut self, fi: &'a ForeignItem) {
-        match fi.node {
+        match fi.kind {
             ForeignItemKind::Fn(ref decl, _) => {
                 self.check_fn_decl(decl);
-                self.check_decl_no_pat(decl, |span, _| {
+                Self::check_decl_no_pat(decl, |span, _| {
                     struct_span_err!(self.session, span, E0130,
                                      "patterns aren't allowed in foreign function declarations")
                         .span_label(span, "pattern not allowed in foreign function").emit();
@@ -786,7 +789,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
     }
 
     fn visit_pat(&mut self, pat: &'a Pat) {
-        match pat.node {
+        match pat.kind {
             PatKind::Lit(ref expr) => {
                 self.check_expr_within_pat(expr, false);
             }
@@ -832,17 +835,14 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
     }
 
     fn visit_impl_item(&mut self, ii: &'a ImplItem) {
-        match ii.node {
-            ImplItemKind::Method(ref sig, _) => {
-                self.check_fn_decl(&sig.decl);
-            }
-            _ => {}
+        if let ImplItemKind::Method(ref sig, _) = ii.kind {
+            self.check_fn_decl(&sig.decl);
         }
         visit::walk_impl_item(self, ii);
     }
 }
 
-pub fn check_crate(session: &Session, krate: &Crate) -> bool {
+pub fn check_crate(session: &Session, krate: &Crate, lints: &mut lint::LintBuffer) -> bool {
     let mut validator = AstValidator {
         session,
         has_proc_macro_decls: false,
@@ -851,6 +851,7 @@ pub fn check_crate(session: &Session, krate: &Crate) -> bool {
         is_assoc_ty_bound_banned: false,
         warning_period_57979_didnt_record_next_impl_trait: false,
         warning_period_57979_impl_trait_in_proj: false,
+        lint_buffer: lints,
     };
     visit::walk_crate(&mut validator, krate);
 

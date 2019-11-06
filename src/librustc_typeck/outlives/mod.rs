@@ -2,9 +2,10 @@ use hir::Node;
 use rustc::hir;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use rustc::ty::query::Providers;
-use rustc::ty::subst::UnpackedKind;
+use rustc::ty::subst::GenericArgKind;
 use rustc::ty::{self, CratePredicatesMap, TyCtxt};
 use syntax::symbol::sym;
+use syntax_pos::Span;
 
 mod explicit;
 mod implicit_infer;
@@ -23,14 +24,14 @@ pub fn provide(providers: &mut Providers<'_>) {
 fn inferred_outlives_of(
     tcx: TyCtxt<'_>,
     item_def_id: DefId,
-) -> &[ty::Predicate<'_>] {
+) -> &[(ty::Predicate<'_>, Span)] {
     let id = tcx
         .hir()
         .as_local_hir_id(item_def_id)
         .expect("expected local def-id");
 
     match tcx.hir().get(id) {
-        Node::Item(item) => match item.node {
+        Node::Item(item) => match item.kind {
             hir::ItemKind::Struct(..) | hir::ItemKind::Enum(..) | hir::ItemKind::Union(..) => {
                 let crate_map = tcx.inferred_outlives_crate(LOCAL_CRATE);
 
@@ -43,7 +44,7 @@ fn inferred_outlives_of(
                 if tcx.has_attr(item_def_id, sym::rustc_outlives) {
                     let mut pred: Vec<String> = predicates
                         .iter()
-                        .map(|out_pred| match out_pred {
+                        .map(|(out_pred, _)| match out_pred {
                             ty::Predicate::RegionOutlives(p) => p.to_string(),
                             ty::Predicate::TypeOutlives(p) => p.to_string(),
                             err => bug!("unexpected predicate {:?}", err),
@@ -96,27 +97,27 @@ fn inferred_outlives_crate(
     let predicates = global_inferred_outlives
         .iter()
         .map(|(&def_id, set)| {
-            let predicates = tcx.arena.alloc_from_iter(set
+            let predicates = &*tcx.arena.alloc_from_iter(set
                 .iter()
                 .filter_map(
-                    |ty::OutlivesPredicate(kind1, region2)| match kind1.unpack() {
-                        UnpackedKind::Type(ty1) => {
-                            Some(ty::Predicate::TypeOutlives(ty::Binder::bind(
+                    |(ty::OutlivesPredicate(kind1, region2), &span)| match kind1.unpack() {
+                        GenericArgKind::Type(ty1) => {
+                            Some((ty::Predicate::TypeOutlives(ty::Binder::bind(
                                 ty::OutlivesPredicate(ty1, region2)
-                            )))
+                            )), span))
                         }
-                        UnpackedKind::Lifetime(region1) => {
-                            Some(ty::Predicate::RegionOutlives(
+                        GenericArgKind::Lifetime(region1) => {
+                            Some((ty::Predicate::RegionOutlives(
                                 ty::Binder::bind(ty::OutlivesPredicate(region1, region2))
-                            ))
+                            ), span))
                         }
-                        UnpackedKind::Const(_) => {
+                        GenericArgKind::Const(_) => {
                             // Generic consts don't impose any constraints.
                             None
                         }
                     },
                 ));
-            (def_id, &*predicates)
+            (def_id, predicates)
         }).collect();
 
     tcx.arena.alloc(ty::CratePredicatesMap {

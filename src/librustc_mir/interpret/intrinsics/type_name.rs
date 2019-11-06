@@ -1,6 +1,6 @@
 use rustc::ty::{
     TyCtxt, Ty,
-    subst::{UnpackedKind, Kind},
+    subst::{GenericArgKind, GenericArg},
     print::{Printer, PrettyPrinter, Print},
     self,
 };
@@ -32,7 +32,7 @@ impl<'tcx> Printer<'tcx> for AbsolutePathPrinter<'tcx> {
     }
 
     fn print_type(mut self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
-        match ty.sty {
+        match ty.kind {
             // Types without identity.
             | ty::Bool
             | ty::Char
@@ -67,9 +67,8 @@ impl<'tcx> Printer<'tcx> for AbsolutePathPrinter<'tcx> {
             | ty::Opaque(def_id, substs)
             | ty::Projection(ty::ProjectionTy { item_def_id: def_id, substs })
             | ty::UnnormalizedProjection(ty::ProjectionTy { item_def_id: def_id, substs })
-            | ty::Closure(def_id, ty::ClosureSubsts { substs })
-            | ty::Generator(def_id, ty::GeneratorSubsts { substs }, _)
-            => self.print_def_path(def_id, substs),
+            | ty::Closure(def_id, substs)
+            | ty::Generator(def_id, substs, _) => self.print_def_path(def_id, substs),
             ty::Foreign(def_id) => self.print_def_path(def_id, &[]),
 
             ty::GeneratorWitness(_) => {
@@ -149,19 +148,19 @@ impl<'tcx> Printer<'tcx> for AbsolutePathPrinter<'tcx> {
 
         self.path.push_str("::");
 
-        self.path.push_str(&disambiguated_data.data.as_interned_str().as_str());
+        self.path.push_str(&disambiguated_data.data.as_symbol().as_str());
         Ok(self)
     }
 
     fn path_generic_args(
         mut self,
         print_prefix: impl FnOnce(Self) -> Result<Self::Path, Self::Error>,
-        args: &[Kind<'tcx>],
+        args: &[GenericArg<'tcx>],
     ) -> Result<Self::Path, Self::Error> {
         self = print_prefix(self)?;
         let args = args.iter().cloned().filter(|arg| {
             match arg.unpack() {
-                UnpackedKind::Lifetime(_) => false,
+                GenericArgKind::Lifetime(_) => false,
                 _ => true,
             }
         });

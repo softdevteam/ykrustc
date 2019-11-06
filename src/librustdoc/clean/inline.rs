@@ -3,8 +3,8 @@
 use std::iter::once;
 
 use syntax::ast;
-use syntax::ext::base::MacroKind;
 use syntax::symbol::sym;
+use syntax_pos::hygiene::MacroKind;
 use syntax_pos::Span;
 
 use rustc::hir;
@@ -131,7 +131,7 @@ pub fn try_inline(
         name: Some(name.clean(cx)),
         attrs,
         inner,
-        visibility: Some(clean::Public),
+        visibility: clean::Public,
         stability: cx.tcx.lookup_stability(did).clean(cx),
         deprecation: cx.tcx.lookup_deprecation(did).clean(cx),
         def_id: did,
@@ -193,7 +193,7 @@ pub fn build_external_trait(cx: &DocContext<'_>, did: DefId) -> clean::Trait {
     let auto_trait = cx.tcx.trait_def(did).has_auto_impl;
     let trait_items = cx.tcx.associated_items(did).map(|item| item.clean(cx)).collect();
     let predicates = cx.tcx.predicates_of(did);
-    let generics = (cx.tcx.generics_of(did), &predicates).clean(cx);
+    let generics = (cx.tcx.generics_of(did), predicates).clean(cx);
     let generics = filter_non_trait_generics(did, generics);
     let (generics, supertrait_bounds) = separate_supertrait_bounds(generics);
     let is_spotlight = load_attrs(cx, did).clean(cx).has_doc_flag(sym::spotlight);
@@ -217,10 +217,10 @@ fn build_external_function(cx: &DocContext<'_>, did: DefId) -> clean::Function {
     } else {
         hir::Constness::NotConst
     };
-
+    let asyncness =  cx.tcx.asyncness(did);
     let predicates = cx.tcx.predicates_of(did);
     let (generics, decl) = clean::enter_impl_trait(cx, || {
-        ((cx.tcx.generics_of(did), &predicates).clean(cx), (did, sig).clean(cx))
+        ((cx.tcx.generics_of(did), predicates).clean(cx), (did, sig).clean(cx))
     });
     let (all_types, ret_types) = clean::get_all_types(&generics, &decl, cx);
     clean::Function {
@@ -230,7 +230,7 @@ fn build_external_function(cx: &DocContext<'_>, did: DefId) -> clean::Function {
             unsafety: sig.unsafety(),
             abi: sig.abi(),
             constness,
-            asyncness: hir::IsAsync::NotAsync,
+            asyncness,
         },
         all_types,
         ret_types,
@@ -241,7 +241,7 @@ fn build_enum(cx: &DocContext<'_>, did: DefId) -> clean::Enum {
     let predicates = cx.tcx.explicit_predicates_of(did);
 
     clean::Enum {
-        generics: (cx.tcx.generics_of(did), &predicates).clean(cx),
+        generics: (cx.tcx.generics_of(did), predicates).clean(cx),
         variants_stripped: false,
         variants: cx.tcx.adt_def(did).variants.clean(cx),
     }
@@ -257,7 +257,7 @@ fn build_struct(cx: &DocContext<'_>, did: DefId) -> clean::Struct {
             CtorKind::Fn => doctree::Tuple,
             CtorKind::Const => doctree::Unit,
         },
-        generics: (cx.tcx.generics_of(did), &predicates).clean(cx),
+        generics: (cx.tcx.generics_of(did), predicates).clean(cx),
         fields: variant.fields.clean(cx),
         fields_stripped: false,
     }
@@ -269,7 +269,7 @@ fn build_union(cx: &DocContext<'_>, did: DefId) -> clean::Union {
 
     clean::Union {
         struct_type: doctree::Plain,
-        generics: (cx.tcx.generics_of(did), &predicates).clean(cx),
+        generics: (cx.tcx.generics_of(did), predicates).clean(cx),
         fields: variant.fields.clean(cx),
         fields_stripped: false,
     }
@@ -280,7 +280,7 @@ fn build_type_alias(cx: &DocContext<'_>, did: DefId) -> clean::Typedef {
 
     clean::Typedef {
         type_: cx.tcx.type_of(did).clean(cx),
-        generics: (cx.tcx.generics_of(did), &predicates).clean(cx),
+        generics: (cx.tcx.generics_of(did), predicates).clean(cx),
     }
 }
 
@@ -333,7 +333,7 @@ pub fn build_impl(cx: &DocContext<'_>, did: DefId, attrs: Option<Attrs<'_>>,
     }
 
     let for_ = if let Some(hir_id) = tcx.hir().as_local_hir_id(did) {
-        match tcx.hir().expect_item(hir_id).node {
+        match tcx.hir().expect_item(hir_id).kind {
             hir::ItemKind::Impl(.., ref t, _) => {
                 t.clean(cx)
             }
@@ -355,7 +355,7 @@ pub fn build_impl(cx: &DocContext<'_>, did: DefId, attrs: Option<Attrs<'_>>,
 
     let predicates = tcx.explicit_predicates_of(did);
     let (trait_items, generics) = if let Some(hir_id) = tcx.hir().as_local_hir_id(did) {
-        match tcx.hir().expect_item(hir_id).node {
+        match tcx.hir().expect_item(hir_id).kind {
             hir::ItemKind::Impl(.., ref gen, _, _, ref item_ids) => {
                 (
                     item_ids.iter()
@@ -376,7 +376,7 @@ pub fn build_impl(cx: &DocContext<'_>, did: DefId, attrs: Option<Attrs<'_>>,
                 }
             }).collect::<Vec<_>>(),
             clean::enter_impl_trait(cx, || {
-                (tcx.generics_of(did), &predicates).clean(cx)
+                (tcx.generics_of(did), predicates).clean(cx)
             }),
         )
     };
@@ -418,7 +418,7 @@ pub fn build_impl(cx: &DocContext<'_>, did: DefId, attrs: Option<Attrs<'_>>,
         source: tcx.def_span(did).clean(cx),
         name: None,
         attrs,
-        visibility: Some(clean::Inherited),
+        visibility: clean::Inherited,
         stability: tcx.lookup_stability(did).clean(cx),
         deprecation: tcx.lookup_deprecation(did).clean(cx),
         def_id: did,
@@ -479,9 +479,9 @@ fn build_static(cx: &DocContext<'_>, did: DefId, mutable: bool) -> clean::Static
 
 fn build_macro(cx: &DocContext<'_>, did: DefId, name: ast::Name) -> clean::ItemEnum {
     let imported_from = cx.tcx.original_crate_name(did.krate);
-    match cx.cstore.load_macro_untracked(did, cx.sess()) {
-        LoadedMacro::MacroDef(def) => {
-            let matchers: hir::HirVec<Span> = if let ast::ItemKind::MacroDef(ref def) = def.node {
+    match cx.enter_resolver(|r| r.cstore().load_macro_untracked(did, cx.sess())) {
+        LoadedMacro::MacroDef(def, _) => {
+            let matchers: hir::HirVec<Span> = if let ast::ItemKind::MacroDef(ref def) = def.kind {
                 let tts: Vec<_> = def.stream().into_trees().collect();
                 tts.chunks(4).map(|arm| arm[0].span()).collect()
             } else {

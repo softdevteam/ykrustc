@@ -71,8 +71,7 @@ mod riscv_base;
 mod wasm32_base;
 mod vxworks_base;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
-         RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LinkerFlavor {
     Em,
     Gcc,
@@ -82,8 +81,7 @@ pub enum LinkerFlavor {
     PtxLinker,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
-         RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LldFlavor {
     Wasm,
     Ld64,
@@ -364,6 +362,7 @@ supported_targets! {
     ("armv7-unknown-linux-gnueabi", armv7_unknown_linux_gnueabi),
     ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
     ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
+    ("thumbv7neon-unknown-linux-musleabihf", thumbv7neon_unknown_linux_musleabihf),
     ("armv7-unknown-linux-musleabi", armv7_unknown_linux_musleabi),
     ("armv7-unknown-linux-musleabihf", armv7_unknown_linux_musleabihf),
     ("aarch64-unknown-linux-gnu", aarch64_unknown_linux_gnu),
@@ -462,7 +461,6 @@ supported_targets! {
     ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
     ("wasm32-unknown-unknown", wasm32_unknown_unknown),
     ("wasm32-wasi", wasm32_wasi),
-    ("wasm32-experimental-emscripten", wasm32_experimental_emscripten),
 
     ("thumbv6m-none-eabi", thumbv6m_none_eabi),
     ("thumbv7m-none-eabi", thumbv7m_none_eabi),
@@ -489,6 +487,7 @@ supported_targets! {
     ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
 
     ("aarch64-unknown-none", aarch64_unknown_none),
+    ("aarch64-unknown-none-softfloat", aarch64_unknown_none_softfloat),
 
     ("x86_64-fortanix-unknown-sgx", x86_64_fortanix_unknown_sgx),
 
@@ -691,6 +690,9 @@ pub struct TargetOptions {
     /// defined in libgcc. If this option is enabled, the target must provide
     /// `eh_unwind_resume` lang item.
     pub custom_unwind_resume: bool,
+    /// Whether the runtime startup code requires the `main` function be passed
+    /// `argc` and `argv` values.
+    pub main_needs_argc_argv: bool,
 
     /// Flag indicating whether ELF TLS (e.g., #[thread_local]) is available for
     /// this target.
@@ -792,7 +794,10 @@ pub struct TargetOptions {
     pub merge_functions: MergeFunctions,
 
     /// Use platform dependent mcount function
-    pub target_mcount: String
+    pub target_mcount: String,
+
+    /// LLVM ABI name, corresponds to the '-mabi' parameter available in multilib C compilers
+    pub llvm_abiname: String,
 }
 
 impl Default for TargetOptions {
@@ -849,6 +854,7 @@ impl Default for TargetOptions {
             link_env_remove: Vec::new(),
             archive_format: "gnu".to_string(),
             custom_unwind_resume: false,
+            main_needs_argc_argv: true,
             allow_asm: true,
             has_elf_tls: false,
             obj_is_bitcode: false,
@@ -878,6 +884,7 @@ impl Default for TargetOptions {
             override_export_symbols: None,
             merge_functions: MergeFunctions::Aliases,
             target_mcount: "mcount".to_string(),
+            llvm_abiname: "".to_string(),
         }
     }
 }
@@ -901,6 +908,13 @@ impl Target {
                     Abi::C
                 } else {
                     abi
+                }
+            },
+            Abi::EfiApi => {
+                if self.arch == "x86_64" {
+                    Abi::Win64
+                } else {
+                    Abi::C
                 }
             },
             abi => abi
@@ -1159,6 +1173,7 @@ impl Target {
         key!(archive_format);
         key!(allow_asm, bool);
         key!(custom_unwind_resume, bool);
+        key!(main_needs_argc_argv, bool);
         key!(has_elf_tls, bool);
         key!(obj_is_bitcode, bool);
         key!(no_integrated_as, bool);
@@ -1186,6 +1201,7 @@ impl Target {
         key!(override_export_symbols, opt_list);
         key!(merge_functions, MergeFunctions)?;
         key!(target_mcount);
+        key!(llvm_abiname);
 
         if let Some(array) = obj.find("abi-blacklist").and_then(Json::as_array) {
             for name in array.iter().filter_map(|abi| abi.as_string()) {
@@ -1376,6 +1392,7 @@ impl ToJson for Target {
         target_option_val!(archive_format);
         target_option_val!(allow_asm);
         target_option_val!(custom_unwind_resume);
+        target_option_val!(main_needs_argc_argv);
         target_option_val!(has_elf_tls);
         target_option_val!(obj_is_bitcode);
         target_option_val!(no_integrated_as);
@@ -1403,6 +1420,7 @@ impl ToJson for Target {
         target_option_val!(override_export_symbols);
         target_option_val!(merge_functions);
         target_option_val!(target_mcount);
+        target_option_val!(llvm_abiname);
 
         if default.abi_blacklist != self.options.abi_blacklist {
             d.insert("abi-blacklist".to_string(), self.options.abi_blacklist.iter()

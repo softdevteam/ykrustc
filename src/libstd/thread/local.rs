@@ -236,8 +236,8 @@ impl<T: 'static> LocalKey<T> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn with<F, R>(&'static self, f: F) -> R
                       where F: FnOnce(&T) -> R {
-        self.try_with(f).expect("cannot access a TLS value during or \
-                                 after it is destroyed")
+        self.try_with(f).expect("cannot access a Thread Local Storage value \
+                                 during or after destruction")
     }
 
     /// Acquires a reference to the value in this TLS key.
@@ -509,9 +509,8 @@ pub mod os {
         pub unsafe fn get(&'static self, init: fn() -> T) -> Option<&'static T> {
             let ptr = self.os.get() as *mut Value<T>;
             if ptr as usize > 1 {
-                match (*ptr).inner.get() {
-                    Some(ref value) => return Some(value),
-                    None => {},
+                if let Some(ref value) = (*ptr).inner.get() {
+                    return Some(value);
                 }
             }
             self.try_initialize(init)

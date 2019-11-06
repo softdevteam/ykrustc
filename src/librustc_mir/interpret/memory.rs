@@ -22,7 +22,7 @@ use super::{
     Machine, AllocMap, MayLeak, ErrorHandled, CheckInAllocMsg,
 };
 
-#[derive(Debug, PartialEq, Eq, Copy, Clone, Hash)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum MemoryKind<T> {
     /// Error if deallocated except during a stack pop
     Stack,
@@ -314,16 +314,18 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
         align: Align,
     ) -> InterpResult<'tcx, Option<Pointer<M::PointerTag>>> {
         let align = if M::CHECK_ALIGN { Some(align) } else { None };
-        self.check_ptr_access_align(sptr, size, align)
+        self.check_ptr_access_align(sptr, size, align, CheckInAllocMsg::MemoryAccessTest)
     }
 
     /// Like `check_ptr_access`, but *definitely* checks alignment when `align`
-    /// is `Some` (overriding `M::CHECK_ALIGN`).
-    pub(super) fn check_ptr_access_align(
+    /// is `Some` (overriding `M::CHECK_ALIGN`). Also lets the caller control
+    /// the error message for the out-of-bounds case.
+    pub fn check_ptr_access_align(
         &self,
         sptr: Scalar<M::PointerTag>,
         size: Size,
         align: Option<Align>,
+        msg: CheckInAllocMsg,
     ) -> InterpResult<'tcx, Option<Pointer<M::PointerTag>>> {
         fn check_offset_align(offset: u64, align: Align) -> InterpResult<'static> {
             if offset % align.bytes() == 0 {
@@ -368,7 +370,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
                 // It is sufficient to check this for the end pointer. The addition
                 // checks for overflow.
                 let end_ptr = ptr.offset(size, self)?;
-                end_ptr.check_inbounds_alloc(allocation_size, CheckInAllocMsg::MemoryAccessTest)?;
+                end_ptr.check_inbounds_alloc(allocation_size, msg)?;
                 // Test align. Check this last; if both bounds and alignment are violated
                 // we want the error to be about the bounds.
                 if let Some(align) = align {
@@ -462,6 +464,8 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
                     // Make sure we use the ID of the resolved memory, not the lazy one!
                     let id = raw_const.alloc_id;
                     let allocation = tcx.alloc_map.lock().unwrap_memory(id);
+
+                    M::before_access_static(allocation)?;
                     Cow::Borrowed(allocation)
                 }
             }
@@ -781,6 +785,26 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Memory<'mir, 'tcx, M> {
     pub fn read_c_str(&self, ptr: Scalar<M::PointerTag>) -> InterpResult<'tcx, &[u8]> {
         let ptr = self.force_ptr(ptr)?; // We need to read at least 1 byte, so we *need* a ptr.
         self.get(ptr.alloc_id)?.read_c_str(self, ptr)
+    }
+
+    /// Writes the given stream of bytes into memory.
+    ///
+    /// Performs appropriate bounds checks.
+    pub fn write_bytes(
+        &mut self,
+        ptr: Scalar<M::PointerTag>,
+        src: impl IntoIterator<Item=u8>,
+    ) -> InterpResult<'tcx>
+    {
+        let src = src.into_iter();
+        let size = Size::from_bytes(src.size_hint().0 as u64);
+        // `write_bytes` checks that this lower bound matches the upper bound matches reality.
+        let ptr = match self.check_ptr_access(ptr, size, Align::from_bytes(1).unwrap())? {
+            Some(ptr) => ptr,
+            None => return Ok(()), // zero-sized access
+        };
+        let tcx = self.tcx.tcx;
+        self.get_mut(ptr.alloc_id)?.write_bytes(&tcx, ptr, src)
     }
 
     /// Expects the caller to have checked bounds and alignment.

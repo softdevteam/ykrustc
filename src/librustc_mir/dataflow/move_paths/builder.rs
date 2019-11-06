@@ -1,7 +1,7 @@
 use rustc::mir::tcx::RvalueInitializationState;
 use rustc::mir::*;
 use rustc::ty::{self, TyCtxt};
-use rustc_data_structures::indexed_vec::IndexVec;
+use rustc_index::vec::IndexVec;
 use smallvec::{smallvec, SmallVec};
 
 use std::collections::hash_map::Entry;
@@ -106,7 +106,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
             let body = self.builder.body;
             let tcx = self.builder.tcx;
             let place_ty = Place::ty_from(&place.base, proj_base, body, tcx).ty;
-            match place_ty.sty {
+            match place_ty.kind {
                 ty::Ref(..) | ty::RawPtr(..) => {
                     let proj = &place.projection[..i+1];
                     return Err(MoveError::cannot_move_out_of(
@@ -114,7 +114,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
                         BorrowedContent {
                             target_place: Place {
                                 base: place.base.clone(),
-                                projection: proj.to_vec().into_boxed_slice(),
+                                projection: tcx.intern_place_elems(proj),
                             },
                         },
                     ));
@@ -172,7 +172,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
                             Some(base),
                             Place {
                                 base: place.base.clone(),
-                                projection: proj.to_vec().into_boxed_slice(),
+                                projection: tcx.intern_place_elems(proj),
                             },
                         );
                         ent.insert(path);
@@ -274,7 +274,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
                     // Box starts out uninitialized - need to create a separate
                     // move-path for the interior so it will be separate from
                     // the exterior.
-                    self.create_move_path(&place.clone().deref());
+                    self.create_move_path(&self.builder.tcx.mk_place_deref(place.clone()));
                     self.gather_init(place.as_ref(), InitKind::Shallow);
                 } else {
                     self.gather_init(place.as_ref(), InitKind::Deep);
@@ -438,7 +438,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
         // of the union so it is marked as initialized again.
         if let [proj_base @ .., ProjectionElem::Field(_, _)] = place.projection {
             if let ty::Adt(def, _) =
-                Place::ty_from(place.base, proj_base, self.builder.body, self.builder.tcx).ty.sty
+                Place::ty_from(place.base, proj_base, self.builder.body, self.builder.tcx).ty.kind
             {
                 if def.is_union() {
                     place = PlaceRef { base: place.base, projection: proj_base }

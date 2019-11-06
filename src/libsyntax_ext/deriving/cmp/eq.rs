@@ -2,10 +2,10 @@ use crate::deriving::path_std;
 use crate::deriving::generic::*;
 use crate::deriving::generic::ty::*;
 
-use syntax::ast::{self, Expr, MetaItem, GenericArg};
-use syntax::ext::base::{Annotatable, ExtCtxt, SpecialDerives};
+use syntax::ast::{self, Ident, Expr, MetaItem, GenericArg};
 use syntax::ptr::P;
 use syntax::symbol::{sym, Symbol};
+use syntax_expand::base::{Annotatable, ExtCtxt};
 use syntax_pos::Span;
 
 pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
@@ -13,11 +13,9 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
                           mitem: &MetaItem,
                           item: &Annotatable,
                           push: &mut dyn FnMut(Annotatable)) {
-    cx.resolver.add_derives(cx.current_expansion.id.expn_data().parent, SpecialDerives::EQ);
-
     let inline = cx.meta_word(span, sym::inline);
-    let hidden = cx.meta_list_item_word(span, sym::hidden);
-    let doc = cx.meta_list(span, sym::doc, vec![hidden]);
+    let hidden = syntax::attr::mk_nested_word_item(Ident::new(sym::hidden, span));
+    let doc = syntax::attr::mk_list_item(Ident::new(sym::doc, span), vec![hidden]);
     let attrs = vec![cx.attribute(inline), cx.attribute(doc)];
     let trait_def = TraitDef {
         span,
@@ -42,6 +40,12 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
                       }],
         associated_types: Vec::new(),
     };
+
+    super::inject_impl_of_structural_trait(
+        cx, span, item,
+        path_std!(cx, marker::StructuralEq),
+        push);
+
     trait_def.expand_ext(cx, mitem, item, push, true)
 }
 
@@ -56,7 +60,7 @@ fn cs_total_eq_assert(cx: &mut ExtCtxt<'_>,
         let span = cx.with_def_site_ctxt(span);
         let assert_path = cx.path_all(span, true,
                                         cx.std_path(&[sym::cmp, Symbol::intern(helper_name)]),
-                                        vec![GenericArg::Type(ty)], vec![]);
+                                        vec![GenericArg::Type(ty)]);
         stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
     }
     fn process_variant(cx: &mut ExtCtxt<'_>,

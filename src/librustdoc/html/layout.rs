@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::externalfiles::ExternalHtml;
-use crate::html::render::SlashChecker;
+use crate::html::render::ensure_trailing_slash;
 use crate::html::format::{Buffer, Print};
 
 #[derive(Clone)]
@@ -106,53 +106,6 @@ pub fn render<T: Print, S: Print>(
     <section id=\"main\" class=\"content\">{content}</section>\
     <section id=\"search\" class=\"content hidden\"></section>\
     <section class=\"footer\"></section>\
-    <aside id=\"help\" class=\"hidden\">\
-        <div>\
-            <h1 class=\"hidden\">Help</h1>\
-            <div class=\"shortcuts\">\
-                <h2>Keyboard Shortcuts</h2>\
-                <dl>\
-                    <dt><kbd>?</kbd></dt>\
-                    <dd>Show this help dialog</dd>\
-                    <dt><kbd>S</kbd></dt>\
-                    <dd>Focus the search field</dd>\
-                    <dt><kbd>↑</kbd></dt>\
-                    <dd>Move up in search results</dd>\
-                    <dt><kbd>↓</kbd></dt>\
-                    <dd>Move down in search results</dd>\
-                    <dt><kbd>↹</kbd></dt>\
-                    <dd>Switch tab</dd>\
-                    <dt><kbd>&#9166;</kbd></dt>\
-                    <dd>Go to active search result</dd>\
-                    <dt><kbd>+</kbd></dt>\
-                    <dd>Expand all sections</dd>\
-                    <dt><kbd>-</kbd></dt>\
-                    <dd>Collapse all sections</dd>\
-                </dl>\
-            </div>\
-            <div class=\"infos\">\
-                <h2>Search Tricks</h2>\
-                <p>\
-                    Prefix searches with a type followed by a colon (e.g., \
-                    <code>fn:</code>) to restrict the search to a given type.\
-                </p>\
-                <p>\
-                    Accepted types are: <code>fn</code>, <code>mod</code>, \
-                    <code>struct</code>, <code>enum</code>, \
-                    <code>trait</code>, <code>type</code>, <code>macro</code>, \
-                    and <code>const</code>.\
-                </p>\
-                <p>\
-                    Search functions by type signature (e.g., \
-                    <code>vec -> usize</code> or <code>* -> vec</code>)\
-                </p>\
-                <p>\
-                    Search multiple things at once by splitting your query with comma (e.g., \
-                    <code>str,u8</code> or <code>String,struct:Vec,test</code>)\
-                </p>\
-            </div>\
-        </div>\
-    </aside>\
     {after_content}\
     <script>\
         window.rootPath = \"{root_path}\";\
@@ -180,7 +133,7 @@ pub fn render<T: Print, S: Print>(
     css_class = page.css_class,
     logo      = {
         let p = format!("{}{}", page.root_path, layout.krate);
-        let p = SlashChecker(&p);
+        let p = ensure_trailing_slash(&p);
         if layout.logo.is_empty() {
             format!("<a href='{path}index.html'>\
                      <div class='logo-container'>\

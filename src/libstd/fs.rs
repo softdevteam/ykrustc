@@ -29,7 +29,7 @@ use crate::time::SystemTime;
 ///
 /// # Examples
 ///
-/// Creates a new file and write bytes to it:
+/// Creates a new file and write bytes to it (you can also use [`write`]):
 ///
 /// ```no_run
 /// use std::fs::File;
@@ -42,7 +42,7 @@ use crate::time::SystemTime;
 /// }
 /// ```
 ///
-/// Read the contents of a file into a [`String`]:
+/// Read the contents of a file into a [`String`] (you can also use [`read`]):
 ///
 /// ```no_run
 /// use std::fs::File;
@@ -89,6 +89,8 @@ use crate::time::SystemTime;
 /// [`Write`]: ../io/trait.Write.html
 /// [`BufReader<R>`]: ../io/struct.BufReader.html
 /// [`sync_all`]: struct.File.html#method.sync_all
+/// [`read`]: fn.read.html
+/// [`write`]: fn.write.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct File {
     inner: fs_imp::File,
@@ -113,6 +115,9 @@ pub struct Metadata(fs_imp::FileAttr);
 /// will yield instances of [`io::Result`]`<`[`DirEntry`]`>`. Through a [`DirEntry`]
 /// information like the entry's path and possibly other metadata can be
 /// learned.
+///
+/// The order in which this iterator returns entries is platform and filesystem
+/// dependent.
 ///
 /// # Errors
 ///
@@ -392,6 +397,37 @@ impl File {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn create<P: AsRef<Path>>(path: P) -> io::Result<File> {
         OpenOptions::new().write(true).create(true).truncate(true).open(path.as_ref())
+    }
+
+    /// Returns a new OpenOptions object.
+    ///
+    /// This function returns a new OpenOptions object that you can use to
+    /// open or create a file with specific options if `open()` or `create()`
+    /// are not appropriate.
+    ///
+    /// It is equivalent to `OpenOptions::new()` but allows you to write more
+    /// readable code. Instead of `OpenOptions::new().read(true).open("foo.txt")`
+    /// you can write `File::with_options().read(true).open("foo.txt"). This
+    /// also avoids the need to import `OpenOptions`.
+    ///
+    /// See the [`OpenOptions::new`] function for more details.
+    ///
+    /// [`OpenOptions::new`]: struct.OpenOptions.html#method.new
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// #![feature(with_options)]
+    /// use std::fs::File;
+    ///
+    /// fn main() -> std::io::Result<()> {
+    ///     let mut f = File::with_options().read(true).open("foo.txt")?;
+    ///     Ok(())
+    /// }
+    /// ```
+    #[unstable(feature = "with_options", issue = "65439")]
+    pub fn with_options() -> OpenOptions {
+        OpenOptions::new()
     }
 
     /// Attempts to sync all OS-internal metadata to disk.
@@ -1087,13 +1123,14 @@ impl Metadata {
 
     /// Returns the creation time listed in this metadata.
     ///
-    /// The returned value corresponds to the `birthtime` field of `stat` on
-    /// Unix platforms and the `ftCreationTime` field on Windows platforms.
+    /// The returned value corresponds to the `btime` field of `statx` on
+    /// Linux kernel starting from to 4.11, the `birthtime` field of `stat` on other
+    /// Unix platforms, and the `ftCreationTime` field on Windows platforms.
     ///
     /// # Errors
     ///
     /// This field may not be available on all platforms, and will return an
-    /// `Err` on platforms where it is not available.
+    /// `Err` on platforms or filesystems where it is not available.
     ///
     /// # Examples
     ///
@@ -1106,7 +1143,7 @@ impl Metadata {
     ///     if let Ok(time) = metadata.created() {
     ///         println!("{:?}", time);
     ///     } else {
-    ///         println!("Not supported on this platform");
+    ///         println!("Not supported on this platform or filesystem");
     ///     }
     ///     Ok(())
     /// }
@@ -1962,6 +1999,9 @@ pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
 ///
 /// [changes]: ../io/index.html#platform-specific-behavior
 ///
+/// The order in which this iterator returns entries is platform and filesystem
+/// dependent.
+///
 /// # Errors
 ///
 /// This function will return an error in the following situations, but is not
@@ -1991,6 +2031,25 @@ pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> io::Result<()> {
 ///             }
 ///         }
 ///     }
+///     Ok(())
+/// }
+/// ```
+///
+/// ```rust,no_run
+/// use std::{fs, io};
+///
+/// fn main() -> io::Result<()> {
+///     let mut entries = fs::read_dir(".")?
+///         .map(|res| res.map(|e| e.path()))
+///         .collect::<Result<Vec<_>, io::Error>>()?;
+///
+///     // The order in which `read_dir` returns entries is not guaranteed. If reproducible
+///     // ordering is required the entries should be explicitly sorted.
+///
+///     entries.sort();
+///
+///     // The entries have now been sorted by their path.
+///
 ///     Ok(())
 /// }
 /// ```
@@ -3087,8 +3146,10 @@ mod tests {
 
         #[cfg(windows)]
         let invalid_options = 87; // ERROR_INVALID_PARAMETER
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_os = "vxworks")))]
         let invalid_options = "Invalid argument";
+        #[cfg(target_os = "vxworks")]
+        let invalid_options = "invalid argument";
 
         // Test various combinations of creation modes and access modes.
         //
@@ -3415,6 +3476,19 @@ mod tests {
         if cfg!(target_os = "macos") || cfg!(target_os = "windows") {
             check!(a.created());
             check!(b.created());
+        }
+
+        if cfg!(target_os = "linux") {
+            // Not always available
+            match (a.created(), b.created()) {
+                (Ok(t1), Ok(t2)) => assert!(t1 <= t2),
+                (Err(e1), Err(e2)) if e1.kind() == ErrorKind::Other &&
+                                      e2.kind() == ErrorKind::Other => {}
+                (a, b) => panic!(
+                    "creation time must be always supported or not supported: {:?} {:?}",
+                    a, b,
+                ),
+            }
         }
     }
 }

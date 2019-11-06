@@ -252,7 +252,7 @@ Basic usage:
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[inline]
+            #[inline(always)]
             #[rustc_promotable]
             pub const fn min_value() -> Self {
                 !0 ^ ((!0 as $UnsignedT) >> 1) as Self
@@ -271,7 +271,7 @@ Basic usage:
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[inline]
+            #[inline(always)]
             #[rustc_promotable]
             pub const fn max_value() -> Self {
                 !Self::min_value()
@@ -938,7 +938,9 @@ Basic usage:
 ```
 ", $Feature, "assert_eq!(100", stringify!($SelfT), ".saturating_add(1), 101);
 assert_eq!(", stringify!($SelfT), "::max_value().saturating_add(100), ", stringify!($SelfT),
-"::max_value());",
+"::max_value());
+assert_eq!(", stringify!($SelfT), "::min_value().saturating_add(-1), ", stringify!($SelfT),
+"::min_value());",
 $EndFeature, "
 ```"),
 
@@ -952,7 +954,6 @@ $EndFeature, "
             }
         }
 
-
         doc_comment! {
             concat!("Saturating integer subtraction. Computes `self - rhs`, saturating at the
 numeric bounds instead of overflowing.
@@ -964,7 +965,9 @@ Basic usage:
 ```
 ", $Feature, "assert_eq!(100", stringify!($SelfT), ".saturating_sub(127), -27);
 assert_eq!(", stringify!($SelfT), "::min_value().saturating_sub(100), ", stringify!($SelfT),
-"::min_value());",
+"::min_value());
+assert_eq!(", stringify!($SelfT), "::max_value().saturating_sub(-1), ", stringify!($SelfT),
+"::max_value());",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
@@ -1055,7 +1058,7 @@ $EndFeature, "
             #[inline]
             pub fn saturating_mul(self, rhs: Self) -> Self {
                 self.checked_mul(rhs).unwrap_or_else(|| {
-                    if (self < 0 && rhs < 0) || (self > 0 && rhs > 0) {
+                    if (self < 0) == (rhs < 0) {
                         Self::max_value()
                     } else {
                         Self::min_value()
@@ -1112,13 +1115,7 @@ $EndFeature, "
                           without modifying the original"]
             #[inline]
             pub const fn wrapping_add(self, rhs: Self) -> Self {
-                #[cfg(boostrap_stdarch_ignore_this)] {
-                    intrinsics::overflowing_add(self, rhs)
-                }
-
-                #[cfg(not(boostrap_stdarch_ignore_this))] {
-                    intrinsics::wrapping_add(self, rhs)
-                }
+                intrinsics::wrapping_add(self, rhs)
             }
         }
 
@@ -1141,13 +1138,7 @@ $EndFeature, "
                           without modifying the original"]
             #[inline]
             pub const fn wrapping_sub(self, rhs: Self) -> Self {
-                #[cfg(boostrap_stdarch_ignore_this)] {
-                    intrinsics::overflowing_sub(self, rhs)
-                }
-
-                #[cfg(not(boostrap_stdarch_ignore_this))] {
-                    intrinsics::wrapping_sub(self, rhs)
-                }
+                intrinsics::wrapping_sub(self, rhs)
             }
         }
 
@@ -1169,13 +1160,7 @@ $EndFeature, "
                           without modifying the original"]
             #[inline]
             pub const fn wrapping_mul(self, rhs: Self) -> Self {
-                #[cfg(boostrap_stdarch_ignore_this)] {
-                    intrinsics::overflowing_mul(self, rhs)
-                }
-
-                #[cfg(not(boostrap_stdarch_ignore_this))] {
-                    intrinsics::wrapping_mul(self, rhs)
-                }
+                intrinsics::wrapping_mul(self, rhs)
             }
         }
 
@@ -1402,7 +1387,16 @@ $EndFeature, "
             #[stable(feature = "no_panic_abs", since = "1.13.0")]
             #[inline]
             pub const fn wrapping_abs(self) -> Self {
-                (self ^ (self >> ($BITS - 1))).wrapping_sub(self >> ($BITS - 1))
+                // sign is -1 (all ones) for negative numbers, 0 otherwise.
+                let sign = self >> ($BITS - 1);
+                // For positive self, sign == 0 so the expression is simply
+                // (self ^ 0).wrapping_sub(0) == self == abs(self).
+                //
+                // For negative self, self ^ sign == self ^ all_ones.
+                // But all_ones ^ self == all_ones - self == -1 - self.
+                // So for negative numbers, (self ^ sign).wrapping_sub(sign) is
+                // (-1 - self).wrapping_sub(-1) == -self == abs(self).
+                (self ^ sign).wrapping_sub(sign)
             }
         }
 
@@ -1761,7 +1755,7 @@ $EndFeature, "
             #[stable(feature = "no_panic_abs", since = "1.13.0")]
             #[inline]
             pub const fn overflowing_abs(self) -> (Self, bool) {
-                (self ^ (self >> ($BITS - 1))).overflowing_sub(self >> ($BITS - 1))
+                (self.wrapping_abs(), self == Self::min_value())
             }
         }
 
@@ -1870,7 +1864,7 @@ if `self < 0`, this is equal to round towards +/- infinity.
 
 # Panics
 
-This function will panic if `rhs` is 0.
+This function will panic if `rhs` is 0 or the division results in overflow.
 
 # Examples
 
@@ -1909,7 +1903,7 @@ This is done as if by the Euclidean division algorithm -- given
 
 # Panics
 
-This function will panic if `rhs` is 0.
+This function will panic if `rhs` is 0 or the division results in overflow.
 
 # Examples
 
@@ -1969,7 +1963,21 @@ $EndFeature, "
                 // Note that the #[inline] above means that the overflow
                 // semantics of the subtraction depend on the crate we're being
                 // inlined into.
-                (self ^ (self >> ($BITS - 1))) - (self >> ($BITS - 1))
+
+                // sign is -1 (all ones) for negative numbers, 0 otherwise.
+                let sign = self >> ($BITS - 1);
+                // For positive self, sign == 0 so the expression is simply
+                // (self ^ 0) - 0 == self == abs(self).
+                //
+                // For negative self, self ^ sign == self ^ all_ones.
+                // But all_ones ^ self == all_ones - self == -1 - self.
+                // So for negative numbers, (self ^ sign) - sign is
+                // (-1 - self) - -1 == -self == abs(self).
+                //
+                // The subtraction overflows when self is min_value(), because
+                // (-1 - min_value()) - -1 is max_value() - -1 which overflows.
+                // This is exactly when we want self.abs() to overflow.
+                (self ^ sign) - sign
             }
         }
 
@@ -2303,7 +2311,7 @@ Basic usage:
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
             #[rustc_promotable]
-            #[inline]
+            #[inline(always)]
             pub const fn min_value() -> Self { 0 }
         }
 
@@ -2320,7 +2328,7 @@ stringify!($MaxV), ");", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
             #[rustc_promotable]
-            #[inline]
+            #[inline(always)]
             pub const fn max_value() -> Self { !0 }
         }
 
@@ -3040,13 +3048,7 @@ $EndFeature, "
                           without modifying the original"]
             #[inline]
             pub const fn wrapping_add(self, rhs: Self) -> Self {
-                #[cfg(boostrap_stdarch_ignore_this)] {
-                    intrinsics::overflowing_add(self, rhs)
-                }
-
-                #[cfg(not(boostrap_stdarch_ignore_this))] {
-                    intrinsics::wrapping_add(self, rhs)
-                }
+                intrinsics::wrapping_add(self, rhs)
             }
         }
 
@@ -3068,13 +3070,7 @@ $EndFeature, "
                           without modifying the original"]
             #[inline]
             pub const fn wrapping_sub(self, rhs: Self) -> Self {
-                #[cfg(boostrap_stdarch_ignore_this)] {
-                    intrinsics::overflowing_sub(self, rhs)
-                }
-
-                #[cfg(not(boostrap_stdarch_ignore_this))] {
-                    intrinsics::wrapping_sub(self, rhs)
-                }
+                intrinsics::wrapping_sub(self, rhs)
             }
         }
 
@@ -3097,13 +3093,7 @@ $EndFeature, "
                           without modifying the original"]
         #[inline]
         pub const fn wrapping_mul(self, rhs: Self) -> Self {
-            #[cfg(boostrap_stdarch_ignore_this)] {
-                intrinsics::overflowing_mul(self, rhs)
-            }
-
-            #[cfg(not(boostrap_stdarch_ignore_this))] {
-                intrinsics::wrapping_mul(self, rhs)
-            }
+            intrinsics::wrapping_mul(self, rhs)
         }
 
         doc_comment! {
@@ -3704,6 +3694,10 @@ Since, for the positive integers, all common
 definitions of division are equal, this
 is exactly equal to `self / rhs`.
 
+# Panics
+
+This function will panic if `rhs` is 0.
+
 # Examples
 
 Basic usage:
@@ -3728,6 +3722,10 @@ assert_eq!(7", stringify!($SelfT), ".div_euclid(4), 1); // or any other integer 
 Since, for the positive integers, all common
 definitions of division are equal, this
 is exactly equal to `self % rhs`.
+
+# Panics
+
+This function will panic if `rhs` is 0.
 
 # Examples
 
@@ -3759,8 +3757,8 @@ assert!(!10", stringify!($SelfT), ".is_power_of_two());", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
             #[inline]
-            pub fn is_power_of_two(self) -> bool {
-                (self.wrapping_sub(1)) & self == 0 && !(self == 0)
+            pub const fn is_power_of_two(self) -> bool {
+                self.count_ones() == 1
             }
         }
 

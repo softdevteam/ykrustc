@@ -52,9 +52,10 @@ impl Step for Std {
 
         builder.info(&format!("Checking std artifacts ({} -> {})", &compiler.host, target));
         run_cargo(builder,
-                  &mut cargo,
+                  cargo,
                   args(builder.kind),
                   &libstd_stamp(builder, compiler, target),
+                  vec![],
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);
@@ -100,9 +101,10 @@ impl Step for Rustc {
 
         builder.info(&format!("Checking compiler artifacts ({} -> {})", &compiler.host, target));
         run_cargo(builder,
-                  &mut cargo,
+                  cargo,
                   args(builder.kind),
                   &librustc_stamp(builder, compiler, target),
+                  vec![],
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);
@@ -152,9 +154,10 @@ impl Step for CodegenBackend {
         // We won't build LLVM if it's not available, as it shouldn't affect `check`.
 
         run_cargo(builder,
-                  &mut cargo,
+                  cargo,
                   args(builder.kind),
                   &codegen_backend_stamp(builder, compiler, target, backend),
+                  vec![],
                   true);
     }
 }
@@ -185,20 +188,21 @@ impl Step for Rustdoc {
 
         builder.ensure(Rustc { target });
 
-        let mut cargo = prepare_tool_cargo(builder,
-                                           compiler,
-                                           Mode::ToolRustc,
-                                           target,
-                                           cargo_subcommand(builder.kind),
-                                           "src/tools/rustdoc",
-                                           SourceType::InTree,
-                                           &[]);
+        let cargo = prepare_tool_cargo(builder,
+                                       compiler,
+                                       Mode::ToolRustc,
+                                       target,
+                                       cargo_subcommand(builder.kind),
+                                       "src/tools/rustdoc",
+                                       SourceType::InTree,
+                                       &[]);
 
         println!("Checking rustdoc artifacts ({} -> {})", &compiler.host, target);
         run_cargo(builder,
-                  &mut cargo,
+                  cargo,
                   args(builder.kind),
                   &rustdoc_stamp(builder, compiler, target),
+                  vec![],
                   true);
 
         let libdir = builder.sysroot_libdir(compiler, target);

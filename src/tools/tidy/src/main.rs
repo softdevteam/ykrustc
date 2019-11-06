@@ -4,6 +4,8 @@
 //! etc. This is run by default on `make check` and as part of the auto
 //! builders.
 
+#![deny(warnings)]
+
 use tidy::*;
 
 use std::process;
@@ -20,6 +22,7 @@ fn main() {
     let verbose = args.iter().any(|s| *s == "--verbose");
     bins::check(&path, &mut bad);
     style::check(&path, &mut bad);
+    debug_artifacts::check(&path, &mut bad);
     errors::check(&path, &mut bad);
     cargo::check(&path, &mut bad);
     edition::check(&path, &mut bad);
@@ -33,6 +36,7 @@ fn main() {
     deps::check_whitelist(&path, &cargo, &mut bad);
     extdeps::check(&path, &mut bad);
     ui_tests::check(&path, &mut bad);
+    error_codes_check::check(&path, &mut bad);
 
     if bad {
         eprintln!("some tidy checks failed");

@@ -75,7 +75,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 };
 
                 let func = self.eval_operand(func, None)?;
-                let (fn_val, abi) = match func.layout.ty.sty {
+                let (fn_val, abi) = match func.layout.ty.kind {
                     ty::FnPtr(sig) => {
                         let caller_abi = sig.abi();
                         let fn_ptr = self.read_scalar(func)?.not_undef()?;
@@ -140,12 +140,12 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                                 .read_immediate(self.eval_operand(len, None)?)
                                 .expect("can't eval len")
                                 .to_scalar()?
-                                .to_bits(self.memory().pointer_size())? as u64;
+                                .to_bits(self.memory.pointer_size())? as u64;
                             let index = self
                                 .read_immediate(self.eval_operand(index, None)?)
                                 .expect("can't eval index")
                                 .to_scalar()?
-                                .to_bits(self.memory().pointer_size())? as u64;
+                                .to_bits(self.memory.pointer_size())? as u64;
                             err_panic!(BoundsCheck { len, index })
                         }
                         Overflow(op) => err_panic!(Overflow(*op)),
@@ -249,16 +249,13 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         match instance.def {
             ty::InstanceDef::Intrinsic(..) => {
-                if caller_abi != Abi::RustIntrinsic {
-                    throw_unsup!(FunctionAbiMismatch(caller_abi, Abi::RustIntrinsic))
-                }
                 // The intrinsic itself cannot diverge, so if we got here without a return
                 // place... (can happen e.g., for transmute returning `!`)
                 let dest = match dest {
                     Some(dest) => dest,
                     None => throw_ub!(Unreachable)
                 };
-                M::call_intrinsic(self, instance, args, dest)?;
+                M::call_intrinsic(self, span, instance, args, dest)?;
                 // No stack frame gets pushed, the main loop will just act as if the
                 // call completed.
                 self.goto_block(ret)?;
@@ -266,6 +263,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 Ok(())
             }
             ty::InstanceDef::VtableShim(..) |
+            ty::InstanceDef::ReifyShim(..) |
             ty::InstanceDef::ClosureOnceShim { .. } |
             ty::InstanceDef::FnPtrShim(..) |
             ty::InstanceDef::DropGlue(..) |
@@ -275,7 +273,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 {
                     let callee_abi = {
                         let instance_ty = instance.ty(*self.tcx);
-                        match instance_ty.sty {
+                        match instance_ty.kind {
                             ty::FnDef(..) =>
                                 instance_ty.fn_sig(*self.tcx).abi(),
                             ty::Closure(..) => Abi::RustCall,
@@ -482,7 +480,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         // implementation fail -- a problem shared by rustc.
         let place = self.force_allocation(place)?;
 
-        let (instance, place) = match place.layout.ty.sty {
+        let (instance, place) = match place.layout.ty.kind {
             ty::Dynamic(..) => {
                 // Dropping a trait object.
                 self.unpack_dyn_trait(place)?

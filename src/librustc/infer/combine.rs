@@ -30,6 +30,7 @@ use super::sub::Sub;
 use super::type_variable::TypeVariableValue;
 use super::unify_key::{ConstVarValue, ConstVariableValue};
 use super::unify_key::{ConstVariableOrigin, ConstVariableOriginKind};
+use super::unify_key::replace_if_possible;
 
 use crate::hir::def_id::DefId;
 use crate::mir::interpret::ConstValue;
@@ -52,7 +53,7 @@ pub struct CombineFields<'infcx, 'tcx> {
     pub obligations: PredicateObligations<'tcx>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum RelationDir {
     SubtypeOf, SupertypeOf, EqTo
 }
@@ -69,7 +70,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
     {
         let a_is_expected = relation.a_is_expected();
 
-        match (&a.sty, &b.sty) {
+        match (&a.kind, &b.kind) {
             // Relate integral variables to other types
             (&ty::Infer(ty::IntVar(a_id)), &ty::Infer(ty::IntVar(b_id))) => {
                 self.int_unification_table
@@ -127,6 +128,12 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
     where
         R: TypeRelation<'tcx>,
     {
+        debug!("{}.consts({:?}, {:?})", relation.tag(), a, b);
+        if a == b { return Ok(a); }
+
+        let a = replace_if_possible(self.const_unification_table.borrow_mut(), a);
+        let b = replace_if_possible(self.const_unification_table.borrow_mut(), b);
+
         let a_is_expected = relation.a_is_expected();
 
         match (a.val, b.val) {
@@ -479,7 +486,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
         // any other type variable related to `vid` via
         // subtyping. This is basically our "occurs check", preventing
         // us from creating infinitely sized types.
-        match t.sty {
+        match t.kind {
             ty::Infer(ty::TyVar(vid)) => {
                 let mut variables = self.infcx.type_variables.borrow_mut();
                 let vid = variables.root_var(vid);
@@ -487,7 +494,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                 if sub_vid == self.for_vid_sub_root {
                     // If sub-roots are equal, then `for_vid` and
                     // `vid` are related via subtyping.
-                    return Err(TypeError::CyclicTy(self.root_ty));
+                    Err(TypeError::CyclicTy(self.root_ty))
                 } else {
                     match variables.probe(vid) {
                         TypeVariableValue::Known { value: u } => {
@@ -520,7 +527,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                             let u = self.tcx().mk_ty_var(new_var_id);
                             debug!("generalize: replacing original vid={:?} with new={:?}",
                                    vid, u);
-                            return Ok(u);
+                            Ok(u)
                         }
                     }
                 }
@@ -595,19 +602,26 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
     ) -> RelateResult<'tcx, &'tcx ty::Const<'tcx>> {
         assert_eq!(c, c2); // we are abusing TypeRelation here; both LHS and RHS ought to be ==
 
-        match c {
-            ty::Const { val: ConstValue::Infer(InferConst::Var(vid)), .. } => {
+        match c.val {
+            ConstValue::Infer(InferConst::Var(vid)) => {
                 let mut variable_table = self.infcx.const_unification_table.borrow_mut();
-                match variable_table.probe_value(*vid).val.known() {
-                    Some(u) => {
-                        self.relate(&u, &u)
+                let var_value = variable_table.probe_value(vid);
+                match var_value.val {
+                    ConstVariableValue::Known { value: u } => self.relate(&u, &u),
+                    ConstVariableValue::Unknown { universe } => {
+                        if self.for_universe.can_name(universe) {
+                            Ok(c)
+                        } else {
+                            let new_var_id = variable_table.new_key(ConstVarValue {
+                                origin: var_value.origin,
+                                val: ConstVariableValue::Unknown { universe: self.for_universe },
+                            });
+                            Ok(self.tcx().mk_const_var(new_var_id, c.ty))
+                        }
                     }
-                    None => Ok(c),
                 }
             }
-            _ => {
-                relate::super_relate_consts(self, c, c)
-            }
+            _ => relate::super_relate_consts(self, c, c),
         }
     }
 }

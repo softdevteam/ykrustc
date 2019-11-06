@@ -23,7 +23,7 @@ use crate::tool::{self, Tool, SourceType};
 use crate::toolstate::ToolState;
 use crate::util::{self, dylib_path, dylib_path_var};
 use crate::Crate as CargoCrate;
-use crate::{DocTests, Mode, GitRepo};
+use crate::{DocTests, Mode, GitRepo, envify};
 
 const ADB_TEST_DIR: &str = "/data/tmp/work";
 
@@ -233,10 +233,9 @@ impl Step for Cargo {
         // those features won't be able to land.
         cargo.env("CARGO_TEST_DISABLE_NIGHTLY", "1");
 
-        try_run(
-            builder,
-            cargo.env("PATH", &path_for_cargo(builder, compiler)),
-        );
+        cargo.env("PATH", &path_for_cargo(builder, compiler));
+
+        try_run(builder, &mut cargo.into());
     }
 }
 
@@ -290,7 +289,7 @@ impl Step for Rls {
         cargo.arg("--")
             .args(builder.config.cmd.test_args());
 
-        if try_run(builder, &mut cargo) {
+        if try_run(builder, &mut cargo.into()) {
             builder.save_toolstate("rls", ToolState::TestPass);
         }
     }
@@ -348,7 +347,7 @@ impl Step for Rustfmt {
 
         builder.add_rustc_lib_path(compiler, &mut cargo);
 
-        if try_run(builder, &mut cargo) {
+        if try_run(builder, &mut cargo.into()) {
             builder.save_toolstate("rustfmt", ToolState::TestPass);
         }
     }
@@ -387,8 +386,17 @@ impl Step for Miri {
             extra_features: Vec::new(),
         });
         if let Some(miri) = miri {
+            let mut cargo = builder.cargo(compiler, Mode::ToolRustc, host, "install");
+            cargo.arg("xargo");
+            // Configure `cargo install` path. cargo adds a `bin/`.
+            cargo.env("CARGO_INSTALL_ROOT", &builder.out);
+
+            let mut cargo = Command::from(cargo);
+            if !try_run(builder, &mut cargo) {
+                return;
+            }
+
             // # Run `cargo miri setup`.
-            // As a side-effect, this will install xargo.
             let mut cargo = tool::prepare_tool_cargo(
                 builder,
                 compiler,
@@ -413,11 +421,10 @@ impl Step for Miri {
             cargo.env("XARGO_RUST_SRC", builder.src.join("src"));
             // Debug things.
             cargo.env("RUST_BACKTRACE", "1");
-            // Configure `cargo install` path, and let cargo-miri know that that's where
-            // xargo ends up.
-            cargo.env("CARGO_INSTALL_ROOT", &builder.out); // cargo adds a `bin/`
+            // Let cargo-miri know where xargo ended up.
             cargo.env("XARGO", builder.out.join("bin").join("xargo"));
 
+            let mut cargo = Command::from(cargo);
             if !try_run(builder, &mut cargo) {
                 return;
             }
@@ -427,7 +434,7 @@ impl Step for Miri {
             // (We do this separately from the above so that when the setup actually
             // happens we get some output.)
             // We re-use the `cargo` from above.
-            cargo.arg("--env");
+            cargo.arg("--print-sysroot");
 
             // FIXME: Is there a way in which we can re-use the usual `run` helpers?
             let miri_sysroot = if builder.config.dry_run {
@@ -437,13 +444,11 @@ impl Step for Miri {
                 let out = cargo.output()
                     .expect("We already ran `cargo miri setup` before and that worked");
                 assert!(out.status.success(), "`cargo miri setup` returned with non-0 exit code");
-                // Output is "MIRI_SYSROOT=<str>\n".
+                // Output is "<sysroot>\n".
                 let stdout = String::from_utf8(out.stdout)
                     .expect("`cargo miri setup` stdout is not valid UTF-8");
-                let stdout = stdout.trim();
-                builder.verbose(&format!("`cargo miri setup --env` returned: {:?}", stdout));
-                let sysroot = stdout.splitn(2, '=')
-                    .nth(1).expect("`cargo miri setup` stdout did not contain '='");
+                let sysroot = stdout.trim_end();
+                builder.verbose(&format!("`cargo miri setup --print-sysroot` said: {:?}", sysroot));
                 sysroot.to_owned()
             };
 
@@ -467,7 +472,7 @@ impl Step for Miri {
 
             builder.add_rustc_lib_path(compiler, &mut cargo);
 
-            if !try_run(builder, &mut cargo) {
+            if !try_run(builder, &mut cargo.into()) {
                 return;
             }
 
@@ -502,16 +507,16 @@ impl Step for CompiletestTest {
         let host = self.host;
         let compiler = builder.compiler(0, host);
 
-        let mut cargo = tool::prepare_tool_cargo(builder,
-                                                 compiler,
-                                                 Mode::ToolBootstrap,
-                                                 host,
-                                                 "test",
-                                                 "src/tools/compiletest",
-                                                 SourceType::InTree,
-                                                 &[]);
+        let cargo = tool::prepare_tool_cargo(builder,
+                                             compiler,
+                                             Mode::ToolBootstrap,
+                                             host,
+                                             "test",
+                                             "src/tools/compiletest",
+                                             SourceType::InTree,
+                                             &[]);
 
-        try_run(builder, &mut cargo);
+        try_run(builder, &mut cargo.into());
     }
 }
 
@@ -571,7 +576,7 @@ impl Step for Clippy {
 
             builder.add_rustc_lib_path(compiler, &mut cargo);
 
-            if try_run(builder, &mut cargo) {
+            if try_run(builder, &mut cargo.into()) {
                 builder.save_toolstate("clippy-driver", ToolState::TestPass);
             }
         } else {
@@ -1053,10 +1058,11 @@ impl Step for Compiletest {
         // Also provide `rust_test_helpers` for the host.
         builder.ensure(native::TestHelpers { target: compiler.host });
 
-        // wasm32 can't build the test helpers
-        if !target.contains("wasm32") {
+        // As well as the target, except for plain wasm32, which can't build it
+        if !target.contains("wasm32") || target.contains("emscripten") {
             builder.ensure(native::TestHelpers { target });
         }
+
         builder.ensure(RemoteCopyLibs { compiler, target });
 
         let mut cmd = builder.tool_cmd(Tool::Compiletest);
@@ -1170,7 +1176,7 @@ impl Step for Compiletest {
                     }).to_string()
             })
         };
-        let lldb_exe = if builder.config.lldb_enabled && !target.contains("emscripten") {
+        let lldb_exe = if builder.config.lldb_enabled {
             // Test against the lldb that was just built.
             builder.llvm_out(target).join("bin").join("lldb")
         } else {
@@ -1239,7 +1245,6 @@ impl Step for Compiletest {
         if builder.config.llvm_enabled() {
             let llvm_config = builder.ensure(native::Llvm {
                 target: builder.config.build,
-                emscripten: false,
             });
             if !builder.config.dry_run {
                 let llvm_version = output(Command::new(&llvm_config).arg("--version"));
@@ -1820,10 +1825,6 @@ impl Step for Crate {
                     .expect("nodejs not configured"),
             );
         } else if target.starts_with("wasm32") {
-            // On the wasm32-unknown-unknown target we're using LTO which is
-            // incompatible with `-C prefer-dynamic`, so disable that here
-            cargo.env("RUSTC_NO_PREFER_DYNAMIC", "1");
-
             let node = builder
                 .config
                 .nodejs
@@ -1847,7 +1848,7 @@ impl Step for Crate {
             test_kind, krate, compiler.stage, &compiler.host, target
         ));
         let _time = util::timeit(&builder);
-        try_run(builder, &mut cargo);
+        try_run(builder, &mut cargo.into());
     }
 }
 
@@ -1915,18 +1916,8 @@ impl Step for CrateRustdoc {
         ));
         let _time = util::timeit(&builder);
 
-        try_run(builder, &mut cargo);
+        try_run(builder, &mut cargo.into());
     }
-}
-
-fn envify(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '-' => '_',
-            c => c,
-        })
-        .flat_map(|c| c.to_uppercase())
-        .collect()
 }
 
 /// Some test suites are run inside emulators or on remote devices, and most
