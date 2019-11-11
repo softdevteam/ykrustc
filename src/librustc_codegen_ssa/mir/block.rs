@@ -149,8 +149,9 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
                     let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
                     let lbl_name = CString::new(format!("__YK_RET_{}_{}_{}", crate_hash,
                                                 did.index.as_u32(), self.bb.index())).unwrap();
-                    let di_sp = fx.fn_metadata(self.terminator.source_info);
-                    bx.add_yk_block_label_at_end(di_sp, lbl_name);
+                    if let Some(di_sp) = fx.fn_metadata(self.terminator.source_info) {
+                        bx.add_yk_block_label_at_end(di_sp, lbl_name);
+                    }
                 }
 
                 fx.store_return(bx, ret_dest, &fn_abi.ret, llret);
@@ -804,8 +805,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
             let lbl_name = CString::new(format!("__YK_BLK_{}_{}_{}", crate_hash,
                                         did.index.as_u32(), bb.index())).unwrap();
-            let di_sp = self.fn_metadata(data.terminator().source_info);
-            bx.add_yk_block_label_at_end(di_sp, lbl_name);
+            if let Some(di_sp) = self.fn_metadata(data.terminator().source_info) {
+                bx.add_yk_block_label_at_end(di_sp, lbl_name);
+            }
         }
 
         for statement in &data.statements {
