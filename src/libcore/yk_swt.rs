@@ -21,6 +21,16 @@ pub struct SirLoc {
 }
 
 impl SirLoc {
+
+    /// Creates a new SirLoc.
+    pub fn new(crate_hash: u64, def_idx: u32, bb_idx: u32) -> SirLoc {
+        SirLoc {
+            crate_hash,
+            def_idx,
+            bb_idx
+        }
+    }
+
     /// Returns the crate hash of the location.
     pub fn crate_hash(&self) -> u64 {
         self.crate_hash
