@@ -88,8 +88,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         )
     }
 
-    pub fn fn_metadata(&self, source_info: SourceInfo) -> Bx::DIScope {
-        self.debug_context.as_ref().unwrap().scopes[source_info.scope].scope_metadata.unwrap()
+    pub fn fn_metadata(&self, source_info: SourceInfo) -> Option<Bx::DIScope> {
+        let (odisp, _span) = self.debug_loc(source_info);
+        odisp
     }
 }
 
