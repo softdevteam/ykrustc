@@ -1591,6 +1591,17 @@ pub fn default_configuration(sess: &Session) -> ast::CrateConfig {
     if sess.opts.crate_types.contains(&CrateType::ProcMacro) {
         ret.insert((sym::proc_macro, None));
     }
+    match sess.opts.cg.tracer {
+        TracerMode::Software => {
+            ret.insert((Symbol::intern("tracermode"), Some(Symbol::intern("sw"))));
+        },
+        TracerMode::Hardware => {
+            ret.insert((Symbol::intern("tracermode"), Some(Symbol::intern("hw"))));
+        },
+        TracerMode::Off => {
+            ret.insert((Symbol::intern("tracermode"), Some(Symbol::intern("off"))));
+        }
+    }
     ret
 }
 
