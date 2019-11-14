@@ -147,7 +147,7 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
                 if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
                     let did = fx.instance.def.def_id();
                     let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
-                    let lbl_name = CString::new(format!("__YK_RET_{}_{}_{}", crate_hash,
+                    let lbl_name = CString::new(format!("__YK_RET_{:x}_{}_{}", crate_hash,
                                                 did.index.as_u32(), self.bb.index())).unwrap();
                     if let Some(di_sp) = fx.fn_metadata(self.terminator.source_info) {
                         bx.add_yk_block_label_at_end(di_sp, lbl_name);
@@ -803,7 +803,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
             let did = self.instance.def.def_id();
             let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
-            let lbl_name = CString::new(format!("__YK_BLK_{}_{}_{}", crate_hash,
+            let lbl_name = CString::new(format!("__YK_BLK_{:x}_{}_{}", crate_hash,
                                         did.index.as_u32(), bb.index())).unwrap();
             if let Some(di_sp) = self.fn_metadata(data.terminator().source_info) {
                 bx.add_yk_block_label_at_end(di_sp, lbl_name);
