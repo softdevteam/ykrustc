@@ -13,7 +13,7 @@ test = false
 [dependencies]
 rustc = { path = "../librustc" }
 rustc_yk_link = { path = "../librustc_yk_link" }
-ykpack = { git = "https://github.com/ptersilie/yk", rev="0d50d339cba123e91556a03d013b4a5724c7ef7e" }
+ykpack = { git = "https://github.com/softdevteam/yk" }
 rustc_index = { path = "../librustc_index" }
 rustc_codegen_utils = { path = "../librustc_codegen_utils" }
 rustc_data_structures = { path = "../librustc_data_structures" }
