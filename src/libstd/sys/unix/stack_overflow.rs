@@ -86,8 +86,8 @@ mod imp {
                                     info: *mut libc::siginfo_t,
                                     _data: *mut libc::c_void) {
         // A signal handler can corrupt a software trace.
-        use core::yk_swt;
-        yk_swt::invalidate_trace();
+        use core::yk;
+        yk::invalidate_trace();
 
         use crate::sys_common::util::report_overflow;
 

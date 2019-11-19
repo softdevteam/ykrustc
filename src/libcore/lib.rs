@@ -240,7 +240,7 @@ mod unit;
 
 /// Yorick software tracing.
 #[unstable(feature = "yk_swt", issue = "0")]
-pub mod yk_swt;
+pub mod yk;
 
 // Pull in the `core_arch` crate directly into libcore. The contents of
 // `core_arch` are in a different repository: rust-lang/stdarch.

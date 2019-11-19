@@ -7,45 +7,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/// A SIR basic block location.
-/// FIXME: This shouldn't live here, as it will need to be shared across all tracing backends.
-#[repr(C)]
-#[derive(Debug)]
-pub struct SirLoc {
-    /// Unique identifier for the crate.
-    crate_hash: u64,
-    /// The definition index.
-    def_idx: u32,
-    /// The basic block index.
-    bb_idx: u32,
-}
-
-impl SirLoc {
-
-    /// Creates a new SirLoc.
-    pub fn new(crate_hash: u64, def_idx: u32, bb_idx: u32) -> SirLoc {
-        SirLoc {
-            crate_hash,
-            def_idx,
-            bb_idx
-        }
-    }
-
-    /// Returns the crate hash of the location.
-    pub fn crate_hash(&self) -> u64 {
-        self.crate_hash
-    }
-
-    /// Returns the definition index of the location.
-    pub fn def_idx(&self) -> u32 {
-        self.def_idx
-    }
-
-    /// Returns the basic block index of the location.
-    pub fn bb_idx(&self) -> u32 {
-        self.bb_idx
-    }
-}
+use super::SirLoc;
 
 /// The software trace recorder function.
 /// This is implemented in C so that: the `yk_swt_calls` MIR pass doesn't see inside.

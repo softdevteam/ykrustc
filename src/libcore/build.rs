@@ -12,11 +12,11 @@ use cc;
 fn main() {
     let mut c_build = cc::Build::new();
 
-    c_build.file("yk_swt_impl.c");
+    c_build.file("yk/yk_swt_impl.c");
     c_build.compile("yk_swt_impl");
     c_build.flag("-std=c11");
     c_build.warnings(true);
     c_build.extra_warnings(true);
 
-    println!("cargo:rerun-if-changed=yk_swt_impl.c");
+    println!("cargo:rerun-if-changed=yk/yk_swt_impl.c");
 }
