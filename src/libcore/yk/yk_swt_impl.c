@@ -11,7 +11,6 @@
 #include <stdlib.h>
 #include <err.h>
 #include <stdbool.h>
-#include <stdatomic.h>
 
 struct mir_loc {
     uint64_t crate_hash;
@@ -34,7 +33,7 @@ static __thread size_t trace_buf_len = 0;
 static __thread size_t trace_buf_cap = 0;
 // Is the current thread tracing?
 // true = we are tracing, false = we are not tracing or an error occurred.
-static __thread volatile atomic_bool tracing = false;
+static __thread bool tracing = false;
 
 // Start tracing on the current thread.
 // A new trace buffer is allocated and MIR locations will be written into it on
@@ -48,14 +47,14 @@ yk_swt_start_tracing_impl(void) {
     }
 
     trace_buf_cap = TL_TRACE_INIT_CAP;
-    atomic_store_explicit(&tracing, true, memory_order_relaxed);
+    tracing = true;
 }
 
 // Record a location into the trace buffer if tracing is enabled on the current thread.
 void
 yk_swt_rec_loc_impl(uint64_t crate_hash, uint32_t def_idx, uint32_t bb_idx)
 {
-    if (!atomic_load_explicit(&tracing, memory_order_relaxed)) {
+    if (!tracing) {
         return;
     }
 
@@ -63,21 +62,21 @@ yk_swt_rec_loc_impl(uint64_t crate_hash, uint32_t def_idx, uint32_t bb_idx)
     if (trace_buf_len == trace_buf_cap) {
         if (trace_buf_cap >= SIZE_MAX - TL_TRACE_REALLOC_CAP) {
             // Trace capacity would overflow.
-            atomic_store_explicit(&tracing, false, memory_order_relaxed);
+            tracing = false;
             return;
         }
         size_t new_cap = trace_buf_cap + TL_TRACE_REALLOC_CAP;
 
         if (new_cap > SIZE_MAX / sizeof(struct mir_loc)) {
             // New buffer size would overflow.
-            atomic_store_explicit(&tracing, false, memory_order_relaxed);
+            tracing = false;
             return;
         }
         size_t new_size = new_cap * sizeof(struct mir_loc);
 
         trace_buf = realloc(trace_buf, new_size);
         if (trace_buf == NULL) {
-            atomic_store_explicit(&tracing, false, memory_order_relaxed);
+            tracing = false;
             return;
         }
 
@@ -98,7 +97,7 @@ yk_swt_rec_loc_impl(uint64_t crate_hash, uint32_t def_idx, uint32_t bb_idx)
 // `yk_swt_start_tracing_impl()` results in undefined behaviour.
 struct mir_loc *
 yk_swt_stop_tracing_impl(size_t *ret_trace_len) {
-    if (!atomic_load_explicit(&tracing, memory_order_relaxed)) {
+    if (!tracing) {
         free(trace_buf);
         trace_buf = NULL;
         trace_buf_len = 0;
