@@ -47,10 +47,3 @@ impl SirLoc {
         self.bb_idx
     }
 }
-
-/// Invalidate the software trace, if one is being collected.
-#[cfg_attr(not(bootstrap), no_sw_trace)]
-pub fn invalidate_trace() {
-    #[cfg(tracermode="sw")]
-    swt::invalidate_trace();
-}

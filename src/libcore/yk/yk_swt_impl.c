@@ -25,7 +25,6 @@ struct mir_loc {
 void yk_swt_start_tracing_impl(void);
 void yk_swt_rec_loc_impl(uint64_t crate_hash, uint32_t def_idx, uint32_t bb_idx);
 struct mir_loc *yk_swt_stop_tracing_impl(size_t *ret_trace_len);
-void yk_swt_invalidate_trace_impl(void);
 
 // The trace buffer.
 static __thread struct mir_loc *trace_buf = NULL;
@@ -111,20 +110,10 @@ yk_swt_stop_tracing_impl(size_t *ret_trace_len) {
     *ret_trace_len = trace_buf_len;
 
     // Now reset all off the recorder's state.
-    // We reset `trace_invalid` when tracing is restarted, because signals
-    // handlers which set this flag may arrive in the meantime.
     trace_buf = NULL;
     tracing = false;
     trace_buf_len = 0;
     trace_buf_cap = 0;
 
     return ret_trace;
-}
-
-// Call this to safely mark the trace invalid.
-void
-yk_swt_invalidate_trace_impl(void) {
-    // We don't free the trace buffer here, as this may be called in a signal
-    // handler and thus needs to be reentrant.
-    atomic_store_explicit(&tracing, false, memory_order_relaxed);
 }
