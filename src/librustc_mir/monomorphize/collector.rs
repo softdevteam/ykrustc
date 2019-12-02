@@ -285,6 +285,13 @@ pub fn collect_crate_mono_items(
     tcx: TyCtxt<'_>,
     mode: MonoItemCollectionMode,
 ) -> (FxHashSet<MonoItem<'_>>, InliningMap<'_>) {
+    // Initialise Yorick call resolution map.
+    {
+        let mut resolutions = tcx.call_resolution_map.borrow_mut();
+        assert!(resolutions.is_none()); // Should only be initialised once.
+        *resolutions = Some(FxHashMap::default());
+    }
+
     let _prof_timer = tcx.prof.generic_activity("monomorphization_collector");
 
     let roots = time(tcx.sess, "collecting roots", || {
@@ -727,6 +734,10 @@ fn visit_fn_use<'tcx>(
             ty::Instance::resolve_for_fn_ptr
         };
         let instance = resolver(tcx, ty::ParamEnv::reveal_all(), def_id, substs).unwrap();
+
+        let mut resolutions = tcx.call_resolution_map.borrow_mut();
+        resolutions.as_mut().unwrap().insert((def_id, substs), instance);
+
         visit_instance_use(tcx, instance, is_direct_call, output);
     }
 }

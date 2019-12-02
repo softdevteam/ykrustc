@@ -28,7 +28,7 @@ use crate::ty::subst::{GenericArg, InternalSubsts, SubstsRef, Subst};
 use crate::ty::ReprOptions;
 use crate::traits;
 use crate::traits::{Clause, Clauses, GoalKind, Goal, Goals};
-use crate::ty::{self, DefIdTree, Ty, TypeAndMut};
+use crate::ty::{self, DefIdTree, Ty, TypeAndMut, Instance};
 use crate::ty::{TyS, TyKind, List};
 use crate::ty::{AdtKind, AdtDef, Region, Const};
 use crate::ty::{PolyFnSig, InferTy, ParamTy, ProjectionTy, ExistentialPredicate, Predicate};
@@ -1107,6 +1107,10 @@ pub struct GlobalCtxt<'tcx> {
     layout_interner: ShardedHashMap<&'tcx LayoutDetails, ()>,
 
     output_filenames: Arc<OutputFilenames>,
+
+    /// Caches the results of `Instance::resolve()` so that Yorick's SIR lowering can use them
+    /// later. Normally only the monomorphisation collector can resolve instances.
+    pub call_resolution_map: Lock<Option<FxHashMap<(DefId, SubstsRef<'tcx>), Instance<'tcx>>>>,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -1302,6 +1306,7 @@ impl<'tcx> TyCtxt<'tcx> {
             allocation_interner: Default::default(),
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames.clone()),
+            call_resolution_map: Lock::new(None),
         }
     }
 

@@ -13,7 +13,7 @@
 //!
 //! Serialisation itself is performed by an external library: ykpack.
 
-use rustc::ty::{self, TyCtxt, TyS, Const, Ty, Instance};
+use rustc::ty::{self, TyCtxt, TyS, Const, Ty};
 use syntax::ast::{UintTy, IntTy};
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::{
@@ -34,6 +34,7 @@ use std::convert::{TryFrom, TryInto};
 use rustc_index::vec::IndexVec;
 use ykpack;
 use rustc::ty::fold::TypeFoldable;
+use rustc::ty::InstanceDef;
 use syntax_pos::sym;
 
 const SECTION_NAME: &'static str = ".yk_sir";
@@ -210,14 +211,26 @@ impl<'a, 'tcx> ConvCx<'a, 'tcx> {
                         }, ..
                     }, ..
                 }, ..) = func {
-                    // A statically known call target.
-                    let inst = Instance::new(*target_def_id, substs);
-                    let sym_name = match substs.needs_subst() {
-                        // If the instance isn't full instantiated, then it has no symbol name.
-                        true => None,
-                        false => Some(String::from(&*self.tcx.symbol_name(inst).name.as_str())),
-                    };
-                    ykpack::CallOperand::Fn(self.lower_def_id(target_def_id), sym_name)
+                    let map = self.tcx.call_resolution_map.borrow();
+                    let maybe_inst = map.as_ref().unwrap().get(&(*target_def_id, substs));
+                    if let Some(inst) = maybe_inst {
+                        let sym_name = match substs.needs_subst() {
+                            // If the instance isn't fully instantiated, then it has no symbol name.
+                            true => None,
+                            false => Some(String::from(
+                                &*self.tcx.symbol_name(*inst).name.as_str())),
+                        };
+
+                        match inst.def {
+                            InstanceDef::Item(def_id) => ykpack::CallOperand::Fn(
+                                self.lower_def_id(&def_id), sym_name),
+                            InstanceDef::Virtual(def_id, _) => ykpack::CallOperand::Virtual(
+                                self.lower_def_id(&def_id), sym_name),
+                            _ => ykpack::CallOperand::Unknown,
+                        }
+                    } else {
+                        ykpack::CallOperand::Unknown
+                    }
                 } else {
                     // FIXME -- implement other callables.
                     ykpack::CallOperand::Unknown
