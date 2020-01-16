@@ -129,6 +129,22 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
             if let Some((ret_dest, target)) = destination {
                 let mut ret_bx = fx.build_block(target);
                 fx.set_debug_loc(&mut ret_bx, self.terminator.source_info);
+
+                if ret_bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && ret_bx.cx().has_debug(){
+                    let did = fx.instance.def.def_id();
+                    let crate_hash = ret_bx.cx().tcx().crate_hash(did.krate).as_u64();
+                    let fname = ret_bx.cx().tcx().def_path_str(did);
+                    if fname != "std::ptr::real_drop_in_place"
+                        && fname != "core::ptr::real_drop_in_place"
+                    {
+                        let lbl_name = CString::new(format!("__YK_RET_{:x}_{}_{}", crate_hash,
+                                                    did.index.as_u32(), self.bb.index())).unwrap();
+                        if let Some(di_sp) = fx.fn_metadata(self.terminator.source_info) {
+                            ret_bx.add_yk_block_label_at_end(di_sp, lbl_name);
+                        }
+                    }
+                }
+
                 fx.store_return(&mut ret_bx, ret_dest, &fn_abi.ret, invokeret);
             }
         } else {
