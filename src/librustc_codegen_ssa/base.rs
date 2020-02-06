@@ -26,7 +26,7 @@ use rustc::ty::layout::{self, Align, TyLayout, LayoutOf, VariantIdx, HasTyCtxt};
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{self, LinkagePreference};
 use rustc::util::common::{time, print_time_passes_entry, set_time_depth, time_depth};
-use rustc::session::config::{self, EntryFnType, Lto};
+use rustc::session::config::{self, EntryFnType, Lto, OutputType};
 use rustc::session::Session;
 use rustc::util::nodemap::FxHashMap;
 use rustc_index::vec::Idx;
@@ -631,6 +631,26 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
                 true
             }
         };
+    }
+
+    // If we generated Sir and we are not dumping it textually, then encode it into an LLVM module
+    // for later linkage.
+    if !tcx.sess.opts.output_types.contains_key(&OutputType::YkSir) &&
+        !tcx.finished_sir_cxs.borrow().is_empty()
+    {
+        let sir_cgu_name = cgu_name_builder.build_cgu_name(LOCAL_CRATE,
+            &["crate"],
+            Some("yksir")).to_string();
+        let mut sir_module = backend.new_metadata(tcx, &sir_cgu_name);
+        time(tcx.sess, "write SIR", || {
+            backend.write_sir(tcx, &mut sir_module);
+        });
+        let sir_mod_cg = ModuleCodegen {
+            name: sir_cgu_name,
+            module_llvm: sir_module,
+            kind: ModuleKind::YkSir,
+        };
+        ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, sir_mod_cg);
     }
 
     ongoing_codegen.codegen_finished(tcx);

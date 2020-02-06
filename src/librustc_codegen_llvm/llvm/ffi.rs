@@ -1664,11 +1664,7 @@ extern "C" {
     pub fn LLVMRustDIBuilderCreateOpPlusUconst() -> i64;
 
     pub fn LLVMRustAddYkBlockLabel(Builder: &Builder<'a>, DIBuilder: &DIBuilder<'a>,
-                                   SP: &DISubprogram, InsertBefore: &Value,
-                                   Name: *const c_char);
-
-    pub fn LLVMRustAddYkBlockLabelAtEnd(Builder: &Builder<'a>, DIBuilder: &DIBuilder<'a>,
-                                   SP: &DISubprogram, InsertAfter: &BasicBlock,
+                                   Block: &BasicBlock,
                                    Name: *const c_char);
 
     #[allow(improper_ctypes)]

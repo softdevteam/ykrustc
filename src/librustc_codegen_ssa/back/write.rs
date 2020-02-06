@@ -212,6 +212,7 @@ pub struct CodegenContext<B: WriteBackendMethods> {
     pub regular_module_config: Arc<ModuleConfig>,
     pub metadata_module_config: Arc<ModuleConfig>,
     pub allocator_module_config: Arc<ModuleConfig>,
+    pub sir_module_config: Arc<ModuleConfig>,
     pub tm_factory: TargetMachineFactory<B>,
     pub msvc_imps_needed: bool,
     pub target_pointer_width: String,
@@ -249,6 +250,7 @@ impl<B: WriteBackendMethods> CodegenContext<B> {
             ModuleKind::Regular => &self.regular_module_config,
             ModuleKind::Metadata => &self.metadata_module_config,
             ModuleKind::Allocator => &self.allocator_module_config,
+            ModuleKind::YkSir => &self.sir_module_config,
         }
     }
 }
@@ -293,6 +295,7 @@ pub struct CompiledModules {
     pub modules: Vec<CompiledModule>,
     pub metadata_module: Option<CompiledModule>,
     pub allocator_module: Option<CompiledModule>,
+    pub sir_module: Option<CompiledModule>,
 }
 
 fn need_crate_bitcode_for_rlib(sess: &Session) -> bool {
@@ -343,6 +346,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     let mut modules_config = ModuleConfig::new(sess.opts.cg.passes.clone());
     let mut metadata_config = ModuleConfig::new(vec![]);
     let mut allocator_config = ModuleConfig::new(vec![]);
+    let mut sir_config = ModuleConfig::new(vec![]);
 
     if let Some(ref sanitizer) = sess.opts.debugging_opts.sanitizer {
         match *sanitizer {
@@ -378,6 +382,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
         modules_config.emit_lto_bc = true;
         metadata_config.emit_bc = true;
         allocator_config.emit_bc = true;
+        sir_config.emit_bc = true;
     }
 
     // Emit compressed bitcode files for the crate if we're emitting an rlib.
@@ -407,14 +412,16 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
                 if !sess.opts.output_types.contains_key(&OutputType::Assembly) {
                     metadata_config.emit_obj = true;
                     allocator_config.emit_obj = true;
+                    sir_config.emit_obj = true;
                 }
             }
-            OutputType::Object => { modules_config.emit_obj = true; }
+            OutputType::Object => { modules_config.emit_obj = true; },
             OutputType::Metadata => { metadata_config.emit_obj = true; }
             OutputType::Exe => {
                 modules_config.emit_obj = true;
                 metadata_config.emit_obj = true;
                 allocator_config.emit_obj = true;
+                sir_config.emit_obj = true;
             },
             OutputType::Mir => {}
             OutputType::DepInfo => {}
@@ -424,11 +431,13 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     modules_config.set_flags(sess, no_builtins);
     metadata_config.set_flags(sess, no_builtins);
     allocator_config.set_flags(sess, no_builtins);
+    sir_config.set_flags(sess, no_builtins);
 
     // Exclude metadata and allocator modules from time_passes output, since
     // they throw off the "LLVM passes" measurement.
     metadata_config.time_passes = false;
     allocator_config.time_passes = false;
+    sir_config.time_passes = false;
 
     let (shared_emitter, shared_emitter_main) = SharedEmitter::new();
     let (codegen_worker_send, codegen_worker_receive) = channel();
@@ -444,6 +453,7 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
                                                   Arc::new(modules_config),
                                                   Arc::new(metadata_config),
                                                   Arc::new(allocator_config),
+                                                  Arc::new(sir_config),
                                                   coordinator_send.clone());
 
     OngoingCodegen {
@@ -950,6 +960,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     modules_config: Arc<ModuleConfig>,
     metadata_config: Arc<ModuleConfig>,
     allocator_config: Arc<ModuleConfig>,
+    sir_config: Arc<ModuleConfig>,
     tx_to_llvm_workers: Sender<Box<dyn Any + Send>>,
 ) -> thread::JoinHandle<Result<CompiledModules, ()>> {
     let coordinator_send = tx_to_llvm_workers;
@@ -1044,6 +1055,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         output_filenames: tcx.output_filenames(LOCAL_CRATE),
         regular_module_config: modules_config,
         metadata_module_config: metadata_config,
+        sir_module_config: sir_config,
         allocator_module_config: allocator_config,
         tm_factory: TargetMachineFactory(backend.target_machine_factory(tcx.sess, ol, false)),
         total_cgus,
@@ -1211,6 +1223,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
         let mut compiled_modules = vec![];
         let mut compiled_metadata_module = None;
         let mut compiled_allocator_module = None;
+        let mut compiled_sir_module = None;
         let mut needs_fat_lto = Vec::new();
         let mut needs_thin_lto = Vec::new();
         let mut lto_import_only_modules = Vec::new();
@@ -1465,6 +1478,10 @@ fn start_executing_work<B: ExtraBackendMethods>(
                             assert!(compiled_allocator_module.is_none());
                             compiled_allocator_module = Some(compiled_module);
                         }
+                        ModuleKind::YkSir => {
+                            assert!(compiled_sir_module.is_none());
+                            compiled_sir_module = Some(compiled_module);
+                        },
                     }
                 }
                 Message::NeedsFatLTO { result, worker_id } => {
@@ -1514,6 +1531,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
             modules: compiled_modules,
             metadata_module: compiled_metadata_module,
             allocator_module: compiled_allocator_module,
+            sir_module: compiled_sir_module,
         })
     });
 
@@ -1789,6 +1807,7 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
             modules: compiled_modules.modules,
             allocator_module: compiled_modules.allocator_module,
             metadata_module: compiled_modules.metadata_module,
+            sir_module: compiled_modules.sir_module,
         }, work_products)
     }
 

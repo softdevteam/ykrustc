@@ -182,6 +182,13 @@ const WHITELIST: &[Crate<'_>] = &[
     Crate("winapi-x86_64-pc-windows-gnu"),
     Crate("wincolor"),
     Crate("hermit-abi"),
+
+    // Yorick.
+    Crate("fallible-iterator"),
+    Crate("num-traits"),
+    Crate("rmp"),
+    Crate("rmp-serde"),
+    Crate("ykpack"),
 ];
 
 // Some types for Serde to deserialize the output of `cargo metadata` to.

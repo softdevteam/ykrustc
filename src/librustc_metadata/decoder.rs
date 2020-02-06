@@ -12,7 +12,6 @@ use rustc::middle::cstore::{LinkagePreference, NativeLibrary, ForeignModule};
 use rustc::middle::exported_symbols::{ExportedSymbol, SymbolExportLevel};
 use rustc::hir::def::{self, Res, DefKind, CtorOf, CtorKind};
 use rustc::hir::def_id::{CrateNum, DefId, DefIndex, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc::util::nodemap::DefIdSet;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc::dep_graph::{DepNodeIndex, DepKind};
@@ -1182,22 +1181,6 @@ impl<'a, 'tcx> CrateMetadata {
             vec![]
         } else {
             self.root.exported_symbols.decode((self, tcx)).collect()
-        }
-    }
-
-    pub fn defids_with_mir(&self, tcx: TyCtxt<'tcx>) -> DefIdSet {
-        if self.is_proc_macro_crate() {
-            // Following the precedent of `exported_symbols()` we skip procedural macro crates.
-            DefIdSet::default()
-        } else {
-            let mut res = DefIdSet::default();
-            for idx in 1..self.def_path_table.size() {
-                let def_id = DefId{krate: self.cnum, index: DefIndex::from_usize(idx)};
-                if tcx.is_mir_available(def_id) {
-                    res.insert(def_id);
-                }
-            }
-            res
         }
     }
 

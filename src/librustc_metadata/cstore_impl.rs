@@ -233,10 +233,6 @@ provide! { <'tcx> tcx, def_id, other, cdata,
 
     used_crate_source => { Lrc::new(cdata.source.clone()) }
 
-    defids_with_mir => {
-        cdata.defids_with_mir(tcx)
-    }
-
     exported_symbols => {
         let syms = cdata.exported_symbols(tcx);
 

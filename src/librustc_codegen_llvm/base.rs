@@ -25,7 +25,7 @@ use crate::context::CodegenCx;
 use rustc::dep_graph;
 use rustc::mir::mono::{Linkage, Visibility};
 use rustc::middle::cstore::{EncodedMetadata};
-use rustc::ty::TyCtxt;
+use rustc::ty::{TyCtxt, Instance};
 use rustc::middle::exported_symbols;
 use rustc::session::config::DebugInfo;
 use rustc_codegen_ssa::mono_item::MonoItemExt;
@@ -38,6 +38,9 @@ use std::ffi::CString;
 use std::time::Instant;
 use syntax_pos::symbol::Symbol;
 use rustc::hir::CodegenFnAttrs;
+use rustc::hir::def_id::LOCAL_CRATE;
+use rustc::sir;
+use ykpack::BLOCK_LABEL_PREFIX;
 
 use crate::value::Value;
 
@@ -168,9 +171,56 @@ pub fn compile_codegen_unit(
                 cx.create_used_variable()
             }
 
+            if cx.has_debug() {
+                if let Some(sir_cx) = cx.sir_cx.borrow_mut().as_mut() {
+                    for (func_idx, blocks) in sir_cx.funcs_and_blocks_deterministic()
+                        .iter_enumerated()
+                    {
+                        let sir_func = &sir_cx.funcs[func_idx];
+                        let sym_name = &sir_func.symbol_name;
+
+                        // Don't label the main wrapper as it causes label insertion to crash and
+                        // is never a candidate for tracing.
+                        if sym_name == "main" {
+                            continue;
+                        }
+
+                        // When --test is passed, the auto-generated entry point causes our label
+                        // insertion to crash. We never want to trace test harnesses anyway, so
+                        // skip them.
+                        if tcx.sess.opts.test {
+                            let entry_fn = tcx.entry_fn(LOCAL_CRATE).unwrap().0;
+                            let entry_inst = Instance::mono(tcx, entry_fn);
+                            let entry_sym = &*tcx.symbol_name(entry_inst).name.as_str();
+                            if sym_name == entry_sym {
+                                continue;
+                            }
+                        }
+
+                        for (bb_idx, bb) in blocks.iter_enumerated() {
+                            let llbb = unsafe {
+                                &*(*bb as *const sir::BasicBlock as *const llvm::BasicBlock)
+                            };
+
+                            let lbl_name = CString::new(format!("{}:{}:{}",
+                                    BLOCK_LABEL_PREFIX, sym_name, bb_idx.index())).unwrap();
+                            let mut bx = Builder::with_cx(&cx);
+                            bx.position_at_end(llbb);
+                            bx.add_yk_block_label(llbb, lbl_name);
+                        }
+                    }
+                }
+            }
+
             // Finalize debuginfo
             if cx.sess().opts.debuginfo != DebugInfo::None {
                 cx.debuginfo_finalize();
+            }
+
+            // If we have a sir_cx then we are done with it now. We move it into the tcx so that
+            // the SIR can be serialised later.
+            if let Some(sir_cx) = cx.sir_cx.replace(None) {
+                cx.tcx.finished_sir_cxs.borrow_mut().push(sir_cx);
             }
         }
 

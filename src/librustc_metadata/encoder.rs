@@ -996,8 +996,7 @@ impl EncodeContext<'tcx> {
                                     !self.metadata_output_only();
                 let is_const_fn = sig.header.constness == hir::Constness::Const;
                 let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir;
-                let encode_sir = self.tcx.sess.opts.cg.tracer.encode_sir();
-                needs_inline || is_const_fn || always_encode_mir || encode_sir
+                needs_inline || is_const_fn || always_encode_mir
             },
             hir::ImplItemKind::OpaqueTy(..) |
             hir::ImplItemKind::TyAlias(..) => false,
@@ -1294,9 +1293,7 @@ impl EncodeContext<'tcx> {
                         tcx.codegen_fn_attrs(def_id).requests_inline()) &&
                         !self.metadata_output_only();
                 let always_encode_mir = self.tcx.sess.opts.debugging_opts.always_encode_mir;
-                let encode_sir = self.tcx.sess.opts.cg.tracer.encode_sir();
-                needs_inline || header.constness == hir::Constness::Const || always_encode_mir ||
-                    encode_sir
+                needs_inline || header.constness == hir::Constness::Const || always_encode_mir
             }
             _ => false,
         };

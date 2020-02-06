@@ -985,24 +985,35 @@ extern "C" int64_t LLVMRustDIBuilderCreateOpPlusUconst() {
   return dwarf::DW_OP_plus_uconst;
 }
 
+// Adds YK labels as close to the beginning of BasicBlocks as possible.
+//
+// This is tricky because LLVM has certain constraints which the bitcode
+// checker will complain about. For example, you may not insert debug info
+// before PHI nodes.
+//
+// Returns false if no label was added (e.g. if the BasicBlock is empty or is a
+// LandingPad), or true otherwise.
 extern "C" bool LLVMRustAddYkBlockLabel(LLVMBuilderRef Builder,
-                                        LLVMRustDIBuilderRef DBuilder,
-                                        DISubprogram *SP, Instruction *Instr,
-                                        char *Name) {
-    // FIXME Add useful location info?
-    auto Loc = DebugLoc::get(0, 0, SP);
-    DILabel *label = DBuilder->createLabel(SP, Name, SP->getFile(), 0, true);
-    DBuilder->insertLabel(label, Loc, Instr);
-    return true;
-}
+        LLVMRustDIBuilderRef DBuilder, LLVMBasicBlockRef Block, char *Name) {
 
-extern "C" bool LLVMRustAddYkBlockLabelAtEnd(LLVMBuilderRef Builder,
-                                             LLVMRustDIBuilderRef DBuilder,
-                                             DISubprogram *SP,
-                                             BasicBlock *Block, char *Name) {
+    // Use C++ call FIXME
+    BasicBlock *B = unwrap(Block);
+    Function *f = B->getParent();
+    DISubprogram *SP = f->getSubprogram();
     auto Loc = DebugLoc::get(0, 0, SP);
+    if (B->isLandingPad()) {
+        // FIXME We may want to add labels to the landingpad instruction
+        // (getLandingPadInst) here in the future.
+        return false;
+    }
+    auto First = B->getFirstNonPHI();
+    if (First == nullptr) {
+        // There is no instruction to attach a label to, so bail out.
+        return false;
+    }
     DILabel *label = DBuilder->createLabel(SP, Name, SP->getFile(), 0, true);
-    DBuilder->insertLabel(label, Loc, Block);
+    DBuilder->insertLabel(label, Loc, First);
+
     return true;
 }
 

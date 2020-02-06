@@ -7,7 +7,9 @@ use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::mono::{Linkage, Visibility};
 use rustc::ty::{TypeFoldable, Instance};
 use rustc::ty::layout::{LayoutOf, HasTyCtxt};
+use rustc::sir;
 use rustc_codegen_ssa::traits::*;
+use syntax_pos::sym;
 
 pub use rustc::mir::mono::MonoItem;
 
@@ -45,6 +47,21 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         let mono_sig = instance.fn_sig(self.tcx());
         let attrs = self.tcx.codegen_fn_attrs(instance.def_id());
         let lldecl = self.declare_fn(symbol_name, mono_sig);
+
+        // Set function flags in Yorick SIR.
+        self.with_sir_cx_mut(|sir_cx| {
+            let sir_lldecl = lldecl as *const llvm::Value as *const sir::Value;
+            let func_idx = sir_cx.llvm_values[&sir_lldecl].func_idx();
+            let func = &mut sir_cx.funcs[func_idx];
+            for attr in self.tcx.get_attrs(instance.def_id()).iter() {
+                if attr.check_name(sym::trace_head) {
+                    func.flags |= ykpack::bodyflags::TRACE_HEAD;
+                } else if attr.check_name(sym::trace_tail) {
+                    func.flags |= ykpack::bodyflags::TRACE_TAIL;
+                }
+            }
+        });
+
         unsafe { llvm::LLVMRustSetLinkage(lldecl, base::linkage_to_llvm(linkage)) };
         base::set_link_section(lldecl, &attrs);
         if linkage == Linkage::LinkOnceODR ||

@@ -5,7 +5,6 @@ use crate::context::CodegenCx;
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
-use crate::llvm::debuginfo::DIScope;
 use rustc_codegen_ssa::common::{IntPredicate, TypeKind, RealPredicate};
 use rustc_codegen_ssa::MemFlags;
 use libc::{c_uint, c_char};
@@ -13,6 +12,7 @@ use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::layout::{self, Align, Size, TyLayout};
 use rustc::hir::def_id::DefId;
 use rustc::session::config;
+use rustc::sir;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::base::to_immediate;
@@ -131,6 +131,12 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                 name.as_ptr()
             )
         };
+
+        cx.with_sir_cx_mut(|sir_cx| {
+            sir_cx.add_block(llfn as *const llvm::Value as *const sir::Value,
+                llbb as *const llvm::BasicBlock as *const sir::BasicBlock);
+        });
+
         bx.position_at_end(llbb);
         bx
     }
@@ -168,29 +174,11 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
-    fn add_yk_block_label(&mut self, di_sp: &DIScope, lbl_name: CString) {
-        // Insert a DWARF label at the start of each block.
-        // ykrt uses this at runtime to map virtual addresses to MIR blocks.
-        if let Some(first_instr) = self.first_instruction(self.llbb()) {
-            self.position_before(first_instr);
-
-            let dbg_cx = self.cx().dbg_cx.as_ref().unwrap();
-            let di_bldr = dbg_cx.get_builder();
-
-            unsafe {
-                llvm::LLVMRustAddYkBlockLabel(self.llbuilder, di_bldr, di_sp, first_instr,
-                                              lbl_name.as_ptr());
-            }
-        }
-
-        self.position_at_end(self.llbb());
-    }
-
-    fn add_yk_block_label_at_end(&mut self, di_sp: &DIScope, lbl_name: CString) {
+    fn add_yk_block_label(&mut self, block: &'ll BasicBlock, lbl_name: CString) {
         let dbg_cx = self.cx().dbg_cx.as_ref().unwrap();
         let di_bldr = dbg_cx.get_builder();
         unsafe {
-            llvm::LLVMRustAddYkBlockLabelAtEnd(self.llbuilder, di_bldr, di_sp, self.llbb(),
+            llvm::LLVMRustAddYkBlockLabel(self.llbuilder, di_bldr, block,
                                                lbl_name.as_ptr());
         }
     }
