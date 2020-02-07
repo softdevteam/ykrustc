@@ -130,5 +130,7 @@ pub mod util {
     pub mod bug;
 }
 
+pub mod sir;
+
 // Allows macros to refer to this crate as `::rustc`
 extern crate self as rustc;

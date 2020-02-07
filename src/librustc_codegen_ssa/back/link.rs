@@ -3,7 +3,7 @@
 
 use rustc::session::{Session, filesearch};
 use rustc::session::config::{
-    self, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer
+    self, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer, TracerMode
 };
 use rustc::session::search_paths::PathKind;
 use rustc::middle::dependency_format::Linkage;
@@ -16,7 +16,7 @@ use rustc_target::spec::{PanicStrategy, RelroLevel, LinkerFlavor};
 use syntax::symbol::Symbol;
 
 use crate::{METADATA_FILENAME, RLIB_BYTECODE_EXTENSION, CrateInfo,
-    looks_like_rust_object_file, CodegenResults};
+    looks_like_rust_object_file, CodegenResults, SIR_FILENAME};
 use super::archive::ArchiveBuilder;
 use super::command::Command;
 use super::linker::Linker;
@@ -363,6 +363,16 @@ fn link_rlib<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
             // contain the metadata in a separate file.
             ab.add_file(&emit_metadata(sess, &codegen_results.metadata, tmpdir));
 
+            // Put Yorick SIR in an ELF section in the rlib.
+            // We rename the object file to a well-known name so that we can find it later. See
+            // link_sir() for more on this.
+            if let Some(sir_mod) = codegen_results.sir_module.as_ref() {
+                let mut dest = PathBuf::from(tmpdir.path());
+                dest.push(SIR_FILENAME);
+                fs::rename(sir_mod.object.as_ref().unwrap(), &dest).unwrap();
+                ab.add_file(&dest);
+            }
+
             // For LTO purposes, the bytecode of this library is also inserted
             // into the archive.
             for bytecode in codegen_results
@@ -542,10 +552,17 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
         cmd.args(args);
     }
 
-    // Link Yorick objects into executables.
-    if crate_type == config::CrateType::Executable {
-        cmd.arg("-Wl,--no-gc-sections");
-        cmd.args(sess.yk_link_objects.borrow().iter().map(|o| o.path()));
+    // Link Yorick SIR into executables.
+    // This links only the code from the local crate. See add_upstream_rust_crates() for where SIR
+    // for dependencies is linked.
+    //
+    // FIXME When rebuilding after a small change, only the rebuilt code gets SIR. We should cache
+    // the SIR in a file between builds and load the SIR from last time as a starting point, only
+    // updating what changed. This may require dumping the SIR into a file between builds, as Rust
+    // does with metadata.
+    if let Some(sir_mod) = codegen_results.sir_module.as_ref() {
+        let sir_path = sir_mod.object.as_ref().unwrap();
+        cmd.arg(sir_path);
     }
 
     for &(ref k, ref v) in &sess.target.target.options.link_env {
@@ -1121,7 +1138,10 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
 
     // Try to strip as much out of the generated object by removing unused
     // sections if possible. See more comments in linker.rs
-    if !sess.opts.cg.link_dead_code {
+    //
+    // In the eyes of the compiler, SIR (and Rust metadata) are unreferenced and will be removed it
+    // we don't omit section garbage collection.
+    if !sess.opts.cg.link_dead_code && sess.opts.cg.tracer == TracerMode::Off {
         let keep_metadata = crate_type == config::CrateType::Dylib;
         cmd.gc_sections(keep_metadata);
     }
@@ -1312,6 +1332,7 @@ pub fn add_local_native_libraries(cmd: &mut dyn Linker,
     }
 }
 
+
 // # Rust Crate linking
 //
 // Rust crates are not considered at all when creating an rlib output. All
@@ -1414,6 +1435,9 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
             Linkage::IncludedFromDylib => {}
             Linkage::Static => {
                 add_static_crate::<B>(cmd, sess, codegen_results, tmpdir, crate_type, cnum);
+                if sess.opts.cg.tracer.encode_sir() {
+                    link_sir::<B>(cmd, sess, codegen_results, tmpdir, cnum);
+                }
             }
             Linkage::Dynamic => {
                 add_dynamic_crate(cmd, sess, &src.dylib.as_ref().unwrap().0)
@@ -1432,6 +1456,36 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
     // is used)
     if let Some(cnum) = compiler_builtins {
         add_static_crate::<B>(cmd, sess, codegen_results, tmpdir, crate_type, cnum);
+    }
+
+    /// Extracts the SIR from the dependency rlib and puts it into it's own static object for
+    /// --whole-archive linkage. This is required because the link editor will normally only link
+    /// strictly required symbols and it is unaware that we will look directly into the SIR section
+    /// at runtime. Whilst we could link the original rlib with --whole-archive, that would bloat
+    /// the binary a lot (we'd include unused code).
+    fn link_sir<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
+                              sess: &'a Session,
+                              codegen_results: &CodegenResults,
+                              tmpdir: &Path,
+                              cnum: CrateNum) {
+        let src = &codegen_results.crate_info.used_crate_source[&cnum];
+        let cratepath = &src.rlib.as_ref().unwrap().0;
+        let filename = format!("{}.yksir", cratepath.file_name().unwrap().to_str().unwrap());
+
+        // Note that if there was a reproducible build test that used our tracer, then this would
+        // break it because the tempdir is non-deterministic.
+        let dst = tmpdir.join(filename);
+        let mut archive = <B as ArchiveBuilder>::new(sess, &dst, Some(cratepath));
+        archive.update_symbols();
+
+        for f in archive.src_files() {
+            if f != SIR_FILENAME {
+                archive.remove_file(&f);
+            }
+        }
+
+        archive.build();
+        cmd.link_whole_rlib(&dst);
     }
 
     // Converts a library file-stem into a cc -l argument

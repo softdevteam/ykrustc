@@ -11,7 +11,6 @@ use crate::MemFlags;
 use crate::common::{self, IntPredicate};
 use crate::meth;
 
-use std::ffi::CString;
 
 use crate::traits::*;
 
@@ -129,22 +128,6 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
             if let Some((ret_dest, target)) = destination {
                 let mut ret_bx = fx.build_block(target);
                 fx.set_debug_loc(&mut ret_bx, self.terminator.source_info);
-
-                if ret_bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && ret_bx.cx().has_debug(){
-                    let did = fx.instance.def.def_id();
-                    let crate_hash = ret_bx.cx().tcx().crate_hash(did.krate).as_u64();
-                    let fname = ret_bx.cx().tcx().def_path_str(did);
-                    if fname != "std::ptr::real_drop_in_place"
-                        && fname != "core::ptr::real_drop_in_place"
-                    {
-                        let lbl_name = CString::new(format!("__YK_RET_{:x}_{}_{}", crate_hash,
-                                                    did.index.as_u32(), self.bb.index())).unwrap();
-                        if let Some(di_sp) = fx.fn_metadata(self.terminator.source_info) {
-                            ret_bx.add_yk_block_label_at_end(di_sp, lbl_name);
-                        }
-                    }
-                }
-
                 fx.store_return(&mut ret_bx, ret_dest, &fn_abi.ret, invokeret);
             }
         } else {
@@ -159,17 +142,6 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'a, 'tcx> {
             }
 
             if let Some((ret_dest, target)) = destination {
-                // Generate YK debug label to match hardware traces with blocks in the MIR.
-                if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
-                    let did = fx.instance.def.def_id();
-                    let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
-                    let lbl_name = CString::new(format!("__YK_RET_{:x}_{}_{}", crate_hash,
-                                                did.index.as_u32(), self.bb.index())).unwrap();
-                    if let Some(di_sp) = fx.fn_metadata(self.terminator.source_info) {
-                        bx.add_yk_block_label_at_end(di_sp, lbl_name);
-                    }
-                }
-
                 fx.store_return(bx, ret_dest, &fn_abi.ret, llret);
                 self.funclet_br(fx, bx, target);
             } else {
@@ -815,16 +787,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let data = &self.mir[bb];
 
         debug!("codegen_block({:?}={:?})", bb, data);
-
-        if bx.cx().tcx().sess.opts.cg.tracer.sir_labels() && bx.cx().has_debug() {
-            let did = self.instance.def.def_id();
-            let crate_hash = bx.cx().tcx().crate_hash(did.krate).as_u64();
-            let lbl_name = CString::new(format!("__YK_BLK_{:x}_{}_{}", crate_hash,
-                                        did.index.as_u32(), bb.index())).unwrap();
-            if let Some(di_sp) = self.fn_metadata(data.terminator().source_info) {
-                bx.add_yk_block_label_at_end(di_sp, lbl_name);
-            }
-        }
 
         for statement in &data.statements {
             bx = self.codegen_statement(bx, statement);

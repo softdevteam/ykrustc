@@ -10,7 +10,6 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
-rustc_yk_sections = { path = "../librustc_yk_sections" }
 log = "0.4"
 rayon = { version = "0.3.0", package = "rustc-rayon" }
 smallvec = { version = "1.0", features = ["union", "may_dangle"] }

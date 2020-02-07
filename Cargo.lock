@@ -432,7 +432,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "45912881121cb26fad7c38c17ba7daa18764771836b34fab7d3fbd93ed633878"
 dependencies = [
  "num-integer",
- "num-traits 0.2.8",
+ "num-traits",
  "time",
 ]
 
@@ -2163,7 +2163,7 @@ dependencies = [
  "getrandom",
  "hex 0.4.0",
  "log",
- "num-traits 0.1.43",
+ "num-traits",
  "rand 0.7.0",
  "rustc-workspace-hack",
  "rustc_version",
@@ -2218,16 +2218,7 @@ version = "0.1.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e83d528d2677f0518c570baf2b7abdcf0cd2d248860b68507bdcb3e91d4c0cea"
 dependencies = [
- "num-traits 0.2.8",
-]
-
-[[package]]
-name = "num-traits"
-version = "0.1.43"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e5113e9fd4cc14ded8e499429f396a20f98c772a47cc8622a736e1ec843c31"
-dependencies = [
- "num-traits 0.2.8",
+ "num-traits",
 ]
 
 [[package]]
@@ -3116,12 +3107,12 @@ dependencies = [
 
 [[package]]
 name = "rmp"
-version = "0.8.8"
+version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f594cb7ff8f1c5a7907f6be91f15795c8301e0d5718eb007fb5832723dd716e"
+checksum = "0f10b46df14cf1ee1ac7baa4d2fbc2c52c0622a4b82fa8740e37bc452ac0184f"
 dependencies = [
  "byteorder",
- "num-traits 0.2.8",
+ "num-traits",
 ]
 
 [[package]]
@@ -3173,12 +3164,12 @@ dependencies = [
  "rustc_index",
  "rustc_macros",
  "rustc_target",
- "rustc_yk_link",
  "scoped-tls",
  "serialize",
  "smallvec 1.0.0",
  "syntax",
  "syntax_pos",
+ "ykpack",
 ]
 
 [[package]]
@@ -3620,7 +3611,6 @@ dependencies = [
  "rustc_target",
  "rustc_traits",
  "rustc_typeck",
- "rustc_yk_sections",
  "serialize",
  "smallvec 1.0.0",
  "syntax",
@@ -3881,24 +3871,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
 dependencies = [
  "semver",
-]
-
-[[package]]
-name = "rustc_yk_link"
-version = "0.0.0"
-
-[[package]]
-name = "rustc_yk_sections"
-version = "0.0.0"
-dependencies = [
- "rustc",
- "rustc_codegen_utils",
- "rustc_data_structures",
- "rustc_index",
- "rustc_yk_link",
- "syntax",
- "syntax_pos",
- "ykpack",
 ]
 
 [[package]]
@@ -4991,7 +4963,7 @@ checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
 name = "unstable-book-gen"
 version = "0.1.0"
 dependencies = [
- "num-traits 0.2.8",
+ "num-traits",
  "tidy",
 ]
 
@@ -5217,7 +5189,6 @@ checksum = "e66366e18dc58b46801afbf2ca7661a9f59cc8c5962c29892b6039b4f86fa992"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#745629734407d3c5bbc87aef3659fadc52d8a573"
 dependencies = [
  "fallible-iterator",
  "rmp-serde",

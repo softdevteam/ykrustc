@@ -75,6 +75,8 @@ use syntax::source_map::MultiSpan;
 use syntax::feature_gate;
 use syntax::symbol::{Symbol, kw, sym};
 use syntax_pos::Span;
+use crate::sir::SirCx;
+use std::cell::RefCell;
 
 pub struct AllArenas {
     pub interner: SyncDroplessArena,
@@ -1107,6 +1109,9 @@ pub struct GlobalCtxt<'tcx> {
     layout_interner: ShardedHashMap<&'tcx LayoutDetails, ()>,
 
     output_filenames: Arc<OutputFilenames>,
+
+    /// As each codegen unit completes, it copies the SIR here for serialisation later.
+    pub finished_sir_cxs: RefCell<Vec<SirCx>>,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -1302,6 +1307,7 @@ impl<'tcx> TyCtxt<'tcx> {
             allocation_interner: Default::default(),
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames.clone()),
+            finished_sir_cxs: RefCell::new(Vec::new()),
         }
     }
 

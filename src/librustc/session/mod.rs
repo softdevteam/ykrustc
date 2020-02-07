@@ -10,7 +10,6 @@ use crate::session::config::{OutputType, PrintRequest, Sanitizer, SwitchWithOptP
 use crate::session::search_paths::{PathKind, SearchPath};
 use crate::util::nodemap::{FxHashMap, FxHashSet};
 use crate::util::common::{duration_to_secs_str, ErrorReported};
-use rustc_yk_link::YkExtraLinkObject;
 
 use rustc_data_structures::base_n;
 use rustc_data_structures::sync::{
@@ -62,9 +61,6 @@ pub struct OptimizationFuel {
 /// Represents the data associated with a compilation
 /// session for a single crate.
 pub struct Session {
-    /// A list of additional objects to link in for Yorick support.
-    pub yk_link_objects: RefCell<Vec<YkExtraLinkObject>>,
-
     pub target: config::Config,
     pub host: Target,
     pub opts: config::Options,
@@ -1173,7 +1169,6 @@ fn build_session_(
     };
 
     let sess = Session {
-        yk_link_objects: RefCell::new(Vec::new()),
         target: target_cfg,
         host,
         opts: sopts,

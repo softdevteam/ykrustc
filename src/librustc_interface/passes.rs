@@ -41,8 +41,6 @@ use syntax::util::node_count::NodeCounter;
 use syntax::symbol::Symbol;
 use syntax_pos::FileName;
 use syntax_ext;
-use rustc_yk_sections::emit_sir::{generate_sir, SirMode};
-use rustc_codegen_utils::link::out_filename;
 
 use rustc_serialize::json;
 use tempfile::Builder as TempFileBuilder;
@@ -1040,41 +1038,28 @@ pub fn start_codegen<'tcx>(
         tcx.print_debug_stats();
     }
 
-    if tcx.sess.opts.output_types.contains_key(&OutputType::Mir) {
-        if let Err(e) = mir::transform::dump_mir::emit_mir(tcx, outputs) {
-            tcx.sess.err(&format!("could not emit MIR: {}", e));
+    // If the user has requested to just dump SIR to disk, then let's do that.
+    if tcx.sess.opts.output_types.contains_key(&OutputType::YkSir) {
+        let res = fs::File::create(outputs.path(OutputType::YkSir)).and_then(|mut sir_file| {
+            let sir_cxs = tcx.finished_sir_cxs.replace(Default::default());
+            let mut cu = 0;
+            for sir_cx in sir_cxs.into_iter() {
+                writeln!(sir_file, "### Compilation Unit: {}", cu)?;
+                sir_cx.dump(&mut sir_file)?;
+                cu += 1;
+            }
+            Ok(())
+        });
+        if let Err(e) = res {
+            tcx.sess.err(&format!("could not dump SIR to text file: {}", e));
             tcx.sess.abort_if_errors();
         }
     }
 
-    // Output Yorick sections into binary targets if necessary.
-    if tcx.sess.opts.cg.tracer.encode_sir() &&
-        tcx.sess.crate_types.borrow().contains(&config::CrateType::Executable) &&
-        tcx.crate_name(LOCAL_CRATE).as_str() != "build_script_build"
-    {
-        let def_ids = tcx.collect_and_partition_mono_items(LOCAL_CRATE).0;
-        let mut def_ids = (*def_ids).clone();
-        for cnum in tcx.crates() {
-            def_ids.extend(tcx.defids_with_mir(*cnum));
-        }
-        let sir_mode = if tcx.sess.opts.output_types.contains_key(&OutputType::YkSir) {
-            // The user passed "--emit yk-sir" so we will output textual SIR and stop.
-            SirMode::TextDump(outputs.path(OutputType::YkSir))
-        } else {
-            // SIR will be encoded into the compiled binary.
-            let out_fname = out_filename(
-                tcx.sess, config::CrateType::Executable, &outputs,
-                &*tcx.crate_name(LOCAL_CRATE).as_str());
-            SirMode::Default(out_fname)
-        };
-
-        match generate_sir(tcx, &def_ids, sir_mode) {
-            Ok(Some(obj)) => tcx.sess.yk_link_objects.borrow_mut().push(obj),
-            Ok(None) => (),
-            Err(e) => {
-                tcx.sess.err(&format!("could not emit SIR: {}", e));
-                tcx.sess.abort_if_errors();
-            }
+    if tcx.sess.opts.output_types.contains_key(&OutputType::Mir) {
+        if let Err(e) = mir::transform::dump_mir::emit_mir(tcx, outputs) {
+            tcx.sess.err(&format!("could not emit MIR: {}", e));
+            tcx.sess.abort_if_errors();
         }
     }
 

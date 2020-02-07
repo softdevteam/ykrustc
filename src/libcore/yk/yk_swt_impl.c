@@ -7,6 +7,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// FIXME Software tracing is currently broken.
+//
+// a) mir_loc below (which should really be called *sir*_loc anyway) uses the
+//    old notion of a location (crate hash, def index, bb index), whereas when
+//    we moved SIR to the codegen it changed (symbol name, bb idx). This causes
+//    undefined behaviour.
+//
+// b) The code which inserts calls to the trace recorder operates at the wrong
+//    level. Instead of being a MIR pass, it should operate at the LLVM-level.
+//    Put differently, we should record which *LLVM* blocks we pass through,
+//    not which *MIR* blocks.
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <err.h>
