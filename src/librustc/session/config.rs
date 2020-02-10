@@ -2344,10 +2344,10 @@ fn parse_opt_level(
         }
     };
 
-    // Disable hardware tracing when optimisations are enabled.
-    // https://github.com/softdevteam/ykrustc/issues/66
-    if opt_level != OptLevel::No && cg.tracer == TracerMode::Hardware {
-       cg.tracer = TracerMode::Software;
+    // We don't allow optimisation and tracing to be enabled simultaneously as LLVM is likely to
+    // reorder things, thus destroying the correctness of our SIR and DILabels.
+    if opt_level != OptLevel::No && cg.tracer != TracerMode::Off {
+        early_error(error_format, &format!("optimisation cannot be enabled with a tracer"));
     }
 
     opt_level

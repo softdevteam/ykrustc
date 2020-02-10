@@ -7,6 +7,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+// ignore-test FIXME software tracing is broken
 // compile-flags: -C tracer=sw
 // run-pass
 
