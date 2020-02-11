@@ -1,22 +1,27 @@
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::fold::{TypeFoldable, TypeVisitor};
-use rustc::util::nodemap::FxHashSet;
-use rustc::mir::interpret::ConstValue;
-use syntax::source_map::Span;
+use rustc::ty::{self, Ty, TyCtxt};
+use rustc_data_structures::fx::FxHashSet;
+use rustc_span::source_map::Span;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Parameter(pub u32);
 
 impl From<ty::ParamTy> for Parameter {
-    fn from(param: ty::ParamTy) -> Self { Parameter(param.index) }
+    fn from(param: ty::ParamTy) -> Self {
+        Parameter(param.index)
+    }
 }
 
 impl From<ty::EarlyBoundRegion> for Parameter {
-    fn from(param: ty::EarlyBoundRegion) -> Self { Parameter(param.index) }
+    fn from(param: ty::EarlyBoundRegion) -> Self {
+        Parameter(param.index)
+    }
 }
 
 impl From<ty::ParamConst> for Parameter {
-    fn from(param: ty::ParamConst) -> Self { Parameter(param.index) }
+    fn from(param: ty::ParamConst) -> Self {
+        Parameter(param.index)
+    }
 }
 
 /// Returns the set of parameters constrained by the impl header.
@@ -40,17 +45,14 @@ pub fn parameters_for<'tcx>(
     t: &impl TypeFoldable<'tcx>,
     include_nonconstraining: bool,
 ) -> Vec<Parameter> {
-    let mut collector = ParameterCollector {
-        parameters: vec![],
-        include_nonconstraining,
-    };
+    let mut collector = ParameterCollector { parameters: vec![], include_nonconstraining };
     t.visit_with(&mut collector);
     collector.parameters
 }
 
 struct ParameterCollector {
     parameters: Vec<Parameter>,
-    include_nonconstraining: bool
+    include_nonconstraining: bool,
 }
 
 impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
@@ -77,7 +79,7 @@ impl<'tcx> TypeVisitor<'tcx> for ParameterCollector {
     }
 
     fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
-        if let ConstValue::Param(data) = c.val {
+        if let ty::ConstKind::Param(data) = c.val {
             self.parameters.push(Parameter::from(data));
         }
         false
@@ -93,7 +95,6 @@ pub fn identify_constrained_generic_params<'tcx>(
     let mut predicates = predicates.predicates.to_vec();
     setup_constraining_predicates(tcx, &mut predicates, impl_trait_ref, input_parameters);
 }
-
 
 /// Order the predicates in `predicates` such that each parameter is
 /// constrained before it is used, if that is possible, and add the
@@ -136,7 +137,7 @@ pub fn identify_constrained_generic_params<'tcx>(
 /// by 0. I should probably pick a less tangled example, but I can't
 /// think of any.
 pub fn setup_constraining_predicates<'tcx>(
-    tcx: TyCtxt<'_>,
+    tcx: TyCtxt<'tcx>,
     predicates: &mut [(ty::Predicate<'tcx>, Span)],
     impl_trait_ref: Option<ty::TraitRef<'tcx>>,
     input_parameters: &mut FxHashSet<Parameter>,
@@ -160,9 +161,11 @@ pub fn setup_constraining_predicates<'tcx>(
     //   * <U as Iterator>::Item = T
     //   * T: Debug
     //   * U: Iterator
-    debug!("setup_constraining_predicates: predicates={:?} \
+    debug!(
+        "setup_constraining_predicates: predicates={:?} \
             impl_trait_ref={:?} input_parameters={:?}",
-           predicates, impl_trait_ref, input_parameters);
+        predicates, impl_trait_ref, input_parameters
+    );
     let mut i = 0;
     let mut changed = true;
     while changed {
@@ -178,7 +181,7 @@ pub fn setup_constraining_predicates<'tcx>(
                 // to project out an associated type defined by this very
                 // trait.
                 let unbound_trait_ref = projection.projection_ty.trait_ref(tcx);
-                if Some(unbound_trait_ref.clone()) == impl_trait_ref {
+                if Some(unbound_trait_ref) == impl_trait_ref {
                     continue;
                 }
 
@@ -201,8 +204,10 @@ pub fn setup_constraining_predicates<'tcx>(
             i += 1;
             changed = true;
         }
-        debug!("setup_constraining_predicates: predicates={:?} \
+        debug!(
+            "setup_constraining_predicates: predicates={:?} \
                 i={} impl_trait_ref={:?} input_parameters={:?}",
-               predicates, i, impl_trait_ref, input_parameters);
+            predicates, i, impl_trait_ref, input_parameters
+        );
     }
 }

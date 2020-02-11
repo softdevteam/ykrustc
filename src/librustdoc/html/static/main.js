@@ -3,7 +3,7 @@
 
 // Local js definitions:
 /* global addClass, getCurrentValue, hasClass */
-/* global isHidden, onEach, removeClass, updateLocalStorage */
+/* global onEach, removeClass, updateLocalStorage */
 
 if (!String.prototype.startsWith) {
     String.prototype.startsWith = function(searchString, position) {
@@ -138,13 +138,25 @@ function getSearchElement() {
         }
     }
 
+    function showSearchResults(search) {
+        if (search === null || typeof search === 'undefined') {
+            search = getSearchElement();
+        }
+        addClass(main, "hidden");
+        removeClass(search, "hidden");
+    }
+
+    function hideSearchResults(search) {
+        if (search === null || typeof search === 'undefined') {
+            search = getSearchElement();
+        }
+        addClass(search, "hidden");
+        removeClass(main, "hidden");
+    }
+
     // used for special search precedence
     var TY_PRIMITIVE = itemTypes.indexOf("primitive");
     var TY_KEYWORD = itemTypes.indexOf("keyword");
-
-    onEachLazy(document.getElementsByClassName("js-only"), function(e) {
-        removeClass(e, "js-only");
-    });
 
     function getQueryStringParams() {
         var params = {};
@@ -161,19 +173,19 @@ function getSearchElement() {
         return window.history && typeof window.history.pushState === "function";
     }
 
-    var main = document.getElementById("main");
+    function isHidden(elem) {
+        return elem.offsetHeight === 0;
+    }
 
-    function onHashChange(ev) {
-        // If we're in mobile mode, we should hide the sidebar in any case.
-        hideSidebar();
-        var match = window.location.hash.match(/^#?(\d+)(?:-(\d+))?$/);
-        if (match) {
-            return highlightSourceLines(match, ev);
-        }
+    var main = document.getElementById("main");
+    var savedHash = "";
+
+    function handleHashes(ev) {
         var search = getSearchElement();
         if (ev !== null && search && !hasClass(search, "hidden") && ev.newURL) {
-            addClass(search, "hidden");
-            removeClass(main, "hidden");
+            // This block occurs when clicking on an element in the navbar while
+            // in a search.
+            hideSearchResults(search);
             var hash = ev.newURL.slice(ev.newURL.indexOf("#") + 1);
             if (browserSupportsHistoryApi()) {
                 history.replaceState(hash, "", "?search=#" + hash);
@@ -181,6 +193,35 @@ function getSearchElement() {
             var elem = document.getElementById(hash);
             if (elem) {
                 elem.scrollIntoView();
+            }
+        }
+        // This part is used in case an element is not visible.
+        if (savedHash !== window.location.hash) {
+            savedHash = window.location.hash;
+            if (savedHash.length === 0) {
+                return;
+            }
+            var elem = document.getElementById(savedHash.slice(1)); // we remove the '#'
+            if (!elem || !isHidden(elem)) {
+                return;
+            }
+            var parent = elem.parentNode;
+            if (parent && hasClass(parent, "impl-items")) {
+                // In case this is a trait implementation item, we first need to toggle
+                // the "Show hidden undocumented items".
+                onEachLazy(parent.getElementsByClassName("collapsed"), function(e) {
+                    if (e.parentNode === parent) {
+                        // Only click on the toggle we're looking for.
+                        e.click();
+                        return true;
+                    }
+                });
+                if (isHidden(elem)) {
+                    // The whole parent is collapsed. We need to click on its toggle as well!
+                    if (hasClass(parent.lastElementChild, "collapse-toggle")) {
+                        parent.lastElementChild.click();
+                    }
+                }
             }
         }
     }
@@ -228,6 +269,16 @@ function getSearchElement() {
         }
     }
 
+    function onHashChange(ev) {
+        // If we're in mobile mode, we should hide the sidebar in any case.
+        hideSidebar();
+        var match = window.location.hash.match(/^#?(\d+)(?:-(\d+))?$/);
+        if (match) {
+            return highlightSourceLines(match, ev);
+        }
+        handleHashes(ev);
+    }
+
     function expandSection(id) {
         var elem = document.getElementById(id);
         if (elem && isHidden(elem)) {
@@ -245,9 +296,6 @@ function getSearchElement() {
             }
         }
     }
-
-    highlightSourceLines();
-    window.onhashchange = onHashChange;
 
     // Gets the human-readable string for the virtual-key code of the
     // given KeyboardEvent, ev.
@@ -298,8 +346,7 @@ function getSearchElement() {
             displayHelp(false, ev, help);
         } else if (hasClass(search, "hidden") === false) {
             ev.preventDefault();
-            addClass(search, "hidden");
-            removeClass(main, "hidden");
+            hideSearchResults(search);
             document.title = titleBeforeSearch;
         }
         defocusSearchBar();
@@ -357,40 +404,53 @@ function getSearchElement() {
         return null;
     }
 
-    document.onkeypress = handleShortcut;
-    document.onkeydown = handleShortcut;
-    document.onclick = function(ev) {
+    document.addEventListener("keypress", handleShortcut);
+    document.addEventListener("keydown", handleShortcut);
+
+    var handleSourceHighlight = (function() {
+        var prev_line_id = 0;
+
+        var set_fragment = function(name) {
+            var x = window.scrollX,
+                y = window.scrollY;
+            if (browserSupportsHistoryApi()) {
+                history.replaceState(null, null, "#" + name);
+                highlightSourceLines();
+            } else {
+                location.replace("#" + name);
+            }
+            // Prevent jumps when selecting one or many lines
+            window.scrollTo(x, y);
+        };
+
+        return function(ev) {
+            var cur_line_id = parseInt(ev.target.id, 10);
+            ev.preventDefault();
+
+            if (ev.shiftKey && prev_line_id) {
+                // Swap selection if needed
+                if (prev_line_id > cur_line_id) {
+                    var tmp = prev_line_id;
+                    prev_line_id = cur_line_id;
+                    cur_line_id = tmp;
+                }
+
+                set_fragment(prev_line_id + "-" + cur_line_id);
+            } else {
+                prev_line_id = cur_line_id;
+
+                set_fragment(cur_line_id);
+            }
+        }
+    })();
+
+    document.addEventListener("click", function(ev) {
         if (hasClass(ev.target, "collapse-toggle")) {
             collapseDocs(ev.target, "toggle");
         } else if (hasClass(ev.target.parentNode, "collapse-toggle")) {
             collapseDocs(ev.target.parentNode, "toggle");
         } else if (ev.target.tagName === "SPAN" && hasClass(ev.target.parentNode, "line-numbers")) {
-            var prev_id = 0;
-
-            var set_fragment = function(name) {
-                if (browserSupportsHistoryApi()) {
-                    history.replaceState(null, null, "#" + name);
-                    highlightSourceLines();
-                } else {
-                    location.replace("#" + name);
-                }
-            };
-
-            var cur_id = parseInt(ev.target.id, 10);
-
-            if (ev.shiftKey && prev_id) {
-                if (prev_id > cur_id) {
-                    var tmp = prev_id;
-                    prev_id = cur_id;
-                    cur_id = tmp;
-                }
-
-                set_fragment(prev_id + "-" + cur_id);
-            } else {
-                prev_id = cur_id;
-
-                set_fragment(cur_id);
-            }
+            handleSourceHighlight(ev);
         } else if (hasClass(getHelpElement(), "hidden") === false) {
             var help = getHelpElement();
             var is_inside_help_popup = ev.target !== help && help.contains(ev.target);
@@ -406,7 +466,7 @@ function getSearchElement() {
                 expandSection(a.hash.replace(/^#/, ""));
             }
         }
-    };
+    });
 
     var x = document.getElementsByClassName("version-selector");
     if (x.length > 0) {
@@ -474,21 +534,6 @@ function getSearchElement() {
         var INPUTS_DATA = 0;
         var OUTPUT_DATA = 1;
         var params = getQueryStringParams();
-
-        // Set the crate filter from saved storage, if the current page has the saved crate filter.
-        //
-        // If not, ignore the crate filter -- we want to support filtering for crates on sites like
-        // doc.rust-lang.org where the crates may differ from page to page while on the same domain.
-        var savedCrate = getCurrentValue("rustdoc-saved-filter-crate");
-        if (savedCrate !== null) {
-            onEachLazy(document.getElementById("crate-search").getElementsByTagName("option"),
-                       function(e) {
-                if (e.value === savedCrate) {
-                    document.getElementById("crate-search").value = e.value;
-                    return true;
-                }
-            });
-        }
 
         // Populate search bar with query string search term when provided,
         // but only if the input bar is empty. This avoid the obnoxious issue
@@ -1044,14 +1089,13 @@ function getSearchElement() {
                 val = paths[paths.length - 1];
                 var contains = paths.slice(0, paths.length > 1 ? paths.length - 1 : 1);
 
+                var lev;
+                var lev_distance;
                 for (j = 0; j < nSearchWords; ++j) {
-                    var lev;
-                    var lev_distance;
                     ty = searchIndex[j];
                     if (!ty || (filterCrates !== undefined && ty.crate !== filterCrates)) {
                         continue;
                     }
-                    var lev_distance;
                     var lev_add = 0;
                     if (paths.length > 1) {
                         lev = checkPath(contains, paths[paths.length - 1], ty);
@@ -1191,7 +1235,7 @@ function getSearchElement() {
                     // then an exact path match
                     path.indexOf(keys[i]) > -1 ||
                     // next if there is a parent, check for exact parent match
-                    (parent !== undefined &&
+                    (parent !== undefined && parent.name !== undefined &&
                         parent.name.toLowerCase().indexOf(keys[i]) > -1) ||
                     // lastly check to see if the name was a levenshtein match
                     levenshtein(name, keys[i]) <= MAX_LEV_DISTANCE)) {
@@ -1234,8 +1278,7 @@ function getSearchElement() {
                 }
                 dst = dst[0];
                 if (window.location.pathname === dst.pathname) {
-                    addClass(getSearchElement(), "hidden");
-                    removeClass(main, "hidden");
+                    hideSearchResults();
                     document.location.href = dst.href;
                 }
             };
@@ -1310,8 +1353,6 @@ function getSearchElement() {
                     e.preventDefault();
                 } else if (e.which === 16) { // shift
                     // Does nothing, it's just to avoid losing "focus" on the highlighted element.
-                } else if (e.which === 27) { // escape
-                    handleEscape(e);
                 } else if (actives[currentTab].length > 0) {
                     removeClass(actives[currentTab][0], "highlighted");
                 }
@@ -1461,10 +1502,9 @@ function getSearchElement() {
                 "</div><div id=\"results\">" +
                 ret_others[0] + ret_in_args[0] + ret_returned[0] + "</div>";
 
-            addClass(main, "hidden");
             var search = getSearchElement();
-            removeClass(search, "hidden");
             search.innerHTML = output;
+            showSearchResults(search);
             var tds = search.getElementsByTagName("td");
             var td_width = 0;
             if (tds.length > 0) {
@@ -1596,7 +1636,7 @@ function getSearchElement() {
             }
 
             var filterCrates = getFilterCrates();
-            showResults(execSearch(query, index, filterCrates), filterCrates);
+            showResults(execSearch(query, index, filterCrates));
         }
 
         function buildIndex(rawSearchIndex) {
@@ -1669,13 +1709,7 @@ function getSearchElement() {
                     if (browserSupportsHistoryApi()) {
                         history.replaceState("", window.currentCrate + " - Rust", "?search=");
                     }
-                    if (hasClass(main, "content")) {
-                        removeClass(main, "hidden");
-                    }
-                    var search_c = getSearchElement();
-                    if (hasClass(search_c, "content")) {
-                        addClass(search_c, "hidden");
-                    }
+                    hideSearchResults();
                 } else {
                     searchTimeout = setTimeout(search, 500);
                 }
@@ -1688,6 +1722,10 @@ function getSearchElement() {
                 search();
             };
             search_input.onchange = function(e) {
+                if (e.target !== document.activeElement) {
+                    // To prevent doing anything when it's from a blur event.
+                    return;
+                }
                 // Do NOT e.preventDefault() here. It will prevent pasting.
                 clearTimeout(searchTimeout);
                 // zero-timeout necessary here because at the time of event handler execution the
@@ -1711,19 +1749,8 @@ function getSearchElement() {
                 // Store the previous <title> so we can revert back to it later.
                 var previousTitle = document.title;
 
-                window.onpopstate = function(e) {
+                window.addEventListener("popstate", function(e) {
                     var params = getQueryStringParams();
-                    // When browsing back from search results the main page
-                    // visibility must be reset.
-                    if (!params.search) {
-                        if (hasClass(main, "content")) {
-                            removeClass(main, "hidden");
-                        }
-                        var search_c = getSearchElement();
-                        if (hasClass(search_c, "content")) {
-                            addClass(search_c, "hidden");
-                        }
-                    }
                     // Revert to the previous title manually since the History
                     // API ignores the title parameter.
                     document.title = previousTitle;
@@ -1735,18 +1762,21 @@ function getSearchElement() {
                     // perform the search. This will empty the bar if there's
                     // nothing there, which lets you really go back to a
                     // previous state with nothing in the bar.
-                    if (params.search) {
+                    if (params.search && params.search.length > 0) {
                         search_input.value = params.search;
+                        // Some browsers fire "onpopstate" for every page load
+                        // (Chrome), while others fire the event only when actually
+                        // popping a state (Firefox), which is why search() is
+                        // called both here and at the end of the startSearch()
+                        // function.
+                        search(e);
                     } else {
                         search_input.value = "";
+                        // When browsing back from search results the main page
+                        // visibility must be reset.
+                        hideSearchResults();
                     }
-                    // Some browsers fire "onpopstate" for every page load
-                    // (Chrome), while others fire the event only when actually
-                    // popping a state (Firefox), which is why search() is
-                    // called both here and at the end of the startSearch()
-                    // function.
-                    search();
-                };
+                });
             }
             search();
         }
@@ -1865,6 +1895,24 @@ function getSearchElement() {
         var implementors = document.getElementById("implementors-list");
         var synthetic_implementors = document.getElementById("synthetic-implementors-list");
 
+        if (synthetic_implementors) {
+            // This `inlined_types` variable is used to avoid having the same implementation
+            // showing up twice. For example "String" in the "Sync" doc page.
+            //
+            // By the way, this is only used by and useful for traits implemented automatically
+            // (like "Send" and "Sync").
+            var inlined_types = new Set();
+            onEachLazy(synthetic_implementors.getElementsByClassName("impl"), function(el) {
+                var aliases = el.getAttribute("aliases");
+                if (!aliases) {
+                    return;
+                }
+                aliases.split(",").forEach(function(alias) {
+                    inlined_types.add(alias);
+                });
+            });
+        }
+
         var libs = Object.getOwnPropertyNames(imp);
         var llength = libs.length;
         for (var i = 0; i < llength; ++i) {
@@ -1881,10 +1929,10 @@ function getSearchElement() {
                 if (struct.synthetic) {
                     var stlength = struct.types.length;
                     for (var k = 0; k < stlength; k++) {
-                        if (window.inlined_types.has(struct.types[k])) {
+                        if (inlined_types.has(struct.types[k])) {
                             continue struct_loop;
                         }
-                        window.inlined_types.add(struct.types[k]);
+                        inlined_types.add(struct.types[k]);
                     }
                 }
 
@@ -2118,7 +2166,7 @@ function getSearchElement() {
     function autoCollapse(pageId, collapse) {
         if (collapse) {
             toggleAllDocs(pageId, true);
-        } else if (getCurrentValue("rustdoc-trait-implementations") !== "false") {
+        } else if (getCurrentValue("rustdoc-auto-hide-trait-implementations") !== "false") {
             var impl_list = document.getElementById("implementations-list");
 
             if (impl_list !== null) {
@@ -2156,7 +2204,7 @@ function getSearchElement() {
     }
 
     var toggle = createSimpleToggle(false);
-    var hideMethodDocs = getCurrentValue("rustdoc-method-docs") === "true";
+    var hideMethodDocs = getCurrentValue("rustdoc-auto-hide-method-docs") === "true";
     var pageId = getPageId();
 
     var func = function(e) {
@@ -2286,7 +2334,31 @@ function getSearchElement() {
         return wrapper;
     }
 
-    var showItemDeclarations = getCurrentValue("rustdoc-item-declarations") === "false";
+    var currentType = document.getElementsByClassName("type-decl")[0];
+    var className = null;
+    if (currentType) {
+        currentType = currentType.getElementsByClassName("rust")[0];
+        if (currentType) {
+            currentType.classList.forEach(function(item) {
+                if (item !== "main") {
+                    className = item;
+                    return true;
+                }
+            });
+        }
+    }
+    var showItemDeclarations = getCurrentValue("rustdoc-auto-hide-" + className);
+    if (showItemDeclarations === null) {
+        if (className === "enum" || className === "macro") {
+            showItemDeclarations = "false";
+        } else if (className === "struct" || className === "union" || className === "trait") {
+            showItemDeclarations = "true";
+        } else {
+            // In case we found an unknown type, we just use the "parent" value.
+            showItemDeclarations = getCurrentValue("rustdoc-auto-hide-declarations");
+        }
+    }
+    showItemDeclarations = showItemDeclarations === "false";
     function buildToggleWrapper(e) {
         if (hasClass(e, "autohide")) {
             var wrap = e.previousElementSibling;
@@ -2369,7 +2441,7 @@ function getSearchElement() {
 
     // To avoid checking on "rustdoc-item-attributes" value on every loop...
     var itemAttributesFunc = function() {};
-    if (getCurrentValue("rustdoc-item-attributes") !== "false") {
+    if (getCurrentValue("rustdoc-auto-hide-attributes") !== "false") {
         itemAttributesFunc = function(x) {
             collapseDocs(x.previousSibling.childNodes[0], "toggle");
         };
@@ -2468,9 +2540,9 @@ function getSearchElement() {
     }
 
     function putBackSearch(search_input) {
-        if (search_input.value !== "") {
-            addClass(main, "hidden");
-            removeClass(getSearchElement(), "hidden");
+        var search = getSearchElement();
+        if (search_input.value !== "" && hasClass(search, "hidden")) {
+            showSearchResults(search);
             if (browserSupportsHistoryApi()) {
                 history.replaceState(search_input.value,
                                      "",
@@ -2487,10 +2559,9 @@ function getSearchElement() {
 
     var params = getQueryStringParams();
     if (params && params.search) {
-        addClass(main, "hidden");
         var search = getSearchElement();
-        removeClass(search, "hidden");
         search.innerHTML = "<h3 style=\"text-align: center;\">Loading search results...</h3>";
+        showSearchResults(search);
     }
 
     var sidebar_menu = document.getElementsByClassName("sidebar-menu")[0];
@@ -2560,12 +2631,26 @@ function getSearchElement() {
             }
             return 0;
         });
+        var savedCrate = getCurrentValue("rustdoc-saved-filter-crate");
         for (var i = 0; i < crates_text.length; ++i) {
             var option = document.createElement("option");
             option.value = crates_text[i];
             option.innerText = crates_text[i];
             elem.appendChild(option);
+            // Set the crate filter from saved storage, if the current page has the saved crate
+            // filter.
+            //
+            // If not, ignore the crate filter -- we want to support filtering for crates on sites
+            // like doc.rust-lang.org where the crates may differ from page to page while on the
+            // same domain.
+            if (crates_text[i] === savedCrate) {
+                elem.value = savedCrate;
+            }
         }
+
+        if (search_input) {
+            search_input.removeAttribute('disabled');
+        };
     }
 
     window.addSearchOptions = addSearchOptions;
@@ -2596,8 +2681,8 @@ function getSearchElement() {
             "Accepted types are: <code>fn</code>, <code>mod</code>, <code>struct</code>, \
              <code>enum</code>, <code>trait</code>, <code>type</code>, <code>macro</code>, \
              and <code>const</code>.",
-            "Search functions by type signature (e.g., <code>vec -> usize</code> or \
-             <code>* -> vec</code>)",
+            "Search functions by type signature (e.g., <code>vec -&gt; usize</code> or \
+             <code>* -&gt; vec</code>)",
             "Search multiple things at once by splitting your query with comma (e.g., \
              <code>str,u8</code> or <code>String,struct:Vec,test</code>)",
             "You can look for items with an exact name by putting double quotes around \
@@ -2614,6 +2699,9 @@ function getSearchElement() {
         popup.appendChild(container);
         insertAfter(popup, getSearchElement());
     }
+
+    onHashChange(null);
+    window.onhashchange = onHashChange;
 
     buildHelperPopup();
 }());

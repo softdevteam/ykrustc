@@ -1,15 +1,11 @@
 //! Visitor for a run-time value with a given layout: Traverse enums, structs and other compound
 //! types until we arrive at the leaves, with custom handling for primitive types.
 
-use rustc::ty::layout::{self, TyLayout, VariantIdx};
+use rustc::mir::interpret::InterpResult;
 use rustc::ty;
-use rustc::mir::interpret::{
-    InterpResult,
-};
+use rustc::ty::layout::{self, TyLayout, VariantIdx};
 
-use super::{
-    Machine, InterpCx, MPlaceTy, OpTy,
-};
+use super::{InterpCx, MPlaceTy, Machine, OpTy};
 
 // A thing that we can project into, and that has a layout.
 // This wouldn't have to depend on `Machine` but with the current type inference,
@@ -19,10 +15,7 @@ pub trait Value<'mir, 'tcx, M: Machine<'mir, 'tcx>>: Copy {
     fn layout(&self) -> TyLayout<'tcx>;
 
     /// Makes this into an `OpTy`.
-    fn to_op(
-        self,
-        ecx: &InterpCx<'mir, 'tcx, M>,
-    ) -> InterpResult<'tcx, OpTy<'tcx, M::PointerTag>>;
+    fn to_op(self, ecx: &InterpCx<'mir, 'tcx, M>) -> InterpResult<'tcx, OpTy<'tcx, M::PointerTag>>;
 
     /// Creates this from an `MPlaceTy`.
     fn from_mem_place(mplace: MPlaceTy<'tcx, M::PointerTag>) -> Self;
@@ -35,11 +28,7 @@ pub trait Value<'mir, 'tcx, M: Machine<'mir, 'tcx>>: Copy {
     ) -> InterpResult<'tcx, Self>;
 
     /// Projects to the n-th field.
-    fn project_field(
-        self,
-        ecx: &InterpCx<'mir, 'tcx, M>,
-        field: u64,
-    ) -> InterpResult<'tcx, Self>;
+    fn project_field(self, ecx: &InterpCx<'mir, 'tcx, M>, field: u64) -> InterpResult<'tcx, Self>;
 }
 
 // Operands and memory-places are both values.
@@ -73,11 +62,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Value<'mir, 'tcx, M> for OpTy<'tcx, M::
     }
 
     #[inline(always)]
-    fn project_field(
-        self,
-        ecx: &InterpCx<'mir, 'tcx, M>,
-        field: u64,
-    ) -> InterpResult<'tcx, Self> {
+    fn project_field(self, ecx: &InterpCx<'mir, 'tcx, M>, field: u64) -> InterpResult<'tcx, Self> {
         ecx.operand_field(self, field)
     }
 }
@@ -111,11 +96,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> Value<'mir, 'tcx, M> for MPlaceTy<'tcx,
     }
 
     #[inline(always)]
-    fn project_field(
-        self,
-        ecx: &InterpCx<'mir, 'tcx, M>,
-        field: u64,
-    ) -> InterpResult<'tcx, Self> {
+    fn project_field(self, ecx: &InterpCx<'mir, 'tcx, M>, field: u64) -> InterpResult<'tcx, Self> {
         ecx.mplace_field(self, field)
     }
 }
@@ -242,7 +223,7 @@ macro_rules! make_value_visitor {
                 match v.layout().ty.kind {
                     ty::Dynamic(..) => {
                         // immediate trait objects are not a thing
-                        let dest = v.to_op(self.ecx())?.assert_mem_place();
+                        let dest = v.to_op(self.ecx())?.assert_mem_place(self.ecx());
                         let inner = self.ecx().unpack_dyn_trait(dest)?.1;
                         trace!("walk_value: dyn object layout: {:#?}", inner.layout);
                         // recurse with the inner type
@@ -311,13 +292,7 @@ macro_rules! make_value_visitor {
                     },
                     layout::FieldPlacement::Array { .. } => {
                         // Let's get an mplace first.
-                        let mplace = if v.layout().is_zst() {
-                            // it's a ZST, the memory content cannot matter
-                            MPlaceTy::dangling(v.layout(), self.ecx())
-                        } else {
-                            // non-ZST array/slice/str cannot be immediate
-                            v.to_op(self.ecx())?.assert_mem_place()
-                        };
+                        let mplace = v.to_op(self.ecx())?.assert_mem_place(self.ecx());
                         // Now we can go over all the fields.
                         let iter = self.ecx().mplace_array_fields(mplace)?
                             .map(|f| f.and_then(|f| {
@@ -332,4 +307,4 @@ macro_rules! make_value_visitor {
 }
 
 make_value_visitor!(ValueVisitor,);
-make_value_visitor!(MutValueVisitor,mut);
+make_value_visitor!(MutValueVisitor, mut);

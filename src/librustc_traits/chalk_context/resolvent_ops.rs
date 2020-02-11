@@ -1,29 +1,17 @@
 use chalk_engine::fallible::{Fallible, NoSolution};
-use chalk_engine::{
-    context,
-    Literal,
-    ExClause
-};
-use rustc::infer::{InferCtxt, LateBoundRegionConversionTime};
+use chalk_engine::{context, ExClause, Literal};
 use rustc::infer::canonical::{Canonical, CanonicalVarValues};
+use rustc::infer::{InferCtxt, LateBoundRegionConversionTime};
 use rustc::traits::{
-    DomainGoal,
-    WhereClause,
-    Goal,
-    GoalKind,
-    Clause,
-    ProgramClause,
-    Environment,
-    InEnvironment,
+    Clause, DomainGoal, Environment, Goal, GoalKind, InEnvironment, ProgramClause, WhereClause,
 };
-use rustc::ty::{self, Ty, TyCtxt};
-use rustc::ty::subst::GenericArg;
 use rustc::ty::relate::{Relate, RelateResult, TypeRelation};
-use rustc::mir::interpret::ConstValue;
-use syntax_pos::DUMMY_SP;
+use rustc::ty::subst::GenericArg;
+use rustc::ty::{self, Ty, TyCtxt};
+use rustc_span::DUMMY_SP;
 
-use super::{ChalkInferenceContext, ChalkArenas, ChalkExClause, ConstrainedSubst};
 use super::unify::*;
+use super::{ChalkArenas, ChalkExClause, ChalkInferenceContext, ConstrainedSubst};
 
 impl context::ResolventOps<ChalkArenas<'tcx>, ChalkArenas<'tcx>>
     for ChalkInferenceContext<'cx, 'tcx>
@@ -40,26 +28,22 @@ impl context::ResolventOps<ChalkArenas<'tcx>, ChalkArenas<'tcx>>
         debug!("resolvent_clause(goal = {:?}, clause = {:?})", goal, clause);
 
         let result = self.infcx.probe(|_| {
-            let ProgramClause {
-                goal: consequence,
-                hypotheses,
-                ..
-            } = match clause {
+            let ProgramClause { goal: consequence, hypotheses, .. } = match clause {
                 Clause::Implies(program_clause) => *program_clause,
-                Clause::ForAll(program_clause) => self.infcx.replace_bound_vars_with_fresh_vars(
-                    DUMMY_SP,
-                    LateBoundRegionConversionTime::HigherRankedType,
-                    program_clause
-                ).0,
+                Clause::ForAll(program_clause) => {
+                    self.infcx
+                        .replace_bound_vars_with_fresh_vars(
+                            DUMMY_SP,
+                            LateBoundRegionConversionTime::HigherRankedType,
+                            program_clause,
+                        )
+                        .0
+                }
             };
 
-            let result = unify(
-                self.infcx,
-                *environment,
-                ty::Variance::Invariant,
-                goal,
-                &consequence
-            ).map_err(|_| NoSolution)?;
+            let result =
+                unify(self.infcx, *environment, ty::Variance::Invariant, goal, &consequence)
+                    .map_err(|_| NoSolution)?;
 
             let mut ex_clause = ExClause {
                 subst: subst.clone(),
@@ -70,12 +54,10 @@ impl context::ResolventOps<ChalkArenas<'tcx>, ChalkArenas<'tcx>>
 
             self.into_ex_clause(result, &mut ex_clause);
 
-            ex_clause.subgoals.extend(
-                hypotheses.iter().map(|g| match g {
-                    GoalKind::Not(g) => Literal::Negative(environment.with(*g)),
-                    g => Literal::Positive(environment.with(*g)),
-                })
-            );
+            ex_clause.subgoals.extend(hypotheses.iter().map(|g| match g {
+                GoalKind::Not(g) => Literal::Negative(environment.with(*g)),
+                g => Literal::Positive(environment.with(*g)),
+            }));
 
             // If we have a goal of the form `T: 'a` or `'a: 'b`, then just
             // assume it is true (no subgoals) and register it as a constraint
@@ -115,10 +97,9 @@ impl context::ResolventOps<ChalkArenas<'tcx>, ChalkArenas<'tcx>>
             self.infcx.resolve_vars_if_possible(selected_goal)
         );
 
-        let (answer_subst, _) = self.infcx.instantiate_canonical_with_fresh_inference_vars(
-            DUMMY_SP,
-            canonical_answer_subst
-        );
+        let (answer_subst, _) = self
+            .infcx
+            .instantiate_canonical_with_fresh_inference_vars(DUMMY_SP, canonical_answer_subst);
 
         let mut substitutor = AnswerSubstitutor {
             infcx: self.infcx,
@@ -128,8 +109,7 @@ impl context::ResolventOps<ChalkArenas<'tcx>, ChalkArenas<'tcx>>
             ex_clause,
         };
 
-        substitutor.relate(&answer_table_goal.value, &selected_goal)
-            .map_err(|_| NoSolution)?;
+        substitutor.relate(&answer_table_goal.value, &selected_goal).map_err(|_| NoSolution)?;
 
         let mut ex_clause = substitutor.ex_clause;
         ex_clause.constraints.extend(answer_subst.constraints);
@@ -151,18 +131,15 @@ impl AnswerSubstitutor<'cx, 'tcx> {
     fn unify_free_answer_var(
         &mut self,
         answer_var: ty::BoundVar,
-        pending: GenericArg<'tcx>
+        pending: GenericArg<'tcx>,
     ) -> RelateResult<'tcx, ()> {
         let answer_param = &self.answer_subst.var_values[answer_var];
-        let pending = &ty::fold::shift_out_vars(
-            self.infcx.tcx,
-            &pending,
-            self.binder_index.as_u32()
-        );
+        let pending =
+            &ty::fold::shift_out_vars(self.infcx.tcx, &pending, self.binder_index.as_u32());
 
         super::into_ex_clause(
             unify(self.infcx, self.environment, ty::Variance::Invariant, answer_param, pending)?,
-            &mut self.ex_clause
+            &mut self.ex_clause,
         );
 
         Ok(())
@@ -237,7 +214,7 @@ impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
             _ => match ty::relate::super_relate_tys(self, a, b) {
                 Ok(ty) => Ok(ty),
                 Err(err) => bug!("type mismatch in `AnswerSubstitutor`: {}", err),
-            }
+            },
         }
     }
 
@@ -247,8 +224,11 @@ impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
         b: ty::Region<'tcx>,
     ) -> RelateResult<'tcx, ty::Region<'tcx>> {
         let b = match b {
-            &ty::ReVar(vid) => self.infcx
-                .borrow_region_constraints()
+            &ty::ReVar(vid) => self
+                .infcx
+                .inner
+                .borrow_mut()
+                .unwrap_region_constraints()
                 .opportunistic_resolve_var(self.infcx.tcx, vid),
 
             other => other,
@@ -268,9 +248,11 @@ impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
                 assert_eq!(a_bound.assert_bound_var(), b_bound.assert_bound_var());
             }
 
-            (ty::ReStatic, ty::ReStatic) |
-            (ty::ReErased, ty::ReErased) |
-            (ty::ReEmpty, ty::ReEmpty) => (),
+            (ty::ReStatic, ty::ReStatic) | (ty::ReErased, ty::ReErased) => (),
+
+            (ty::ReEmpty(a_ui), ty::ReEmpty(b_ui)) => {
+                assert_eq!(a_ui, b_ui);
+            }
 
             (&ty::ReFree(a_free), &ty::ReFree(b_free)) => {
                 assert_eq!(a_free, b_free);
@@ -287,7 +269,7 @@ impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
         a: &'tcx ty::Const<'tcx>,
         b: &'tcx ty::Const<'tcx>,
     ) -> RelateResult<'tcx, &'tcx ty::Const<'tcx>> {
-        if let ty::Const { val: ConstValue::Bound(debruijn, bound_ct), .. } = a {
+        if let ty::Const { val: ty::ConstKind::Bound(debruijn, bound_ct), .. } = a {
             if *debruijn == self.binder_index {
                 self.unify_free_answer_var(*bound_ct, b.into())?;
                 return Ok(b);
@@ -296,8 +278,8 @@ impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
 
         match (a, b) {
             (
-                ty::Const { val: ConstValue::Bound(a_debruijn, a_bound), .. },
-                ty::Const { val: ConstValue::Bound(b_debruijn, b_bound), .. },
+                ty::Const { val: ty::ConstKind::Bound(a_debruijn, a_bound), .. },
+                ty::Const { val: ty::ConstKind::Bound(b_debruijn, b_bound), .. },
             ) => {
                 assert_eq!(a_debruijn, b_debruijn);
                 assert_eq!(a_bound, b_bound);
@@ -309,7 +291,7 @@ impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
             _ => match ty::relate::super_relate_consts(self, a, b) {
                 Ok(ct) => Ok(ct),
                 Err(err) => bug!("const mismatch in `AnswerSubstitutor`: {}", err),
-            }
+            },
         }
     }
 }

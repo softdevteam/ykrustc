@@ -7,16 +7,18 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use rustc::ty::{self, TyCtxt, List};
-use rustc::mir::{Operand, LocalDecl, Place, SourceInfo, BasicBlock, Local, BasicBlockData,
-    TerminatorKind, Terminator, OUTERMOST_SOURCE_SCOPE, Constant, Body, PlaceBase};
-use rustc_index::vec::Idx;
-use syntax_pos::{DUMMY_SP, sym};
-use syntax::attr;
 use crate::transform::{MirPass, MirSource};
 use rustc::hir;
 use rustc::hir::def_id::{DefIndex, LOCAL_CRATE};
 use rustc::hir::map::blocks::FnLikeNode;
+use rustc::mir::{
+    BasicBlock, BasicBlockData, Body, Constant, Local, LocalDecl, Operand, Place, PlaceBase,
+    SourceInfo, Terminator, TerminatorKind, OUTERMOST_SOURCE_SCOPE,
+};
+use rustc::ty::{self, List, TyCtxt};
+use rustc_index::vec::Idx;
+use syntax::attr;
+use syntax_pos::{sym, DUMMY_SP};
 
 /// A MIR transformation that, for each basic block, inserts a call to the software trace recorder.
 /// The arguments to the calls (crate hash, DefId and block index) identify the position to be
@@ -47,15 +49,14 @@ use rustc::hir::map::blocks::FnLikeNode;
 pub struct AddYkSWTCalls(pub DefIndex);
 
 impl MirPass<'_> for AddYkSWTCalls {
-    fn run_pass<'tcx>(&self,
-                          tcx: TyCtxt<'tcx>,
-                          src: MirSource<'_>,
-                          mir: &mut Body<'tcx>) {
+    fn run_pass<'tcx>(&self, tcx: TyCtxt<'tcx>, src: MirSource<'_>, mir: &mut Body<'tcx>) {
         if !tcx.sess.opts.cg.tracer.sw_trace_recorder() || is_untraceable(tcx, src) {
             return;
         }
 
-        let rec_fn_defid = tcx.get_lang_items(LOCAL_CRATE).yk_swt_rec_loc()
+        let rec_fn_defid = tcx
+            .get_lang_items(LOCAL_CRATE)
+            .yk_swt_rec_loc()
             .expect("couldn't find software trace recorder function");
 
         let unit_ty = tcx.mk_unit();
@@ -102,8 +103,7 @@ impl MirPass<'_> for AddYkSWTCalls {
                 literal: bb_const,
             });
 
-            let rec_fn_oper = Operand::function_handle(tcx, rec_fn_defid,
-                List::empty(), DUMMY_SP);
+            let rec_fn_oper = Operand::function_handle(tcx, rec_fn_defid, List::empty(), DUMMY_SP);
 
             let term_kind = TerminatorKind::Call {
                 func: rec_fn_oper,
@@ -114,15 +114,16 @@ impl MirPass<'_> for AddYkSWTCalls {
             };
 
             // Build the replacement block with the new call terminator.
-            let source_info = bb_data.terminator.clone().map(|t| t.source_info)
-                .or(Some(SourceInfo { span: DUMMY_SP, scope: OUTERMOST_SOURCE_SCOPE })).unwrap();
+            let source_info = bb_data
+                .terminator
+                .clone()
+                .map(|t| t.source_info)
+                .or(Some(SourceInfo { span: DUMMY_SP, scope: OUTERMOST_SOURCE_SCOPE }))
+                .unwrap();
             let replace_block = BasicBlockData {
                 statements: vec![],
-                terminator: Some(Terminator {
-                    source_info,
-                    kind: term_kind
-                }),
-                is_cleanup: false
+                terminator: Some(Terminator { source_info, kind: term_kind }),
+                is_cleanup: false,
             };
             shadow_blks.push(replace_block);
         }
@@ -152,7 +153,7 @@ fn is_untraceable(tcx: TyCtxt<'tcx>, src: MirSource<'_>) -> bool {
         }
         if attr.check_name(sym::naked) {
             return true;
-       }
+        }
     }
 
     // Similar to `#[no_sw_trace]`, don't transform anything inside a crate marked
@@ -182,8 +183,7 @@ fn is_untraceable(tcx: TyCtxt<'tcx>, src: MirSource<'_>) -> bool {
     }
 
     // For the same reason as above, regular const functions can't be transformed.
-    let hir_id = tcx.hir().as_local_hir_id(src.def_id())
-        .expect("Failed to get node id");
+    let hir_id = tcx.hir().as_local_hir_id(src.def_id()).expect("Failed to get node id");
     if let Some(fn_like) = FnLikeNode::from_node(tcx.hir().get(hir_id)) {
         fn_like.constness() == hir::Constness::Const
     } else {

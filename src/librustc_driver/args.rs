@@ -2,23 +2,12 @@ use std::error;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::str;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static USED_ARGSFILE_FEATURE: AtomicBool = AtomicBool::new(false);
-
-pub fn used_unstable_argsfile() -> bool {
-    USED_ARGSFILE_FEATURE.load(Ordering::Relaxed)
-}
 
 pub fn arg_expand(arg: String) -> Result<Vec<String>, Error> {
     if arg.starts_with("@") {
         let path = &arg[1..];
         let file = match fs::read_to_string(path) {
-            Ok(file) => {
-                USED_ARGSFILE_FEATURE.store(true, Ordering::Relaxed);
-                file
-            }
+            Ok(file) => file,
             Err(ref err) if err.kind() == io::ErrorKind::InvalidData => {
                 return Err(Error::Utf8Error(Some(path.to_string())));
             }
@@ -46,8 +35,4 @@ impl fmt::Display for Error {
     }
 }
 
-impl error::Error for Error {
-    fn description(&self) -> &'static str {
-        "argument error"
-    }
-}
+impl error::Error for Error {}

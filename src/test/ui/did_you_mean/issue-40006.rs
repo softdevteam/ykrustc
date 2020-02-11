@@ -18,10 +18,10 @@ trait A { //~ ERROR missing
 trait B {
     fn xxx() { ### } //~ ERROR expected
 }
-trait C { //~ ERROR missing `fn`, `type`, or `const` for trait-item declaration
+trait C { //~ ERROR missing `fn`, `type`, or `const` for associated-item declaration
     L = M;
 }
-trait D { //~ ERROR missing `fn`, `type`, or `const` for trait-item declaration
+trait D { //~ ERROR missing `fn`, `type`, or `const` for associated-item declaration
     Z = { 2 + 3 };
 }
 trait E {
@@ -35,5 +35,5 @@ impl S {
 }
 
 fn main() {
-    S.hello_method(); //~ no method named `hello_method` found for type `S` in the current scope
+    S.hello_method(); //~ no method named `hello_method` found
 }

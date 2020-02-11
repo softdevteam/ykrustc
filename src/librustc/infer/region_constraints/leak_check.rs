@@ -33,36 +33,18 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
 
         assert!(self.in_snapshot());
 
-        // If the user gave `-Zno-leak-check`, then skip the leak
-        // check completely. This is wildly unsound and also not
-        // unlikely to cause an ICE or two. It is intended for use
-        // only during a transition period, in which the MIR typeck
-        // uses the "universe-style" check, and the rest of typeck
-        // uses the more conservative leak check.  Since the leak
-        // check is more conservative, we can't test the
-        // universe-style check without disabling it.
-        if tcx.sess.opts.debugging_opts.no_leak_check {
-            return Ok(());
-        }
-
         // Go through each placeholder that we created.
         for (_, &placeholder_region) in placeholder_map {
             // Find the universe this placeholder inhabits.
             let placeholder = match placeholder_region {
                 ty::RePlaceholder(p) => p,
-                _ => bug!(
-                    "leak_check: expected placeholder found {:?}",
-                    placeholder_region,
-                ),
+                _ => bug!("leak_check: expected placeholder found {:?}", placeholder_region,),
             };
 
             // Find all regions that are related to this placeholder
             // in some way. This means any region that either outlives
             // or is outlived by a placeholder.
-            let mut taint_set = TaintSet::new(
-                TaintDirections::both(),
-                placeholder_region,
-            );
+            let mut taint_set = TaintSet::new(TaintDirections::both(), placeholder_region);
             taint_set.fixed_point(tcx, &self.undo_log, &self.data.verifys);
             let tainted_regions = taint_set.into_set();
 
@@ -103,10 +85,7 @@ impl<'tcx> TaintSet<'tcx> {
     fn new(directions: TaintDirections, initial_region: ty::Region<'tcx>) -> Self {
         let mut regions = FxHashSet::default();
         regions.insert(initial_region);
-        TaintSet {
-            directions: directions,
-            regions: regions,
-        }
+        TaintSet { directions: directions, regions: regions }
     }
 
     fn fixed_point(
@@ -117,11 +96,7 @@ impl<'tcx> TaintSet<'tcx> {
     ) {
         let mut prev_len = 0;
         while prev_len < self.len() {
-            debug!(
-                "tainted: prev_len = {:?} new_len = {:?}",
-                prev_len,
-                self.len()
-            );
+            debug!("tainted: prev_len = {:?} new_len = {:?}", prev_len, self.len());
 
             prev_len = self.len();
 

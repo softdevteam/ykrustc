@@ -4,7 +4,7 @@
 //! "Exception Handling in LLVM" (llvm.org/docs/ExceptionHandling.html) and
 //! documents linked from it.
 //! These are also good reads:
-//!     http://mentorembedded.github.io/cxx-abi/abi-eh.html
+//!     https://itanium-cxx-abi.github.io/cxx-abi/abi-eh.html
 //!     http://monoinfinito.wordpress.com/series/exception-handling-in-c/
 //!     http://www.airs.com/blog/index.php?s=exception+frames
 //!
@@ -46,18 +46,18 @@
 
 #![allow(private_no_mangle_fns)]
 
+use alloc::boxed::Box;
 use core::any::Any;
 use core::ptr;
-use alloc::boxed::Box;
 
-use unwind as uw;
+use crate::dwarf::eh::{self, EHAction, EHContext};
 use libc::{c_int, uintptr_t};
-use crate::dwarf::eh::{self, EHContext, EHAction};
+use unwind as uw;
 
 #[repr(C)]
 struct Exception {
     _uwe: uw::_Unwind_Exception,
-    cause: Option<Box<dyn Any + Send>>,
+    cause: Box<dyn Any + Send>,
 }
 
 pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
@@ -67,15 +67,18 @@ pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
             exception_cleanup,
             private: [0; uw::unwinder_private_data_size],
         },
-        cause: Some(data),
+        cause: data,
     });
     let exception_param = Box::into_raw(exception) as *mut uw::_Unwind_Exception;
     return uw::_Unwind_RaiseException(exception_param) as u32;
 
-    extern "C" fn exception_cleanup(_unwind_code: uw::_Unwind_Reason_Code,
-                                    exception: *mut uw::_Unwind_Exception) {
+    extern "C" fn exception_cleanup(
+        _unwind_code: uw::_Unwind_Reason_Code,
+        exception: *mut uw::_Unwind_Exception,
+    ) {
         unsafe {
             let _: Box<Exception> = Box::from_raw(exception as *mut Exception);
+            super::__rust_drop_panic();
         }
     }
 }
@@ -85,10 +88,8 @@ pub fn payload() -> *mut u8 {
 }
 
 pub unsafe fn cleanup(ptr: *mut u8) -> Box<dyn Any + Send> {
-    let my_ep = ptr as *mut Exception;
-    let cause = (*my_ep).cause.take();
-    uw::_Unwind_DeleteException(ptr as *mut _);
-    cause.unwrap()
+    let exception = Box::from_raw(ptr as *mut Exception);
+    exception.cause
 }
 
 // Rust's exception class identifier.  This is used by personality routines to
@@ -97,7 +98,6 @@ fn rust_exception_class() -> uw::_Unwind_Exception_Class {
     // M O Z \0  R U S T -- vendor, language
     0x4d4f5a_00_52555354
 }
-
 
 // Register ids were lifted from LLVM's TargetLowering::getExceptionPointerRegister()
 // and TargetLowering::getExceptionSelectorRegister() for each architecture,
@@ -128,6 +128,9 @@ const UNWIND_DATA_REG: (i32, i32) = (24, 25); // I0, I1
 
 #[cfg(target_arch = "hexagon")]
 const UNWIND_DATA_REG: (i32, i32) = (0, 1); // R0, R1
+
+#[cfg(target_arch = "riscv64")]
+const UNWIND_DATA_REG: (i32, i32) = (10, 11); // x10, x11
 
 // The following code is based on GCC's C and C++ personality routines.  For reference, see:
 // https://github.com/gcc-mirror/gcc/blob/master/libstdc++-v3/libsupc++/eh_personality.cc
@@ -187,7 +190,13 @@ cfg_if::cfg_if! {
                 match eh_action {
                     EHAction::None |
                     EHAction::Cleanup(_) => return continue_unwind(exception_object, context),
-                    EHAction::Catch(_) => return uw::_URC_HANDLER_FOUND,
+                    EHAction::Catch(_) => {
+                        // EHABI requires the personality routine to update the
+                        // SP value in the barrier cache of the exception object.
+                        (*exception_object).private[5] =
+                            uw::_Unwind_GetGR(context, uw::UNWIND_SP_REG);
+                        return uw::_URC_HANDLER_FOUND;
+                    }
                     EHAction::Terminate => return uw::_URC_FAILURE,
                 }
             } else {
@@ -302,9 +311,10 @@ cfg_if::cfg_if! {
     }
 }
 
-unsafe fn find_eh_action(context: *mut uw::_Unwind_Context, foreign_exception: bool)
-    -> Result<EHAction, ()>
-{
+unsafe fn find_eh_action(
+    context: *mut uw::_Unwind_Context,
+    foreign_exception: bool,
+) -> Result<EHAction, ()> {
     let lsda = uw::_Unwind_GetLanguageSpecificData(context) as *const u8;
     let mut ip_before_instr: c_int = 0;
     let ip = uw::_Unwind_GetIPInfo(context, &mut ip_before_instr);
@@ -320,7 +330,11 @@ unsafe fn find_eh_action(context: *mut uw::_Unwind_Context, foreign_exception: b
 }
 
 // See docs in the `unwind` module.
-#[cfg(all(target_os="windows", any(target_arch = "x86", target_arch = "x86_64"), target_env="gnu"))]
+#[cfg(all(
+    target_os = "windows",
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_env = "gnu"
+))]
 #[lang = "eh_unwind_resume"]
 #[unwind(allowed)]
 unsafe extern "C" fn rust_eh_unwind_resume(panic_ctx: *mut u8) -> ! {
@@ -343,7 +357,7 @@ unsafe extern "C" fn rust_eh_unwind_resume(panic_ctx: *mut u8) -> ! {
 // implementation of stack unwinding is (for now) deferred to libgcc_eh, however
 // Rust crates use these Rust-specific entry points to avoid potential clashes
 // with any GCC runtime.
-#[cfg(all(target_os="windows", target_arch = "x86", target_env="gnu"))]
+#[cfg(all(target_os = "windows", target_arch = "x86", target_env = "gnu"))]
 pub mod eh_frame_registry {
     extern "C" {
         fn __register_frame_info(eh_frame_begin: *const u8, object: *mut u8);
@@ -356,8 +370,7 @@ pub mod eh_frame_registry {
     }
 
     #[no_mangle]
-    pub unsafe extern "C" fn rust_eh_unregister_frames(eh_frame_begin: *const u8,
-                                                       object: *mut u8) {
+    pub unsafe extern "C" fn rust_eh_unregister_frames(eh_frame_begin: *const u8, object: *mut u8) {
         __deregister_frame_info(eh_frame_begin, object);
     }
 }

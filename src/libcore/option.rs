@@ -133,11 +133,16 @@
 //! [`Box<T>`]: ../../std/boxed/struct.Box.html
 //! [`i32`]: ../../std/primitive.i32.html
 
+// ignore-tidy-undocumented-unsafe
+
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use crate::iter::{FromIterator, FusedIterator, TrustedLen};
-use crate::{convert, fmt, hint, mem, ops::{self, Deref, DerefMut}};
 use crate::pin::Pin;
+use crate::{
+    convert, fmt, hint, mem,
+    ops::{self, Deref, DerefMut},
+};
 
 // Note that this is not a lang item per se, but it has a hidden dependency on
 // `Iterator`, which is one. The compiler assumes that the `next` method of
@@ -146,6 +151,7 @@ use crate::pin::Pin;
 
 /// The `Option` type. See [the module level documentation](index.html) for more.
 #[derive(Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[rustc_diagnostic_item = "option_type"]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Option<T> {
     /// No value
@@ -182,10 +188,7 @@ impl<T> Option<T> {
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_some(&self) -> bool {
-        match *self {
-            Some(_) => true,
-            None => false,
-        }
+        matches!(*self, Some(_))
     }
 
     /// Returns `true` if the option is a [`None`] value.
@@ -228,7 +231,10 @@ impl<T> Option<T> {
     #[must_use]
     #[inline]
     #[unstable(feature = "option_result_contains", issue = "62358")]
-    pub fn contains<U>(&self, x: &U) -> bool where U: PartialEq<T> {
+    pub fn contains<U>(&self, x: &U) -> bool
+    where
+        U: PartialEq<T>,
+    {
         match self {
             Some(y) => x == y,
             None => false,
@@ -289,16 +295,13 @@ impl<T> Option<T> {
         }
     }
 
-
     /// Converts from [`Pin`]`<&Option<T>>` to `Option<`[`Pin`]`<&T>>`.
     ///
     /// [`Pin`]: ../pin/struct.Pin.html
     #[inline]
     #[stable(feature = "pin", since = "1.33.0")]
     pub fn as_pin_ref(self: Pin<&Self>) -> Option<Pin<&T>> {
-        unsafe {
-            Pin::get_ref(self).as_ref().map(|x| Pin::new_unchecked(x))
-        }
+        unsafe { Pin::get_ref(self).as_ref().map(|x| Pin::new_unchecked(x)) }
     }
 
     /// Converts from [`Pin`]`<&mut Option<T>>` to `Option<`[`Pin`]`<&mut T>>`.
@@ -307,16 +310,14 @@ impl<T> Option<T> {
     #[inline]
     #[stable(feature = "pin", since = "1.33.0")]
     pub fn as_pin_mut(self: Pin<&mut Self>) -> Option<Pin<&mut T>> {
-        unsafe {
-            Pin::get_unchecked_mut(self).as_mut().map(|x| Pin::new_unchecked(x))
-        }
+        unsafe { Pin::get_unchecked_mut(self).as_mut().map(|x| Pin::new_unchecked(x)) }
     }
 
     /////////////////////////////////////////////////////////////////////////
     // Getting to contained values
     /////////////////////////////////////////////////////////////////////////
 
-    /// Unwraps an option, yielding the content of a [`Some`].
+    /// Returns the contained [`Some`] value, consuming the `self` value.
     ///
     /// # Panics
     ///
@@ -330,14 +331,15 @@ impl<T> Option<T> {
     ///
     /// ```
     /// let x = Some("value");
-    /// assert_eq!(x.expect("the world is ending"), "value");
+    /// assert_eq!(x.expect("fruits are healthy"), "value");
     /// ```
     ///
     /// ```{.should_panic}
     /// let x: Option<&str> = None;
-    /// x.expect("the world is ending"); // panics with `the world is ending`
+    /// x.expect("fruits are healthy"); // panics with `fruits are healthy`
     /// ```
     #[inline]
+    #[track_caller]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn expect(self, msg: &str) -> T {
         match self {
@@ -346,17 +348,22 @@ impl<T> Option<T> {
         }
     }
 
-    /// Moves the value `v` out of the `Option<T>` if it is [`Some(v)`].
+    /// Returns the contained [`Some`] value, consuming the `self` value.
     ///
-    /// In general, because this function may panic, its use is discouraged.
+    /// Because this function may panic, its use is generally discouraged.
     /// Instead, prefer to use pattern matching and handle the [`None`]
-    /// case explicitly.
+    /// case explicitly, or call [`unwrap_or`], [`unwrap_or_else`], or
+    /// [`unwrap_or_default`].
+    ///
+    /// [`unwrap_or`]: #method.unwrap_or
+    /// [`unwrap_or_else`]: #method.unwrap_or_else
+    /// [`unwrap_or_default`]: #method.unwrap_or_default
     ///
     /// # Panics
     ///
     /// Panics if the self value equals [`None`].
     ///
-    /// [`Some(v)`]: #variant.Some
+    /// [`Some`]: #variant.Some
     /// [`None`]: #variant.None
     ///
     /// # Examples
@@ -371,6 +378,7 @@ impl<T> Option<T> {
     /// assert_eq!(x.unwrap(), "air"); // fails
     /// ```
     #[inline]
+    #[track_caller]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn unwrap(self) -> T {
         match self {
@@ -379,12 +387,13 @@ impl<T> Option<T> {
         }
     }
 
-    /// Returns the contained value or a default.
+    /// Returns the contained [`Some`] value or a provided default.
     ///
     /// Arguments passed to `unwrap_or` are eagerly evaluated; if you are passing
     /// the result of a function call, it is recommended to use [`unwrap_or_else`],
     /// which is lazily evaluated.
     ///
+    /// [`Some`]: #variant.Some
     /// [`unwrap_or_else`]: #method.unwrap_or_else
     ///
     /// # Examples
@@ -402,7 +411,7 @@ impl<T> Option<T> {
         }
     }
 
-    /// Returns the contained value or computes it from a closure.
+    /// Returns the contained [`Some`] value or computes it from a closure.
     ///
     /// # Examples
     ///
@@ -451,6 +460,12 @@ impl<T> Option<T> {
 
     /// Applies a function to the contained value (if any),
     /// or returns the provided default (if not).
+    ///
+    /// Arguments passed to `map_or` are eagerly evaluated; if you are passing
+    /// the result of a function call, it is recommended to use [`map_or_else`],
+    /// which is lazily evaluated.
+    ///
+    /// [`map_or_else`]: #method.map_or_else
     ///
     /// # Examples
     ///
@@ -688,7 +703,7 @@ impl<T> Option<T> {
     pub fn filter<P: FnOnce(&T) -> bool>(self, predicate: P) -> Self {
         if let Some(x) = self {
             if predicate(&x) {
-                return Some(x)
+                return Some(x);
             }
         }
         None
@@ -977,7 +992,7 @@ impl<T: Clone> Option<&mut T> {
 }
 
 impl<T: fmt::Debug> Option<T> {
-    /// Unwraps an option, expecting [`None`] and returning nothing.
+    /// Consumes `self` while expecting [`None`] and returning nothing.
     ///
     /// # Panics
     ///
@@ -1012,6 +1027,7 @@ impl<T: fmt::Debug> Option<T> {
     /// }
     /// ```
     #[inline]
+    #[track_caller]
     #[unstable(feature = "option_expect_none", reason = "newly added", issue = "62633")]
     pub fn expect_none(self, msg: &str) {
         if let Some(val) = self {
@@ -1019,7 +1035,7 @@ impl<T: fmt::Debug> Option<T> {
         }
     }
 
-    /// Unwraps an option, expecting [`None`] and returning nothing.
+    /// Consumes `self` while expecting [`None`] and returning nothing.
     ///
     /// # Panics
     ///
@@ -1054,6 +1070,7 @@ impl<T: fmt::Debug> Option<T> {
     /// }
     /// ```
     #[inline]
+    #[track_caller]
     #[unstable(feature = "option_unwrap_none", reason = "newly added", issue = "62633")]
     pub fn unwrap_none(self) {
         if let Some(val) = self {
@@ -1063,7 +1080,7 @@ impl<T: fmt::Debug> Option<T> {
 }
 
 impl<T: Default> Option<T> {
-    /// Returns the contained value or a default
+    /// Returns the contained [`Some`] value or a default
     ///
     /// Consumes the `self` argument then, if [`Some`], returns the contained
     /// value, otherwise if [`None`], returns the [default value] for that
@@ -1181,6 +1198,7 @@ impl<T, E> Option<Result<T, E>> {
 // This is a separate function to reduce the code size of .expect() itself.
 #[inline(never)]
 #[cold]
+#[track_caller]
 fn expect_failed(msg: &str) -> ! {
     panic!("{}", msg)
 }
@@ -1188,6 +1206,7 @@ fn expect_failed(msg: &str) -> ! {
 // This is a separate function to reduce the code size of .expect_none() itself.
 #[inline(never)]
 #[cold]
+#[track_caller]
 fn expect_none_failed(msg: &str, value: &dyn fmt::Debug) -> ! {
     panic!("{}: {:?}", msg, value)
 }
@@ -1226,7 +1245,9 @@ impl<T> Default for Option<T> {
     /// assert!(opt.is_none());
     /// ```
     #[inline]
-    fn default() -> Option<T> { None }
+    fn default() -> Option<T> {
+        None
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1300,7 +1321,7 @@ impl<'a, T> From<&'a mut Option<T>> for Option<&'a mut T> {
 
 #[derive(Clone, Debug)]
 struct Item<A> {
-    opt: Option<A>
+    opt: Option<A>,
 }
 
 impl<A> Iterator for Item<A> {
@@ -1342,22 +1363,30 @@ unsafe impl<A> TrustedLen for Item<A> {}
 /// [`Option::iter`]: enum.Option.html#method.iter
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug)]
-pub struct Iter<'a, A: 'a> { inner: Item<&'a A> }
+pub struct Iter<'a, A: 'a> {
+    inner: Item<&'a A>,
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, A> Iterator for Iter<'a, A> {
     type Item = &'a A;
 
     #[inline]
-    fn next(&mut self) -> Option<&'a A> { self.inner.next() }
+    fn next(&mut self) -> Option<&'a A> {
+        self.inner.next()
+    }
     #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, A> DoubleEndedIterator for Iter<'a, A> {
     #[inline]
-    fn next_back(&mut self) -> Option<&'a A> { self.inner.next_back() }
+    fn next_back(&mut self) -> Option<&'a A> {
+        self.inner.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1388,22 +1417,30 @@ impl<A> Clone for Iter<'_, A> {
 /// [`Option::iter_mut`]: enum.Option.html#method.iter_mut
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Debug)]
-pub struct IterMut<'a, A: 'a> { inner: Item<&'a mut A> }
+pub struct IterMut<'a, A: 'a> {
+    inner: Item<&'a mut A>,
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, A> Iterator for IterMut<'a, A> {
     type Item = &'a mut A;
 
     #[inline]
-    fn next(&mut self) -> Option<&'a mut A> { self.inner.next() }
+    fn next(&mut self) -> Option<&'a mut A> {
+        self.inner.next()
+    }
     #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<'a, A> DoubleEndedIterator for IterMut<'a, A> {
     #[inline]
-    fn next_back(&mut self) -> Option<&'a mut A> { self.inner.next_back() }
+    fn next_back(&mut self) -> Option<&'a mut A> {
+        self.inner.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1425,22 +1462,30 @@ unsafe impl<A> TrustedLen for IterMut<'_, A> {}
 /// [`Option::into_iter`]: enum.Option.html#method.into_iter
 #[derive(Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
-pub struct IntoIter<A> { inner: Item<A> }
+pub struct IntoIter<A> {
+    inner: Item<A>,
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<A> Iterator for IntoIter<A> {
     type Item = A;
 
     #[inline]
-    fn next(&mut self) -> Option<A> { self.inner.next() }
+    fn next(&mut self) -> Option<A> {
+        self.inner.next()
+    }
     #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<A> DoubleEndedIterator for IntoIter<A> {
     #[inline]
-    fn next_back(&mut self) -> Option<A> { self.inner.next_back() }
+    fn next_back(&mut self) -> Option<A> {
+        self.inner.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1521,14 +1566,11 @@ impl<A, V: FromIterator<A>> FromIterator<Option<A>> for Option<V> {
     ///
     /// [`Iterator`]: ../iter/trait.Iterator.html
     #[inline]
-    fn from_iter<I: IntoIterator<Item=Option<A>>>(iter: I) -> Option<V> {
+    fn from_iter<I: IntoIterator<Item = Option<A>>>(iter: I) -> Option<V> {
         // FIXME(#11084): This could be replaced with Iterator::scan when this
         // performance bug is closed.
 
-        iter.into_iter()
-            .map(|x| x.ok_or(()))
-            .collect::<Result<_, _>>()
-            .ok()
+        iter.into_iter().map(|x| x.ok_or(())).collect::<Result<_, _>>().ok()
     }
 }
 

@@ -22,7 +22,7 @@ pub fn check(path: &Path, bad: &mut bool) {
     // Process each line.
     for line in cargo_lock.lines() {
         // Consider only source entries.
-        if ! line.starts_with("source = ") {
+        if !line.starts_with("source = ") {
             continue;
         }
 
@@ -32,10 +32,10 @@ pub fn check(path: &Path, bad: &mut bool) {
         // Allow all soft-dev repos.
         // We also allow our personal forks for scenarios where we are breaking a CI cycle and need
         // to temporarily use one of our personal feature branches.
-        if source.starts_with("\"git+https://github.com/softdevteam/") ||
-            source.starts_with("\"git+https://github.com/vext01/") ||
-            source.starts_with("\"git+https://github.com/ltratt/") ||
-            source.starts_with("\"git+https://github.com/ptersilie/")
+        if source.starts_with("\"git+https://github.com/softdevteam/")
+            || source.starts_with("\"git+https://github.com/vext01/")
+            || source.starts_with("\"git+https://github.com/ltratt/")
+            || source.starts_with("\"git+https://github.com/ptersilie/")
         {
             continue;
         }

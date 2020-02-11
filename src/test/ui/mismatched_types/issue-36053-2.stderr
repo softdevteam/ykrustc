@@ -1,4 +1,4 @@
-error[E0599]: no method named `count` found for type `std::iter::Filter<std::iter::Fuse<std::iter::Once<&str>>, [closure@$DIR/issue-36053-2.rs:7:39: 7:53]>` in the current scope
+error[E0599]: no method named `count` found for struct `std::iter::Filter<std::iter::Fuse<std::iter::Once<&str>>, [closure@$DIR/issue-36053-2.rs:7:39: 7:53]>` in the current scope
   --> $DIR/issue-36053-2.rs:7:55
    |
 LL |     once::<&str>("str").fuse().filter(|a: &str| true).count();
@@ -18,4 +18,5 @@ LL |     once::<&str>("str").fuse().filter(|a: &str| true).count();
 
 error: aborting due to 2 previous errors
 
-For more information about this error, try `rustc --explain E0599`.
+Some errors have detailed explanations: E0599, E0631.
+For more information about an error, try `rustc --explain E0599`.

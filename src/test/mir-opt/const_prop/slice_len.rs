@@ -6,7 +6,8 @@ fn main() {
 // START rustc.main.ConstProp.before.mir
 //  bb0: {
 //      ...
-//      _4 = &(promoted[0]: [u32; 3]);
+//      _9 = const main::promoted[0];
+//      _4 = _9;
 //      _3 = _4;
 //      _2 = move _3 as &[u32] (Pointer(Unsize));
 //      ...
@@ -24,8 +25,9 @@ fn main() {
 // START rustc.main.ConstProp.after.mir
 //  bb0: {
 //      ...
-//      _4 = const Scalar(AllocId(0).0x0) : &[u32; 3];
-//      _3 = const Scalar(AllocId(0).0x0) : &[u32; 3];
+//      _9 = const main::promoted[0];
+//      _4 = _9;
+//      _3 = _4;
 //      _2 = move _3 as &[u32] (Pointer(Unsize));
 //      ...
 //      _6 = const 1usize;

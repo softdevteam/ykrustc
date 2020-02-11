@@ -50,6 +50,9 @@ is a bug or not, feel free to file a bug anyway.
 **If you believe reporting your bug publicly represents a security risk to Rust users,
 please follow our [instructions for reporting security vulnerabilities](https://www.rust-lang.org/policies/security)**.
 
+If you're using the nightly channel, please check if the bug exists in the
+latest toolchain before filing your bug. It might be fixed already.
+
 If you have the chance, before reporting a bug, please [search existing
 issues](https://github.com/rust-lang/rust/search?q=&type=Issues&utf8=%E2%9C%93),
 as it's possible that someone else has already reported your error. This doesn't
@@ -105,7 +108,7 @@ contributions to the compiler and the standard library. It also lists some
 really useful commands to the build system (`./x.py`), which could save you a
 lot of time.
 
-[rustcguidebuild]: https://rust-lang.github.io/rustc-guide/how-to-build-and-run.html
+[rustcguidebuild]: https://rust-lang.github.io/rustc-guide/building/how-to-build-and-run.html
 
 ## Pull Requests
 [pull-requests]: #pull-requests
@@ -150,13 +153,13 @@ All pull requests are reviewed by another person. We have a bot,
 request.
 
 If you want to request that a specific person reviews your pull request,
-you can add an `r?` to the message. For example, [Steve][steveklabnik] usually reviews
+you can add an `r?` to the pull request description. For example, [Steve][steveklabnik] usually reviews
 documentation changes. So if you were to make a documentation change, add
 
     r? @steveklabnik
 
-to the end of the message, and @rust-highfive will assign [@steveklabnik][steveklabnik] instead
-of a random person. This is entirely optional.
+to the end of the pull request description, and [@rust-highfive][rust-highfive] will assign
+[@steveklabnik][steveklabnik] instead of a random person. This is entirely optional.
 
 After someone has reviewed your pull request, they will leave an annotation
 on the pull request with an `r+`. It will look something like this:
@@ -367,7 +370,7 @@ labels to triage issues:
   to fix the issue.
 
 * The dark blue **final-comment-period** label marks bugs that are using the
-  RFC signoff functionality of [rfcbot][rfcbot] and are currently in the final
+  RFC signoff functionality of [rfcbot] and are currently in the final
   comment period.
 
 * Red, **I**-prefixed labels indicate the **importance** of the issue. The
@@ -385,7 +388,7 @@ labels to triage issues:
   label.
 
 * The gray **proposed-final-comment-period** label marks bugs that are using
-  the RFC signoff functionality of [rfcbot][rfcbot] and are currently awaiting
+  the RFC signoff functionality of [rfcbot] and are currently awaiting
   signoff of all team members in order to enter the final comment period.
 
 * Pink, **regression**-prefixed labels track regressions from stable to the

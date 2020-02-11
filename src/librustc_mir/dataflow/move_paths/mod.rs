@@ -1,10 +1,10 @@
 use core::slice::Iter;
 use rustc::mir::*;
-use rustc::ty::{Ty, TyCtxt};
-use rustc::util::nodemap::FxHashMap;
-use rustc_index::vec::{Enumerated, Idx, IndexVec};
+use rustc::ty::{ParamEnv, Ty, TyCtxt};
+use rustc_data_structures::fx::FxHashMap;
+use rustc_index::vec::{Enumerated, IndexVec};
+use rustc_span::Span;
 use smallvec::SmallVec;
-use syntax_pos::Span;
 
 use std::fmt;
 use std::ops::{Index, IndexMut};
@@ -246,10 +246,7 @@ impl MovePathLookup {
     // unknown place, but will rather return the nearest available
     // parent.
     pub fn find(&self, place: PlaceRef<'_, '_>) -> LookupResult {
-        let mut result = match place.base {
-            PlaceBase::Local(local) => self.locals[*local],
-            PlaceBase::Static(..) => return LookupResult::Parent(None),
-        };
+        let mut result = self.locals[place.local];
 
         for elem in place.projection.iter() {
             if let Some(&subpath) = self.projections.get(&(result, elem.lift())) {
@@ -281,9 +278,6 @@ pub struct IllegalMoveOrigin<'tcx> {
 
 #[derive(Debug)]
 pub(crate) enum IllegalMoveOriginKind<'tcx> {
-    /// Illegal move due to attempt to move from `static` variable.
-    Static,
-
     /// Illegal move due to attempt to move from behind a reference.
     BorrowedContent {
         /// The place the reference refers to: if erroneous code was trying to
@@ -318,8 +312,9 @@ impl<'tcx> MoveData<'tcx> {
     pub fn gather_moves(
         body: &Body<'tcx>,
         tcx: TyCtxt<'tcx>,
+        param_env: ParamEnv<'tcx>,
     ) -> Result<Self, (Self, Vec<(Place<'tcx>, MoveError<'tcx>)>)> {
-        builder::gather_moves(body, tcx)
+        builder::gather_moves(body, tcx, param_env)
     }
 
     /// For the move path `mpi`, returns the root local variable (if any) that starts the path.

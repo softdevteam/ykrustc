@@ -1,36 +1,39 @@
+use crate::abi::FnAbi;
 use crate::attributes;
+use crate::debuginfo;
 use crate::llvm;
 use crate::llvm_util;
-use crate::debuginfo;
 use crate::value::Value;
 use rustc::dep_graph::DepGraphSafe;
-use rustc::hir;
 
 use crate::type_::Type;
 use rustc_codegen_ssa::traits::*;
 
-use rustc_data_structures::base_n;
-use rustc_data_structures::small_c_str::SmallCStr;
+use crate::callee::get_fn;
+use rustc::bug;
 use rustc::mir::mono::CodegenUnit;
-use rustc::session::config::{self, DebugInfo, OutputType};
+use rustc::session::config::{self, CFGuard, DebugInfo, OutputType};
 use rustc::session::Session;
 use rustc::ty::layout::{
-    LayoutError, LayoutOf, PointeeInfo, Size, TyLayout, VariantIdx, HasParamEnv
+    FnAbiExt, HasParamEnv, LayoutError, LayoutOf, PointeeInfo, Size, TyLayout, VariantIdx,
 };
-use rustc::ty::{self, Ty, TyCtxt, Instance};
-use rustc::util::nodemap::FxHashMap;
-use rustc_target::spec::{HasTargetSpec, Target};
+use rustc::ty::{self, Instance, Ty, TyCtxt};
 use rustc_codegen_ssa::base::wants_msvc_seh;
-use crate::callee::get_fn;
+use rustc_data_structures::base_n;
+use rustc_data_structures::const_cstr;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::small_c_str::SmallCStr;
+use rustc_hir::{def_id::LOCAL_CRATE, Unsafety};
+use rustc_target::spec::{HasTargetSpec, Target};
 
-use std::ffi::CStr;
+use crate::abi::Abi;
+use rustc_span::source_map::{Span, DUMMY_SP};
+use rustc_span::symbol::Symbol;
 use std::cell::{Cell, RefCell};
+use std::ffi::CStr;
 use std::iter;
 use std::str;
 use std::sync::Arc;
-use syntax::symbol::Symbol;
-use syntax::source_map::{DUMMY_SP, Span};
-use crate::abi::Abi;
 
 use rustc::sir::SirCx;
 
@@ -105,12 +108,10 @@ pub fn get_reloc_model(sess: &Session) -> llvm::RelocMode {
         None => &sess.target.target.options.relocation_model[..],
     };
 
-    match crate::back::write::RELOC_MODEL_ARGS.iter().find(
-        |&&arg| arg.0 == reloc_model_arg) {
+    match crate::back::write::RELOC_MODEL_ARGS.iter().find(|&&arg| arg.0 == reloc_model_arg) {
         Some(x) => x.1,
         _ => {
-            sess.err(&format!("{:?} is not a valid relocation mode",
-                              reloc_model_arg));
+            sess.err(&format!("{:?} is not a valid relocation mode", reloc_model_arg));
             sess.abort_if_errors();
             bug!();
         }
@@ -123,12 +124,10 @@ fn get_tls_model(sess: &Session) -> llvm::ThreadLocalMode {
         None => &sess.target.target.options.tls_model[..],
     };
 
-    match crate::back::write::TLS_MODEL_ARGS.iter().find(
-        |&&arg| arg.0 == tls_model_arg) {
+    match crate::back::write::TLS_MODEL_ARGS.iter().find(|&&arg| arg.0 == tls_model_arg) {
         Some(x) => x.1,
         _ => {
-            sess.err(&format!("{:?} is not a valid TLS model",
-                              tls_model_arg));
+            sess.err(&format!("{:?} is not a valid TLS model", tls_model_arg));
             sess.abort_if_errors();
             bug!();
         }
@@ -136,9 +135,7 @@ fn get_tls_model(sess: &Session) -> llvm::ThreadLocalMode {
 }
 
 fn is_any_library(sess: &Session) -> bool {
-    sess.crate_types.borrow().iter().any(|ty| {
-        *ty != config::CrateType::Executable
-    })
+    sess.crate_types.borrow().iter().any(|ty| *ty != config::CrateType::Executable)
 }
 
 pub fn is_pie_binary(sess: &Session) -> bool {
@@ -148,6 +145,10 @@ pub fn is_pie_binary(sess: &Session) -> bool {
 fn strip_function_ptr_alignment(data_layout: String) -> String {
     // FIXME: Make this more general.
     data_layout.replace("-Fi8-", "-")
+}
+
+fn strip_x86_address_spaces(data_layout: String) -> String {
+    data_layout.replace("-p270:32:32-p271:32:32-p272:64:64-", "-")
 }
 
 pub unsafe fn create_module(
@@ -163,6 +164,11 @@ pub unsafe fn create_module(
     if llvm_util::get_major_version() < 9 {
         target_data_layout = strip_function_ptr_alignment(target_data_layout);
     }
+    if llvm_util::get_major_version() < 10 {
+        if sess.target.target.arch == "x86" || sess.target.target.arch == "x86_64" {
+            target_data_layout = strip_x86_address_spaces(target_data_layout);
+        }
+    }
 
     // Ensure the data-layout values hardcoded remain the defaults.
     if sess.target.target.options.is_builtin {
@@ -172,7 +178,8 @@ pub unsafe fn create_module(
 
         let llvm_data_layout = llvm::LLVMGetDataLayout(llmod);
         let llvm_data_layout = str::from_utf8(CStr::from_ptr(llvm_data_layout).to_bytes())
-            .ok().expect("got a non-UTF8 data-layout from LLVM");
+            .ok()
+            .expect("got a non-UTF8 data-layout from LLVM");
 
         // Unfortunately LLVM target specs change over time, and right now we
         // don't have proper support to work with any more than one
@@ -193,11 +200,13 @@ pub unsafe fn create_module(
         let custom_llvm_used = cfg_llvm_root.trim() != "";
 
         if !custom_llvm_used && target_data_layout != llvm_data_layout {
-            bug!("data-layout for builtin `{}` target, `{}`, \
+            bug!(
+                "data-layout for builtin `{}` target, `{}`, \
                   differs from LLVM default, `{}`",
-                 sess.target.target.llvm_target,
-                 target_data_layout,
-                 llvm_data_layout);
+                sess.target.target.llvm_target,
+                target_data_layout,
+                llvm_data_layout
+            );
         }
     }
 
@@ -220,6 +229,16 @@ pub unsafe fn create_module(
     if !sess.needs_plt() {
         let avoid_plt = "RtLibUseGOT\0".as_ptr().cast();
         llvm::LLVMRustAddModuleFlag(llmod, avoid_plt, 1);
+    }
+
+    // Set module flags to enable Windows Control Flow Guard (/guard:cf) metadata
+    // only (`cfguard=1`) or metadata and checks (`cfguard=2`).
+    match sess.opts.debugging_opts.control_flow_guard {
+        CFGuard::Disabled => {}
+        CFGuard::NoChecks => {
+            llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 1)
+        }
+        CFGuard::Checks => llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 2),
     }
 
     llmod
@@ -284,9 +303,7 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 
         let dbg_cx = if tcx.sess.opts.debuginfo != DebugInfo::None {
             let dctx = debuginfo::CrateDebugContext::new(llmod);
-            debuginfo::metadata::compile_unit_metadata(tcx,
-                                                       &codegen_unit.name().as_str(),
-                                                       &dctx);
+            debuginfo::metadata::compile_unit_metadata(tcx, &codegen_unit.name().as_str(), &dctx);
             Some(dctx)
         } else {
             None
@@ -296,9 +313,9 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 
         // If we are putting SIR into the binary or dumping it to disk, then create a SirCx. Also
         // skip generating SIR for build scripts (we will never trace them).
-        let sir_cx = if (tcx.sess.opts.cg.tracer.encode_sir() ||
-            tcx.sess.opts.output_types.contains_key(&OutputType::YkSir)) &&
-            tcx.crate_name(hir::def_id::LOCAL_CRATE).as_str() != "build_script_build"
+        let sir_cx = if (tcx.sess.opts.cg.tracer.encode_sir()
+            || tcx.sess.opts.output_types.contains_key(&OutputType::YkSir))
+            && tcx.crate_name(LOCAL_CRATE).as_str() != "build_script_build"
         {
             Some(SirCx::new())
         } else {
@@ -340,8 +357,9 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 }
 
 impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
-    fn vtables(&self) -> &RefCell<FxHashMap<(Ty<'tcx>,
-                                Option<ty::PolyExistentialTraitRef<'tcx>>), &'ll Value>>
+    fn vtables(
+        &self,
+    ) -> &RefCell<FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), &'ll Value>>
     {
         &self.vtables
     }
@@ -376,20 +394,19 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         // CRT's custom personality function, which forces LLVM to consider
         // landing pads as "landing pads for SEH".
         if let Some(llpersonality) = self.eh_personality.get() {
-            return llpersonality
+            return llpersonality;
         }
         let tcx = self.tcx;
         let llfn = match tcx.lang_items().eh_personality() {
-            Some(def_id) if !wants_msvc_seh(self.sess()) => {
-                self.get_fn_addr(
-                    ty::Instance::resolve(
-                        tcx,
-                        ty::ParamEnv::reveal_all(),
-                        def_id,
-                        tcx.intern_substs(&[]),
-                    ).unwrap()
+            Some(def_id) if !wants_msvc_seh(self.sess()) => self.get_fn_addr(
+                ty::Instance::resolve(
+                    tcx,
+                    ty::ParamEnv::reveal_all(),
+                    def_id,
+                    tcx.intern_substs(&[]),
                 )
-            }
+                .unwrap(),
+            ),
             _ => {
                 let name = if wants_msvc_seh(self.sess()) {
                     "__CxxFrameHandler3"
@@ -422,7 +439,8 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                     ty::ParamEnv::reveal_all(),
                     def_id,
                     tcx.intern_substs(&[]),
-                ).unwrap()
+                )
+                .unwrap(),
             );
             unwresume.set(Some(llfn));
             return llfn;
@@ -432,11 +450,12 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             iter::once(tcx.mk_mut_ptr(tcx.types.u8)),
             tcx.types.never,
             false,
-            hir::Unsafety::Unsafe,
-            Abi::C
+            Unsafety::Unsafe,
+            Abi::C,
         ));
 
-        let llfn = self.declare_fn("rust_eh_unwind_resume", sig);
+        let fn_abi = FnAbi::of_fn_ptr(self, sig, &[]);
+        let llfn = self.declare_fn("rust_eh_unwind_resume", &fn_abi);
         attributes::apply_target_cpu_attr(self, llfn);
         unwresume.set(Some(llfn));
         llfn
@@ -469,15 +488,11 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     fn create_used_variable(&self) {
         let name = const_cstr!("llvm.used");
         let section = const_cstr!("llvm.metadata");
-        let array = self.const_array(
-            &self.type_ptr_to(self.type_i8()),
-            &*self.used_statics.borrow()
-        );
+        let array =
+            self.const_array(&self.type_ptr_to(self.type_i8()), &*self.used_statics.borrow());
 
         unsafe {
-            let g = llvm::LLVMAddGlobal(self.llmod,
-                                        self.val_ty(array),
-                                        name.as_ptr());
+            let g = llvm::LLVMAddGlobal(self.llmod, self.val_ty(array), name.as_ptr());
             llvm::LLVMSetInitializer(g, array);
             llvm::LLVMRustSetLinkage(g, llvm::Linkage::AppendingLinkage);
             llvm::LLVMSetSection(g, section.as_ptr());
@@ -486,7 +501,10 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
     /// If there is a SirCx, then call the function `f` passing in a mutable reference to the
     /// SirCx. Otherwise do nothing.
-    fn with_sir_cx_mut<F>(&self, f: F) where F: Fn(&mut SirCx) {
+    fn with_sir_cx_mut<F>(&self, f: F)
+    where
+        F: Fn(&mut SirCx),
+    {
         if let Some(cx) = self.sir_cx.borrow_mut().as_mut() {
             f(cx);
         }
@@ -503,7 +521,10 @@ impl CodegenCx<'b, 'tcx> {
     }
 
     fn insert_intrinsic(
-        &self, name: &'static str, args: Option<&[&'b llvm::Type]>, ret: &'b llvm::Type
+        &self,
+        name: &'static str,
+        args: Option<&[&'b llvm::Type]>,
+        ret: &'b llvm::Type,
     ) -> &'b llvm::Value {
         let fn_ty = if let Some(args) = args {
             self.type_func(args, ret)
@@ -516,10 +537,7 @@ impl CodegenCx<'b, 'tcx> {
         f
     }
 
-    fn declare_intrinsic(
-        &self,
-        key: &str
-    ) -> Option<&'b Value> {
+    fn declare_intrinsic(&self, key: &str) -> Option<&'b Value> {
         macro_rules! ifn {
             ($name:expr, fn() -> $ret:expr) => (
                 if key == $name {
@@ -744,13 +762,13 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.ctpop.i64", fn(t_i64) -> t_i64);
         ifn!("llvm.ctpop.i128", fn(t_i128) -> t_i128);
 
-        ifn!("llvm.ctlz.i8", fn(t_i8 , i1) -> t_i8);
+        ifn!("llvm.ctlz.i8", fn(t_i8, i1) -> t_i8);
         ifn!("llvm.ctlz.i16", fn(t_i16, i1) -> t_i16);
         ifn!("llvm.ctlz.i32", fn(t_i32, i1) -> t_i32);
         ifn!("llvm.ctlz.i64", fn(t_i64, i1) -> t_i64);
         ifn!("llvm.ctlz.i128", fn(t_i128, i1) -> t_i128);
 
-        ifn!("llvm.cttz.i8", fn(t_i8 , i1) -> t_i8);
+        ifn!("llvm.cttz.i8", fn(t_i8, i1) -> t_i8);
         ifn!("llvm.cttz.i16", fn(t_i16, i1) -> t_i16);
         ifn!("llvm.cttz.i32", fn(t_i32, i1) -> t_i32);
         ifn!("llvm.cttz.i64", fn(t_i64, i1) -> t_i64);
@@ -779,41 +797,41 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.fshr.i64", fn(t_i64, t_i64, t_i64) -> t_i64);
         ifn!("llvm.fshr.i128", fn(t_i128, t_i128, t_i128) -> t_i128);
 
-        ifn!("llvm.sadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
-        ifn!("llvm.sadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
-        ifn!("llvm.sadd.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
-        ifn!("llvm.sadd.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
-        ifn!("llvm.sadd.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
+        ifn!("llvm.sadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct! {t_i8, i1});
+        ifn!("llvm.sadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct! {t_i16, i1});
+        ifn!("llvm.sadd.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct! {t_i32, i1});
+        ifn!("llvm.sadd.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct! {t_i64, i1});
+        ifn!("llvm.sadd.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct! {t_i128, i1});
 
-        ifn!("llvm.uadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
-        ifn!("llvm.uadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
-        ifn!("llvm.uadd.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
-        ifn!("llvm.uadd.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
-        ifn!("llvm.uadd.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
+        ifn!("llvm.uadd.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct! {t_i8, i1});
+        ifn!("llvm.uadd.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct! {t_i16, i1});
+        ifn!("llvm.uadd.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct! {t_i32, i1});
+        ifn!("llvm.uadd.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct! {t_i64, i1});
+        ifn!("llvm.uadd.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct! {t_i128, i1});
 
-        ifn!("llvm.ssub.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
-        ifn!("llvm.ssub.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
-        ifn!("llvm.ssub.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
-        ifn!("llvm.ssub.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
-        ifn!("llvm.ssub.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
+        ifn!("llvm.ssub.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct! {t_i8, i1});
+        ifn!("llvm.ssub.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct! {t_i16, i1});
+        ifn!("llvm.ssub.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct! {t_i32, i1});
+        ifn!("llvm.ssub.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct! {t_i64, i1});
+        ifn!("llvm.ssub.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct! {t_i128, i1});
 
-        ifn!("llvm.usub.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
-        ifn!("llvm.usub.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
-        ifn!("llvm.usub.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
-        ifn!("llvm.usub.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
-        ifn!("llvm.usub.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
+        ifn!("llvm.usub.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct! {t_i8, i1});
+        ifn!("llvm.usub.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct! {t_i16, i1});
+        ifn!("llvm.usub.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct! {t_i32, i1});
+        ifn!("llvm.usub.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct! {t_i64, i1});
+        ifn!("llvm.usub.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct! {t_i128, i1});
 
-        ifn!("llvm.smul.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
-        ifn!("llvm.smul.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
-        ifn!("llvm.smul.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
-        ifn!("llvm.smul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
-        ifn!("llvm.smul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
+        ifn!("llvm.smul.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct! {t_i8, i1});
+        ifn!("llvm.smul.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct! {t_i16, i1});
+        ifn!("llvm.smul.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct! {t_i32, i1});
+        ifn!("llvm.smul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct! {t_i64, i1});
+        ifn!("llvm.smul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct! {t_i128, i1});
 
-        ifn!("llvm.umul.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct!{t_i8, i1});
-        ifn!("llvm.umul.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct!{t_i16, i1});
-        ifn!("llvm.umul.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct!{t_i32, i1});
-        ifn!("llvm.umul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct!{t_i64, i1});
-        ifn!("llvm.umul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct!{t_i128, i1});
+        ifn!("llvm.umul.with.overflow.i8", fn(t_i8, t_i8) -> mk_struct! {t_i8, i1});
+        ifn!("llvm.umul.with.overflow.i16", fn(t_i16, t_i16) -> mk_struct! {t_i16, i1});
+        ifn!("llvm.umul.with.overflow.i32", fn(t_i32, t_i32) -> mk_struct! {t_i32, i1});
+        ifn!("llvm.umul.with.overflow.i64", fn(t_i64, t_i64) -> mk_struct! {t_i64, i1});
+        ifn!("llvm.umul.with.overflow.i128", fn(t_i128, t_i128) -> mk_struct! {t_i128, i1});
 
         ifn!("llvm.sadd.sat.i8", fn(t_i8, t_i8) -> t_i8);
         ifn!("llvm.sadd.sat.i16", fn(t_i16, t_i16) -> t_i16);
@@ -839,7 +857,7 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.usub.sat.i64", fn(t_i64, t_i64) -> t_i64);
         ifn!("llvm.usub.sat.i128", fn(t_i128, t_i128) -> t_i128);
 
-        ifn!("llvm.lifetime.start", fn(t_i64,i8p) -> void);
+        ifn!("llvm.lifetime.start", fn(t_i64, i8p) -> void);
         ifn!("llvm.lifetime.end", fn(t_i64, i8p) -> void);
 
         ifn!("llvm.expect.i1", fn(i1, i1) -> i1);
@@ -907,12 +925,13 @@ impl LayoutOf for CodegenCx<'ll, 'tcx> {
     }
 
     fn spanned_layout_of(&self, ty: Ty<'tcx>, span: Span) -> Self::TyLayout {
-        self.tcx.layout_of(ty::ParamEnv::reveal_all().and(ty))
-            .unwrap_or_else(|e| if let LayoutError::SizeOverflow(_) = e {
+        self.tcx.layout_of(ty::ParamEnv::reveal_all().and(ty)).unwrap_or_else(|e| {
+            if let LayoutError::SizeOverflow(_) = e {
                 self.sess().span_fatal(span, &e.to_string())
             } else {
                 bug!("failed to get layout for `{}`: {}", ty, e)
-            })
+            }
+        })
     }
 }
 

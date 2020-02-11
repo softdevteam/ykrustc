@@ -1,7 +1,6 @@
 // compile-flags: -C opt-level=0
 use std::env;
 
-#[no_sw_trace]
 fn main() {
     let x = env::args().count();
     let mut res = 42;

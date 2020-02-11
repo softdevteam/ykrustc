@@ -5,8 +5,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use test::ColorConfig;
 use crate::util::PathBufExt;
+use test::ColorConfig;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
@@ -14,10 +14,7 @@ pub enum Mode {
     RunFail,
     RunPassValgrind,
     Pretty,
-    DebugInfoCdb,
-    DebugInfoGdbLldb,
-    DebugInfoGdb,
-    DebugInfoLldb,
+    DebugInfo,
     Codegen,
     Rustdoc,
     CodegenUnits,
@@ -33,13 +30,9 @@ pub enum Mode {
 impl Mode {
     pub fn disambiguator(self) -> &'static str {
         // Pretty-printing tests could run concurrently, and if they do,
-        // they need to keep their output segregated. Same is true for debuginfo tests that
-        // can be run on cdb, gdb, and lldb.
+        // they need to keep their output segregated.
         match self {
             Pretty => ".pretty",
-            DebugInfoCdb => ".cdb",
-            DebugInfoGdb => ".gdb",
-            DebugInfoLldb => ".lldb",
             _ => "",
         }
     }
@@ -53,10 +46,7 @@ impl FromStr for Mode {
             "run-fail" => Ok(RunFail),
             "run-pass-valgrind" => Ok(RunPassValgrind),
             "pretty" => Ok(Pretty),
-            "debuginfo-cdb" => Ok(DebugInfoCdb),
-            "debuginfo-gdb+lldb" => Ok(DebugInfoGdbLldb),
-            "debuginfo-lldb" => Ok(DebugInfoLldb),
-            "debuginfo-gdb" => Ok(DebugInfoGdb),
+            "debuginfo" => Ok(DebugInfo),
             "codegen" => Ok(Codegen),
             "rustdoc" => Ok(Rustdoc),
             "codegen-units" => Ok(CodegenUnits),
@@ -79,10 +69,7 @@ impl fmt::Display for Mode {
             RunFail => "run-fail",
             RunPassValgrind => "run-pass-valgrind",
             Pretty => "pretty",
-            DebugInfoCdb => "debuginfo-cdb",
-            DebugInfoGdbLldb => "debuginfo-gdb+lldb",
-            DebugInfoGdb => "debuginfo-gdb",
-            DebugInfoLldb => "debuginfo-lldb",
+            DebugInfo => "debuginfo",
             Codegen => "codegen",
             Rustdoc => "rustdoc",
             CodegenUnits => "codegen-units",
@@ -103,7 +90,6 @@ pub enum PassMode {
     Check,
     Build,
     Run,
-    RunFail,
 }
 
 impl FromStr for PassMode {
@@ -124,10 +110,16 @@ impl fmt::Display for PassMode {
             PassMode::Check => "check",
             PassMode::Build => "build",
             PassMode::Run => "run",
-            PassMode::RunFail => "run-fail",
         };
         fmt::Display::fmt(s, f)
     }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub enum FailMode {
+    Check,
+    Build,
+    Run,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +142,29 @@ impl CompareMode {
             "polonius" => CompareMode::Polonius,
             x => panic!("unknown --compare-mode option: {}", x),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Debugger {
+    Cdb,
+    Gdb,
+    Lldb,
+}
+
+impl Debugger {
+    fn to_str(&self) -> &'static str {
+        match self {
+            Debugger::Cdb => "cdb",
+            Debugger::Gdb => "gdb",
+            Debugger::Lldb => "lldb",
+        }
+    }
+}
+
+impl fmt::Display for Debugger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.to_str(), f)
     }
 }
 
@@ -205,6 +220,9 @@ pub struct Config {
 
     /// The test mode, compile-fail, run-fail, ui
     pub mode: Mode,
+
+    /// The debugger to use in debuginfo mode. Unset otherwise.
+    pub debugger: Option<Debugger>,
 
     /// Run ignored tests
     pub run_ignored: bool,
@@ -304,7 +322,6 @@ pub struct Config {
     pub ar: String,
     pub linker: Option<String>,
     pub llvm_components: String,
-    pub llvm_cxxflags: String,
 
     /// Path to a NodeJS executable. Used for JS doctests, emscripten and WASM tests
     pub nodejs: Option<String>,
@@ -360,9 +377,11 @@ pub fn output_testname_unique(
     revision: Option<&str>,
 ) -> PathBuf {
     let mode = config.compare_mode.as_ref().map_or("", |m| m.to_str());
+    let debugger = config.debugger.as_ref().map_or("", |m| m.to_str());
     PathBuf::from(&testpaths.file.file_stem().unwrap())
         .with_extra_extension(revision.unwrap_or(""))
         .with_extra_extension(mode)
+        .with_extra_extension(debugger)
 }
 
 /// Absolute path to the directory where all output for the given

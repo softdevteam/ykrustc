@@ -1,14 +1,13 @@
 use crate::infer::canonical::{
-    Canonicalized, CanonicalizedQueryResponse, OriginalQueryValues,
-    QueryRegionConstraints,
+    Canonicalized, CanonicalizedQueryResponse, OriginalQueryValues, QueryRegionConstraints,
 };
 use crate::infer::{InferCtxt, InferOk};
-use std::fmt;
-use std::rc::Rc;
 use crate::traits::query::Fallible;
 use crate::traits::ObligationCause;
 use crate::ty::fold::TypeFoldable;
 use crate::ty::{ParamEnvAnd, TyCtxt};
+use std::fmt;
+use std::rc::Rc;
 
 pub mod ascribe_user_type;
 pub mod custom;
@@ -19,6 +18,8 @@ pub mod outlives;
 pub mod prove_predicate;
 use self::prove_predicate::ProvePredicate;
 pub mod subtype;
+
+pub use crate::traits::types::query::type_op::*;
 
 /// "Type ops" are used in NLL to perform some particular action and
 /// extract out the resulting region constraints (or an error if it
@@ -102,9 +103,7 @@ pub trait QueryTypeOp<'tcx>: fmt::Debug + Sized + TypeFoldable<'tcx> + 'tcx {
         // fulfill them. We do this via a (recursive) query.
         for obligation in obligations {
             let () = ProvePredicate::fully_perform_into(
-                obligation
-                    .param_env
-                    .and(ProvePredicate::new(obligation.predicate)),
+                obligation.param_env.and(ProvePredicate::new(obligation.predicate)),
                 infcx,
                 output_query_region_constraints,
             )?;
@@ -129,11 +128,8 @@ where
 
         // Promote the final query-region-constraints into a
         // (optional) ref-counted vector:
-        let opt_qrc = if region_constraints.is_empty() {
-            None
-        } else {
-            Some(Rc::new(region_constraints))
-        };
+        let opt_qrc =
+            if region_constraints.is_empty() { None } else { Some(Rc::new(region_constraints)) };
 
         Ok((r, opt_qrc))
     }

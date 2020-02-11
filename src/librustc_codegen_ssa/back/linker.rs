@@ -1,6 +1,6 @@
-use super::symbol_export;
-use super::command::Command;
 use super::archive;
+use super::command::Command;
+use super::symbol_export;
 
 use rustc_data_structures::fx::FxHashMap;
 use std::ffi::{OsStr, OsString};
@@ -9,18 +9,18 @@ use std::io::prelude::*;
 use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
 
-use rustc::hir::def_id::{LOCAL_CRATE, CrateNum};
 use rustc::middle::dependency_format::Linkage;
+use rustc::session::config::{self, CrateType, DebugInfo, LinkerPluginLto, Lto, OptLevel};
 use rustc::session::Session;
-use rustc::session::config::{self, CrateType, OptLevel, DebugInfo,
-                             LinkerPluginLto, Lto};
 use rustc::ty::TyCtxt;
-use rustc_target::spec::{LinkerFlavor, LldFlavor};
+use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_serialize::{json, Encoder};
-use syntax::symbol::Symbol;
+use rustc_span::symbol::Symbol;
+use rustc_target::spec::{LinkerFlavor, LldFlavor};
 
 /// For all the linkers we support, and information they might
 /// need out of the shared crate context before we get rid of it.
+#[derive(RustcEncodable, RustcDecodable)]
 pub struct LinkerInfo {
     exports: FxHashMap<CrateType, Vec<String>>,
 }
@@ -28,9 +28,13 @@ pub struct LinkerInfo {
 impl LinkerInfo {
     pub fn new(tcx: TyCtxt<'_>) -> LinkerInfo {
         LinkerInfo {
-            exports: tcx.sess.crate_types.borrow().iter().map(|&c| {
-                (c, exported_symbols(tcx, c))
-            }).collect(),
+            exports: tcx
+                .sess
+                .crate_types
+                .borrow()
+                .iter()
+                .map(|&c| (c, exported_symbols(tcx, c)))
+                .collect(),
         }
     }
 
@@ -40,54 +44,37 @@ impl LinkerInfo {
         sess: &'a Session,
         flavor: LinkerFlavor,
         target_cpu: &'a str,
-    ) -> Box<dyn Linker+'a> {
+    ) -> Box<dyn Linker + 'a> {
         match flavor {
-            LinkerFlavor::Lld(LldFlavor::Link) |
-            LinkerFlavor::Msvc => {
-                Box::new(MsvcLinker {
-                    cmd,
-                    sess,
-                    info: self
-                }) as Box<dyn Linker>
+            LinkerFlavor::Lld(LldFlavor::Link) | LinkerFlavor::Msvc => {
+                Box::new(MsvcLinker { cmd, sess, info: self }) as Box<dyn Linker>
             }
-            LinkerFlavor::Em =>  {
-                Box::new(EmLinker {
-                    cmd,
-                    sess,
-                    info: self
-                }) as Box<dyn Linker>
-            }
-            LinkerFlavor::Gcc =>  {
-                Box::new(GccLinker {
-                    cmd,
-                    sess,
-                    info: self,
-                    hinted_static: false,
-                    is_ld: false,
-                    target_cpu,
-                }) as Box<dyn Linker>
-            }
+            LinkerFlavor::Em => Box::new(EmLinker { cmd, sess, info: self }) as Box<dyn Linker>,
+            LinkerFlavor::Gcc => Box::new(GccLinker {
+                cmd,
+                sess,
+                info: self,
+                hinted_static: false,
+                is_ld: false,
+                target_cpu,
+            }) as Box<dyn Linker>,
 
-            LinkerFlavor::Lld(LldFlavor::Ld) |
-            LinkerFlavor::Lld(LldFlavor::Ld64) |
-            LinkerFlavor::Ld => {
-                Box::new(GccLinker {
-                    cmd,
-                    sess,
-                    info: self,
-                    hinted_static: false,
-                    is_ld: true,
-                    target_cpu,
-                }) as Box<dyn Linker>
-            }
+            LinkerFlavor::Lld(LldFlavor::Ld)
+            | LinkerFlavor::Lld(LldFlavor::Ld64)
+            | LinkerFlavor::Ld => Box::new(GccLinker {
+                cmd,
+                sess,
+                info: self,
+                hinted_static: false,
+                is_ld: true,
+                target_cpu,
+            }) as Box<dyn Linker>,
 
             LinkerFlavor::Lld(LldFlavor::Wasm) => {
                 Box::new(WasmLd::new(cmd, sess, self)) as Box<dyn Linker>
             }
 
-            LinkerFlavor::PtxLinker => {
-                Box::new(PtxLinker { cmd, sess }) as Box<dyn Linker>
-            }
+            LinkerFlavor::PtxLinker => Box::new(PtxLinker { cmd, sess }) as Box<dyn Linker>,
         }
     }
 }
@@ -119,6 +106,7 @@ pub trait Linker {
     fn no_relro(&mut self);
     fn optimize(&mut self);
     fn pgo_gen(&mut self);
+    fn control_flow_guard(&mut self);
     fn debuginfo(&mut self);
     fn no_default_libraries(&mut self);
     fn build_dylib(&mut self, out_filename: &Path);
@@ -148,7 +136,8 @@ impl<'a> GccLinker<'a> {
     ///
     /// These arguments need to be prepended with `-Wl`, when a GCC-style linker is used.
     fn linker_arg<S>(&mut self, arg: S) -> &mut Self
-        where S: AsRef<OsStr>
+    where
+        S: AsRef<OsStr>,
     {
         if !self.is_ld {
             let mut os = OsString::from("-Wl,");
@@ -169,8 +158,7 @@ impl<'a> GccLinker<'a> {
         // * On OSX they have their own linker, not binutils'
         // * For WebAssembly the only functional linker is LLD, which doesn't
         //   support hint flags
-        !self.sess.target.target.options.is_like_osx &&
-            self.sess.target.target.arch != "wasm32"
+        !self.sess.target.target.options.is_like_osx && self.sess.target.target.arch != "wasm32"
     }
 
     // Some platforms take hints about whether a library is static or dynamic.
@@ -178,7 +166,9 @@ impl<'a> GccLinker<'a> {
     // was flagged "static" (most defaults are dynamic) to ensure that if
     // libfoo.a and libfoo.so both exist that the right one is chosen.
     fn hint_static(&mut self) {
-        if !self.takes_hints() { return }
+        if !self.takes_hints() {
+            return;
+        }
         if !self.hinted_static {
             self.linker_arg("-Bstatic");
             self.hinted_static = true;
@@ -186,7 +176,9 @@ impl<'a> GccLinker<'a> {
     }
 
     fn hint_dynamic(&mut self) {
-        if !self.takes_hints() { return }
+        if !self.takes_hints() {
+            return;
+        }
         if self.hinted_static {
             self.linker_arg("-Bdynamic");
             self.hinted_static = false;
@@ -224,18 +216,44 @@ impl<'a> Linker for GccLinker<'a> {
         self.hint_static();
         self.cmd.arg(format!("-l{}", lib));
     }
-    fn link_rlib(&mut self, lib: &Path) { self.hint_static(); self.cmd.arg(lib); }
-    fn include_path(&mut self, path: &Path) { self.cmd.arg("-L").arg(path); }
-    fn framework_path(&mut self, path: &Path) { self.cmd.arg("-F").arg(path); }
-    fn output_filename(&mut self, path: &Path) { self.cmd.arg("-o").arg(path); }
-    fn add_object(&mut self, path: &Path) { self.cmd.arg(path); }
-    fn position_independent_executable(&mut self) { self.cmd.arg("-pie"); }
-    fn no_position_independent_executable(&mut self) { self.cmd.arg("-no-pie"); }
-    fn full_relro(&mut self) { self.linker_arg("-zrelro"); self.linker_arg("-znow"); }
-    fn partial_relro(&mut self) { self.linker_arg("-zrelro"); }
-    fn no_relro(&mut self) { self.linker_arg("-znorelro"); }
-    fn build_static_executable(&mut self) { self.cmd.arg("-static"); }
-    fn args(&mut self, args: &[String]) { self.cmd.args(args); }
+    fn link_rlib(&mut self, lib: &Path) {
+        self.hint_static();
+        self.cmd.arg(lib);
+    }
+    fn include_path(&mut self, path: &Path) {
+        self.cmd.arg("-L").arg(path);
+    }
+    fn framework_path(&mut self, path: &Path) {
+        self.cmd.arg("-F").arg(path);
+    }
+    fn output_filename(&mut self, path: &Path) {
+        self.cmd.arg("-o").arg(path);
+    }
+    fn add_object(&mut self, path: &Path) {
+        self.cmd.arg(path);
+    }
+    fn position_independent_executable(&mut self) {
+        self.cmd.arg("-pie");
+    }
+    fn no_position_independent_executable(&mut self) {
+        self.cmd.arg("-no-pie");
+    }
+    fn full_relro(&mut self) {
+        self.linker_arg("-zrelro");
+        self.linker_arg("-znow");
+    }
+    fn partial_relro(&mut self) {
+        self.linker_arg("-zrelro");
+    }
+    fn no_relro(&mut self) {
+        self.linker_arg("-znorelro");
+    }
+    fn build_static_executable(&mut self) {
+        self.cmd.arg("-static");
+    }
+    fn args(&mut self, args: &[String]) {
+        self.cmd.args(args);
+    }
 
     fn link_rust_dylib(&mut self, lib: Symbol, _path: &Path) {
         self.hint_dynamic();
@@ -310,18 +328,23 @@ impl<'a> Linker for GccLinker<'a> {
     }
 
     fn optimize(&mut self) {
-        if !self.sess.target.target.options.linker_is_gnu { return }
+        if !self.sess.target.target.options.linker_is_gnu {
+            return;
+        }
 
         // GNU-style linkers support optimization with -O. GNU ld doesn't
         // need a numeric argument, but other linkers do.
-        if self.sess.opts.optimize == config::OptLevel::Default ||
-           self.sess.opts.optimize == config::OptLevel::Aggressive {
+        if self.sess.opts.optimize == config::OptLevel::Default
+            || self.sess.opts.optimize == config::OptLevel::Aggressive
+        {
             self.linker_arg("-O1");
         }
     }
 
     fn pgo_gen(&mut self) {
-        if !self.sess.target.target.options.linker_is_gnu { return }
+        if !self.sess.target.target.options.linker_is_gnu {
+            return;
+        }
 
         // If we're doing PGO generation stuff and on a GNU-like linker, use the
         // "-u" flag to properly pull in the profiler runtime bits.
@@ -336,6 +359,10 @@ impl<'a> Linker for GccLinker<'a> {
         // the overhead of the initialization should be minor.
         self.cmd.arg("-u");
         self.cmd.arg("__llvm_profile_runtime");
+    }
+
+    fn control_flow_guard(&mut self) {
+        self.sess.warn("Windows Control Flow Guard is not supported by this linker.");
     }
 
     fn debuginfo(&mut self) {
@@ -377,17 +404,17 @@ impl<'a> Linker for GccLinker<'a> {
                 // The output filename already contains `dll_suffix` so
                 // the resulting import library will have a name in the
                 // form of libfoo.dll.a
-                let implib_name = out_filename
-                    .file_name()
-                    .and_then(|file| file.to_str())
-                    .map(|file| format!("{}{}{}",
-                         self.sess.target.target.options.staticlib_prefix,
-                         file,
-                         self.sess.target.target.options.staticlib_suffix));
+                let implib_name =
+                    out_filename.file_name().and_then(|file| file.to_str()).map(|file| {
+                        format!(
+                            "{}{}{}",
+                            self.sess.target.target.options.staticlib_prefix,
+                            file,
+                            self.sess.target.target.options.staticlib_suffix
+                        )
+                    });
                 if let Some(implib_name) = implib_name {
-                    let implib = out_filename
-                        .parent()
-                        .map(|dir| dir.join(&implib_name));
+                    let implib = out_filename.parent().map(|dir| dir.join(&implib_name));
                     if let Some(implib) = implib {
                         self.linker_arg(&format!("--out-implib,{}", (*implib).to_str().unwrap()));
                     }
@@ -398,7 +425,9 @@ impl<'a> Linker for GccLinker<'a> {
 
     fn export_symbols(&mut self, tmpdir: &Path, crate_type: CrateType) {
         // Symbol visibility in object files typically takes care of this.
-        if crate_type == CrateType::Executable {
+        if crate_type == CrateType::Executable
+            && self.sess.target.target.options.override_export_symbols.is_none()
+        {
             return;
         }
 
@@ -411,7 +440,7 @@ impl<'a> Linker for GccLinker<'a> {
         }
 
         if crate_type == CrateType::ProcMacro {
-            return
+            return;
         }
 
         let mut arg = OsString::new();
@@ -512,13 +541,19 @@ impl<'a> Linker for GccLinker<'a> {
 pub struct MsvcLinker<'a> {
     cmd: Command,
     sess: &'a Session,
-    info: &'a LinkerInfo
+    info: &'a LinkerInfo,
 }
 
 impl<'a> Linker for MsvcLinker<'a> {
-    fn link_rlib(&mut self, lib: &Path) { self.cmd.arg(lib); }
-    fn add_object(&mut self, path: &Path) { self.cmd.arg(path); }
-    fn args(&mut self, args: &[String]) { self.cmd.args(args); }
+    fn link_rlib(&mut self, lib: &Path) {
+        self.cmd.arg(lib);
+    }
+    fn add_object(&mut self, path: &Path) {
+        self.cmd.arg(path);
+    }
+    fn args(&mut self, args: &[String]) {
+        self.cmd.args(args);
+    }
 
     fn build_dylib(&mut self, out_filename: &Path) {
         self.cmd.arg("/DLL");
@@ -630,6 +665,10 @@ impl<'a> Linker for MsvcLinker<'a> {
         // Nothing needed here.
     }
 
+    fn control_flow_guard(&mut self) {
+        self.cmd.arg("/guard:cf");
+    }
+
     fn debuginfo(&mut self) {
         // This will cause the Microsoft linker to generate a PDB file
         // from the CodeView line tables in the object files.
@@ -647,10 +686,10 @@ impl<'a> Linker for MsvcLinker<'a> {
                             arg.push(path);
                             self.cmd.arg(arg);
                         }
-                    },
+                    }
                     Err(err) => {
                         self.sess.warn(&format!("error enumerating natvis directory: {}", err));
-                    },
+                    }
                 }
             }
         }
@@ -668,9 +707,7 @@ impl<'a> Linker for MsvcLinker<'a> {
     // crates. Upstream rlibs may be linked statically to this dynamic library,
     // in which case they may continue to transitively be used and hence need
     // their symbols exported.
-    fn export_symbols(&mut self,
-                      tmpdir: &Path,
-                      crate_type: CrateType) {
+    fn export_symbols(&mut self, tmpdir: &Path, crate_type: CrateType) {
         // Symbol visibility takes care of this typically
         if crate_type == CrateType::Executable {
             return;
@@ -737,7 +774,7 @@ impl<'a> Linker for MsvcLinker<'a> {
 pub struct EmLinker<'a> {
     cmd: Command,
     sess: &'a Session,
-    info: &'a LinkerInfo
+    info: &'a LinkerInfo,
 }
 
 impl<'a> Linker for EmLinker<'a> {
@@ -824,7 +861,7 @@ impl<'a> Linker for EmLinker<'a> {
             OptLevel::Default => "-O2",
             OptLevel::Aggressive => "-O3",
             OptLevel::Size => "-Os",
-            OptLevel::SizeMin => "-Oz"
+            OptLevel::SizeMin => "-Oz",
         });
         // Unusable until https://github.com/rust-lang/rust/issues/38454 is resolved
         self.cmd.args(&["--memory-init-file", "0"]);
@@ -834,12 +871,16 @@ impl<'a> Linker for EmLinker<'a> {
         // noop, but maybe we need something like the gnu linker?
     }
 
+    fn control_flow_guard(&mut self) {
+        self.sess.warn("Windows Control Flow Guard is not supported by this linker.");
+    }
+
     fn debuginfo(&mut self) {
         // Preserve names or generate source maps depending on debug info
         self.cmd.arg(match self.sess.opts.debuginfo {
             DebugInfo::None => "-g0",
             DebugInfo::Limited => "-g3",
-            DebugInfo::Full => "-g4"
+            DebugInfo::Full => "-g4",
         });
     }
 
@@ -869,9 +910,7 @@ impl<'a> Linker for EmLinker<'a> {
             let mut encoder = json::Encoder::new(&mut encoded);
             let res = encoder.emit_seq(symbols.len(), |encoder| {
                 for (i, sym) in symbols.iter().enumerate() {
-                    encoder.emit_seq_elt(i, |encoder| {
-                        encoder.emit_str(&("_".to_owned() + sym))
-                    })?;
+                    encoder.emit_seq_elt(i, |encoder| encoder.emit_str(&("_".to_owned() + sym)))?;
                 }
                 Ok(())
             });
@@ -935,8 +974,8 @@ impl<'a> WasmLd<'a> {
         //
         // * `--export=*tls*` - when `#[thread_local]` symbols are used these
         //   symbols are how the TLS segments are initialized and configured.
-        let atomics = sess.opts.cg.target_feature.contains("+atomics") ||
-            sess.target.target.options.features.contains("+atomics");
+        let atomics = sess.opts.cg.target_feature.contains("+atomics")
+            || sess.target.target.options.features.contains("+atomics");
         if atomics {
             cmd.arg("--shared-memory");
             cmd.arg("--max-memory=1073741824");
@@ -981,20 +1020,15 @@ impl<'a> Linker for WasmLd<'a> {
         self.cmd.arg(path);
     }
 
-    fn position_independent_executable(&mut self) {
-    }
+    fn position_independent_executable(&mut self) {}
 
-    fn full_relro(&mut self) {
-    }
+    fn full_relro(&mut self) {}
 
-    fn partial_relro(&mut self) {
-    }
+    fn partial_relro(&mut self) {}
 
-    fn no_relro(&mut self) {
-    }
+    fn no_relro(&mut self) {}
 
-    fn build_static_executable(&mut self) {
-    }
+    fn build_static_executable(&mut self) {}
 
     fn args(&mut self, args: &[String]) {
         self.cmd.args(args);
@@ -1029,18 +1063,19 @@ impl<'a> Linker for WasmLd<'a> {
             // Currently LLD doesn't support `Os` and `Oz`, so pass through `O2`
             // instead.
             OptLevel::Size => "-O2",
-            OptLevel::SizeMin => "-O2"
+            OptLevel::SizeMin => "-O2",
         });
     }
 
-    fn pgo_gen(&mut self) {
+    fn pgo_gen(&mut self) {}
+
+    fn debuginfo(&mut self) {}
+
+    fn control_flow_guard(&mut self) {
+        self.sess.warn("Windows Control Flow Guard is not supported by this linker.");
     }
 
-    fn debuginfo(&mut self) {
-    }
-
-    fn no_default_libraries(&mut self) {
-    }
+    fn no_default_libraries(&mut self) {}
 
     fn build_dylib(&mut self, _out_filename: &Path) {
         self.cmd.arg("--no-entry");
@@ -1059,11 +1094,9 @@ impl<'a> Linker for WasmLd<'a> {
         self.cmd.arg("--export=__data_end");
     }
 
-    fn subsystem(&mut self, _subsystem: &str) {
-    }
+    fn subsystem(&mut self, _subsystem: &str) {}
 
-    fn no_position_independent_executable(&mut self) {
-    }
+    fn no_position_independent_executable(&mut self) {}
 
     fn finalize(&mut self) -> Command {
         ::std::mem::replace(&mut self.cmd, Command::new(""))
@@ -1080,7 +1113,7 @@ impl<'a> Linker for WasmLd<'a> {
 
 fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
     if let Some(ref exports) = tcx.sess.target.target.options.override_export_symbols {
-        return exports.clone()
+        return exports.clone();
     }
 
     let mut symbols = Vec::new();
@@ -1088,18 +1121,20 @@ fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
     let export_threshold = symbol_export::crates_export_threshold(&[crate_type]);
     for &(symbol, level) in tcx.exported_symbols(LOCAL_CRATE).iter() {
         if level.is_below_threshold(export_threshold) {
-            symbols.push(symbol.symbol_name(tcx).to_string());
+            symbols.push(symbol_export::symbol_name_for_instance_in_crate(
+                tcx,
+                symbol,
+                LOCAL_CRATE,
+            ));
         }
     }
 
     let formats = tcx.dependency_formats(LOCAL_CRATE);
-    let deps = formats.iter().filter_map(|(t, list)| {
-        if *t == crate_type {
-            Some(list)
-        } else {
-            None
-        }
-    }).next().unwrap();
+    let deps = formats
+        .iter()
+        .filter_map(|(t, list)| if *t == crate_type { Some(list) } else { None })
+        .next()
+        .unwrap();
 
     for (index, dep_format) in deps.iter().enumerate() {
         let cnum = CrateNum::new(index + 1);
@@ -1111,12 +1146,7 @@ fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
                     continue;
                 }
 
-                // FIXME rust-lang/rust#64319, rust-lang/rust#64872:
-                // We want to block export of generics from dylibs,
-                // but we must fix rust-lang/rust#65890 before we can
-                // do that robustly.
-
-                symbols.push(symbol.symbol_name(tcx).to_string());
+                symbols.push(symbol_export::symbol_name_for_instance_in_crate(tcx, symbol, cnum));
             }
         }
     }
@@ -1160,9 +1190,9 @@ impl<'a> Linker for PtxLinker<'a> {
         match self.sess.lto() {
             Lto::Thin | Lto::Fat | Lto::ThinLocal => {
                 self.cmd.arg("-Olto");
-            },
+            }
 
-            Lto::No => { },
+            Lto::No => {}
         };
     }
 
@@ -1174,7 +1204,7 @@ impl<'a> Linker for PtxLinker<'a> {
         // Provide the linker with fallback to internal `target-cpu`.
         self.cmd.arg("--fallback-arch").arg(match self.sess.opts.cg.target_cpu {
             Some(ref s) => s,
-            None => &self.sess.target.target.options.cpu
+            None => &self.sess.target.target.options.cpu,
         });
 
         ::std::mem::replace(&mut self.cmd, Command::new(""))
@@ -1204,48 +1234,37 @@ impl<'a> Linker for PtxLinker<'a> {
         panic!("frameworks not supported")
     }
 
-    fn position_independent_executable(&mut self) {
+    fn position_independent_executable(&mut self) {}
+
+    fn full_relro(&mut self) {}
+
+    fn partial_relro(&mut self) {}
+
+    fn no_relro(&mut self) {}
+
+    fn build_static_executable(&mut self) {}
+
+    fn gc_sections(&mut self, _keep_metadata: bool) {}
+
+    fn pgo_gen(&mut self) {}
+
+    fn no_default_libraries(&mut self) {}
+
+    fn control_flow_guard(&mut self) {
+        self.sess.warn("Windows Control Flow Guard is not supported by this linker.");
     }
 
-    fn full_relro(&mut self) {
-    }
+    fn build_dylib(&mut self, _out_filename: &Path) {}
 
-    fn partial_relro(&mut self) {
-    }
+    fn export_symbols(&mut self, _tmpdir: &Path, _crate_type: CrateType) {}
 
-    fn no_relro(&mut self) {
-    }
+    fn subsystem(&mut self, _subsystem: &str) {}
 
-    fn build_static_executable(&mut self) {
-    }
+    fn no_position_independent_executable(&mut self) {}
 
-    fn gc_sections(&mut self, _keep_metadata: bool) {
-    }
+    fn group_start(&mut self) {}
 
-    fn pgo_gen(&mut self) {
-    }
+    fn group_end(&mut self) {}
 
-    fn no_default_libraries(&mut self) {
-    }
-
-    fn build_dylib(&mut self, _out_filename: &Path) {
-    }
-
-    fn export_symbols(&mut self, _tmpdir: &Path, _crate_type: CrateType) {
-    }
-
-    fn subsystem(&mut self, _subsystem: &str) {
-    }
-
-    fn no_position_independent_executable(&mut self) {
-    }
-
-    fn group_start(&mut self) {
-    }
-
-    fn group_end(&mut self) {
-    }
-
-    fn linker_plugin_lto(&mut self) {
-    }
+    fn linker_plugin_lto(&mut self) {}
 }

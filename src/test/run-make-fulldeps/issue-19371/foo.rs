@@ -2,14 +2,14 @@
 
 extern crate rustc;
 extern crate rustc_interface;
-extern crate rustc_driver as _;
-extern crate syntax;
+extern crate rustc_driver;
+extern crate rustc_span;
 
 use rustc::session::DiagnosticOutput;
 use rustc::session::config::{Input, Options,
                              OutputType, OutputTypes};
 use rustc_interface::interface;
-use syntax::source_map::FileName;
+use rustc_span::source_map::FileName;
 
 use std::path::PathBuf;
 
@@ -60,10 +60,17 @@ fn compile(code: String, output: PathBuf, sysroot: PathBuf) {
         crate_name: None,
         lint_caps: Default::default(),
         register_lints: None,
+        override_queries: None,
+        registry: rustc_driver::diagnostics_registry(),
     };
 
     interface::run_compiler(config, |compiler| {
         // This runs all the passes prior to linking, too.
-        compiler.link().ok();
+        let linker = compiler.enter(|queries| {
+            queries.linker()
+        });
+        if let Ok(linker) = linker {
+            linker.link();
+        }
     });
 }

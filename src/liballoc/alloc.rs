@@ -24,24 +24,21 @@ extern "Rust" {
     #[rustc_allocator_nounwind]
     fn __rust_dealloc(ptr: *mut u8, size: usize, align: usize);
     #[rustc_allocator_nounwind]
-    fn __rust_realloc(ptr: *mut u8,
-                      old_size: usize,
-                      align: usize,
-                      new_size: usize) -> *mut u8;
+    fn __rust_realloc(ptr: *mut u8, old_size: usize, align: usize, new_size: usize) -> *mut u8;
     #[rustc_allocator_nounwind]
     fn __rust_alloc_zeroed(size: usize, align: usize) -> *mut u8;
 }
 
 /// The global memory allocator.
 ///
-/// This type implements the [`Alloc`] trait by forwarding calls
+/// This type implements the [`AllocRef`] trait by forwarding calls
 /// to the allocator registered with the `#[global_allocator]` attribute
 /// if there is one, or the `std` crate’s default.
 ///
 /// Note: while this type is unstable, the functionality it provides can be
 /// accessed through the [free functions in `alloc`](index.html#functions).
 ///
-/// [`Alloc`]: trait.Alloc.html
+/// [`AllocRef`]: trait.AllocRef.html
 #[unstable(feature = "allocator_api", issue = "32838")]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct Global;
@@ -53,14 +50,14 @@ pub struct Global;
 /// if there is one, or the `std` crate’s default.
 ///
 /// This function is expected to be deprecated in favor of the `alloc` method
-/// of the [`Global`] type when it and the [`Alloc`] trait become stable.
+/// of the [`Global`] type when it and the [`AllocRef`] trait become stable.
 ///
 /// # Safety
 ///
 /// See [`GlobalAlloc::alloc`].
 ///
 /// [`Global`]: struct.Global.html
-/// [`Alloc`]: trait.Alloc.html
+/// [`AllocRef`]: trait.AllocRef.html
 /// [`GlobalAlloc::alloc`]: trait.GlobalAlloc.html#tymethod.alloc
 ///
 /// # Examples
@@ -91,14 +88,14 @@ pub unsafe fn alloc(layout: Layout) -> *mut u8 {
 /// if there is one, or the `std` crate’s default.
 ///
 /// This function is expected to be deprecated in favor of the `dealloc` method
-/// of the [`Global`] type when it and the [`Alloc`] trait become stable.
+/// of the [`Global`] type when it and the [`AllocRef`] trait become stable.
 ///
 /// # Safety
 ///
 /// See [`GlobalAlloc::dealloc`].
 ///
 /// [`Global`]: struct.Global.html
-/// [`Alloc`]: trait.Alloc.html
+/// [`AllocRef`]: trait.AllocRef.html
 /// [`GlobalAlloc::dealloc`]: trait.GlobalAlloc.html#tymethod.dealloc
 #[stable(feature = "global_alloc", since = "1.28.0")]
 #[inline]
@@ -113,14 +110,14 @@ pub unsafe fn dealloc(ptr: *mut u8, layout: Layout) {
 /// if there is one, or the `std` crate’s default.
 ///
 /// This function is expected to be deprecated in favor of the `realloc` method
-/// of the [`Global`] type when it and the [`Alloc`] trait become stable.
+/// of the [`Global`] type when it and the [`AllocRef`] trait become stable.
 ///
 /// # Safety
 ///
 /// See [`GlobalAlloc::realloc`].
 ///
 /// [`Global`]: struct.Global.html
-/// [`Alloc`]: trait.Alloc.html
+/// [`AllocRef`]: trait.AllocRef.html
 /// [`GlobalAlloc::realloc`]: trait.GlobalAlloc.html#method.realloc
 #[stable(feature = "global_alloc", since = "1.28.0")]
 #[inline]
@@ -135,14 +132,14 @@ pub unsafe fn realloc(ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 
 /// if there is one, or the `std` crate’s default.
 ///
 /// This function is expected to be deprecated in favor of the `alloc_zeroed` method
-/// of the [`Global`] type when it and the [`Alloc`] trait become stable.
+/// of the [`Global`] type when it and the [`AllocRef`] trait become stable.
 ///
 /// # Safety
 ///
 /// See [`GlobalAlloc::alloc_zeroed`].
 ///
 /// [`Global`]: struct.Global.html
-/// [`Alloc`]: trait.Alloc.html
+/// [`AllocRef`]: trait.AllocRef.html
 /// [`GlobalAlloc::alloc_zeroed`]: trait.GlobalAlloc.html#method.alloc_zeroed
 ///
 /// # Examples
@@ -166,7 +163,7 @@ pub unsafe fn alloc_zeroed(layout: Layout) -> *mut u8 {
 }
 
 #[unstable(feature = "allocator_api", issue = "32838")]
-unsafe impl Alloc for Global {
+unsafe impl AllocRef for Global {
     #[inline]
     unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
         NonNull::new(alloc(layout)).ok_or(AllocErr)
@@ -178,12 +175,12 @@ unsafe impl Alloc for Global {
     }
 
     #[inline]
-    unsafe fn realloc(&mut self,
-                      ptr: NonNull<u8>,
-                      layout: Layout,
-                      new_size: usize)
-                      -> Result<NonNull<u8>, AllocErr>
-    {
+    unsafe fn realloc(
+        &mut self,
+        ptr: NonNull<u8>,
+        layout: Layout,
+        new_size: usize,
+    ) -> Result<NonNull<u8>, AllocErr> {
         NonNull::new(realloc(ptr.as_ptr(), layout, new_size)).ok_or(AllocErr)
     }
 
@@ -204,11 +201,7 @@ unsafe fn exchange_malloc(size: usize, align: usize) -> *mut u8 {
     } else {
         let layout = Layout::from_size_align_unchecked(size, align);
         let ptr = alloc(layout);
-        if !ptr.is_null() {
-            ptr
-        } else {
-            handle_alloc_error(layout)
-        }
+        if !ptr.is_null() { ptr } else { handle_alloc_error(layout) }
     }
 }
 

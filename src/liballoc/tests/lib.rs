@@ -2,6 +2,7 @@
 #![feature(box_syntax)]
 #![feature(drain_filter)]
 #![feature(exact_size_is_empty)]
+#![feature(map_first_last)]
 #![feature(new_uninit)]
 #![feature(pattern)]
 #![feature(trusted_len)]
@@ -10,9 +11,10 @@
 #![feature(associated_type_bounds)]
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(binary_heap_drain_sorted)]
+#![feature(vec_remove_item)]
 
-use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 mod arc;
 mod binary_heap;
@@ -26,8 +28,8 @@ mod rc;
 mod slice;
 mod str;
 mod string;
-mod vec_deque;
 mod vec;
+mod vec_deque;
 
 fn hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();

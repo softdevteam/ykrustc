@@ -6,22 +6,24 @@ use self::UndoLog::*;
 use super::unify_key;
 use super::{MiscVariable, RegionVariableOrigin, SubregionOrigin};
 
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_index::vec::IndexVec;
-use rustc_data_structures::sync::Lrc;
-use rustc_data_structures::unify as ut;
-use crate::hir::def_id::DefId;
 use crate::ty::ReStatic;
 use crate::ty::{self, Ty, TyCtxt};
 use crate::ty::{ReLateBound, ReVar};
 use crate::ty::{Region, RegionVid};
-use syntax_pos::Span;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::sync::Lrc;
+use rustc_data_structures::unify as ut;
+use rustc_hir::def_id::DefId;
+use rustc_index::vec::IndexVec;
+use rustc_span::Span;
 
 use std::collections::BTreeMap;
-use std::{cmp, fmt, mem};
 use std::ops::Range;
+use std::{cmp, fmt, mem};
 
 mod leak_check;
+
+pub use rustc::infer::types::MemberConstraint;
 
 #[derive(Default)]
 pub struct RegionConstraintCollector<'tcx> {
@@ -145,43 +147,6 @@ impl Constraint<'_> {
     }
 }
 
-/// Requires that `region` must be equal to one of the regions in `choice_regions`.
-/// We often denote this using the syntax:
-///
-/// ```
-/// R0 member of [O1..On]
-/// ```
-#[derive(Debug, Clone, HashStable)]
-pub struct MemberConstraint<'tcx> {
-    /// The `DefId` of the opaque type causing this constraint: used for error reporting.
-    pub opaque_type_def_id: DefId,
-
-    /// The span where the hidden type was instantiated.
-    pub definition_span: Span,
-
-    /// The hidden type in which `member_region` appears: used for error reporting.
-    pub hidden_ty: Ty<'tcx>,
-
-    /// The region `R0`.
-    pub member_region: Region<'tcx>,
-
-    /// The options `O1..On`.
-    pub choice_regions: Lrc<Vec<Region<'tcx>>>,
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for MemberConstraint<'tcx> {
-        opaque_type_def_id, definition_span, hidden_ty, member_region, choice_regions
-    }
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for MemberConstraint<'a> {
-        type Lifted = MemberConstraint<'tcx>;
-        opaque_type_def_id, definition_span, hidden_ty, member_region, choice_regions
-    }
-}
-
 /// `VerifyGenericBound(T, _, R, RS)`: the parameter type `T` (or
 /// associated type) must outlive the region `R`. `T` is known to
 /// outlive `RS`. Therefore, verify that `R <= RS[i]` for some
@@ -195,17 +160,10 @@ pub struct Verify<'tcx> {
     pub bound: VerifyBound<'tcx>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, TypeFoldable)]
 pub enum GenericKind<'tcx> {
     Param(ty::ParamTy),
     Projection(ty::ProjectionTy<'tcx>),
-}
-
-EnumTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for GenericKind<'tcx> {
-        (GenericKind::Param)(a),
-        (GenericKind::Projection)(a),
-    }
 }
 
 /// Describes the things that some `GenericKind` value `G` is known to
@@ -274,6 +232,9 @@ pub enum VerifyBound<'tcx> {
     /// This is used when we can establish that `G: R` -- therefore,
     /// if `R: min`, then by transitivity `G: min`.
     OutlivedBy(Region<'tcx>),
+
+    /// Given a region `R`, true if it is `'empty`.
+    IsEmpty,
 
     /// Given a set of bounds `B`, expands to the function:
     ///
@@ -366,24 +327,15 @@ pub struct TaintDirections {
 
 impl TaintDirections {
     pub fn incoming() -> Self {
-        TaintDirections {
-            incoming: true,
-            outgoing: false,
-        }
+        TaintDirections { incoming: true, outgoing: false }
     }
 
     pub fn outgoing() -> Self {
-        TaintDirections {
-            incoming: false,
-            outgoing: true,
-        }
+        TaintDirections { incoming: false, outgoing: true }
     }
 
     pub fn both() -> Self {
-        TaintDirections {
-            incoming: true,
-            outgoing: true,
-        }
+        TaintDirections { incoming: true, outgoing: true }
     }
 }
 
@@ -549,17 +501,12 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
     ) -> RegionVid {
         let vid = self.var_infos.push(RegionVariableInfo { origin, universe });
 
-        let u_vid = self
-            .unification_table
-            .new_key(unify_key::RegionVidKey { min_vid: vid });
+        let u_vid = self.unification_table.new_key(unify_key::RegionVidKey { min_vid: vid });
         assert_eq!(vid, u_vid);
         if self.in_snapshot() {
             self.undo_log.push(AddVar(vid));
         }
-        debug!(
-            "created new region variable {:?} in {:?} with origin {:?}",
-            vid, universe, origin
-        );
+        debug!("created new region variable {:?} in {:?} with origin {:?}", vid, universe, origin);
         return vid;
     }
 
@@ -621,10 +568,7 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
 
     fn add_constraint(&mut self, constraint: Constraint<'tcx>, origin: SubregionOrigin<'tcx>) {
         // cannot add constraints once regions are resolved
-        debug!(
-            "RegionConstraintCollector: add_constraint({:?})",
-            constraint
-        );
+        debug!("RegionConstraintCollector: add_constraint({:?})", constraint);
 
         // never overwrite an existing (constraint, origin) - only insert one if it isn't
         // present in the map yet. This prevents origins from outside the snapshot being
@@ -707,9 +651,8 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
             definition_span,
             hidden_ty,
             member_region,
-            choice_regions: choice_regions.clone()
+            choice_regions: choice_regions.clone(),
         });
-
     }
 
     pub fn make_subregion(
@@ -726,12 +669,7 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
 
         match (sub, sup) {
             (&ReLateBound(..), _) | (_, &ReLateBound(..)) => {
-                span_bug!(
-                    origin.span(),
-                    "cannot relate bound region: {:?} <= {:?}",
-                    sub,
-                    sup
-                );
+                span_bug!(origin.span(), "cannot relate bound region: {:?} <= {:?}", sub, sup);
             }
             (_, &ReStatic) => {
                 // all regions are subregions of static, so we can ignore this
@@ -759,12 +697,7 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
         sub: Region<'tcx>,
         bound: VerifyBound<'tcx>,
     ) {
-        self.add_verify(Verify {
-            kind,
-            origin,
-            region: sub,
-            bound,
-        });
+        self.add_verify(Verify { kind, origin, region: sub, bound });
     }
 
     pub fn lub_regions(
@@ -862,10 +795,10 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
         match *region {
             ty::ReScope(..)
             | ty::ReStatic
-            | ty::ReEmpty
             | ty::ReErased
             | ty::ReFree(..)
             | ty::ReEarlyBound(..) => ty::UniverseIndex::ROOT,
+            ty::ReEmpty(ui) => ui,
             ty::RePlaceholder(placeholder) => placeholder.universe,
             ty::ReClosureBound(vid) | ty::ReVar(vid) => self.var_universe(vid),
             ty::ReLateBound(..) => bug!("universe(): encountered bound region {:?}", region),
@@ -877,9 +810,12 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
         mark: &RegionSnapshot,
     ) -> (Range<RegionVid>, Vec<RegionVariableOrigin>) {
         let range = self.unification_table.vars_since_snapshot(&mark.region_snapshot);
-        (range.clone(), (range.start.index()..range.end.index()).map(|index| {
-            self.var_infos[ty::RegionVid::from(index)].origin.clone()
-        }).collect())
+        (
+            range.clone(),
+            (range.start.index()..range.end.index())
+                .map(|index| self.var_infos[ty::RegionVid::from(index)].origin)
+                .collect(),
+        )
     }
 
     /// See [`RegionInference::region_constraints_added_in_snapshot`].
@@ -889,7 +825,8 @@ impl<'tcx> RegionConstraintCollector<'tcx> {
             .map(|&elt| match elt {
                 AddConstraint(constraint) => Some(constraint.involves_placeholders()),
                 _ => None,
-            }).max()
+            })
+            .max()
             .unwrap_or(None)
     }
 }
@@ -933,6 +870,7 @@ impl<'tcx> VerifyBound<'tcx> {
             VerifyBound::IfEq(..) => false,
             VerifyBound::OutlivedBy(ty::ReStatic) => true,
             VerifyBound::OutlivedBy(_) => false,
+            VerifyBound::IsEmpty => false,
             VerifyBound::AnyBound(bs) => bs.iter().any(|b| b.must_hold()),
             VerifyBound::AllBounds(bs) => bs.iter().all(|b| b.must_hold()),
         }
@@ -941,7 +879,7 @@ impl<'tcx> VerifyBound<'tcx> {
     pub fn cannot_hold(&self) -> bool {
         match self {
             VerifyBound::IfEq(_, b) => b.cannot_hold(),
-            VerifyBound::OutlivedBy(ty::ReEmpty) => true,
+            VerifyBound::IsEmpty => false,
             VerifyBound::OutlivedBy(_) => false,
             VerifyBound::AnyBound(bs) => bs.iter().all(|b| b.cannot_hold()),
             VerifyBound::AllBounds(bs) => bs.iter().any(|b| b.cannot_hold()),
@@ -973,15 +911,10 @@ impl<'tcx> RegionConstraintData<'tcx> {
     /// Returns `true` if this region constraint data contains no constraints, and `false`
     /// otherwise.
     pub fn is_empty(&self) -> bool {
-        let RegionConstraintData {
-            constraints,
-            member_constraints,
-            verifys,
-            givens,
-        } = self;
-        constraints.is_empty() &&
-            member_constraints.is_empty() &&
-            verifys.is_empty() &&
-            givens.is_empty()
+        let RegionConstraintData { constraints, member_constraints, verifys, givens } = self;
+        constraints.is_empty()
+            && member_constraints.is_empty()
+            && verifys.is_empty()
+            && givens.is_empty()
     }
 }

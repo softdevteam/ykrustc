@@ -1,18 +1,19 @@
 //! Validity checking for weak lang items
 
-use crate::session::config;
 use crate::middle::lang_items;
+use crate::session::config;
 
+use crate::hir::map::Map;
+use crate::ty::TyCtxt;
 use rustc_data_structures::fx::FxHashSet;
+use rustc_errors::struct_span_err;
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
+use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_span::symbol::{sym, Symbol};
+use rustc_span::Span;
 use rustc_target::spec::PanicStrategy;
 use syntax::ast;
-use syntax::symbol::{Symbol, sym};
-use syntax_pos::Span;
-use crate::hir::def_id::DefId;
-use crate::hir::intravisit::{Visitor, NestedVisitorMap};
-use crate::hir::intravisit;
-use crate::hir;
-use crate::ty::TyCtxt;
 
 macro_rules! weak_lang_items {
     ($($name:ident, $item:ident, $sym:ident;)*) => (
@@ -122,19 +123,24 @@ impl<'a, 'tcx> Context<'a, 'tcx> {
                 self.items.missing.push(lang_items::$item);
             }
         } else)* {
-            span_err!(self.tcx.sess, span, E0264,
-                      "unknown external lang item: `{}`",
-                      name);
+            struct_span_err!(
+                self.tcx.sess, span, E0264,
+                "unknown external lang item: `{}`",
+                name
+            )
+            .emit();
         }
     }
 }
 
 impl<'a, 'tcx, 'v> Visitor<'v> for Context<'a, 'tcx> {
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'v> {
+    type Map = Map<'v>;
+
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, Map<'v>> {
         NestedVisitorMap::None
     }
 
-    fn visit_foreign_item(&mut self, i: &hir::ForeignItem) {
+    fn visit_foreign_item(&mut self, i: &hir::ForeignItem<'_>) {
         if let Some((lang_item, _)) = lang_items::extract(&i.attrs) {
             self.register(lang_item, i.span);
         }

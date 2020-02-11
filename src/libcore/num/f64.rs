@@ -7,64 +7,64 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use crate::convert::FloatToInt;
 #[cfg(not(test))]
 use crate::intrinsics;
-
 use crate::mem;
 use crate::num::FpCategory;
 
 /// The radix or base of the internal representation of `f64`.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const RADIX: u32 = 2;
+pub const RADIX: u32 = f64::RADIX;
 
 /// Number of significant digits in base 2.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MANTISSA_DIGITS: u32 = 53;
+pub const MANTISSA_DIGITS: u32 = f64::MANTISSA_DIGITS;
 /// Approximate number of significant digits in base 10.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const DIGITS: u32 = 15;
+pub const DIGITS: u32 = f64::DIGITS;
 
 /// [Machine epsilon] value for `f64`.
 ///
-/// This is the difference between `1.0` and the next largest representable number.
+/// This is the difference between `1.0` and the next larger representable number.
 ///
 /// [Machine epsilon]: https://en.wikipedia.org/wiki/Machine_epsilon
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const EPSILON: f64 = 2.2204460492503131e-16_f64;
+pub const EPSILON: f64 = f64::EPSILON;
 
 /// Smallest finite `f64` value.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN: f64 = -1.7976931348623157e+308_f64;
+pub const MIN: f64 = f64::MIN;
 /// Smallest positive normal `f64` value.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN_POSITIVE: f64 = 2.2250738585072014e-308_f64;
+pub const MIN_POSITIVE: f64 = f64::MIN_POSITIVE;
 /// Largest finite `f64` value.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAX: f64 = 1.7976931348623157e+308_f64;
+pub const MAX: f64 = f64::MAX;
 
 /// One greater than the minimum possible normal power of 2 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN_EXP: i32 = -1021;
+pub const MIN_EXP: i32 = f64::MIN_EXP;
 /// Maximum possible power of 2 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAX_EXP: i32 = 1024;
+pub const MAX_EXP: i32 = f64::MAX_EXP;
 
 /// Minimum possible normal power of 10 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN_10_EXP: i32 = -307;
+pub const MIN_10_EXP: i32 = f64::MIN_10_EXP;
 /// Maximum possible power of 10 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAX_10_EXP: i32 = 308;
+pub const MAX_10_EXP: i32 = f64::MAX_10_EXP;
 
 /// Not a Number (NaN).
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const NAN: f64 = 0.0_f64 / 0.0_f64;
+pub const NAN: f64 = f64::NAN;
 /// Infinity (∞).
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const INFINITY: f64 = 1.0_f64 / 0.0_f64;
-/// Negative infinity (-∞).
+pub const INFINITY: f64 = f64::INFINITY;
+/// Negative infinity (−∞).
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const NEG_INFINITY: f64 = -1.0_f64 / 0.0_f64;
+pub const NEG_INFINITY: f64 = f64::NEG_INFINITY;
 
 /// Basic mathematical constants.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -74,6 +74,12 @@ pub mod consts {
     /// Archimedes' constant (π)
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const PI: f64 = 3.14159265358979323846264338327950288_f64;
+
+    /// The full circle constant (τ)
+    ///
+    /// Equal to 2π.
+    #[unstable(feature = "tau_constant", issue = "66770")]
+    pub const TAU: f64 = 6.28318530717958647692528676655900577_f64;
 
     /// π/2
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -147,6 +153,59 @@ pub mod consts {
 #[lang = "f64"]
 #[cfg(not(test))]
 impl f64 {
+    /// The radix or base of the internal representation of `f64`.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const RADIX: u32 = 2;
+
+    /// Number of significant digits in base 2.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MANTISSA_DIGITS: u32 = 53;
+    /// Approximate number of significant digits in base 10.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const DIGITS: u32 = 15;
+
+    /// [Machine epsilon] value for `f64`.
+    ///
+    /// This is the difference between `1.0` and the next larger representable number.
+    ///
+    /// [Machine epsilon]: https://en.wikipedia.org/wiki/Machine_epsilon
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const EPSILON: f64 = 2.2204460492503131e-16_f64;
+
+    /// Smallest finite `f64` value.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN: f64 = -1.7976931348623157e+308_f64;
+    /// Smallest positive normal `f64` value.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN_POSITIVE: f64 = 2.2250738585072014e-308_f64;
+    /// Largest finite `f64` value.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MAX: f64 = 1.7976931348623157e+308_f64;
+
+    /// One greater than the minimum possible normal power of 2 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN_EXP: i32 = -1021;
+    /// Maximum possible power of 2 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MAX_EXP: i32 = 1024;
+
+    /// Minimum possible normal power of 10 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN_10_EXP: i32 = -307;
+    /// Maximum possible power of 10 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MAX_10_EXP: i32 = 308;
+
+    /// Not a Number (NaN).
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const NAN: f64 = 0.0_f64 / 0.0_f64;
+    /// Infinity (∞).
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const INFINITY: f64 = 1.0_f64 / 0.0_f64;
+    /// Negative infinity (-∞).
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const NEG_INFINITY: f64 = -1.0_f64 / 0.0_f64;
+
     /// Returns `true` if this value is `NaN`.
     ///
     /// ```
@@ -220,7 +279,7 @@ impl f64 {
     }
 
     /// Returns `true` if the number is neither zero, infinite,
-    /// [subnormal][subnormal], or `NaN`.
+    /// [subnormal], or `NaN`.
     ///
     /// ```
     /// use std::f64;
@@ -407,6 +466,37 @@ impl f64 {
         intrinsics::minnumf64(self, other)
     }
 
+    /// Rounds toward zero and converts to any primitive integer type,
+    /// assuming that the value is finite and fits in that type.
+    ///
+    /// ```
+    /// #![feature(float_approx_unchecked_to)]
+    ///
+    /// let value = 4.6_f32;
+    /// let rounded = unsafe { value.approx_unchecked_to::<u16>() };
+    /// assert_eq!(rounded, 4);
+    ///
+    /// let value = -128.9_f32;
+    /// let rounded = unsafe { value.approx_unchecked_to::<i8>() };
+    /// assert_eq!(rounded, std::i8::MIN);
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// The value must:
+    ///
+    /// * Not be `NaN`
+    /// * Not be infinite
+    /// * Be representable in the return type `Int`, after truncating off its fractional part
+    #[unstable(feature = "float_approx_unchecked_to", issue = "67058")]
+    #[inline]
+    pub unsafe fn approx_unchecked_to<Int>(self) -> Int
+    where
+        Self: FloatToInt<Int>,
+    {
+        FloatToInt::<Int>::approx_unchecked(self)
+    }
+
     /// Raw transmutation to `u64`.
     ///
     /// This is currently identical to `transmute::<f64, u64>(self)` on all platforms.
@@ -427,6 +517,7 @@ impl f64 {
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[inline]
     pub fn to_bits(self) -> u64 {
+        // SAFETY: `u64` is a plain old datatype so we can always transmute to it
         unsafe { mem::transmute(self) }
     }
 
@@ -469,6 +560,7 @@ impl f64 {
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[inline]
     pub fn from_bits(v: u64) -> Self {
+        // SAFETY: `u64` is a plain old datatype so we can always transmute from it
         // It turns out the safety issues with sNaN were overblown! Hooray!
         unsafe { mem::transmute(v) }
     }

@@ -7,8 +7,8 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-/// Software Tracing
-pub mod swt;
+/// Software Tracing FIXME broken and rotted.
+//pub mod swt;
 
 const SYM_MAX: usize = 128;
 
@@ -27,10 +27,7 @@ pub struct SirLoc {
 impl SirLoc {
     /// Creates a new SirLoc.
     pub fn new(symbol_name: [u8; SYM_MAX], bb_idx: u32) -> SirLoc {
-        SirLoc {
-            symbol_name,
-            bb_idx
-        }
+        SirLoc { symbol_name, bb_idx }
     }
 
     /// Returns the binary-level symbol name of the location.

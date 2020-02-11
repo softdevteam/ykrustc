@@ -8,6 +8,7 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/IR/AutoUpgrade.h"
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -20,8 +21,17 @@
 #include "llvm/Transforms/IPO/FunctionImport.h"
 #include "llvm/Transforms/Utils/FunctionImportUtils.h"
 #include "llvm/LTO/LTO.h"
-
 #include "llvm-c/Transforms/PassManagerBuilder.h"
+
+#include "llvm/Transforms/Instrumentation.h"
+#if LLVM_VERSION_GE(9, 0)
+#include "llvm/Transforms/Instrumentation/AddressSanitizer.h"
+#include "llvm/Support/TimeProfiler.h"
+#endif
+#if LLVM_VERSION_GE(8, 0)
+#include "llvm/Transforms/Instrumentation/ThreadSanitizer.h"
+#include "llvm/Transforms/Instrumentation/MemorySanitizer.h"
+#endif
 
 using namespace llvm;
 using namespace llvm::legacy;
@@ -46,6 +56,23 @@ extern "C" void LLVMInitializePasses() {
   initializeInstCombine(Registry);
   initializeInstrumentation(Registry);
   initializeTarget(Registry);
+}
+
+extern "C" void LLVMTimeTraceProfilerInitialize() {
+#if LLVM_VERSION_GE(9, 0)
+  timeTraceProfilerInitialize();
+#endif
+}
+
+extern "C" void LLVMTimeTraceProfilerFinish(const char* FileName) {
+#if LLVM_VERSION_GE(9, 0)
+  StringRef FN(FileName);
+  std::error_code EC;
+  raw_fd_ostream OS(FN, EC, sys::fs::CD_CreateAlways);
+
+  timeTraceProfilerWrite(OS);
+  timeTraceProfilerCleanup();
+#endif
 }
 
 enum class LLVMRustPassKind {
@@ -74,6 +101,44 @@ extern "C" LLVMPassRef LLVMRustFindAndCreatePass(const char *PassName) {
     return wrap(PI->createPass());
   }
   return nullptr;
+}
+
+extern "C" LLVMPassRef LLVMRustCreateAddressSanitizerFunctionPass(bool Recover) {
+  const bool CompileKernel = false;
+  const bool UseAfterScope = true;
+
+  return wrap(createAddressSanitizerFunctionPass(CompileKernel, Recover, UseAfterScope));
+}
+
+extern "C" LLVMPassRef LLVMRustCreateModuleAddressSanitizerPass(bool Recover) {
+  const bool CompileKernel = false;
+
+#if LLVM_VERSION_GE(9, 0)
+  return wrap(createModuleAddressSanitizerLegacyPassPass(CompileKernel, Recover));
+#else
+  return wrap(createAddressSanitizerModulePass(CompileKernel, Recover));
+#endif
+}
+
+extern "C" LLVMPassRef LLVMRustCreateMemorySanitizerPass(int TrackOrigins, bool Recover) {
+#if LLVM_VERSION_GE(9, 0)
+  const bool CompileKernel = false;
+
+  return wrap(createMemorySanitizerLegacyPassPass(
+      MemorySanitizerOptions{TrackOrigins, Recover, CompileKernel}));
+#elif LLVM_VERSION_GE(8, 0)
+  return wrap(createMemorySanitizerLegacyPassPass(TrackOrigins, Recover));
+#else
+  return wrap(createMemorySanitizerPass(TrackOrigins, Recover));
+#endif
+}
+
+extern "C" LLVMPassRef LLVMRustCreateThreadSanitizerPass() {
+#if LLVM_VERSION_GE(8, 0)
+  return wrap(createThreadSanitizerLegacyPassPass());
+#else
+  return wrap(createThreadSanitizerPass());
+#endif
 }
 
 extern "C" LLVMRustPassKind LLVMRustPassKind(LLVMPassRef RustPass) {
@@ -350,7 +415,8 @@ extern "C" LLVMTargetMachineRef LLVMRustCreateTargetMachine(
     bool TrapUnreachable,
     bool Singlethread,
     bool AsmComments,
-    bool EmitStackSizeSection) {
+    bool EmitStackSizeSection,
+    bool RelaxELFRelocations) {
 
   auto OptLevel = fromRust(RustOptLevel);
   auto RM = fromRust(RustReloc);
@@ -375,6 +441,7 @@ extern "C" LLVMTargetMachineRef LLVMRustCreateTargetMachine(
   Options.MCOptions.AsmVerbose = AsmComments;
   Options.MCOptions.PreserveAsmComments = AsmComments;
   Options.MCOptions.ABIName = ABIStr;
+  Options.RelaxELFRelocations = RelaxELFRelocations;
 
   if (TrapUnreachable) {
     // Tell LLVM to codegen `unreachable` into an explicit trap instruction.
@@ -402,24 +469,11 @@ extern "C" void LLVMRustDisposeTargetMachine(LLVMTargetMachineRef TM) {
   delete unwrap(TM);
 }
 
-// Unfortunately, LLVM doesn't expose a C API to add the corresponding analysis
-// passes for a target to a pass manager. We export that functionality through
-// this function.
-extern "C" void LLVMRustAddAnalysisPasses(LLVMTargetMachineRef TM,
-                                          LLVMPassManagerRef PMR,
-                                          LLVMModuleRef M) {
-  PassManagerBase *PM = unwrap(PMR);
-  PM->add(
-      createTargetTransformInfoWrapperPass(unwrap(TM)->getTargetIRAnalysis()));
-}
-
 extern "C" void LLVMRustConfigurePassManagerBuilder(
     LLVMPassManagerBuilderRef PMBR, LLVMRustCodeGenOptLevel OptLevel,
     bool MergeFunctions, bool SLPVectorize, bool LoopVectorize, bool PrepareForThinLTO,
     const char* PGOGenPath, const char* PGOUsePath) {
-#if LLVM_VERSION_GE(7, 0)
   unwrap(PMBR)->MergeFunctions = MergeFunctions;
-#endif
   unwrap(PMBR)->SLPVectorize = SLPVectorize;
   unwrap(PMBR)->OptLevel = fromRust(OptLevel);
   unwrap(PMBR)->LoopVectorize = LoopVectorize;
@@ -498,6 +552,18 @@ enum class LLVMRustFileType {
   ObjectFile,
 };
 
+#if LLVM_VERSION_GE(10, 0)
+static CodeGenFileType fromRust(LLVMRustFileType Type) {
+  switch (Type) {
+  case LLVMRustFileType::AssemblyFile:
+    return CGFT_AssemblyFile;
+  case LLVMRustFileType::ObjectFile:
+    return CGFT_ObjectFile;
+  default:
+    report_fatal_error("Bad FileType.");
+  }
+}
+#else
 static TargetMachine::CodeGenFileType fromRust(LLVMRustFileType Type) {
   switch (Type) {
   case LLVMRustFileType::AssemblyFile:
@@ -508,6 +574,7 @@ static TargetMachine::CodeGenFileType fromRust(LLVMRustFileType Type) {
     report_fatal_error("Bad FileType.");
   }
 }
+#endif
 
 extern "C" LLVMRustResult
 LLVMRustWriteOutputFile(LLVMTargetMachineRef Target, LLVMPassManagerRef PMR,
@@ -526,18 +593,14 @@ LLVMRustWriteOutputFile(LLVMTargetMachineRef Target, LLVMPassManagerRef PMR,
     return LLVMRustResult::Failure;
   }
 
-#if LLVM_VERSION_GE(7, 0)
   buffer_ostream BOS(OS);
   unwrap(Target)->addPassesToEmitFile(*PM, BOS, nullptr, FileType, false);
-#else
-  unwrap(Target)->addPassesToEmitFile(*PM, OS, FileType, false);
-#endif
   PM->run(*unwrap(M));
 
   // Apparently `addPassesToEmitFile` adds a pointer to our on-the-stack output
   // stream (OS), so the only real safe place to delete this is here? Don't we
   // wish this was written in Rust?
-  delete PM;
+  LLVMDisposePassManager(PMR);
   return LLVMRustResult::Success;
 }
 
@@ -628,46 +691,11 @@ public:
   }
 };
 
-class RustPrintModulePass : public ModulePass {
-  raw_ostream* OS;
-  DemangleFn Demangle;
-public:
-  static char ID;
-  RustPrintModulePass() : ModulePass(ID), OS(nullptr), Demangle(nullptr) {}
-  RustPrintModulePass(raw_ostream &OS, DemangleFn Demangle)
-      : ModulePass(ID), OS(&OS), Demangle(Demangle) {}
-
-  bool runOnModule(Module &M) override {
-    RustAssemblyAnnotationWriter AW(Demangle);
-
-    M.print(*OS, &AW, false);
-
-    return false;
-  }
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.setPreservesAll();
-  }
-
-  static StringRef name() { return "RustPrintModulePass"; }
-};
-
 } // namespace
 
-namespace llvm {
-  void initializeRustPrintModulePassPass(PassRegistry&);
-}
-
-char RustPrintModulePass::ID = 0;
-INITIALIZE_PASS(RustPrintModulePass, "print-rust-module",
-                "Print rust module to stderr", false, false)
-
 extern "C" LLVMRustResult
-LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
-                    const char *Path, DemangleFn Demangle) {
-  llvm::legacy::PassManager *PM = unwrap<llvm::legacy::PassManager>(PMR);
+LLVMRustPrintModule(LLVMModuleRef M, const char *Path, DemangleFn Demangle) {
   std::string ErrorInfo;
-
   std::error_code EC;
   raw_fd_ostream OS(Path, EC, sys::fs::F_None);
   if (EC)
@@ -677,11 +705,9 @@ LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
     return LLVMRustResult::Failure;
   }
 
+  RustAssemblyAnnotationWriter AAW(Demangle);
   formatted_raw_ostream FOS(OS);
-
-  PM->add(new RustPrintModulePass(FOS, Demangle));
-
-  PM->run(*unwrap(M));
+  unwrap(M)->print(FOS, &AAW);
 
   return LLVMRustResult::Success;
 }
@@ -815,9 +841,7 @@ struct LLVMRustThinLTOData {
   StringMap<FunctionImporter::ExportSetTy> ExportLists;
   StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries;
 
-#if LLVM_VERSION_GE(7, 0)
   LLVMRustThinLTOData() : Index(/* HaveGVs = */ false) {}
-#endif
 };
 
 // Just an argument to the `LLVMRustCreateThinLTOData` function below.
@@ -858,7 +882,11 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
                           int num_modules,
                           const char **preserved_symbols,
                           int num_symbols) {
+#if LLVM_VERSION_GE(10, 0)
+  auto Ret = std::make_unique<LLVMRustThinLTOData>();
+#else
   auto Ret = llvm::make_unique<LLVMRustThinLTOData>();
+#endif
 
   // Load each module's summary and merge it into one combined index
   for (int i = 0; i < num_modules; i++) {
@@ -888,7 +916,6 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
   // combined index
   //
   // This is copied from `lib/LTO/ThinLTOCodeGenerator.cpp`
-#if LLVM_VERSION_GE(7, 0)
   auto deadIsPrevailing = [&](GlobalValue::GUID G) {
     return PrevailingType::Unknown;
   };
@@ -900,9 +927,6 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
                                   deadIsPrevailing, /* ImportEnabled = */ false);
 #else
   computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols, deadIsPrevailing);
-#endif
-#else
-  computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols);
 #endif
   ComputeCrossModuleImport(
     Ret->Index,
@@ -957,6 +981,15 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
         ExportedGUIDs.insert(GUID);
     }
   }
+#if LLVM_VERSION_GE(10, 0)
+  auto isExported = [&](StringRef ModuleIdentifier, ValueInfo VI) {
+    const auto &ExportList = Ret->ExportLists.find(ModuleIdentifier);
+    return (ExportList != Ret->ExportLists.end() &&
+      ExportList->second.count(VI)) ||
+      ExportedGUIDs.count(VI.getGUID());
+  };
+  thinLTOInternalizeAndPromoteInIndex(Ret->Index, isExported, isPrevailing);
+#else
   auto isExported = [&](StringRef ModuleIdentifier, GlobalValue::GUID GUID) {
     const auto &ExportList = Ret->ExportLists.find(ModuleIdentifier);
     return (ExportList != Ret->ExportLists.end() &&
@@ -964,6 +997,7 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
       ExportedGUIDs.count(GUID);
   };
   thinLTOInternalizeAndPromoteInIndex(Ret->Index, isExported);
+#endif
 
   return Ret.release();
 }
@@ -1094,7 +1128,11 @@ struct LLVMRustThinLTOBuffer {
 
 extern "C" LLVMRustThinLTOBuffer*
 LLVMRustThinLTOBufferCreate(LLVMModuleRef M) {
+#if LLVM_VERSION_GE(10, 0)
+  auto Ret = std::make_unique<LLVMRustThinLTOBuffer>();
+#else
   auto Ret = llvm::make_unique<LLVMRustThinLTOBuffer>();
+#endif
   {
     raw_string_ostream OS(Ret->data);
     {

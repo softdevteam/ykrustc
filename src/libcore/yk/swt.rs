@@ -12,19 +12,29 @@ use super::SirLoc;
 /// The software trace recorder function.
 /// This is implemented in C so that: the `yk_swt_calls` MIR pass doesn't see inside.
 #[allow(dead_code)] // Used only indirectly in a MIR pass.
-#[cfg_attr(not(bootstrap), lang="yk_swt_rec_loc")]
+#[cfg_attr(not(bootstrap), lang = "yk_swt_rec_loc")]
 #[cfg_attr(not(bootstrap), no_sw_trace)]
 #[cfg(not(test))]
 fn yk_swt_rec_loc(crate_hash: u64, def_idx: u32, bb_idx: u32) {
-    extern "C" { fn yk_swt_rec_loc_impl(crate_hash: u64, def_idx: u32, bb_idx: u32); }
-    unsafe { yk_swt_rec_loc_impl(crate_hash, def_idx, bb_idx); }
+    extern "C" {
+        fn yk_swt_rec_loc_impl(crate_hash: u64, def_idx: u32, bb_idx: u32);
+    }
+    /// SAFETY: Calls C.
+    unsafe {
+        yk_swt_rec_loc_impl(crate_hash, def_idx, bb_idx);
+    }
 }
 
 /// Start software tracing on the current thread. The current thread must not already be tracing.
 #[cfg_attr(not(bootstrap), no_sw_trace)]
 pub fn start_tracing() {
-    extern "C" { fn yk_swt_start_tracing_impl(); }
-    unsafe { yk_swt_start_tracing_impl(); }
+    extern "C" {
+        fn yk_swt_start_tracing_impl();
+    }
+    /// SAFETY: Calls C.
+    unsafe {
+        yk_swt_start_tracing_impl();
+    }
 }
 
 /// Stop software tracing and on success return a tuple containing a pointer to the raw trace
@@ -34,12 +44,11 @@ pub fn start_tracing() {
 pub fn stop_tracing() -> Option<(*mut SirLoc, usize)> {
     let len: usize = 0;
 
-    extern "C" { fn yk_swt_stop_tracing_impl(ret_len: &usize) -> *mut SirLoc; }
+    extern "C" {
+        fn yk_swt_stop_tracing_impl(ret_len: &usize) -> *mut SirLoc;
+    }
+    /// SAFETY: Calls C.
     let buf = unsafe { yk_swt_stop_tracing_impl(&len) };
 
-    if buf.is_null() {
-        None
-    } else {
-        Some((buf, len))
-    }
+    if buf.is_null() { None } else { Some((buf, len)) }
 }

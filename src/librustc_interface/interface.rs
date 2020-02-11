@@ -1,30 +1,32 @@
-use crate::queries::Queries;
-use crate::util;
 pub use crate::passes::BoxedResolver;
+use crate::util;
 
 use rustc::lint;
+use rustc::session::config::{self, ErrorOutputType, Input};
 use rustc::session::early_error;
-use rustc::session::config::{self, Input, ErrorOutputType};
 use rustc::session::{DiagnosticOutput, Session};
+use rustc::ty;
 use rustc::util::common::ErrorReported;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
-use rustc_data_structures::OnDrop;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync::Lrc;
-use rustc_data_structures::fx::{FxHashSet, FxHashMap};
+use rustc_data_structures::OnDrop;
+use rustc_errors::registry::Registry;
+use rustc_lint::LintStore;
+use rustc_parse::new_parser_from_source_str;
+use rustc_session::parse::{CrateConfig, ParseSess};
+use rustc_span::edition;
+use rustc_span::source_map::{FileLoader, FileName, SourceMap};
 use std::path::PathBuf;
 use std::result;
 use std::sync::{Arc, Mutex};
-use syntax::{self, parse};
-use syntax::ast::{self, MetaItemKind};
-use syntax::parse::token;
-use syntax::source_map::{FileName, FileLoader, SourceMap};
-use syntax::sess::ParseSess;
-use syntax_pos::edition;
+use syntax::ast::MetaItemKind;
+use syntax::token;
 
 pub type Result<T> = result::Result<T, ErrorReported>;
 
 /// Represents a compiler session.
-/// Can be used run `rustc_interface` queries.
+/// Can be used to run `rustc_interface` queries.
 /// Created by passing `Config` to `run_compiler`.
 pub struct Compiler {
     pub(crate) sess: Lrc<Session>,
@@ -34,9 +36,10 @@ pub struct Compiler {
     pub(crate) input_path: Option<PathBuf>,
     pub(crate) output_dir: Option<PathBuf>,
     pub(crate) output_file: Option<PathBuf>,
-    pub(crate) queries: Queries,
     pub(crate) crate_name: Option<String>,
-    pub(crate) register_lints: Option<Box<dyn Fn(&Session, &mut lint::LintStore) + Send + Sync>>,
+    pub(crate) register_lints: Option<Box<dyn Fn(&Session, &mut LintStore) + Send + Sync>>,
+    pub(crate) override_queries:
+        Option<fn(&Session, &mut ty::query::Providers<'_>, &mut ty::query::Providers<'_>)>,
 }
 
 impl Compiler {
@@ -63,43 +66,48 @@ impl Compiler {
 /// Converts strings provided as `--cfg [cfgspec]` into a `crate_cfg`.
 pub fn parse_cfgspecs(cfgspecs: Vec<String>) -> FxHashSet<(String, Option<String>)> {
     syntax::with_default_globals(move || {
-        let cfg = cfgspecs.into_iter().map(|s| {
-            let sess = ParseSess::with_silent_emitter();
-            let filename = FileName::cfg_spec_source_code(&s);
-            let mut parser = parse::new_parser_from_source_str(&sess, filename, s.to_string());
+        let cfg = cfgspecs
+            .into_iter()
+            .map(|s| {
+                let sess = ParseSess::with_silent_emitter();
+                let filename = FileName::cfg_spec_source_code(&s);
+                let mut parser = new_parser_from_source_str(&sess, filename, s.to_string());
 
-            macro_rules! error {($reason: expr) => {
-                early_error(ErrorOutputType::default(),
-                            &format!(concat!("invalid `--cfg` argument: `{}` (", $reason, ")"), s));
-            }}
-
-            match &mut parser.parse_meta_item() {
-                Ok(meta_item) if parser.token == token::Eof => {
-                    if meta_item.path.segments.len() != 1 {
-                        error!("argument key must be an identifier");
-                    }
-                    match &meta_item.kind {
-                        MetaItemKind::List(..) => {
-                            error!(r#"expected `key` or `key="value"`"#);
-                        }
-                        MetaItemKind::NameValue(lit) if !lit.kind.is_str() => {
-                            error!("argument value must be a string");
-                        }
-                        MetaItemKind::NameValue(..) | MetaItemKind::Word => {
-                            let ident = meta_item.ident().expect("multi-segment cfg key");
-                            return (ident.name, meta_item.value_str());
-                        }
-                    }
+                macro_rules! error {
+                    ($reason: expr) => {
+                        early_error(
+                            ErrorOutputType::default(),
+                            &format!(concat!("invalid `--cfg` argument: `{}` (", $reason, ")"), s),
+                        );
+                    };
                 }
-                Ok(..) => {}
-                Err(err) => err.cancel(),
-            }
 
-            error!(r#"expected `key` or `key="value"`"#);
-        }).collect::<ast::CrateConfig>();
-        cfg.into_iter().map(|(a, b)| {
-            (a.to_string(), b.map(|b| b.to_string()))
-        }).collect()
+                match &mut parser.parse_meta_item() {
+                    Ok(meta_item) if parser.token == token::Eof => {
+                        if meta_item.path.segments.len() != 1 {
+                            error!("argument key must be an identifier");
+                        }
+                        match &meta_item.kind {
+                            MetaItemKind::List(..) => {
+                                error!(r#"expected `key` or `key="value"`"#);
+                            }
+                            MetaItemKind::NameValue(lit) if !lit.kind.is_str() => {
+                                error!("argument value must be a string");
+                            }
+                            MetaItemKind::NameValue(..) | MetaItemKind::Word => {
+                                let ident = meta_item.ident().expect("multi-segment cfg key");
+                                return (ident.name, meta_item.value_str());
+                            }
+                        }
+                    }
+                    Ok(..) => {}
+                    Err(err) => err.cancel(),
+                }
+
+                error!(r#"expected `key` or `key="value"`"#);
+            })
+            .collect::<CrateConfig>();
+        cfg.into_iter().map(|(a, b)| (a.to_string(), b.map(|b| b.to_string()))).collect()
     })
 }
 
@@ -129,13 +137,24 @@ pub struct Config {
     ///
     /// Note that if you find a Some here you probably want to call that function in the new
     /// function being registered.
-    pub register_lints: Option<Box<dyn Fn(&Session, &mut lint::LintStore) + Send + Sync>>,
+    pub register_lints: Option<Box<dyn Fn(&Session, &mut LintStore) + Send + Sync>>,
+
+    /// This is a callback from the driver that is called just after we have populated
+    /// the list of queries.
+    ///
+    /// The second parameter is local providers and the third parameter is external providers.
+    pub override_queries:
+        Option<fn(&Session, &mut ty::query::Providers<'_>, &mut ty::query::Providers<'_>)>,
+
+    /// Registry of diagnostics codes.
+    pub registry: Registry,
 }
 
-pub fn run_compiler_in_existing_thread_pool<F, R>(config: Config, f: F) -> R
-where
-    F: FnOnce(&Compiler) -> R,
-{
+pub fn run_compiler_in_existing_thread_pool<R>(
+    config: Config,
+    f: impl FnOnce(&Compiler) -> R,
+) -> R {
+    let registry = &config.registry;
     let (sess, codegen_backend, source_map) = util::create_session(
         config.opts,
         config.crate_cfg,
@@ -143,6 +162,7 @@ where
         config.file_loader,
         config.input_path.clone(),
         config.lint_caps,
+        registry.clone(),
     );
 
     let compiler = Compiler {
@@ -153,23 +173,25 @@ where
         input_path: config.input_path,
         output_dir: config.output_dir,
         output_file: config.output_file,
-        queries: Default::default(),
         crate_name: config.crate_name,
         register_lints: config.register_lints,
+        override_queries: config.override_queries,
     };
 
-    let _sess_abort_error = OnDrop(|| {
-        compiler.sess.diagnostic().print_error_count(&util::diagnostics_registry());
-    });
+    let r = {
+        let _sess_abort_error = OnDrop(|| {
+            compiler.sess.diagnostic().print_error_count(registry);
+        });
 
-    f(&compiler)
+        f(&compiler)
+    };
+
+    let prof = compiler.sess.prof.clone();
+    prof.generic_activity("drop_compiler").run(move || drop(compiler));
+    r
 }
 
-pub fn run_compiler<F, R>(mut config: Config, f: F) -> R
-where
-    F: FnOnce(&Compiler) -> R + Send,
-    R: Send,
-{
+pub fn run_compiler<R: Send>(mut config: Config, f: impl FnOnce(&Compiler) -> R + Send) -> R {
     let stderr = config.stderr.take();
     util::spawn_thread_pool(
         config.opts.edition,
@@ -179,11 +201,7 @@ where
     )
 }
 
-pub fn default_thread_pool<F, R>(edition: edition::Edition, f: F) -> R
-where
-    F: FnOnce() -> R + Send,
-    R: Send,
-{
+pub fn default_thread_pool<R: Send>(edition: edition::Edition, f: impl FnOnce() -> R + Send) -> R {
     // the 1 here is duplicating code in config.opts.debugging_opts.threads
     // which also defaults to 1; it ultimately doesn't matter as the default
     // isn't threaded, and just ignores this parameter

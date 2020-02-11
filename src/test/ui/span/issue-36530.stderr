@@ -1,10 +1,10 @@
 error[E0658]: non-builtin inner attributes are unstable
-  --> $DIR/issue-36530.rs:7:5
+  --> $DIR/issue-36530.rs:9:5
    |
 LL |     #![foo]
    |     ^^^^^^^
    |
-   = note: for more information, see https://github.com/rust-lang/rust/issues/54726
+   = note: see issue #54726 <https://github.com/rust-lang/rust/issues/54726> for more information
    = help: add `#![feature(custom_inner_attributes)]` to the crate attributes to enable
 
 error: aborting due to previous error

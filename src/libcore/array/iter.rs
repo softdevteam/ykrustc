@@ -1,5 +1,6 @@
 //! Defines the `IntoIter` owned iterator for arrays.
 
+use super::LengthAtMost32;
 use crate::{
     fmt,
     iter::{ExactSizeIterator, FusedIterator, TrustedLen},
@@ -7,8 +8,6 @@ use crate::{
     ops::Range,
     ptr,
 };
-use super::LengthAtMost32;
-
 
 /// A by-value [array] iterator.
 ///
@@ -40,7 +39,7 @@ where
     alive: Range<usize>,
 }
 
-impl<T, const N: usize> IntoIter<T, {N}>
+impl<T, const N: usize> IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
@@ -51,7 +50,7 @@ where
     /// iterator (either via `IntoIterator` for arrays or via another way).
     #[unstable(feature = "array_value_iter", issue = "65798")]
     pub fn new(array: [T; N]) -> Self {
-        // The transmute here is actually safe. The docs of `MaybeUninit`
+        // SAFETY: The transmute here is actually safe. The docs of `MaybeUninit`
         // promise:
         //
         // > `MaybeUninit<T>` is guaranteed to have the same size and alignment
@@ -75,28 +74,32 @@ where
             data
         };
 
-        Self {
-            data,
-            alive: 0..N,
-        }
+        Self { data, alive: 0..N }
     }
 
     /// Returns an immutable slice of all elements that have not been yielded
     /// yet.
     fn as_slice(&self) -> &[T] {
-        // This transmute is safe. As mentioned in `new`, `MaybeUninit` retains
+        let slice = &self.data[self.alive.clone()];
+        // SAFETY: This transmute is safe. As mentioned in `new`, `MaybeUninit` retains
         // the size and alignment of `T`. Furthermore, we know that all
         // elements within `alive` are properly initialized.
-        let slice = &self.data[self.alive.clone()];
-        unsafe {
-            mem::transmute::<&[MaybeUninit<T>], &[T]>(slice)
-        }
+        unsafe { mem::transmute::<&[MaybeUninit<T>], &[T]>(slice) }
+    }
+
+    /// Returns a mutable slice of all elements that have not been yielded yet.
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        // This transmute is safe, same as in `as_slice` above.
+        let slice = &mut self.data[self.alive.clone()];
+        // SAFETY: This transmute is safe. As mentioned in `new`, `MaybeUninit` retains
+        // the size and alignment of `T`. Furthermore, we know that all
+        // elements within `alive` are properly initialized.
+        unsafe { mem::transmute::<&mut [MaybeUninit<T>], &mut [T]>(slice) }
     }
 }
 
-
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T, const N: usize> Iterator for IntoIter<T, {N}>
+impl<T, const N: usize> Iterator for IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
@@ -117,7 +120,8 @@ where
         let idx = self.alive.start;
         self.alive.start += 1;
 
-        // Read the element from the array. This is safe: `idx` is an index
+        // Read the element from the array.
+        // SAFETY: This is safe: `idx` is an index
         // into the "alive" region of the array. Reading this element means
         // that `data[idx]` is regarded as dead now (i.e. do not touch). As
         // `idx` was the start of the alive-zone, the alive zone is now
@@ -142,7 +146,7 @@ where
 }
 
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, {N}>
+impl<T, const N: usize> DoubleEndedIterator for IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
@@ -163,7 +167,8 @@ where
         // + 1]`.
         self.alive.end -= 1;
 
-        // Read the element from the array. This is safe: `alive.end` is an
+        // Read the element from the array.
+        // SAFETY: This is safe: `alive.end` is an
         // index into the "alive" region of the array. Compare the previous
         // comment that states that the alive region is
         // `data[alive.start..alive.end + 1]`. Reading this element means that
@@ -177,20 +182,20 @@ where
 }
 
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T, const N: usize> Drop for IntoIter<T, {N}>
+impl<T, const N: usize> Drop for IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
     fn drop(&mut self) {
-        // We simply drop each element via `for_each`. This should not incur
-        // any significant runtime overhead and avoids adding another `unsafe`
-        // block.
-        self.by_ref().for_each(drop);
+        // SAFETY: This is safe: `as_mut_slice` returns exactly the sub-slice
+        // of elements that have not been moved out yet and that remain
+        // to be dropped.
+        unsafe { ptr::drop_in_place(self.as_mut_slice()) }
     }
 }
 
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T, const N: usize> ExactSizeIterator for IntoIter<T, {N}>
+impl<T, const N: usize> ExactSizeIterator for IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
@@ -205,27 +210,22 @@ where
 }
 
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T, const N: usize> FusedIterator for IntoIter<T, {N}>
-where
-    [T; N]: LengthAtMost32,
-{}
+impl<T, const N: usize> FusedIterator for IntoIter<T, { N }> where [T; N]: LengthAtMost32 {}
 
 // The iterator indeed reports the correct length. The number of "alive"
 // elements (that will still be yielded) is the length of the range `alive`.
 // This range is decremented in length in either `next` or `next_back`. It is
 // always decremented by 1 in those methods, but only if `Some(_)` is returned.
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-unsafe impl<T, const N: usize> TrustedLen for IntoIter<T, {N}>
-where
-    [T; N]: LengthAtMost32,
-{}
+unsafe impl<T, const N: usize> TrustedLen for IntoIter<T, { N }> where [T; N]: LengthAtMost32 {}
 
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T: Clone, const N: usize> Clone for IntoIter<T, {N}>
+impl<T: Clone, const N: usize> Clone for IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
     fn clone(&self) -> Self {
+        // SAFETY: each point of unsafety is documented inside the unsafe block
         unsafe {
             // This creates a new uninitialized array. Note that the `assume_init`
             // refers to the array, not the individual elements. And it is Ok if
@@ -243,24 +243,19 @@ where
                 new_data.get_unchecked_mut(idx).write(clone);
             }
 
-            Self {
-                data: new_data,
-                alive: self.alive.clone(),
-            }
+            Self { data: new_data, alive: self.alive.clone() }
         }
     }
 }
 
 #[stable(feature = "array_value_iter_impls", since = "1.40.0")]
-impl<T: fmt::Debug, const N: usize> fmt::Debug for IntoIter<T, {N}>
+impl<T: fmt::Debug, const N: usize> fmt::Debug for IntoIter<T, { N }>
 where
     [T; N]: LengthAtMost32,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Only print the elements that were not yielded yet: we cannot
         // access the yielded elements anymore.
-        f.debug_tuple("IntoIter")
-            .field(&self.as_slice())
-            .finish()
+        f.debug_tuple("IntoIter").field(&self.as_slice()).finish()
     }
 }

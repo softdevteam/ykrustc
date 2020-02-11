@@ -1,11 +1,11 @@
 // run-pass
-#![allow(unused_assignments)]
-#![allow(unused_variables)]
-
 // ignore-wasm32-bare compiled with panic=abort by default
 
 #![feature(generators, generator_trait, untagged_unions)]
-#![feature(slice_patterns)]
+#![feature(move_ref_pattern)]
+
+#![allow(unused_assignments)]
+#![allow(unused_variables)]
 
 use std::cell::{Cell, RefCell};
 use std::mem::ManuallyDrop;
@@ -185,7 +185,7 @@ fn generator(a: &Allocator, run_count: usize) {
          );
     };
     for _ in 0..run_count {
-        Pin::new(&mut gen).resume();
+        Pin::new(&mut gen).resume(());
     }
 }
 
@@ -267,6 +267,33 @@ fn subslice_pattern_reassign(a: &Allocator) {
     let[_, _, _x] = ar;
     ar = [a.alloc(), a.alloc(), a.alloc()];
     let[_, _y @ ..] = ar;
+}
+
+fn index_field_mixed_ends(a: &Allocator) {
+    let ar = [(a.alloc(), a.alloc()), (a.alloc(), a.alloc())];
+    let[(_x, _), ..] = ar;
+    let[(_, _y), _] = ar;
+    let[_, (_, _w)] = ar;
+    let[.., (_z, _)] = ar;
+}
+
+fn subslice_mixed_min_lengths(a: &Allocator, c: i32) {
+    let ar = [(a.alloc(), a.alloc()), (a.alloc(), a.alloc())];
+    match c {
+        0 => { let[_x, ..] = ar; }
+        1 => { let[_x, _, ..] = ar; }
+        2 => { let[_x, _] = ar; }
+        3 => { let[(_x, _), _, ..] = ar; }
+        4 => { let[.., (_x, _)] = ar; }
+        5 => { let[.., (_x, _), _] = ar; }
+        6 => { let [_y @ ..] = ar; }
+        _ => { let [_y @ .., _] = ar; }
+    }
+}
+
+fn move_ref_pattern(a: &Allocator) {
+    let mut tup = (a.alloc(), a.alloc(), a.alloc(), a.alloc());
+    let (ref _a, ref mut _b, _c, mut _d) = tup;
 }
 
 fn panic_after_return(a: &Allocator) -> Ptr<'_> {
@@ -421,6 +448,18 @@ fn main() {
     run_test(|a| subslice_pattern_from_end_with_drop(a, false, false));
     run_test(|a| slice_pattern_reassign(a));
     run_test(|a| subslice_pattern_reassign(a));
+
+    run_test(|a| index_field_mixed_ends(a));
+    run_test(|a| subslice_mixed_min_lengths(a, 0));
+    run_test(|a| subslice_mixed_min_lengths(a, 1));
+    run_test(|a| subslice_mixed_min_lengths(a, 2));
+    run_test(|a| subslice_mixed_min_lengths(a, 3));
+    run_test(|a| subslice_mixed_min_lengths(a, 4));
+    run_test(|a| subslice_mixed_min_lengths(a, 5));
+    run_test(|a| subslice_mixed_min_lengths(a, 6));
+    run_test(|a| subslice_mixed_min_lengths(a, 7));
+
+    run_test(|a| move_ref_pattern(a));
 
     run_test(|a| {
         panic_after_return(a);

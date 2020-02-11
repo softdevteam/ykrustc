@@ -1,5 +1,5 @@
 use rustc::mir::visit::{PlaceContext, Visitor};
-use rustc::mir::{Local, Location, Place, PlaceBase, Statement, StatementKind, TerminatorKind};
+use rustc::mir::{Local, Location, Place, Statement, StatementKind, TerminatorKind};
 
 use rustc_data_structures::fx::FxHashSet;
 
@@ -57,56 +57,39 @@ impl GatherUsedMutsVisitor<'_, '_, '_> {
         // be those that were never initialized - we will consider those as being used as
         // they will either have been removed by unreachable code optimizations; or linted
         // as unused variables.
-        if let PlaceBase::Local(local) = into.base {
-            let _ = self.never_initialized_mut_locals.remove(&local);
-        }
+        self.never_initialized_mut_locals.remove(&into.local);
     }
 }
 
 impl<'visit, 'cx, 'tcx> Visitor<'tcx> for GatherUsedMutsVisitor<'visit, 'cx, 'tcx> {
-    fn visit_terminator_kind(
-        &mut self,
-        kind: &TerminatorKind<'tcx>,
-        _location: Location,
-    ) {
+    fn visit_terminator_kind(&mut self, kind: &TerminatorKind<'tcx>, _location: Location) {
         debug!("visit_terminator_kind: kind={:?}", kind);
         match &kind {
             TerminatorKind::Call { destination: Some((into, _)), .. } => {
                 self.remove_never_initialized_mut_locals(&into);
-            },
+            }
             TerminatorKind::DropAndReplace { location, .. } => {
                 self.remove_never_initialized_mut_locals(&location);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
-    fn visit_statement(
-        &mut self,
-        statement: &Statement<'tcx>,
-        _location: Location,
-    ) {
+    fn visit_statement(&mut self, statement: &Statement<'tcx>, _location: Location) {
         match &statement.kind {
-            StatementKind::Assign(box(into, _)) => {
-                if let PlaceBase::Local(local) = into.base {
-                    debug!(
-                        "visit_statement: statement={:?} local={:?} \
-                         never_initialized_mut_locals={:?}",
-                        statement, local, self.never_initialized_mut_locals
-                    );
-                }
+            StatementKind::Assign(box (into, _)) => {
+                debug!(
+                    "visit_statement: statement={:?} local={:?} \
+                    never_initialized_mut_locals={:?}",
+                    statement, into.local, self.never_initialized_mut_locals
+                );
                 self.remove_never_initialized_mut_locals(into);
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 
-    fn visit_local(
-        &mut self,
-        local: &Local,
-        place_context: PlaceContext,
-        location: Location,
-    ) {
+    fn visit_local(&mut self, local: &Local, place_context: PlaceContext, location: Location) {
         if place_context.is_place_assignment() && self.temporary_used_locals.contains(local) {
             // Propagate the Local assigned at this Location as a used mutable local variable
             for moi in &self.mbcx.move_data.loc_map[location] {

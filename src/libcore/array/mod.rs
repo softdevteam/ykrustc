@@ -1,5 +1,5 @@
 //! Implementations of things like `Eq` for fixed-length arrays
-//! up to a certain length. Eventually we should able to generalize
+//! up to a certain length. Eventually, we should be able to generalize
 //! to all lengths.
 //!
 //! *[See also the array primitive type](../../std/primitive.array.html).*
@@ -10,14 +10,12 @@ use crate::borrow::{Borrow, BorrowMut};
 use crate::cmp::Ordering;
 use crate::convert::{Infallible, TryFrom};
 use crate::fmt;
-use crate::hash::{Hash, self};
+use crate::hash::{self, Hash};
 use crate::marker::Unsize;
 use crate::slice::{Iter, IterMut};
 
-#[cfg(not(bootstrap))]
 mod iter;
 
-#[cfg(not(bootstrap))]
 #[unstable(feature = "array_value_iter", issue = "65798")]
 pub use iter::IntoIter;
 
@@ -73,10 +71,12 @@ impl fmt::Display for TryFromSliceError {
 }
 
 impl TryFromSliceError {
-    #[unstable(feature = "array_error_internals",
-           reason = "available through Error trait and this method should not \
+    #[unstable(
+        feature = "array_error_internals",
+        reason = "available through Error trait and this method should not \
                      be exposed publicly",
-           issue = "0")]
+        issue = "none"
+    )]
     #[inline]
     #[doc(hidden)]
     pub fn __description(&self) -> &str {
@@ -156,6 +156,7 @@ where
     fn try_from(slice: &[T]) -> Result<&[T; N], TryFromSliceError> {
         if slice.len() == N {
             let ptr = slice.as_ptr() as *const [T; N];
+            // SAFETY: ok because we just checked that the length fits
             unsafe { Ok(&*ptr) }
         } else {
             Err(TryFromSliceError(()))
@@ -173,6 +174,7 @@ where
     fn try_from(slice: &mut [T]) -> Result<&mut [T; N], TryFromSliceError> {
         if slice.len() == N {
             let ptr = slice.as_mut_ptr() as *mut [T; N];
+            // SAFETY: ok because we just checked that the length fits
             unsafe { Ok(&mut *ptr) }
         } else {
             Err(TryFromSliceError(()))
@@ -385,17 +387,18 @@ where
 }
 
 /// Implemented for lengths where trait impls are allowed on arrays in core/std
-#[rustc_on_unimplemented(
-    message="arrays only have std trait implementations for lengths 0..=32",
+#[rustc_on_unimplemented(message = "arrays only have std trait implementations for lengths 0..=32")]
+#[unstable(
+    feature = "const_generic_impls_guard",
+    issue = "none",
+    reason = "will never be stable, just a temporary step until const generics are stable"
 )]
-#[unstable(feature = "const_generic_impls_guard", issue = "0",
-    reason = "will never be stable, just a temporary step until const generics are stable")]
 pub trait LengthAtMost32 {}
 
 macro_rules! array_impls {
     ($($N:literal)+) => {
         $(
-            #[unstable(feature = "const_generic_impls_guard", issue = "0")]
+            #[unstable(feature = "const_generic_impls_guard", issue = "none")]
             impl<T> LengthAtMost32 for [T; $N] {}
         )+
     }
@@ -429,4 +432,4 @@ macro_rules! array_impl_default {
     };
 }
 
-array_impl_default!{32, T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T}
+array_impl_default! {32, T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T T}

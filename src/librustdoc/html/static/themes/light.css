@@ -105,6 +105,8 @@ pre {
 .content .highlighted.primitive { background-color: #9aecff; }
 .content .highlighted.keyword { background-color: #f99650; }
 
+.content .stability::before { color: #ccc; }
+
 .content span.enum, .content a.enum, .block a.current.enum { color: #508157; }
 .content span.struct, .content a.struct, .block a.current.struct { color: #ad448e; }
 .content span.type, .content a.type, .block a.current.type { color: #ba5d00; }
@@ -175,6 +177,10 @@ a.test-arrow {
 
 .search-input:focus {
 	border-color: #66afe9;
+}
+
+.search-focus:disabled {
+	background-color: #e6e6e6;
 }
 
 #crate-search + .search-input:focus {
@@ -418,4 +424,7 @@ div.files > a:hover, div.name:hover {
 }
 div.files > .selected {
 	background-color: #fff;
+}
+.setting-line > .title {
+	border-bottom-color: #D5D5D5;
 }

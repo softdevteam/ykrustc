@@ -4,11 +4,11 @@
 // general routines.
 
 use crate::infer::InferCtxt;
-use crate::traits::{FulfillmentContext, Obligation, ObligationCause, SelectionContext,
-             TraitEngine, Vtable};
-use crate::ty::{self, TyCtxt};
-use crate::ty::subst::{Subst, SubstsRef};
+use crate::traits::{
+    FulfillmentContext, Obligation, ObligationCause, SelectionContext, TraitEngine, Vtable,
+};
 use crate::ty::fold::TypeFoldable;
+use crate::ty::{self, TyCtxt};
 
 /// Attempts to resolve an obligation to a vtable. The result is
 /// a shallow vtable resolution, meaning that we do not
@@ -23,8 +23,11 @@ pub fn codegen_fulfill_obligation<'tcx>(
     // Remove any references to regions; this helps improve caching.
     let trait_ref = ty.erase_regions(&trait_ref);
 
-    debug!("codegen_fulfill_obligation(trait_ref={:?}, def_id={:?})",
-        (param_env, trait_ref), trait_ref.def_id());
+    debug!(
+        "codegen_fulfill_obligation(trait_ref={:?}, def_id={:?})",
+        (param_env, trait_ref),
+        trait_ref.def_id()
+    );
 
     // Do the initial selection for the obligation. This yields the
     // shallow result we are looking for -- that is, what specific impl.
@@ -32,9 +35,8 @@ pub fn codegen_fulfill_obligation<'tcx>(
         let mut selcx = SelectionContext::new(&infcx);
 
         let obligation_cause = ObligationCause::dummy();
-        let obligation = Obligation::new(obligation_cause,
-                                         param_env,
-                                         trait_ref.to_poly_trait_predicate());
+        let obligation =
+            Obligation::new(obligation_cause, param_env, trait_ref.to_poly_trait_predicate());
 
         let selection = match selcx.select(&obligation) {
             Ok(Some(selection)) => selection,
@@ -45,9 +47,11 @@ pub fn codegen_fulfill_obligation<'tcx>(
                 // leading to an ambiguous result. So report this as an
                 // overflow bug, since I believe this is the only case
                 // where ambiguity can result.
-                bug!("Encountered ambiguity selecting `{:?}` during codegen, \
+                bug!(
+                    "Encountered ambiguity selecting `{:?}` during codegen, \
                       presuming due to overflow",
-                      trait_ref)
+                    trait_ref
+                )
             }
             Err(e) => {
                 bug!("Encountered error `{:?}` selecting `{:?}` during codegen", e, trait_ref)
@@ -69,33 +73,6 @@ pub fn codegen_fulfill_obligation<'tcx>(
         info!("Cache miss: {:?} => {:?}", trait_ref, vtable);
         vtable
     })
-}
-
-impl<'tcx> TyCtxt<'tcx> {
-    /// Monomorphizes a type from the AST by first applying the
-    /// in-scope substitutions and then normalizing any associated
-    /// types.
-    pub fn subst_and_normalize_erasing_regions<T>(
-        self,
-        param_substs: SubstsRef<'tcx>,
-        param_env: ty::ParamEnv<'tcx>,
-        value: &T
-    ) -> T
-    where
-        T: TypeFoldable<'tcx>,
-    {
-        debug!(
-            "subst_and_normalize_erasing_regions(\
-             param_substs={:?}, \
-             value={:?}, \
-             param_env={:?})",
-            param_substs,
-            value,
-            param_env,
-        );
-        let substituted = value.subst(self, param_substs);
-        self.normalize_erasing_regions(param_env, substituted)
-    }
 }
 
 // # Global Cache

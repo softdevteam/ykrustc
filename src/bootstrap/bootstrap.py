@@ -102,10 +102,10 @@ def verify(path, sha_path, verbose):
     return verified
 
 
-def unpack(tarball, dst, verbose=False, match=None):
+def unpack(tarball, tarball_suffix, dst, verbose=False, match=None):
     """Unpack the given tarball file"""
     print("extracting", tarball)
-    fname = os.path.basename(tarball).replace(".tar.gz", "")
+    fname = os.path.basename(tarball).replace(tarball_suffix, "")
     with contextlib.closing(tarfile.open(tarball)) as tar:
         for member in tar.getnames():
             if "/" not in member:
@@ -322,6 +322,7 @@ class RustBuild(object):
         self.date = ''
         self._download_url = ''
         self.rustc_channel = ''
+        self.rustfmt_channel = ''
         self.build = ''
         self.build_dir = os.path.join(os.getcwd(), "build")
         self.clean = False
@@ -330,6 +331,7 @@ class RustBuild(object):
         self.use_locked_deps = ''
         self.use_vendored_sources = ''
         self.verbose = False
+
 
     def download_stage0(self):
         """Fetch the build system for Rust, written in Rust
@@ -343,19 +345,32 @@ class RustBuild(object):
         """
         rustc_channel = self.rustc_channel
         cargo_channel = self.cargo_channel
+        rustfmt_channel = self.rustfmt_channel
+
+        def support_xz():
+            try:
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    temp_path = temp_file.name
+                with tarfile.open(temp_path, "w:xz") as tar:
+                    pass
+                return True
+            except tarfile.CompressionError:
+                return False
 
         if self.rustc().startswith(self.bin_root()) and \
                 (not os.path.exists(self.rustc()) or
                  self.program_out_of_date(self.rustc_stamp())):
             if os.path.exists(self.bin_root()):
                 shutil.rmtree(self.bin_root())
-            filename = "rust-std-{}-{}.tar.gz".format(
-                rustc_channel, self.build)
+            tarball_suffix = '.tar.xz' if support_xz() else '.tar.gz'
+            filename = "rust-std-{}-{}{}".format(
+                rustc_channel, self.build, tarball_suffix)
             pattern = "rust-std-{}".format(self.build)
-            self._download_stage0_helper(filename, pattern)
+            self._download_stage0_helper(filename, pattern, tarball_suffix)
 
-            filename = "rustc-{}-{}.tar.gz".format(rustc_channel, self.build)
-            self._download_stage0_helper(filename, "rustc")
+            filename = "rustc-{}-{}{}".format(rustc_channel, self.build,
+                                              tarball_suffix)
+            self._download_stage0_helper(filename, "rustc", tarball_suffix)
             self.fix_executable("{}/bin/rustc".format(self.bin_root()))
             self.fix_executable("{}/bin/rustdoc".format(self.bin_root()))
             with output(self.rustc_stamp()) as rust_stamp:
@@ -365,30 +380,48 @@ class RustBuild(object):
             # libraries/binaries that are included in rust-std with
             # the system MinGW ones.
             if "pc-windows-gnu" in self.build:
-                filename = "rust-mingw-{}-{}.tar.gz".format(
-                    rustc_channel, self.build)
-                self._download_stage0_helper(filename, "rust-mingw")
+                filename = "rust-mingw-{}-{}{}".format(
+                    rustc_channel, self.build, tarball_suffix)
+                self._download_stage0_helper(filename, "rust-mingw", tarball_suffix)
 
         if self.cargo().startswith(self.bin_root()) and \
                 (not os.path.exists(self.cargo()) or
                  self.program_out_of_date(self.cargo_stamp())):
-            filename = "cargo-{}-{}.tar.gz".format(cargo_channel, self.build)
-            self._download_stage0_helper(filename, "cargo")
+            tarball_suffix = '.tar.xz' if support_xz() else '.tar.gz'
+            filename = "cargo-{}-{}{}".format(cargo_channel, self.build,
+                                              tarball_suffix)
+            self._download_stage0_helper(filename, "cargo", tarball_suffix)
             self.fix_executable("{}/bin/cargo".format(self.bin_root()))
             with output(self.cargo_stamp()) as cargo_stamp:
                 cargo_stamp.write(self.date)
 
-    def _download_stage0_helper(self, filename, pattern):
+        if self.rustfmt() and self.rustfmt().startswith(self.bin_root()) and (
+            not os.path.exists(self.rustfmt())
+            or self.program_out_of_date(self.rustfmt_stamp(), self.rustfmt_channel)
+        ):
+            if rustfmt_channel:
+                tarball_suffix = '.tar.xz' if support_xz() else '.tar.gz'
+                [channel, date] = rustfmt_channel.split('-', 1)
+                filename = "rustfmt-{}-{}{}".format(channel, self.build, tarball_suffix)
+                self._download_stage0_helper(filename, "rustfmt-preview", tarball_suffix, date)
+                self.fix_executable("{}/bin/rustfmt".format(self.bin_root()))
+                self.fix_executable("{}/bin/cargo-fmt".format(self.bin_root()))
+                with output(self.rustfmt_stamp()) as rustfmt_stamp:
+                    rustfmt_stamp.write(self.date + self.rustfmt_channel)
+
+    def _download_stage0_helper(self, filename, pattern, tarball_suffix, date=None):
+        if date is None:
+            date = self.date
         cache_dst = os.path.join(self.build_dir, "cache")
-        rustc_cache = os.path.join(cache_dst, self.date)
+        rustc_cache = os.path.join(cache_dst, date)
         if not os.path.exists(rustc_cache):
             os.makedirs(rustc_cache)
 
-        url = "{}/dist/{}".format(self._download_url, self.date)
+        url = "{}/dist/{}".format(self._download_url, date)
         tarball = os.path.join(rustc_cache, filename)
         if not os.path.exists(tarball):
             get("{}/{}".format(url, filename), tarball, verbose=self.verbose)
-        unpack(tarball, self.bin_root(), match=pattern, verbose=self.verbose)
+        unpack(tarball, tarball_suffix, self.bin_root(), match=pattern, verbose=self.verbose)
 
     @staticmethod
     def fix_executable(fname):
@@ -478,12 +511,22 @@ class RustBuild(object):
         """
         return os.path.join(self.bin_root(), '.cargo-stamp')
 
-    def program_out_of_date(self, stamp_path):
+    def rustfmt_stamp(self):
+        """Return the path for .rustfmt-stamp
+
+        >>> rb = RustBuild()
+        >>> rb.build_dir = "build"
+        >>> rb.rustfmt_stamp() == os.path.join("build", "stage0", ".rustfmt-stamp")
+        True
+        """
+        return os.path.join(self.bin_root(), '.rustfmt-stamp')
+
+    def program_out_of_date(self, stamp_path, extra=""):
         """Check if the given program stamp is out of date"""
         if not os.path.exists(stamp_path) or self.clean:
             return True
         with open(stamp_path, 'r') as stamp:
-            return self.date != stamp.read()
+            return (self.date + extra) != stamp.read()
 
     def bin_root(self):
         """Return the binary root directory
@@ -549,6 +592,12 @@ class RustBuild(object):
     def rustc(self):
         """Return config path for rustc"""
         return self.program_config('rustc')
+
+    def rustfmt(self):
+        """Return config path for rustfmt"""
+        if not self.rustfmt_channel:
+            return None
+        return self.program_config('rustfmt')
 
     def program_config(self, program):
         """Return config path for the given program
@@ -628,7 +677,9 @@ class RustBuild(object):
         env["LIBRARY_PATH"] = os.path.join(self.bin_root(), "lib") + \
             (os.pathsep + env["LIBRARY_PATH"]) \
             if "LIBRARY_PATH" in env else ""
-        env["RUSTFLAGS"] = "-Cdebuginfo=2 "
+        # preserve existing RUSTFLAGS
+        env.setdefault("RUSTFLAGS", "")
+        env["RUSTFLAGS"] += " -Cdebuginfo=2"
 
         build_section = "target.{}".format(self.build_triple())
         target_features = []
@@ -637,13 +688,13 @@ class RustBuild(object):
         elif self.get_toml("crt-static", build_section) == "false":
             target_features += ["-crt-static"]
         if target_features:
-            env["RUSTFLAGS"] += "-C target-feature=" + (",".join(target_features)) + " "
+            env["RUSTFLAGS"] += " -C target-feature=" + (",".join(target_features))
         target_linker = self.get_toml("linker", build_section)
         if target_linker is not None:
-            env["RUSTFLAGS"] += "-C linker=" + target_linker + " "
-        env["RUSTFLAGS"] += " -Wrust_2018_idioms -Wunused_lifetimes "
+            env["RUSTFLAGS"] += " -C linker=" + target_linker
+        env["RUSTFLAGS"] += " -Wrust_2018_idioms -Wunused_lifetimes"
         if self.get_toml("deny-warnings", "rust") != "false":
-            env["RUSTFLAGS"] += "-Dwarnings "
+            env["RUSTFLAGS"] += " -Dwarnings"
 
         env["PATH"] = os.path.join(self.bin_root(), "bin") + \
             os.pathsep + env["PATH"]
@@ -851,6 +902,9 @@ def bootstrap(help_triggered):
     build.rustc_channel = data['rustc']
     build.cargo_channel = data['cargo']
 
+    if "rustfmt" in data:
+        build.rustfmt_channel = data['rustfmt']
+
     if 'dev' in data:
         build.set_dev_environment()
     else:
@@ -878,6 +932,8 @@ def bootstrap(help_triggered):
     env["RUSTC_BOOTSTRAP"] = '1'
     env["CARGO"] = build.cargo()
     env["RUSTC"] = build.rustc()
+    if build.rustfmt():
+        env["RUSTFMT"] = build.rustfmt()
     run(args, env=env, verbose=build.verbose)
 
 
