@@ -2,7 +2,7 @@ use super::diagnostics::Error;
 use super::expr::LhsExpr;
 use super::pat::GateOr;
 use super::path::PathStyle;
-use super::{BlockMode, Parser, PrevTokenKind, Restrictions, SemiColonMode};
+use super::{BlockMode, Parser, Restrictions, SemiColonMode};
 use crate::maybe_whole;
 use crate::DirectoryOwnership;
 
@@ -190,7 +190,7 @@ impl<'a> Parser<'a> {
     /// Also error if the previous token was a doc comment.
     fn error_outer_attrs(&self, attrs: &[Attribute]) {
         if !attrs.is_empty() {
-            if self.prev_token_kind == PrevTokenKind::DocComment {
+            if matches!(self.prev_token.kind, TokenKind::DocComment(..)) {
                 self.span_fatal_err(self.prev_span, Error::UselessDocComment).emit();
             } else if attrs.iter().any(|a| a.style == AttrStyle::Outer) {
                 self.struct_span_err(self.token.span, "expected statement after outer attribute")
@@ -199,7 +199,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(super) fn is_kw_followed_by_ident(&self, kw: Symbol) -> bool {
+    fn is_kw_followed_by_ident(&self, kw: Symbol) -> bool {
         self.token.is_keyword(kw) && self.look_ahead(1, |t| t.is_ident() && !t.is_reserved_ident())
     }
 

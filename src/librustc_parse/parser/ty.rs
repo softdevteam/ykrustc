@@ -1,5 +1,4 @@
-use super::item::ParamCfg;
-use super::{Parser, PathStyle, PrevTokenKind, TokenType};
+use super::{Parser, PathStyle, TokenType};
 
 use crate::{maybe_recover_from_interpolated_ty_qpath, maybe_whole};
 
@@ -14,7 +13,7 @@ use syntax::ast::{
 };
 use syntax::ast::{Mac, Mutability};
 use syntax::ptr::P;
-use syntax::token::{self, Token};
+use syntax::token::{self, Token, TokenKind};
 
 /// Any `?` or `?const` modifiers that appear at the start of a bound.
 struct BoundModifiers {
@@ -196,7 +195,7 @@ impl<'a> Parser<'a> {
         let mut trailing_plus = false;
         let (ts, trailing) = self.parse_paren_comma_seq(|p| {
             let ty = p.parse_ty()?;
-            trailing_plus = p.prev_token_kind == PrevTokenKind::Plus;
+            trailing_plus = p.prev_token.kind == TokenKind::BinOp(token::Plus);
             Ok(ty)
         })?;
 
@@ -311,8 +310,7 @@ impl<'a> Parser<'a> {
         let unsafety = self.parse_unsafety();
         let ext = self.parse_extern()?;
         self.expect_keyword(kw::Fn)?;
-        let cfg = ParamCfg { is_name_required: |_| false };
-        let decl = self.parse_fn_decl(&cfg, AllowPlus::No)?;
+        let decl = self.parse_fn_decl(|_| false, AllowPlus::No)?;
         Ok(TyKind::BareFn(P(BareFnTy { ext, unsafety, generic_params, decl })))
     }
 
@@ -320,7 +318,7 @@ impl<'a> Parser<'a> {
     fn parse_impl_ty(&mut self, impl_dyn_multi: &mut bool) -> PResult<'a, TyKind> {
         // Always parse bounds greedily for better error recovery.
         let bounds = self.parse_generic_bounds(None)?;
-        *impl_dyn_multi = bounds.len() > 1 || self.prev_token_kind == PrevTokenKind::Plus;
+        *impl_dyn_multi = bounds.len() > 1 || self.prev_token.kind == TokenKind::BinOp(token::Plus);
         Ok(TyKind::ImplTrait(ast::DUMMY_NODE_ID, bounds))
     }
 
@@ -340,7 +338,7 @@ impl<'a> Parser<'a> {
         self.bump(); // `dyn`
         // Always parse bounds greedily for better error recovery.
         let bounds = self.parse_generic_bounds(None)?;
-        *impl_dyn_multi = bounds.len() > 1 || self.prev_token_kind == PrevTokenKind::Plus;
+        *impl_dyn_multi = bounds.len() > 1 || self.prev_token.kind == TokenKind::BinOp(token::Plus);
         Ok(TyKind::TraitObject(bounds, TraitObjectSyntax::Dyn))
     }
 

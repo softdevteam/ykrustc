@@ -518,18 +518,19 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
         }
     }
 
-    fn check_unary_op(&mut self, arg: &Operand<'tcx>, source_info: SourceInfo) -> Option<()> {
+    fn check_unary_op(
+        &mut self,
+        op: UnOp,
+        arg: &Operand<'tcx>,
+        source_info: SourceInfo,
+    ) -> Option<()> {
         self.use_ecx(source_info, |this| {
-            let ty = arg.ty(&this.local_decls, this.tcx);
+            let val = this.ecx.read_immediate(this.ecx.eval_operand(arg, None)?)?;
+            let (_res, overflow, _ty) = this.ecx.overflowing_unary_op(op, val)?;
 
-            if ty.is_integral() {
-                let arg = this.ecx.eval_operand(arg, None)?;
-                let prim = this.ecx.read_immediate(arg)?;
-                // Need to do overflow check here: For actual CTFE, MIR
-                // generation emits code that does this before calling the op.
-                if prim.to_bits()? == (1 << (prim.layout.size.bits() - 1)) {
-                    throw_panic!(OverflowNeg)
-                }
+            if overflow {
+                assert_eq!(op, UnOp::Neg, "Neg is the only UnOp that can overflow");
+                throw_panic!(OverflowNeg);
             }
 
             Ok(())
@@ -556,12 +557,14 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
             let r_bits = r.to_scalar().and_then(|r| r.to_bits(right_size));
             if r_bits.map_or(false, |b| b >= left_bits as u128) {
                 let lint_root = self.lint_root(source_info)?;
-                let dir = if op == BinOp::Shr { "right" } else { "left" };
-                self.tcx.lint_hir(
+                self.tcx.struct_span_lint_hir(
                     ::rustc::lint::builtin::EXCEEDING_BITSHIFTS,
                     lint_root,
                     source_info.span,
-                    &format!("attempt to shift {} with overflow", dir),
+                    |lint| {
+                        let dir = if op == BinOp::Shr { "right" } else { "left" };
+                        lint.build(&format!("attempt to shift {} with overflow", dir)).emit()
+                    },
                 );
                 return None;
             }
@@ -574,11 +577,10 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
         if !overflow_check {
             self.use_ecx(source_info, |this| {
                 let l = this.ecx.read_immediate(this.ecx.eval_operand(left, None)?)?;
-                let (_, overflow, _ty) = this.ecx.overflowing_binary_op(op, l, r)?;
+                let (_res, overflow, _ty) = this.ecx.overflowing_binary_op(op, l, r)?;
 
                 if overflow {
-                    let err = err_panic!(Overflow(op)).into();
-                    return Err(err);
+                    throw_panic!(Overflow(op));
                 }
 
                 Ok(())
@@ -618,9 +620,9 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
             // Additional checking: if overflow checks are disabled (which is usually the case in
             // release mode), then we need to do additional checking here to give lints to the user
             // if an overflow would occur.
-            Rvalue::UnaryOp(UnOp::Neg, arg) if !overflow_check => {
-                trace!("checking UnaryOp(op = Neg, arg = {:?})", arg);
-                self.check_unary_op(arg, source_info)?;
+            Rvalue::UnaryOp(op, arg) if !overflow_check => {
+                trace!("checking UnaryOp(op = {:?}, arg = {:?})", op, arg);
+                self.check_unary_op(*op, arg, source_info)?;
             }
 
             // Additional checking: check for overflows on integer binary operations and report
@@ -912,35 +914,49 @@ impl<'mir, 'tcx> MutVisitor<'tcx> for ConstPropagator<'mir, 'tcx> {
                             .hir()
                             .as_local_hir_id(self.source.def_id())
                             .expect("some part of a failing const eval must be local");
-                        let msg = match msg {
-                            PanicInfo::Overflow(_)
-                            | PanicInfo::OverflowNeg
-                            | PanicInfo::DivisionByZero
-                            | PanicInfo::RemainderByZero => msg.description().to_owned(),
-                            PanicInfo::BoundsCheck { ref len, ref index } => {
-                                let len =
-                                    self.eval_operand(len, source_info).expect("len must be const");
-                                let len = match self.ecx.read_scalar(len) {
-                                    Ok(ScalarMaybeUndef::Scalar(Scalar::Raw { data, .. })) => data,
-                                    other => bug!("const len not primitive: {:?}", other),
+                        self.tcx.struct_span_lint_hir(
+                            ::rustc::lint::builtin::CONST_ERR,
+                            hir_id,
+                            span,
+                            |lint| {
+                                let msg = match msg {
+                                    PanicInfo::Overflow(_)
+                                    | PanicInfo::OverflowNeg
+                                    | PanicInfo::DivisionByZero
+                                    | PanicInfo::RemainderByZero => msg.description().to_owned(),
+                                    PanicInfo::BoundsCheck { ref len, ref index } => {
+                                        let len = self
+                                            .eval_operand(len, source_info)
+                                            .expect("len must be const");
+                                        let len = match self.ecx.read_scalar(len) {
+                                            Ok(ScalarMaybeUndef::Scalar(Scalar::Raw {
+                                                data,
+                                                ..
+                                            })) => data,
+                                            other => bug!("const len not primitive: {:?}", other),
+                                        };
+                                        let index = self
+                                            .eval_operand(index, source_info)
+                                            .expect("index must be const");
+                                        let index = match self.ecx.read_scalar(index) {
+                                            Ok(ScalarMaybeUndef::Scalar(Scalar::Raw {
+                                                data,
+                                                ..
+                                            })) => data,
+                                            other => bug!("const index not primitive: {:?}", other),
+                                        };
+                                        format!(
+                                            "index out of bounds: \
+                                            the len is {} but the index is {}",
+                                            len, index,
+                                        )
+                                    }
+                                    // Need proper const propagator for these
+                                    _ => return,
                                 };
-                                let index = self
-                                    .eval_operand(index, source_info)
-                                    .expect("index must be const");
-                                let index = match self.ecx.read_scalar(index) {
-                                    Ok(ScalarMaybeUndef::Scalar(Scalar::Raw { data, .. })) => data,
-                                    other => bug!("const index not primitive: {:?}", other),
-                                };
-                                format!(
-                                    "index out of bounds: \
-                                    the len is {} but the index is {}",
-                                    len, index,
-                                )
-                            }
-                            // Need proper const propagator for these
-                            _ => return,
-                        };
-                        self.tcx.lint_hir(::rustc::lint::builtin::CONST_ERR, hir_id, span, &msg);
+                                lint.build(&msg).emit()
+                            },
+                        );
                     } else {
                         if self.should_const_prop(value) {
                             if let ScalarMaybeUndef::Scalar(scalar) = value_const {

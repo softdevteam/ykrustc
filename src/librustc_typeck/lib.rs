@@ -58,10 +58,8 @@ This API is completely unstable and subject to change.
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![allow(non_camel_case_types)]
 #![feature(bool_to_option)]
-#![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(crate_visibility_modifier)]
-#![feature(exhaustive_patterns)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(try_blocks)]
@@ -379,7 +377,7 @@ pub fn hir_trait_to_predicates<'tcx>(
         &item_cx,
         hir_trait,
         DUMMY_SP,
-        syntax::ast::Constness::NotConst,
+        hir::Constness::NotConst,
         tcx.types.err,
         &mut bounds,
         true,

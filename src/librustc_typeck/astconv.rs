@@ -28,12 +28,12 @@ use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::print;
-use rustc_hir::{ExprKind, GenericArg, GenericArgs};
+use rustc_hir::{Constness, ExprKind, GenericArg, GenericArgs};
 use rustc_span::symbol::sym;
 use rustc_span::{MultiSpan, Span, DUMMY_SP};
 use rustc_target::spec::abi;
 use smallvec::SmallVec;
-use syntax::ast::{self, Constness};
+use syntax::ast;
 use syntax::util::lev_distance::find_best_match_for_name;
 
 use std::collections::BTreeSet;
@@ -331,11 +331,11 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 } else {
                     let mut multispan = MultiSpan::from_span(span);
                     multispan.push_span_label(span_late, note.to_string());
-                    tcx.lint_hir(
+                    tcx.struct_span_lint_hir(
                         lint::builtin::LATE_BOUND_LIFETIME_ARGUMENTS,
                         args.args[0].id(),
                         multispan,
-                        msg,
+                        |lint| lint.build(msg).emit(),
                     );
                     reported_late_bound_region_err = Some(false);
                 }
@@ -1502,7 +1502,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             .filter(|(trait_ref, _, _)| !tcx.trait_is_auto(trait_ref.def_id()));
 
         for (base_trait_ref, span, constness) in regular_traits_refs_spans {
-            assert_eq!(constness, ast::Constness::NotConst);
+            assert_eq!(constness, Constness::NotConst);
 
             for trait_ref in traits::elaborate_trait_ref(tcx, base_trait_ref) {
                 debug!(
@@ -2216,34 +2216,31 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         tcx.check_stability(item.def_id, Some(hir_ref_id), span);
 
         if let Some(variant_def_id) = variant_resolution {
-            let mut err = tcx.struct_span_lint_hir(
-                AMBIGUOUS_ASSOCIATED_ITEMS,
-                hir_ref_id,
-                span,
-                "ambiguous associated item",
-            );
+            tcx.struct_span_lint_hir(AMBIGUOUS_ASSOCIATED_ITEMS, hir_ref_id, span, |lint| {
+                let mut err = lint.build("ambiguous associated item");
+                let mut could_refer_to = |kind: DefKind, def_id, also| {
+                    let note_msg = format!(
+                        "`{}` could{} refer to the {} defined here",
+                        assoc_ident,
+                        also,
+                        kind.descr(def_id)
+                    );
+                    err.span_note(tcx.def_span(def_id), &note_msg);
+                };
 
-            let mut could_refer_to = |kind: DefKind, def_id, also| {
-                let note_msg = format!(
-                    "`{}` could{} refer to the {} defined here",
-                    assoc_ident,
-                    also,
-                    kind.descr(def_id)
+                could_refer_to(DefKind::Variant, variant_def_id, "");
+                could_refer_to(kind, item.def_id, " also");
+
+                err.span_suggestion(
+                    span,
+                    "use fully-qualified syntax",
+                    format!("<{} as {}>::{}", qself_ty, tcx.item_name(trait_did), assoc_ident),
+                    Applicability::MachineApplicable,
                 );
-                err.span_note(tcx.def_span(def_id), &note_msg);
-            };
-            could_refer_to(DefKind::Variant, variant_def_id, "");
-            could_refer_to(kind, item.def_id, " also");
 
-            err.span_suggestion(
-                span,
-                "use fully-qualified syntax",
-                format!("<{} as {}>::{}", qself_ty, tcx.item_name(trait_did), assoc_ident),
-                Applicability::MachineApplicable,
-            )
-            .emit();
+                err.emit();
+            });
         }
-
         Ok((ty, kind, item.def_id))
     }
 

@@ -40,19 +40,19 @@ use crate::ty::fast_reject;
 use crate::ty::relate::TypeRelation;
 use crate::ty::subst::{Subst, SubstsRef};
 use crate::ty::{self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness};
-use rustc_hir::def_id::DefId;
-
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
 use rustc_index::bit_set::GrowableBitSet;
 use rustc_span::symbol::sym;
 use rustc_target::spec::abi::Abi;
+use syntax::attr;
+
 use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::fmt::{self, Display};
 use std::iter;
 use std::rc::Rc;
-use syntax::{ast, attr};
 
 pub use rustc::traits::types::select::*;
 
@@ -677,7 +677,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
             // if the regions match exactly.
             let cycle = stack.iter().skip(1).take_while(|s| s.depth >= cycle_depth);
             let cycle = cycle.map(|stack| {
-                ty::Predicate::Trait(stack.obligation.predicate, ast::Constness::NotConst)
+                ty::Predicate::Trait(stack.obligation.predicate, hir::Constness::NotConst)
             });
             if self.coinductive_match(cycle) {
                 debug!("evaluate_stack({:?}) --> recursive, coinductive", stack.fresh_trait_ref);
@@ -1634,7 +1634,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         obligation: &TraitObligation<'tcx>,
         candidates: &mut SelectionCandidateSet<'tcx>,
     ) -> Result<(), SelectionError<'tcx>> {
-        let kind = match self.tcx().lang_items().fn_trait_kind(obligation.predicate.def_id()) {
+        let kind = match self.tcx().fn_trait_kind_from_lang_item(obligation.predicate.def_id()) {
             Some(k) => k,
             None => {
                 return Ok(());
@@ -1677,7 +1677,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         candidates: &mut SelectionCandidateSet<'tcx>,
     ) -> Result<(), SelectionError<'tcx>> {
         // We provide impl of all fn traits for fn pointers.
-        if self.tcx().lang_items().fn_trait_kind(obligation.predicate.def_id()).is_none() {
+        if self.tcx().fn_trait_kind_from_lang_item(obligation.predicate.def_id()).is_none() {
             return Ok(());
         }
 
@@ -2889,8 +2889,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
 
         let kind = self
             .tcx()
-            .lang_items()
-            .fn_trait_kind(obligation.predicate.def_id())
+            .fn_trait_kind_from_lang_item(obligation.predicate.def_id())
             .unwrap_or_else(|| bug!("closure candidate for non-fn trait {:?}", obligation));
 
         // Okay to skip binder because the substs on closure types never
@@ -3472,7 +3471,7 @@ impl<'cx, 'tcx> SelectionContext<'cx, 'tcx> {
         // that order.
         let predicates = tcx.predicates_of(def_id);
         assert_eq!(predicates.parent, None);
-        let mut obligations = Vec::new();
+        let mut obligations = Vec::with_capacity(predicates.predicates.len());
         for (predicate, _) in predicates.predicates {
             let predicate = normalize_with_depth_to(
                 self,
