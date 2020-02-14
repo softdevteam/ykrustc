@@ -12,15 +12,22 @@ doctest = false
 [dependencies]
 flate2 = "1.0"
 log = "0.4"
-memmap = "0.6"
+memmap = "0.7"
 smallvec = { version = "1.0", features = ["union", "may_dangle"] }
 rustc = { path = "../librustc" }
+rustc_ast_pretty = { path = "../librustc_ast_pretty" }
+rustc_attr = { path = "../librustc_attr" }
 rustc_data_structures = { path = "../librustc_data_structures" }
-errors = { path = "../librustc_errors", package = "rustc_errors" }
+rustc_errors = { path = "../librustc_errors" }
+rustc_hir = { path = "../librustc_hir" }
 rustc_target = { path = "../librustc_target" }
 rustc_index = { path = "../librustc_index" }
 rustc_serialize = { path = "../libserialize", package = "serialize" }
 stable_deref_trait = "1.0.0"
 syntax = { path = "../libsyntax" }
-syntax_expand = { path = "../libsyntax_expand" }
-syntax_pos = { path = "../libsyntax_pos" }
+rustc_expand = { path = "../librustc_expand" }
+rustc_parse = { path = "../librustc_parse" }
+rustc_span = { path = "../librustc_span" }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["errhandlingapi", "libloaderapi"] }

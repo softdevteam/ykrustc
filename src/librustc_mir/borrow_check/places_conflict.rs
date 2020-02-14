@@ -1,11 +1,9 @@
 use crate::borrow_check::ArtificialField;
 use crate::borrow_check::Overlap;
-use crate::borrow_check::{Deep, Shallow, AccessDepth};
-use rustc::hir;
-use rustc::mir::{
-    Body, BorrowKind, Place, PlaceBase, PlaceElem, PlaceRef, ProjectionElem, StaticKind,
-};
+use crate::borrow_check::{AccessDepth, Deep, Shallow};
+use rustc::mir::{Body, BorrowKind, Local, Place, PlaceElem, PlaceRef, ProjectionElem};
 use rustc::ty::{self, TyCtxt};
+use rustc_hir as hir;
 use std::cmp::max;
 
 /// When checking if a place conflicts with another place, this enum is used to influence decisions
@@ -25,7 +23,6 @@ crate enum PlaceConflictBias {
 /// dataflow).
 crate fn places_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     borrow_place: &Place<'tcx>,
     access_place: &Place<'tcx>,
@@ -33,7 +30,6 @@ crate fn places_conflict<'tcx>(
 ) -> bool {
     borrow_conflicts_with_place(
         tcx,
-        param_env,
         body,
         borrow_place,
         BorrowKind::Mut { allow_two_phase_borrow: true },
@@ -49,7 +45,6 @@ crate fn places_conflict<'tcx>(
 /// order to make the conservative choice and preserve soundness.
 pub(super) fn borrow_conflicts_with_place<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     borrow_place: &Place<'tcx>,
     borrow_kind: BorrowKind,
@@ -70,21 +65,11 @@ pub(super) fn borrow_conflicts_with_place<'tcx>(
         }
     }
 
-    place_components_conflict(
-        tcx,
-        param_env,
-        body,
-        borrow_place,
-        borrow_kind,
-        access_place,
-        access,
-        bias,
-    )
+    place_components_conflict(tcx, body, borrow_place, borrow_kind, access_place, access, bias)
 }
 
 fn place_components_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
-    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     borrow_place: &Place<'tcx>,
     borrow_kind: BorrowKind,
@@ -134,10 +119,10 @@ fn place_components_conflict<'tcx>(
     //    and either equal or disjoint.
     //  - If we did run out of access, the borrow can access a part of it.
 
-    let borrow_base = &borrow_place.base;
-    let access_base = access_place.base;
+    let borrow_local = borrow_place.local;
+    let access_local = access_place.local;
 
-    match place_base_conflict(tcx, param_env, borrow_base, access_base) {
+    match place_base_conflict(borrow_local, access_local) {
         Overlap::Arbitrary => {
             bug!("Two base can't return Arbitrary");
         }
@@ -176,7 +161,7 @@ fn place_components_conflict<'tcx>(
         match place_projection_conflict(
             tcx,
             body,
-            borrow_base,
+            borrow_local,
             borrow_proj_base,
             borrow_c,
             access_c,
@@ -223,7 +208,7 @@ fn place_components_conflict<'tcx>(
             // access cares about.
 
             let proj_base = &borrow_place.projection[..access_place.projection.len() + i];
-            let base_ty = Place::ty_from(borrow_base, proj_base, body, tcx).ty;
+            let base_ty = Place::ty_from(borrow_local, proj_base, body, tcx).ty;
 
             match (elem, &base_ty.kind, access) {
                 (_, _, Shallow(Some(ArtificialField::ArrayLength)))
@@ -246,11 +231,11 @@ fn place_components_conflict<'tcx>(
                     debug!("borrow_conflicts_with_place: shallow access behind ptr");
                     return false;
                 }
-                (ProjectionElem::Deref, ty::Ref(_, _, hir::MutImmutable), _) => {
+                (ProjectionElem::Deref, ty::Ref(_, _, hir::Mutability::Not), _) => {
                     // Shouldn't be tracked
                     bug!("Tracking borrow behind shared reference.");
                 }
-                (ProjectionElem::Deref, ty::Ref(_, _, hir::MutMutable), AccessDepth::Drop) => {
+                (ProjectionElem::Deref, ty::Ref(_, _, hir::Mutability::Mut), AccessDepth::Drop) => {
                     // Values behind a mutable reference are not access either by dropping a
                     // value, or by StorageDead
                     debug!("borrow_conflicts_with_place: drop access behind ptr");
@@ -308,68 +293,15 @@ fn place_components_conflict<'tcx>(
 // Given that the bases of `elem1` and `elem2` are always either equal
 // or disjoint (and have the same type!), return the overlap situation
 // between `elem1` and `elem2`.
-fn place_base_conflict<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    param_env: ty::ParamEnv<'tcx>,
-    elem1: &PlaceBase<'tcx>,
-    elem2: &PlaceBase<'tcx>,
-) -> Overlap {
-    match (elem1, elem2) {
-        (PlaceBase::Local(l1), PlaceBase::Local(l2)) => {
-            if l1 == l2 {
-                // the same local - base case, equal
-                debug!("place_element_conflict: DISJOINT-OR-EQ-LOCAL");
-                Overlap::EqualOrDisjoint
-            } else {
-                // different locals - base case, disjoint
-                debug!("place_element_conflict: DISJOINT-LOCAL");
-                Overlap::Disjoint
-            }
-        }
-        (PlaceBase::Static(s1), PlaceBase::Static(s2)) => {
-            match (&s1.kind, &s2.kind) {
-                (StaticKind::Static, StaticKind::Static) => {
-                    if s1.def_id != s2.def_id {
-                        debug!("place_element_conflict: DISJOINT-STATIC");
-                        Overlap::Disjoint
-                    } else if tcx.is_mutable_static(s1.def_id) {
-                        // We ignore mutable statics - they can only be unsafe code.
-                        debug!("place_element_conflict: IGNORE-STATIC-MUT");
-                        Overlap::Disjoint
-                    } else {
-                        debug!("place_element_conflict: DISJOINT-OR-EQ-STATIC");
-                        Overlap::EqualOrDisjoint
-                    }
-                },
-                (StaticKind::Promoted(promoted_1, _), StaticKind::Promoted(promoted_2, _)) => {
-                    if promoted_1 == promoted_2 {
-                        if let ty::Array(_, len) = s1.ty.kind {
-                            if let Some(0) = len.try_eval_usize(tcx, param_env) {
-                                // Ignore conflicts with promoted [T; 0].
-                                debug!("place_element_conflict: IGNORE-LEN-0-PROMOTED");
-                                return Overlap::Disjoint;
-                            }
-                        }
-                        // the same promoted - base case, equal
-                        debug!("place_element_conflict: DISJOINT-OR-EQ-PROMOTED");
-                        Overlap::EqualOrDisjoint
-                    } else {
-                        // different promoteds - base case, disjoint
-                        debug!("place_element_conflict: DISJOINT-PROMOTED");
-                        Overlap::Disjoint
-                    }
-                },
-                (_, _) => {
-                    debug!("place_element_conflict: DISJOINT-STATIC-PROMOTED");
-                    Overlap::Disjoint
-                }
-            }
-        }
-        (PlaceBase::Local(_), PlaceBase::Static(_)) |
-        (PlaceBase::Static(_), PlaceBase::Local(_)) => {
-            debug!("place_element_conflict: DISJOINT-STATIC-LOCAL-PROMOTED");
-            Overlap::Disjoint
-        }
+fn place_base_conflict(l1: Local, l2: Local) -> Overlap {
+    if l1 == l2 {
+        // the same local - base case, equal
+        debug!("place_element_conflict: DISJOINT-OR-EQ-LOCAL");
+        Overlap::EqualOrDisjoint
+    } else {
+        // different locals - base case, disjoint
+        debug!("place_element_conflict: DISJOINT-LOCAL");
+        Overlap::Disjoint
     }
 }
 
@@ -379,7 +311,7 @@ fn place_base_conflict<'tcx>(
 fn place_projection_conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
-    pi1_base: &PlaceBase<'tcx>,
+    pi1_local: Local,
     pi1_proj_base: &[PlaceElem<'tcx>],
     pi1_elem: &PlaceElem<'tcx>,
     pi2_elem: &PlaceElem<'tcx>,
@@ -397,7 +329,7 @@ fn place_projection_conflict<'tcx>(
                 debug!("place_element_conflict: DISJOINT-OR-EQ-FIELD");
                 Overlap::EqualOrDisjoint
             } else {
-                let ty = Place::ty_from(pi1_base, pi1_proj_base, body, tcx).ty;
+                let ty = Place::ty_from(pi1_local, pi1_proj_base, body, tcx).ty;
                 match ty.kind {
                     ty::Adt(def, _) if def.is_union() => {
                         // Different fields of a union, we are basically stuck.
@@ -466,11 +398,14 @@ fn place_projection_conflict<'tcx>(
                 }
             }
         }
-        (ProjectionElem::ConstantIndex { offset: o1, min_length: _, from_end: false },
-            ProjectionElem::ConstantIndex { offset: o2, min_length: _, from_end: false })
-        | (ProjectionElem::ConstantIndex { offset: o1, min_length: _, from_end: true },
-            ProjectionElem::ConstantIndex {
-                offset: o2, min_length: _, from_end: true }) => {
+        (
+            ProjectionElem::ConstantIndex { offset: o1, min_length: _, from_end: false },
+            ProjectionElem::ConstantIndex { offset: o2, min_length: _, from_end: false },
+        )
+        | (
+            ProjectionElem::ConstantIndex { offset: o1, min_length: _, from_end: true },
+            ProjectionElem::ConstantIndex { offset: o2, min_length: _, from_end: true },
+        ) => {
             if o1 == o2 {
                 debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX");
                 Overlap::EqualOrDisjoint
@@ -479,14 +414,30 @@ fn place_projection_conflict<'tcx>(
                 Overlap::Disjoint
             }
         }
-        (ProjectionElem::ConstantIndex {
-            offset: offset_from_begin, min_length: min_length1, from_end: false },
+        (
             ProjectionElem::ConstantIndex {
-                offset: offset_from_end, min_length: min_length2, from_end: true })
-        | (ProjectionElem::ConstantIndex {
-            offset: offset_from_end, min_length: min_length1, from_end: true },
-           ProjectionElem::ConstantIndex {
-               offset: offset_from_begin, min_length: min_length2, from_end: false }) => {
+                offset: offset_from_begin,
+                min_length: min_length1,
+                from_end: false,
+            },
+            ProjectionElem::ConstantIndex {
+                offset: offset_from_end,
+                min_length: min_length2,
+                from_end: true,
+            },
+        )
+        | (
+            ProjectionElem::ConstantIndex {
+                offset: offset_from_end,
+                min_length: min_length1,
+                from_end: true,
+            },
+            ProjectionElem::ConstantIndex {
+                offset: offset_from_begin,
+                min_length: min_length2,
+                from_end: false,
+            },
+        ) => {
             // both patterns matched so it must be at least the greater of the two
             let min_length = max(min_length1, min_length2);
             // `offset_from_end` can be in range `[1..min_length]`, 1 indicates the last
@@ -501,35 +452,72 @@ fn place_projection_conflict<'tcx>(
                 Overlap::Disjoint
             }
         }
-        (ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
-         ProjectionElem::Subslice {from, .. })
-        | (ProjectionElem::Subslice {from, .. },
-            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false }) => {
-            if offset >= from {
-                debug!(
-                    "place_element_conflict: DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX-SUBSLICE");
+        (
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
+            ProjectionElem::Subslice { from, to, from_end: false },
+        )
+        | (
+            ProjectionElem::Subslice { from, to, from_end: false },
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
+        ) => {
+            if (from..to).contains(&offset) {
+                debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX-SUBSLICE");
                 Overlap::EqualOrDisjoint
             } else {
                 debug!("place_element_conflict: DISJOINT-ARRAY-CONSTANT-INDEX-SUBSLICE");
                 Overlap::Disjoint
             }
         }
-        (ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true },
-         ProjectionElem::Subslice {from: _, to })
-        | (ProjectionElem::Subslice {from: _, to },
-            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true }) => {
-            if offset > to {
-                debug!("place_element_conflict: \
-                       DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX-SUBSLICE-FE");
+        (
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
+            ProjectionElem::Subslice { from, .. },
+        )
+        | (
+            ProjectionElem::Subslice { from, .. },
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
+        ) => {
+            if offset >= from {
+                debug!("place_element_conflict: DISJOINT-OR-EQ-SLICE-CONSTANT-INDEX-SUBSLICE");
                 Overlap::EqualOrDisjoint
             } else {
-                debug!("place_element_conflict: DISJOINT-ARRAY-CONSTANT-INDEX-SUBSLICE-FE");
+                debug!("place_element_conflict: DISJOINT-SLICE-CONSTANT-INDEX-SUBSLICE");
                 Overlap::Disjoint
             }
         }
+        (
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true },
+            ProjectionElem::Subslice { to, from_end: true, .. },
+        )
+        | (
+            ProjectionElem::Subslice { to, from_end: true, .. },
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true },
+        ) => {
+            if offset > to {
+                debug!(
+                    "place_element_conflict: \
+                       DISJOINT-OR-EQ-SLICE-CONSTANT-INDEX-SUBSLICE-FE"
+                );
+                Overlap::EqualOrDisjoint
+            } else {
+                debug!("place_element_conflict: DISJOINT-SLICE-CONSTANT-INDEX-SUBSLICE-FE");
+                Overlap::Disjoint
+            }
+        }
+        (
+            ProjectionElem::Subslice { from: f1, to: t1, from_end: false },
+            ProjectionElem::Subslice { from: f2, to: t2, from_end: false },
+        ) => {
+            if f2 >= t1 || f1 >= t2 {
+                debug!("place_element_conflict: DISJOINT-ARRAY-SUBSLICES");
+                Overlap::Disjoint
+            } else {
+                debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-SUBSLICES");
+                Overlap::EqualOrDisjoint
+            }
+        }
         (ProjectionElem::Subslice { .. }, ProjectionElem::Subslice { .. }) => {
-            debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-SUBSLICES");
-             Overlap::EqualOrDisjoint
+            debug!("place_element_conflict: DISJOINT-OR-EQ-SLICE-SUBSLICES");
+            Overlap::EqualOrDisjoint
         }
         (ProjectionElem::Deref, _)
         | (ProjectionElem::Field(..), _)

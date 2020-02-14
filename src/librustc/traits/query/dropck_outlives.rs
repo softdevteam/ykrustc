@@ -1,10 +1,11 @@
 use crate::infer::at::At;
-use crate::infer::InferOk;
 use crate::infer::canonical::OriginalQueryValues;
-use std::iter::FromIterator;
-use syntax::source_map::Span;
-use crate::ty::subst::GenericArg;
-use crate::ty::{self, Ty, TyCtxt};
+use crate::infer::InferOk;
+
+use rustc::ty::subst::GenericArg;
+use rustc::ty::{self, Ty, TyCtxt};
+
+pub use rustc::traits::query::{DropckOutlivesResult, DtorckConstraint};
 
 impl<'cx, 'tcx> At<'cx, 'tcx> {
     /// Given a type `ty` of some value being dropped, computes a set
@@ -25,19 +26,13 @@ impl<'cx, 'tcx> At<'cx, 'tcx> {
     /// [#1238]: https://github.com/rust-lang/rfcs/blob/master/text/1238-nonparametric-dropck.md
     /// [#1327]: https://github.com/rust-lang/rfcs/blob/master/text/1327-dropck-param-eyepatch.md
     pub fn dropck_outlives(&self, ty: Ty<'tcx>) -> InferOk<'tcx, Vec<GenericArg<'tcx>>> {
-        debug!(
-            "dropck_outlives(ty={:?}, param_env={:?})",
-            ty, self.param_env,
-        );
+        debug!("dropck_outlives(ty={:?}, param_env={:?})", ty, self.param_env,);
 
         // Quick check: there are a number of cases that we know do not require
         // any destructor.
         let tcx = self.infcx.tcx;
         if trivial_dropck_outlives(tcx, ty) {
-            return InferOk {
-                value: vec![],
-                obligations: vec![],
-            };
+            return InferOk { value: vec![], obligations: vec![] };
         }
 
         let mut orig_values = OriginalQueryValues::default();
@@ -48,17 +43,15 @@ impl<'cx, 'tcx> At<'cx, 'tcx> {
             if result.is_proven() {
                 if let Ok(InferOk { value, obligations }) =
                     self.infcx.instantiate_query_response_and_region_obligations(
-                    self.cause,
-                    self.param_env,
-                    &orig_values,
-                    result)
+                        self.cause,
+                        self.param_env,
+                        &orig_values,
+                        result,
+                    )
                 {
                     let ty = self.infcx.resolve_vars_if_possible(&ty);
                     let kinds = value.into_kinds_reporting_overflows(tcx, span, ty);
-                    return InferOk {
-                        value: kinds,
-                        obligations,
-                    };
+                    return InferOk { value: kinds, obligations };
                 }
             }
         }
@@ -67,111 +60,11 @@ impl<'cx, 'tcx> At<'cx, 'tcx> {
         // - unresolved inference variables at the end of typeck
         // - non well-formed types where projections cannot be resolved
         // Either of these should have created an error before.
-        tcx.sess
-            .delay_span_bug(span, "dtorck encountered internal error");
+        tcx.sess.delay_span_bug(span, "dtorck encountered internal error");
 
-        InferOk {
-            value: vec![],
-            obligations: vec![],
-        }
+        InferOk { value: vec![], obligations: vec![] }
     }
 }
-
-#[derive(Clone, Debug, Default)]
-pub struct DropckOutlivesResult<'tcx> {
-    pub kinds: Vec<GenericArg<'tcx>>,
-    pub overflows: Vec<Ty<'tcx>>,
-}
-
-impl<'tcx> DropckOutlivesResult<'tcx> {
-    pub fn report_overflows(&self, tcx: TyCtxt<'tcx>, span: Span, ty: Ty<'tcx>) {
-        if let Some(overflow_ty) = self.overflows.iter().next() {
-            let mut err = struct_span_err!(
-                tcx.sess,
-                span,
-                E0320,
-                "overflow while adding drop-check rules for {}",
-                ty,
-            );
-            err.note(&format!("overflowed on {}", overflow_ty));
-            err.emit();
-        }
-    }
-
-    pub fn into_kinds_reporting_overflows(
-        self,
-        tcx: TyCtxt<'tcx>,
-        span: Span,
-        ty: Ty<'tcx>,
-    ) -> Vec<GenericArg<'tcx>> {
-        self.report_overflows(tcx, span, ty);
-        let DropckOutlivesResult { kinds, overflows: _ } = self;
-        kinds
-    }
-}
-
-/// A set of constraints that need to be satisfied in order for
-/// a type to be valid for destruction.
-#[derive(Clone, Debug)]
-pub struct DtorckConstraint<'tcx> {
-    /// Types that are required to be alive in order for this
-    /// type to be valid for destruction.
-    pub outlives: Vec<ty::subst::GenericArg<'tcx>>,
-
-    /// Types that could not be resolved: projections and params.
-    pub dtorck_types: Vec<Ty<'tcx>>,
-
-    /// If, during the computation of the dtorck constraint, we
-    /// overflow, that gets recorded here. The caller is expected to
-    /// report an error.
-    pub overflows: Vec<Ty<'tcx>>,
-}
-
-impl<'tcx> DtorckConstraint<'tcx> {
-    pub fn empty() -> DtorckConstraint<'tcx> {
-        DtorckConstraint {
-            outlives: vec![],
-            dtorck_types: vec![],
-            overflows: vec![],
-        }
-    }
-}
-
-impl<'tcx> FromIterator<DtorckConstraint<'tcx>> for DtorckConstraint<'tcx> {
-    fn from_iter<I: IntoIterator<Item = DtorckConstraint<'tcx>>>(iter: I) -> Self {
-        let mut result = Self::empty();
-
-        for DtorckConstraint { outlives, dtorck_types, overflows } in iter {
-            result.outlives.extend(outlives);
-            result.dtorck_types.extend(dtorck_types);
-            result.overflows.extend(overflows);
-        }
-
-        result
-    }
-}
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for DropckOutlivesResult<'tcx> {
-        kinds, overflows
-    }
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for DropckOutlivesResult<'a> {
-        type Lifted = DropckOutlivesResult<'tcx>;
-        kinds, overflows
-    }
-}
-
-impl_stable_hash_for!(struct DropckOutlivesResult<'tcx> {
-    kinds, overflows
-});
-
-impl_stable_hash_for!(struct DtorckConstraint<'tcx> {
-    outlives,
-    dtorck_types,
-    overflows
-});
 
 /// This returns true if the type `ty` is "trivial" for
 /// dropck-outlives -- that is, if it doesn't require any types to
@@ -212,10 +105,9 @@ pub fn trivial_dropck_outlives<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> bool {
         // (T1..Tn) and closures have same properties as T1..Tn --
         // check if *any* of those are trivial.
         ty::Tuple(ref tys) => tys.iter().all(|t| trivial_dropck_outlives(tcx, t.expect_ty())),
-        ty::Closure(def_id, ref substs) => substs
-            .as_closure()
-            .upvar_tys(def_id, tcx)
-            .all(|t| trivial_dropck_outlives(tcx, t)),
+        ty::Closure(def_id, ref substs) => {
+            substs.as_closure().upvar_tys(def_id, tcx).all(|t| trivial_dropck_outlives(tcx, t))
+        }
 
         ty::Adt(def, _) => {
             if Some(def.did) == tcx.lang_items().manually_drop() {

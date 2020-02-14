@@ -7,64 +7,64 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use crate::convert::FloatToInt;
 #[cfg(not(test))]
 use crate::intrinsics;
-
 use crate::mem;
 use crate::num::FpCategory;
 
 /// The radix or base of the internal representation of `f32`.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const RADIX: u32 = 2;
+pub const RADIX: u32 = f32::RADIX;
 
 /// Number of significant digits in base 2.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MANTISSA_DIGITS: u32 = 24;
+pub const MANTISSA_DIGITS: u32 = f32::MANTISSA_DIGITS;
 /// Approximate number of significant digits in base 10.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const DIGITS: u32 = 6;
+pub const DIGITS: u32 = f32::DIGITS;
 
 /// [Machine epsilon] value for `f32`.
 ///
-/// This is the difference between `1.0` and the next largest representable number.
+/// This is the difference between `1.0` and the next larger representable number.
 ///
 /// [Machine epsilon]: https://en.wikipedia.org/wiki/Machine_epsilon
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const EPSILON: f32 = 1.19209290e-07_f32;
+pub const EPSILON: f32 = f32::EPSILON;
 
 /// Smallest finite `f32` value.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN: f32 = -3.40282347e+38_f32;
+pub const MIN: f32 = f32::MIN;
 /// Smallest positive normal `f32` value.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN_POSITIVE: f32 = 1.17549435e-38_f32;
+pub const MIN_POSITIVE: f32 = f32::MIN_POSITIVE;
 /// Largest finite `f32` value.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAX: f32 = 3.40282347e+38_f32;
+pub const MAX: f32 = f32::MAX;
 
 /// One greater than the minimum possible normal power of 2 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN_EXP: i32 = -125;
+pub const MIN_EXP: i32 = f32::MIN_EXP;
 /// Maximum possible power of 2 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAX_EXP: i32 = 128;
+pub const MAX_EXP: i32 = f32::MAX_EXP;
 
 /// Minimum possible normal power of 10 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MIN_10_EXP: i32 = -37;
+pub const MIN_10_EXP: i32 = f32::MIN_10_EXP;
 /// Maximum possible power of 10 exponent.
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const MAX_10_EXP: i32 = 38;
+pub const MAX_10_EXP: i32 = f32::MAX_10_EXP;
 
 /// Not a Number (NaN).
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const NAN: f32 = 0.0_f32 / 0.0_f32;
+pub const NAN: f32 = f32::NAN;
 /// Infinity (∞).
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const INFINITY: f32 = 1.0_f32 / 0.0_f32;
-/// Negative infinity (-∞).
+pub const INFINITY: f32 = f32::INFINITY;
+/// Negative infinity (−∞).
 #[stable(feature = "rust1", since = "1.0.0")]
-pub const NEG_INFINITY: f32 = -1.0_f32 / 0.0_f32;
+pub const NEG_INFINITY: f32 = f32::NEG_INFINITY;
 
 /// Basic mathematical constants.
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -74,6 +74,12 @@ pub mod consts {
     /// Archimedes' constant (π)
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const PI: f32 = 3.14159265358979323846264338327950288_f32;
+
+    /// The full circle constant (τ)
+    ///
+    /// Equal to 2π.
+    #[unstable(feature = "tau_constant", issue = "66770")]
+    pub const TAU: f32 = 6.28318530717958647692528676655900577_f32;
 
     /// π/2
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -147,6 +153,60 @@ pub mod consts {
 #[lang = "f32"]
 #[cfg(not(test))]
 impl f32 {
+    /// The radix or base of the internal representation of `f32`.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const RADIX: u32 = 2;
+
+    /// Number of significant digits in base 2.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MANTISSA_DIGITS: u32 = 24;
+
+    /// Approximate number of significant digits in base 10.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const DIGITS: u32 = 6;
+
+    /// [Machine epsilon] value for `f32`.
+    ///
+    /// This is the difference between `1.0` and the next larger representable number.
+    ///
+    /// [Machine epsilon]: https://en.wikipedia.org/wiki/Machine_epsilon
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const EPSILON: f32 = 1.19209290e-07_f32;
+
+    /// Smallest finite `f32` value.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN: f32 = -3.40282347e+38_f32;
+    /// Smallest positive normal `f32` value.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN_POSITIVE: f32 = 1.17549435e-38_f32;
+    /// Largest finite `f32` value.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MAX: f32 = 3.40282347e+38_f32;
+
+    /// One greater than the minimum possible normal power of 2 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN_EXP: i32 = -125;
+    /// Maximum possible power of 2 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MAX_EXP: i32 = 128;
+
+    /// Minimum possible normal power of 10 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MIN_10_EXP: i32 = -37;
+    /// Maximum possible power of 10 exponent.
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const MAX_10_EXP: i32 = 38;
+
+    /// Not a Number (NaN).
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const NAN: f32 = 0.0_f32 / 0.0_f32;
+    /// Infinity (∞).
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const INFINITY: f32 = 1.0_f32 / 0.0_f32;
+    /// Negative infinity (-∞).
+    #[unstable(feature = "assoc_int_consts", reason = "recently added", issue = "68490")]
+    pub const NEG_INFINITY: f32 = -1.0_f32 / 0.0_f32;
+
     /// Returns `true` if this value is `NaN`.
     ///
     /// ```
@@ -220,7 +280,7 @@ impl f32 {
     }
 
     /// Returns `true` if the number is neither zero, infinite,
-    /// [subnormal][subnormal], or `NaN`.
+    /// [subnormal], or `NaN`.
     ///
     /// ```
     /// use std::f32;
@@ -336,7 +396,7 @@ impl f32 {
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
-    #[stable(feature = "f32_deg_rad_conversions", since="1.7.0")]
+    #[stable(feature = "f32_deg_rad_conversions", since = "1.7.0")]
     #[inline]
     pub fn to_degrees(self) -> f32 {
         // Use a constant for better precision.
@@ -355,7 +415,7 @@ impl f32 {
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
-    #[stable(feature = "f32_deg_rad_conversions", since="1.7.0")]
+    #[stable(feature = "f32_deg_rad_conversions", since = "1.7.0")]
     #[inline]
     pub fn to_radians(self) -> f32 {
         let value: f32 = consts::PI;
@@ -394,6 +454,37 @@ impl f32 {
         intrinsics::minnumf32(self, other)
     }
 
+    /// Rounds toward zero and converts to any primitive integer type,
+    /// assuming that the value is finite and fits in that type.
+    ///
+    /// ```
+    /// #![feature(float_approx_unchecked_to)]
+    ///
+    /// let value = 4.6_f32;
+    /// let rounded = unsafe { value.approx_unchecked_to::<u16>() };
+    /// assert_eq!(rounded, 4);
+    ///
+    /// let value = -128.9_f32;
+    /// let rounded = unsafe { value.approx_unchecked_to::<i8>() };
+    /// assert_eq!(rounded, std::i8::MIN);
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// The value must:
+    ///
+    /// * Not be `NaN`
+    /// * Not be infinite
+    /// * Be representable in the return type `Int`, after truncating off its fractional part
+    #[unstable(feature = "float_approx_unchecked_to", issue = "67058")]
+    #[inline]
+    pub unsafe fn approx_unchecked_to<Int>(self) -> Int
+    where
+        Self: FloatToInt<Int>,
+    {
+        FloatToInt::<Int>::approx_unchecked(self)
+    }
+
     /// Raw transmutation to `u32`.
     ///
     /// This is currently identical to `transmute::<f32, u32>(self)` on all platforms.
@@ -414,6 +505,7 @@ impl f32 {
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[inline]
     pub fn to_bits(self) -> u32 {
+        // SAFETY: `u32` is a plain old datatype so we can always transmute to it
         unsafe { mem::transmute(self) }
     }
 
@@ -456,6 +548,7 @@ impl f32 {
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[inline]
     pub fn from_bits(v: u32) -> Self {
+        // SAFETY: `u32` is a plain old datatype so we can always transmute from it
         // It turns out the safety issues with sNaN were overblown! Hooray!
         unsafe { mem::transmute(v) }
     }

@@ -16,15 +16,20 @@ fn allocator_param() {
 
     // A dumb allocator that consumes a fixed amount of fuel
     // before allocation attempts start failing.
-    struct BoundedAlloc { fuel: usize }
-    unsafe impl Alloc for BoundedAlloc {
+    struct BoundedAlloc {
+        fuel: usize,
+    }
+    unsafe impl AllocRef for BoundedAlloc {
         unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
             let size = layout.size();
             if size > self.fuel {
                 return Err(AllocErr);
             }
             match Global.alloc(layout) {
-                ok @ Ok(_) => { self.fuel -= size; ok }
+                ok @ Ok(_) => {
+                    self.fuel -= size;
+                    ok
+                }
                 err @ Err(_) => err,
             }
         }

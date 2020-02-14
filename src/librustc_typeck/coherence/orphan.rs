@@ -3,8 +3,9 @@
 
 use rustc::traits;
 use rustc::ty::{self, TyCtxt};
-use rustc::hir::itemlikevisit::ItemLikeVisitor;
-use rustc::hir;
+use rustc_errors::struct_span_err;
+use rustc_hir as hir;
+use rustc_hir::itemlikevisit::ItemLikeVisitor;
 
 pub fn check(tcx: TyCtxt<'_>) {
     let mut orphan = OrphanChecker { tcx };
@@ -21,12 +22,14 @@ impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
     /// apply to a specific impl, so just return after reporting one
     /// to prevent inundating the user with a bunch of similar error
     /// reports.
-    fn visit_item(&mut self, item: &hir::Item) {
+    fn visit_item(&mut self, item: &hir::Item<'_>) {
         let def_id = self.tcx.hir().local_def_id(item.hir_id);
         // "Trait" impl
-        if let hir::ItemKind::Impl(.., generics, Some(tr), impl_ty, _) = &item.kind {
-            debug!("coherence2::orphan check: trait impl {}",
-                   self.tcx.hir().node_to_string(item.hir_id));
+        if let hir::ItemKind::Impl { generics, of_trait: Some(ref tr), self_ty, .. } = &item.kind {
+            debug!(
+                "coherence2::orphan check: trait impl {}",
+                self.tcx.hir().node_to_string(item.hir_id)
+            );
             let trait_ref = self.tcx.impl_trait_ref(def_id).unwrap();
             let trait_def_id = trait_ref.def_id;
             let cm = self.tcx.sess.source_map();
@@ -67,7 +70,7 @@ impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
                         let msg = format!("{} is not defined in the current crate{}", ty, postfix);
                         if *is_target_ty {
                             // Point at `D<A>` in `impl<A, B> for C<B> in D<A>`
-                            err.span_label(impl_ty.span, &msg);
+                            err.span_label(self_ty.span, &msg);
                         } else {
                             // Point at `C<B>` in `impl<A, B> for C<B> in D<A>`
                             err.span_label(tr.path.span, &msg);
@@ -77,30 +80,66 @@ impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
                     err.emit();
                     return;
                 }
-                Err(traits::OrphanCheckErr::UncoveredTy(param_ty)) => {
+                Err(traits::OrphanCheckErr::UncoveredTy(param_ty, local_type)) => {
                     let mut sp = sp;
-                    for param in &generics.params {
+                    for param in generics.params {
                         if param.name.ident().to_string() == param_ty.to_string() {
                             sp = param.span;
                         }
                     }
-                    let mut err = struct_span_err!(
-                        self.tcx.sess,
-                        sp,
-                        E0210,
-                        "type parameter `{}` must be used as the type parameter for some local \
-                         type (e.g., `MyStruct<{}>`)",
-                        param_ty,
-                        param_ty
-                    );
-                    err.span_label(sp, format!(
-                        "type parameter `{}` must be used as the type parameter for some local \
-                         type",
-                        param_ty,
-                    ));
-                    err.note("only traits defined in the current crate can be implemented for a \
-                              type parameter");
-                    err.emit();
+
+                    match local_type {
+                        Some(local_type) => {
+                            struct_span_err!(
+                                self.tcx.sess,
+                                sp,
+                                E0210,
+                                "type parameter `{}` must be covered by another type \
+                                when it appears before the first local type (`{}`)",
+                                param_ty,
+                                local_type
+                            )
+                            .span_label(
+                                sp,
+                                format!(
+                                    "type parameter `{}` must be covered by another type \
+                                when it appears before the first local type (`{}`)",
+                                    param_ty, local_type
+                                ),
+                            )
+                            .note(
+                                "implementing a foreign trait is only possible if at \
+                                    least one of the types for which is it implemented is local, \
+                                    and no uncovered type parameters appear before that first \
+                                    local type",
+                            )
+                            .note(
+                                "in this case, 'before' refers to the following order: \
+                                    `impl<..> ForeignTrait<T1, ..., Tn> for T0`, \
+                                    where `T0` is the first and `Tn` is the last",
+                            )
+                            .emit();
+                        }
+                        None => {
+                            struct_span_err!(
+                                self.tcx.sess,
+                                sp,
+                                E0210,
+                                "type parameter `{}` must be used as the type parameter for some \
+                                local type (e.g., `MyStruct<{}>`)",
+                                param_ty,
+                                param_ty
+                            ).span_label(sp, format!(
+                                "type parameter `{}` must be used as the type parameter for some \
+                                local type",
+                                param_ty,
+                            )).note("implementing a foreign trait is only possible if at \
+                                    least one of the types for which is it implemented is local"
+                            ).note("only traits defined in the current crate can be \
+                                    implemented for a type parameter"
+                            ).emit();
+                        }
+                    };
                     return;
                 }
             }
@@ -137,12 +176,13 @@ impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
             // This final impl is legal according to the orpan
             // rules, but it invalidates the reasoning from
             // `two_foos` above.
-            debug!("trait_ref={:?} trait_def_id={:?} trait_is_auto={}",
-                   trait_ref,
-                   trait_def_id,
-                   self.tcx.trait_is_auto(trait_def_id));
-            if self.tcx.trait_is_auto(trait_def_id) &&
-               !trait_def_id.is_local() {
+            debug!(
+                "trait_ref={:?} trait_def_id={:?} trait_is_auto={}",
+                trait_ref,
+                trait_def_id,
+                self.tcx.trait_is_auto(trait_def_id)
+            );
+            if self.tcx.trait_is_auto(trait_def_id) && !trait_def_id.is_local() {
                 let self_ty = trait_ref.self_ty();
                 let opt_self_def_id = match self_ty.kind {
                     ty::Adt(self_def, _) => Some(self_def.did),
@@ -160,22 +200,26 @@ impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
                             None
                         } else {
                             Some((
-                                format!("cross-crate traits with a default impl, like `{}`, \
+                                format!(
+                                    "cross-crate traits with a default impl, like `{}`, \
                                          can only be implemented for a struct/enum type \
                                          defined in the current crate",
-                                        self.tcx.def_path_str(trait_def_id)),
-                                "can't implement cross-crate trait for type in another crate"
+                                    self.tcx.def_path_str(trait_def_id)
+                                ),
+                                "can't implement cross-crate trait for type in another crate",
                             ))
                         }
                     }
-                    _ => {
-                        Some((format!("cross-crate traits with a default impl, like `{}`, can \
+                    _ => Some((
+                        format!(
+                            "cross-crate traits with a default impl, like `{}`, can \
                                        only be implemented for a struct/enum type, not `{}`",
-                                      self.tcx.def_path_str(trait_def_id),
-                                      self_ty),
-                              "can't implement cross-crate trait with a default impl for \
-                               non-struct/enum type"))
-                    }
+                            self.tcx.def_path_str(trait_def_id),
+                            self_ty
+                        ),
+                        "can't implement cross-crate trait with a default impl for \
+                               non-struct/enum type",
+                    )),
                 };
 
                 if let Some((msg, label)) = msg {
@@ -188,9 +232,7 @@ impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
         }
     }
 
-    fn visit_trait_item(&mut self, _trait_item: &hir::TraitItem) {
-    }
+    fn visit_trait_item(&mut self, _trait_item: &hir::TraitItem<'_>) {}
 
-    fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem) {
-    }
+    fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem<'_>) {}
 }

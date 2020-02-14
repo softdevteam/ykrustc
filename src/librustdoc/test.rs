@@ -1,29 +1,29 @@
-use rustc_data_structures::sync::Lrc;
-use rustc_interface::interface;
-use rustc_target::spec::TargetTriple;
-use rustc::hir;
-use rustc::hir::intravisit;
+use rustc::hir::map::Map;
 use rustc::session::{self, config, DiagnosticOutput};
 use rustc::util::common::ErrorReported;
-use syntax::ast;
-use syntax::with_globals;
-use syntax::source_map::SourceMap;
-use syntax::edition::Edition;
-use syntax::feature_gate::UnstableFeatures;
+use rustc_data_structures::sync::Lrc;
+use rustc_feature::UnstableFeatures;
+use rustc_hir as hir;
+use rustc_hir::intravisit;
+use rustc_interface::interface;
+use rustc_span::edition::Edition;
+use rustc_span::source_map::SourceMap;
+use rustc_span::symbol::sym;
+use rustc_span::{BytePos, FileName, Pos, Span, DUMMY_SP};
+use rustc_target::spec::TargetTriple;
 use std::env;
 use std::io::{self, Write};
 use std::panic;
 use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::str;
-use syntax::symbol::sym;
-use syntax_pos::{BytePos, DUMMY_SP, Pos, Span, FileName};
+use syntax::ast;
+use syntax::with_globals;
 use tempfile::Builder as TempFileBuilder;
-use testing;
 
 use crate::clean::Attributes;
 use crate::config::Options;
-use crate::html::markdown::{self, ErrorCodes, LangString, Ignore};
+use crate::html::markdown::{self, ErrorCodes, Ignore, LangString};
 
 #[derive(Clone, Default)]
 pub struct TestOptions {
@@ -42,7 +42,7 @@ pub fn run(options: Options) -> i32 {
     let crate_types = if options.proc_macro_crate {
         vec![config::CrateType::ProcMacro]
     } else {
-        vec![config::CrateType::Dylib]
+        vec![config::CrateType::Rlib]
     };
 
     let sessopts = config::Options {
@@ -54,16 +54,14 @@ pub fn run(options: Options) -> i32 {
         unstable_features: UnstableFeatures::from_environment(),
         lint_cap: Some(::rustc::lint::Level::Allow),
         actually_rustdoc: true,
-        debugging_opts: config::DebuggingOptions {
-            ..config::basic_debugging_options()
-        },
+        debugging_opts: config::DebuggingOptions { ..config::basic_debugging_options() },
         edition: options.edition,
         target_triple: options.target.clone(),
         ..config::Options::default()
     };
 
     let mut cfgs = options.cfgs.clone();
-    cfgs.push("rustdoc".to_owned());
+    cfgs.push("doc".to_owned());
     cfgs.push("doctest".to_owned());
     let config = interface::Config {
         opts: sessopts,
@@ -78,67 +76,78 @@ pub fn run(options: Options) -> i32 {
         crate_name: options.crate_name.clone(),
         lint_caps: Default::default(),
         register_lints: None,
+        override_queries: None,
+        registry: rustc_driver::diagnostics_registry(),
     };
 
     let mut test_args = options.test_args.clone();
     let display_warnings = options.display_warnings;
 
-    let tests = interface::run_compiler(config, |compiler| -> Result<_, ErrorReported> {
-        let lower_to_hir = compiler.lower_to_hir()?;
+    let tests = interface::run_compiler(config, |compiler| {
+        compiler.enter(|queries| {
+            let lower_to_hir = queries.lower_to_hir()?;
 
-        let mut opts = scrape_test_config(lower_to_hir.peek().0.borrow().krate());
-        opts.display_warnings |= options.display_warnings;
-        let enable_per_target_ignores = options.enable_per_target_ignores;
-        let mut collector = Collector::new(
-            compiler.crate_name()?.peek().to_string(),
-            options,
-            false,
-            opts,
-            Some(compiler.source_map().clone()),
-            None,
-            enable_per_target_ignores,
-        );
+            let mut opts = scrape_test_config(lower_to_hir.peek().0);
+            opts.display_warnings |= options.display_warnings;
+            let enable_per_target_ignores = options.enable_per_target_ignores;
+            let mut collector = Collector::new(
+                queries.crate_name()?.peek().to_string(),
+                options,
+                false,
+                opts,
+                Some(compiler.source_map().clone()),
+                None,
+                enable_per_target_ignores,
+            );
 
-        let mut global_ctxt = compiler.global_ctxt()?.take();
-        global_ctxt.enter(|tcx| {
-            let krate = tcx.hir().krate();
-            let mut hir_collector = HirCollector {
-                sess: compiler.session(),
-                collector: &mut collector,
-                map: tcx.hir(),
-                codes: ErrorCodes::from(compiler.session().opts
-                                                .unstable_features.is_nightly_build()),
-            };
-            hir_collector.visit_testable("".to_string(), &krate.attrs, |this| {
-                intravisit::walk_crate(this, krate);
+            let mut global_ctxt = queries.global_ctxt()?.take();
+
+            global_ctxt.enter(|tcx| {
+                let krate = tcx.hir().krate();
+                let mut hir_collector = HirCollector {
+                    sess: compiler.session(),
+                    collector: &mut collector,
+                    map: *tcx.hir(),
+                    codes: ErrorCodes::from(
+                        compiler.session().opts.unstable_features.is_nightly_build(),
+                    ),
+                };
+                hir_collector.visit_testable("".to_string(), &krate.attrs, |this| {
+                    intravisit::walk_crate(this, krate);
+                });
             });
-        });
+            compiler.session().abort_if_errors();
 
-        Ok(collector.tests)
-    }).expect("compiler aborted in rustdoc!");
+            let ret: Result<_, ErrorReported> = Ok(collector.tests);
+            ret
+        })
+    });
+    let tests = match tests {
+        Ok(tests) => tests,
+        Err(ErrorReported) => return 1,
+    };
 
     test_args.insert(0, "rustdoctest".to_string());
 
     testing::test_main(
         &test_args,
         tests,
-        Some(testing::Options::new().display_output(display_warnings))
+        Some(testing::Options::new().display_output(display_warnings)),
     );
 
     0
 }
 
 // Look for `#![doc(test(no_crate_inject))]`, used by crates in the std facade.
-fn scrape_test_config(krate: &::rustc::hir::Crate) -> TestOptions {
-    use syntax::print::pprust;
+fn scrape_test_config(krate: &::rustc_hir::Crate) -> TestOptions {
+    use rustc_ast_pretty::pprust;
 
-    let mut opts = TestOptions {
-        no_crate_inject: false,
-        display_warnings: false,
-        attrs: Vec::new(),
-    };
+    let mut opts =
+        TestOptions { no_crate_inject: false, display_warnings: false, attrs: Vec::new() };
 
-    let test_attrs: Vec<_> = krate.attrs.iter()
+    let test_attrs: Vec<_> = krate
+        .attrs
+        .iter()
         .filter(|a| a.check_name(sym::doc))
         .flat_map(|a| a.meta_item_list().unwrap_or_else(Vec::new))
         .filter(|a| a.check_name(sym::test))
@@ -197,17 +206,7 @@ fn run_test(
     opts: &TestOptions,
     edition: Edition,
 ) -> Result<(), TestFailure> {
-    let (test, line_offset) = match panic::catch_unwind(|| {
-        make_test(test, Some(cratename), as_test_harness, opts, edition)
-    }) {
-        Ok((test, line_offset)) => (test, line_offset),
-        Err(cause) if cause.is::<errors::FatalErrorMarker>() => {
-            // If the parser used by `make_test` panicked due to a fatal error, pass the test code
-            // through unchanged. The error will be reported during compilation.
-            (test.to_owned(), 0)
-        },
-        Err(cause) => panic::resume_unwind(cause),
-    };
+    let (test, line_offset) = make_test(test, Some(cratename), as_test_harness, opts, edition);
 
     // FIXME(#44940): if doctests ever support path remapping, then this filename
     // needs to be the result of `SourceMap::span_to_unmapped_path`.
@@ -231,30 +230,29 @@ fn run_test(
     }
 
     let outdir = if let Some(mut path) = options.persist_doctests {
-        path.push(format!("{}_{}",
-            filename
-                .to_string()
-                .rsplit('/')
-                .next()
-                .unwrap()
-                .replace(".", "_"),
-                line)
-        );
-        std::fs::create_dir_all(&path)
-            .expect("Couldn't create directory for doctest executables");
+        path.push(format!(
+            "{}_{}",
+            filename.to_string().rsplit('/').next().unwrap().replace(".", "_"),
+            line
+        ));
+        std::fs::create_dir_all(&path).expect("Couldn't create directory for doctest executables");
 
         DirState::Perm(path)
     } else {
-        DirState::Temp(TempFileBuilder::new()
-                        .prefix("rustdoctest")
-                        .tempdir()
-                        .expect("rustdoc needs a tempdir"))
+        DirState::Temp(
+            TempFileBuilder::new()
+                .prefix("rustdoctest")
+                .tempdir()
+                .expect("rustdoc needs a tempdir"),
+        )
     };
     let output_file = outdir.path().join("rust_out");
 
-    let rustc_binary = options.test_builder.as_ref().map(|v| &**v).unwrap_or_else(|| {
-        rustc_interface::util::rustc_path().expect("found rustc")
-    });
+    let rustc_binary = options
+        .test_builder
+        .as_ref()
+        .map(|v| &**v)
+        .unwrap_or_else(|| rustc_interface::util::rustc_path().expect("found rustc"));
     let mut compiler = Command::new(&rustc_binary);
     compiler.arg("--crate-type").arg("bin");
     for cfg in &options.cfgs {
@@ -265,8 +263,7 @@ fn run_test(
     }
     compiler.arg("--edition").arg(&edition.to_string());
     compiler.env("UNSTABLE_RUSTDOC_TEST_PATH", path);
-    compiler.env("UNSTABLE_RUSTDOC_TEST_LINE",
-                 format!("{}", line as isize - line_offset as isize));
+    compiler.env("UNSTABLE_RUSTDOC_TEST_LINE", format!("{}", line as isize - line_offset as isize));
     compiler.arg("-o").arg(&output_file);
     if as_test_harness {
         compiler.arg("--test");
@@ -284,7 +281,7 @@ fn run_test(
     for debugging_option_str in &options.debugging_options_strs {
         compiler.arg("-Z").arg(&debugging_option_str);
     }
-    if no_run {
+    if no_run && !compile_fail {
         compiler.arg("--emit=metadata");
     }
     compiler.arg("--target").arg(target.to_string());
@@ -303,10 +300,9 @@ fn run_test(
     struct Bomb<'a>(&'a str);
     impl Drop for Bomb<'_> {
         fn drop(&mut self) {
-            eprint!("{}",self.0);
+            eprint!("{}", self.0);
         }
     }
-
     let out = str::from_utf8(&output.stderr).unwrap();
     let _bomb = Bomb(&out);
     match (output.status.success(), compile_fail) {
@@ -316,7 +312,7 @@ fn run_test(
         (true, false) => {}
         (false, true) => {
             if !error_codes.is_empty() {
-                error_codes.retain(|err| !out.contains(err));
+                error_codes.retain(|err| !out.contains(&format!("error[{}]: ", err)));
 
                 if !error_codes.is_empty() {
                     return Err(TestFailure::MissingErrorCodes(error_codes));
@@ -359,17 +355,13 @@ fn run_test(
 
 /// Transforms a test into code that can be compiled into a Rust binary, and returns the number of
 /// lines before the test code begins.
-///
-/// # Panics
-///
-/// This function uses the compiler's parser internally. The parser will panic if it encounters a
-/// fatal error while parsing the test.
-pub fn make_test(s: &str,
-                 cratename: Option<&str>,
-                 dont_insert_main: bool,
-                 opts: &TestOptions,
-                 edition: Edition)
-                 -> (String, usize) {
+pub fn make_test(
+    s: &str,
+    cratename: Option<&str>,
+    dont_insert_main: bool,
+    opts: &TestOptions,
+    edition: Edition,
+) -> (String, usize) {
     let (crate_attrs, everything_else, crates) = partition_source(s);
     let everything_else = everything_else.trim();
     let mut line_offset = 0;
@@ -397,81 +389,94 @@ pub fn make_test(s: &str,
 
     // Uses libsyntax to parse the doctest and find if there's a main fn and the extern
     // crate already is included.
-    let (already_has_main, already_has_extern_crate, found_macro) = with_globals(edition, || {
-        use crate::syntax::{parse, sess::ParseSess, source_map::FilePathMapping};
-        use errors::emitter::EmitterWriter;
-        use errors::Handler;
+    let result = rustc_driver::catch_fatal_errors(|| {
+        with_globals(edition, || {
+            use rustc_errors::emitter::EmitterWriter;
+            use rustc_errors::Handler;
+            use rustc_parse::maybe_new_parser_from_source_str;
+            use rustc_session::parse::ParseSess;
+            use rustc_span::source_map::FilePathMapping;
 
-        let filename = FileName::anon_source_code(s);
-        let source = crates + &everything_else;
+            let filename = FileName::anon_source_code(s);
+            let source = crates + &everything_else;
 
-        // Any errors in parsing should also appear when the doctest is compiled for real, so just
-        // send all the errors that libsyntax emits directly into a `Sink` instead of stderr.
-        let cm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-        let emitter = EmitterWriter::new(box io::sink(), None, false, false, false, None, false);
-        // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
-        let handler = Handler::with_emitter(false, None, box emitter);
-        let sess = ParseSess::with_span_handler(handler, cm);
+            // Any errors in parsing should also appear when the doctest is compiled for real, so just
+            // send all the errors that libsyntax emits directly into a `Sink` instead of stderr.
+            let cm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
+            let emitter =
+                EmitterWriter::new(box io::sink(), None, false, false, false, None, false);
+            // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
+            let handler = Handler::with_emitter(false, None, box emitter);
+            let sess = ParseSess::with_span_handler(handler, cm);
 
-        let mut found_main = false;
-        let mut found_extern_crate = cratename.is_none();
-        let mut found_macro = false;
+            let mut found_main = false;
+            let mut found_extern_crate = cratename.is_none();
+            let mut found_macro = false;
 
-        let mut parser = match parse::maybe_new_parser_from_source_str(&sess, filename, source) {
-            Ok(p) => p,
-            Err(errs) => {
-                for mut err in errs {
-                    err.cancel();
+            let mut parser = match maybe_new_parser_from_source_str(&sess, filename, source) {
+                Ok(p) => p,
+                Err(errs) => {
+                    for mut err in errs {
+                        err.cancel();
+                    }
+
+                    return (found_main, found_extern_crate, found_macro);
                 }
+            };
 
-                return (found_main, found_extern_crate, found_macro);
-            }
-        };
-
-        loop {
-            match parser.parse_item() {
-                Ok(Some(item)) => {
-                    if !found_main {
-                        if let ast::ItemKind::Fn(..) = item.kind {
-                            if item.ident.name == sym::main {
-                                found_main = true;
+            loop {
+                match parser.parse_item() {
+                    Ok(Some(item)) => {
+                        if !found_main {
+                            if let ast::ItemKind::Fn(..) = item.kind {
+                                if item.ident.name == sym::main {
+                                    found_main = true;
+                                }
                             }
                         }
-                    }
 
-                    if !found_extern_crate {
-                        if let ast::ItemKind::ExternCrate(original) = item.kind {
-                            // This code will never be reached if `cratename` is none because
-                            // `found_extern_crate` is initialized to `true` if it is none.
-                            let cratename = cratename.unwrap();
+                        if !found_extern_crate {
+                            if let ast::ItemKind::ExternCrate(original) = item.kind {
+                                // This code will never be reached if `cratename` is none because
+                                // `found_extern_crate` is initialized to `true` if it is none.
+                                let cratename = cratename.unwrap();
 
-                            match original {
-                                Some(name) => found_extern_crate = name.as_str() == cratename,
-                                None => found_extern_crate = item.ident.as_str() == cratename,
+                                match original {
+                                    Some(name) => found_extern_crate = name.as_str() == cratename,
+                                    None => found_extern_crate = item.ident.as_str() == cratename,
+                                }
                             }
                         }
-                    }
 
-                    if !found_macro {
-                        if let ast::ItemKind::Mac(..) = item.kind {
-                            found_macro = true;
+                        if !found_macro {
+                            if let ast::ItemKind::Mac(..) = item.kind {
+                                found_macro = true;
+                            }
+                        }
+
+                        if found_main && found_extern_crate {
+                            break;
                         }
                     }
-
-                    if found_main && found_extern_crate {
+                    Ok(None) => break,
+                    Err(mut e) => {
+                        e.cancel();
                         break;
                     }
                 }
-                Ok(None) => break,
-                Err(mut e) => {
-                    e.cancel();
-                    break;
-                }
             }
-        }
 
-        (found_main, found_extern_crate, found_macro)
+            (found_main, found_extern_crate, found_macro)
+        })
     });
+    let (already_has_main, already_has_extern_crate, found_macro) = match result {
+        Ok(result) => result,
+        Err(ErrorReported) => {
+            // If the parser panicked due to a fatal error, pass the test code through unchanged.
+            // The error will be reported during compilation.
+            return (s.to_owned(), 0);
+        }
+    };
 
     // If a doctest's `fn main` is being masked by a wrapper macro, the parsing loop above won't
     // see it. In that case, run the old text-based scan to see if they at least have a main
@@ -481,11 +486,7 @@ pub fn make_test(s: &str,
         s.lines()
             .map(|line| {
                 let comment = line.find("//");
-                if let Some(comment_begins) = comment {
-                    &line[0..comment_begins]
-                } else {
-                    line
-                }
+                if let Some(comment_begins) = comment { &line[0..comment_begins] } else { line }
             })
             .any(|code| code.contains("fn main"))
     } else {
@@ -510,8 +511,10 @@ pub fn make_test(s: &str,
     } else {
         let returns_result = everything_else.trim_end().ends_with("(())");
         let (main_pre, main_post) = if returns_result {
-            ("fn main() { fn _inner() -> Result<(), impl core::fmt::Debug> {",
-             "}\n_inner().unwrap() }")
+            (
+                "fn main() { fn _inner() -> Result<(), impl core::fmt::Debug> {",
+                "}\n_inner().unwrap() }",
+            )
         } else {
             ("fn main() {\n", "\n}")
         };
@@ -544,13 +547,13 @@ fn partition_source(s: &str) -> (String, String, String) {
         // shunted into "everything else"
         match state {
             PartitionState::Attrs => {
-                state = if trimline.starts_with("#![") ||
-                    trimline.chars().all(|c| c.is_whitespace()) ||
-                    (trimline.starts_with("//") && !trimline.starts_with("///"))
+                state = if trimline.starts_with("#![")
+                    || trimline.chars().all(|c| c.is_whitespace())
+                    || (trimline.starts_with("//") && !trimline.starts_with("///"))
                 {
                     PartitionState::Attrs
-                } else if trimline.starts_with("extern crate") ||
-                    trimline.starts_with("#[macro_use] extern crate")
+                } else if trimline.starts_with("extern crate")
+                    || trimline.starts_with("#[macro_use] extern crate")
                 {
                     PartitionState::Crates
                 } else {
@@ -558,10 +561,10 @@ fn partition_source(s: &str) -> (String, String, String) {
                 };
             }
             PartitionState::Crates => {
-                state = if trimline.starts_with("extern crate") ||
-                    trimline.starts_with("#[macro_use] extern crate") ||
-                    trimline.chars().all(|c| c.is_whitespace()) ||
-                    (trimline.starts_with("//") && !trimline.starts_with("///"))
+                state = if trimline.starts_with("extern crate")
+                    || trimline.starts_with("#[macro_use] extern crate")
+                    || trimline.chars().all(|c| c.is_whitespace())
+                    || (trimline.starts_with("//") && !trimline.starts_with("///"))
                 {
                     PartitionState::Crates
                 } else {
@@ -638,9 +641,15 @@ pub struct Collector {
 }
 
 impl Collector {
-    pub fn new(cratename: String, options: Options, use_headers: bool, opts: TestOptions,
-               source_map: Option<Lrc<SourceMap>>, filename: Option<PathBuf>,
-               enable_per_target_ignores: bool) -> Collector {
+    pub fn new(
+        cratename: String,
+        options: Options,
+        use_headers: bool,
+        opts: TestOptions,
+        source_map: Option<Lrc<SourceMap>>,
+        filename: Option<PathBuf>,
+        enable_per_target_ignores: bool,
+    ) -> Collector {
         Collector {
             tests: Vec::new(),
             names: Vec::new(),
@@ -698,13 +707,11 @@ impl Tester for Collector {
         debug!("creating test {}: {}", name, test);
         self.tests.push(testing::TestDescAndFn {
             desc: testing::TestDesc {
-                name: testing::DynTestName(name.clone()),
+                name: testing::DynTestName(name),
                 ignore: match config.ignore {
                     Ignore::All => true,
                     Ignore::None => false,
-                    Ignore::Some(ref ignores) => {
-                        ignores.iter().any(|s| target_str.contains(s))
-                    },
+                    Ignore::Some(ref ignores) => ignores.iter().any(|s| target_str.contains(s)),
                 },
                 // compiler failures are test failures
                 should_panic: testing::ShouldPanic::No,
@@ -805,14 +812,19 @@ impl Tester for Collector {
         if self.use_headers {
             // We use these headings as test names, so it's good if
             // they're valid identifiers.
-            let name = name.chars().enumerate().map(|(i, c)| {
-                    if (i == 0 && rustc_lexer::is_id_start(c)) ||
-                        (i != 0 && rustc_lexer::is_id_continue(c)) {
+            let name = name
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if (i == 0 && rustc_lexer::is_id_start(c))
+                        || (i != 0 && rustc_lexer::is_id_continue(c))
+                    {
                         c
                     } else {
                         '_'
                     }
-                }).collect::<String>();
+                })
+                .collect::<String>();
 
             // Here we try to efficiently assemble the header titles into the
             // test name in the form of `h1::h2::h3::h4::h5::h6`.
@@ -843,15 +855,17 @@ impl Tester for Collector {
 struct HirCollector<'a, 'hir> {
     sess: &'a session::Session,
     collector: &'a mut Collector,
-    map: &'a hir::map::Map<'hir>,
+    map: &'a Map<'hir>,
     codes: ErrorCodes,
 }
 
 impl<'a, 'hir> HirCollector<'a, 'hir> {
-    fn visit_testable<F: FnOnce(&mut Self)>(&mut self,
-                                            name: String,
-                                            attrs: &[ast::Attribute],
-                                            nested: F) {
+    fn visit_testable<F: FnOnce(&mut Self)>(
+        &mut self,
+        name: String,
+        attrs: &[ast::Attribute],
+        nested: F,
+    ) {
         let mut attrs = Attributes::from_ast(self.sess.diagnostic(), attrs);
         if let Some(ref cfg) = attrs.cfg {
             if !cfg.matches(&self.sess.parse_sess, Some(&self.sess.features_untracked())) {
@@ -870,10 +884,12 @@ impl<'a, 'hir> HirCollector<'a, 'hir> {
         // anything else, this will combine them for us.
         if let Some(doc) = attrs.collapsed_doc_value() {
             self.collector.set_position(attrs.span.unwrap_or(DUMMY_SP));
-            markdown::find_testable_code(&doc,
-                                         self.collector,
-                                         self.codes,
-                                         self.collector.enable_per_target_ignores);
+            markdown::find_testable_code(
+                &doc,
+                self.collector,
+                self.codes,
+                self.collector.enable_per_target_ignores,
+            );
         }
 
         nested(self);
@@ -885,13 +901,15 @@ impl<'a, 'hir> HirCollector<'a, 'hir> {
 }
 
 impl<'a, 'hir> intravisit::Visitor<'hir> for HirCollector<'a, 'hir> {
-    fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, 'hir> {
+    type Map = Map<'hir>;
+
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<'_, Self::Map> {
         intravisit::NestedVisitorMap::All(&self.map)
     }
 
     fn visit_item(&mut self, item: &'hir hir::Item) {
-        let name = if let hir::ItemKind::Impl(.., ref ty, _) = item.kind {
-            self.map.hir_to_pretty_string(ty.hir_id)
+        let name = if let hir::ItemKind::Impl { ref self_ty, .. } = item.kind {
+            self.map.hir_to_pretty_string(self_ty.hir_id)
         } else {
             item.ident.to_string()
         };
@@ -919,10 +937,12 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for HirCollector<'a, 'hir> {
         });
     }
 
-    fn visit_variant(&mut self,
-                     v: &'hir hir::Variant,
-                     g: &'hir hir::Generics,
-                     item_id: hir::HirId) {
+    fn visit_variant(
+        &mut self,
+        v: &'hir hir::Variant,
+        g: &'hir hir::Generics,
+        item_id: hir::HirId,
+    ) {
         self.visit_testable(v.ident.to_string(), &v.attrs, |this| {
             intravisit::walk_variant(this, v, g, item_id);
         });

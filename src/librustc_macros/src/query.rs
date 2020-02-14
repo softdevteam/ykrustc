@@ -1,15 +1,13 @@
 use proc_macro::TokenStream;
-use proc_macro2::{TokenTree, Delimiter};
-use syn::{
-    Token, Ident, Type, Attribute, ReturnType, Expr, Block, Error,
-    braced, parenthesized, parse_macro_input,
-};
-use syn::spanned::Spanned;
-use syn::parse::{Result, Parse, ParseStream};
-use syn::punctuated::Punctuated;
-use syn;
+use proc_macro2::{Delimiter, TokenTree};
 use quote::quote;
-use itertools::Itertools;
+use syn::parse::{Parse, ParseStream, Result};
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
+use syn::{
+    braced, parenthesized, parse_macro_input, Attribute, Block, Error, Expr, Ident, ReturnType,
+    Token, Type,
+};
 
 #[allow(non_camel_case_types)]
 mod kw {
@@ -164,13 +162,7 @@ impl Parse for Query {
         braced!(content in input);
         let modifiers = content.parse()?;
 
-        Ok(Query {
-            modifiers,
-            name,
-            key,
-            arg,
-            result,
-        })
+        Ok(Query { modifiers, name, key, arg, result })
     }
 }
 
@@ -198,10 +190,7 @@ impl Parse for Group {
         let name: Ident = input.parse()?;
         let content;
         braced!(content in input);
-        Ok(Group {
-            name,
-            queries: content.parse()?,
-        })
+        Ok(Group { name, queries: content.parse()? })
     }
 }
 
@@ -352,14 +341,20 @@ fn add_query_description_impl(
             }
         };
 
-        let tcx = args.as_ref().map(|t| {
-            let t = &(t.0).0;
-            quote! { #t }
-        }).unwrap_or(quote! { _ });
-        let value = args.as_ref().map(|t| {
-            let t = &(t.1).0;
-            quote! { #t }
-        }).unwrap_or(quote! { _ });
+        let tcx = args
+            .as_ref()
+            .map(|t| {
+                let t = &(t.0).0;
+                quote! { #t }
+            })
+            .unwrap_or(quote! { _ });
+        let value = args
+            .as_ref()
+            .map(|t| {
+                let t = &(t.1).0;
+                quote! { #t }
+            })
+            .unwrap_or(quote! { _ });
         quote! {
             #[inline]
             #[allow(unused_variables)]
@@ -473,10 +468,7 @@ pub fn rustc_queries(input: TokenStream) -> TokenStream {
                 attributes.push(quote! { eval_always });
             };
 
-            let mut attribute_stream = quote! {};
-            for e in attributes.into_iter().intersperse(quote! {,}) {
-                attribute_stream.extend(e);
-            }
+            let attribute_stream = quote! {#(#attributes),*};
 
             // Add the query to the group
             group_stream.extend(quote! {
@@ -507,11 +499,7 @@ pub fn rustc_queries(input: TokenStream) -> TokenStream {
                 });
             }
 
-            add_query_description_impl(
-                &query,
-                modifiers,
-                &mut query_description_stream,
-            );
+            add_query_description_impl(&query, modifiers, &mut query_description_stream);
         }
         let name = &group.name;
         query_stream.extend(quote! {

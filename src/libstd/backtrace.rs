@@ -95,10 +95,10 @@ use crate::env;
 use crate::fmt;
 use crate::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use crate::sync::Mutex;
-use crate::sys_common::backtrace::{output_filename, lock};
+use crate::sys_common::backtrace::{lock, output_filename};
 use crate::vec::Vec;
-use backtrace_rs as backtrace;
 use backtrace::BytesOrWideString;
+use backtrace_rs as backtrace;
 
 /// A captured OS thread stack backtrace.
 ///
@@ -157,6 +157,69 @@ struct BacktraceSymbol {
 enum BytesOrWide {
     Bytes(Vec<u8>),
     Wide(Vec<u16>),
+}
+
+impl fmt::Debug for Backtrace {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut capture = match &self.inner {
+            Inner::Unsupported => return fmt.write_str("unsupported backtrace"),
+            Inner::Disabled => return fmt.write_str("disabled backtrace"),
+            Inner::Captured(c) => c.lock().unwrap(),
+        };
+        capture.resolve();
+
+        let frames = &capture.frames[capture.actual_start..];
+
+        write!(fmt, "Backtrace ")?;
+
+        let mut dbg = fmt.debug_list();
+
+        for frame in frames {
+            if frame.frame.ip().is_null() {
+                continue;
+            }
+
+            dbg.entries(&frame.symbols);
+        }
+
+        dbg.finish()
+    }
+}
+
+impl fmt::Debug for BacktraceSymbol {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{{ ")?;
+
+        if let Some(fn_name) = self.name.as_ref().map(|b| backtrace::SymbolName::new(b)) {
+            write!(fmt, "fn: \"{:#}\"", fn_name)?;
+        } else {
+            write!(fmt, "fn: \"<unknown>\"")?;
+        }
+
+        if let Some(fname) = self.filename.as_ref() {
+            write!(fmt, ", file: {:?}", fname)?;
+        }
+
+        if let Some(line) = self.lineno.as_ref() {
+            write!(fmt, ", line: {:?}", line)?;
+        }
+
+        write!(fmt, " }}")
+    }
+}
+
+impl fmt::Debug for BytesOrWide {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output_filename(
+            fmt,
+            match self {
+                BytesOrWide::Bytes(w) => BytesOrWideString::Bytes(w),
+                BytesOrWide::Wide(w) => BytesOrWideString::Wide(w),
+            },
+            backtrace::PrintFmt::Short,
+            crate::env::current_dir().as_ref().ok(),
+        )
+    }
 }
 
 impl Backtrace {
@@ -267,12 +330,6 @@ impl Backtrace {
 }
 
 impl fmt::Display for Backtrace {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, fmt)
-    }
-}
-
-impl fmt::Debug for Backtrace {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut capture = match &self.inner {
             Inner::Unsupported => return fmt.write_str("unsupported backtrace"),

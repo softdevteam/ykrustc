@@ -5,11 +5,14 @@
 #![feature(rustc_private)]
 
 extern crate syntax;
+extern crate rustc_parse;
+extern crate rustc_session;
+extern crate rustc_span;
 
+use rustc_parse::new_parser_from_file;
+use rustc_session::parse::ParseSess;
+use rustc_span::source_map::FilePathMapping;
 use std::path::Path;
-use syntax::sess::ParseSess;
-use syntax::source_map::FilePathMapping;
-use syntax::parse;
 
 #[path = "mod_dir_simple/test.rs"]
 mod gravy;
@@ -25,6 +28,6 @@ fn parse() {
 
     let path = Path::new(file!());
     let path = path.canonicalize().unwrap();
-    let mut parser = parse::new_parser_from_file(&parse_session, &path);
+    let mut parser = new_parser_from_file(&parse_session, &path);
     let _ = parser.parse_crate_mod();
 }

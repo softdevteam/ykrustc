@@ -1,18 +1,8 @@
 use crate::infer::canonical::{Canonicalized, CanonicalizedQueryResponse};
 use crate::traits::query::Fallible;
-use crate::ty::{ParamEnvAnd, Ty, TyCtxt};
+use crate::ty::{ParamEnvAnd, TyCtxt};
 
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
-pub struct Eq<'tcx> {
-    pub a: Ty<'tcx>,
-    pub b: Ty<'tcx>,
-}
-
-impl<'tcx> Eq<'tcx> {
-    pub fn new(a: Ty<'tcx>, b: Ty<'tcx>) -> Self {
-        Self { a, b }
-    }
-}
+pub use rustc::traits::query::type_op::Eq;
 
 impl<'tcx> super::QueryTypeOp<'tcx> for Eq<'tcx> {
     type QueryResponse = ();
@@ -21,11 +11,7 @@ impl<'tcx> super::QueryTypeOp<'tcx> for Eq<'tcx> {
         _tcx: TyCtxt<'tcx>,
         key: &ParamEnvAnd<'tcx, Eq<'tcx>>,
     ) -> Option<Self::QueryResponse> {
-        if key.value.a == key.value.b {
-            Some(())
-        } else {
-            None
-        }
+        if key.value.a == key.value.b { Some(()) } else { None }
     }
 
     fn perform_query(
@@ -34,23 +20,4 @@ impl<'tcx> super::QueryTypeOp<'tcx> for Eq<'tcx> {
     ) -> Fallible<CanonicalizedQueryResponse<'tcx, ()>> {
         tcx.type_op_eq(canonicalized)
     }
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for Eq<'tcx> {
-        a,
-        b,
-    }
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for Eq<'a> {
-        type Lifted = Eq<'tcx>;
-        a,
-        b,
-    }
-}
-
-impl_stable_hash_for! {
-    struct Eq<'tcx> { a, b }
 }

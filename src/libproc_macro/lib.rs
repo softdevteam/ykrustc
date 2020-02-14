@@ -11,25 +11,23 @@
 
 #![stable(feature = "proc_macro_lib", since = "1.15.0")]
 #![deny(missing_docs)]
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
-       html_playground_url = "https://play.rust-lang.org/",
-       issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
-       test(no_crate_inject, attr(deny(warnings))),
-       test(attr(allow(dead_code, deprecated, unused_variables, unused_mut))))]
-
+#![doc(
+    html_root_url = "https://doc.rust-lang.org/nightly/",
+    html_playground_url = "https://play.rust-lang.org/",
+    issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/",
+    test(no_crate_inject, attr(deny(warnings))),
+    test(attr(allow(dead_code, deprecated, unused_variables, unused_mut)))
+)]
 #![feature(nll)]
 #![feature(staged_api)]
 #![feature(allow_internal_unstable)]
-#![feature(const_fn)]
 #![feature(decl_macro)]
 #![feature(extern_types)]
 #![feature(in_band_lifetimes)]
 #![feature(optin_builtin_traits)]
-#![cfg_attr(bootstrap, feature(non_exhaustive))]
 #![feature(rustc_attrs)]
 #![feature(specialization)]
-
-#![recursion_limit="256"]
+#![recursion_limit = "256"]
 
 #[unstable(feature = "proc_macro_internals", issue = "27812")]
 #[doc(hidden)]
@@ -40,10 +38,10 @@ mod diagnostic;
 #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
 pub use diagnostic::{Diagnostic, Level, MultiSpan};
 
-use std::{fmt, iter, mem};
 use std::ops::{Bound, RangeBounds};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::{fmt, iter, mem};
 
 /// The main type provided by this crate, representing an abstract stream of
 /// tokens, or, more specifically, a sequence of token trees.
@@ -135,20 +133,20 @@ impl fmt::Debug for TokenStream {
 pub use quote::{quote, quote_span};
 
 /// Creates a token stream containing a single token tree.
-    #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
+#[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl From<TokenTree> for TokenStream {
     fn from(tree: TokenTree) -> TokenStream {
         TokenStream(bridge::client::TokenStream::from_token_tree(match tree {
             TokenTree::Group(tt) => bridge::TokenTree::Group(tt.0),
             TokenTree::Punct(tt) => bridge::TokenTree::Punct(tt.0),
             TokenTree::Ident(tt) => bridge::TokenTree::Ident(tt.0),
-            TokenTree::Literal(tt) => bridge::TokenTree::Literal(tt.0)
+            TokenTree::Literal(tt) => bridge::TokenTree::Literal(tt.0),
         }))
     }
 }
 
 /// Collects a number of token trees into a single stream.
-    #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
+#[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl iter::FromIterator<TokenTree> for TokenStream {
     fn from_iter<I: IntoIterator<Item = TokenTree>>(trees: I) -> Self {
         trees.into_iter().map(TokenStream::from).collect()
@@ -184,7 +182,7 @@ impl Extend<TokenStream> for TokenStream {
 /// Public implementation details for the `TokenStream` type, such as iterators.
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 pub mod token_stream {
-    use crate::{bridge, Group, Ident, Literal, Punct, TokenTree, TokenStream};
+    use crate::{bridge, Group, Ident, Literal, Punct, TokenStream, TokenTree};
 
     /// An iterator over `TokenStream`'s `TokenTree`s.
     /// The iteration is "shallow", e.g., the iterator doesn't recurse into delimited groups,
@@ -227,7 +225,9 @@ pub mod token_stream {
 #[unstable(feature = "proc_macro_quote", issue = "54722")]
 #[allow_internal_unstable(proc_macro_def_site)]
 #[rustc_builtin_macro]
-pub macro quote ($($t:tt)*) { /* compiler built-in */ }
+pub macro quote($($t:tt)*) {
+    /* compiler built-in */
+}
 
 #[unstable(feature = "proc_macro_internals", issue = "27812")]
 #[doc(hidden)]
@@ -376,7 +376,7 @@ pub struct LineColumn {
     /// The 0-indexed column (in UTF-8 characters) in the source file on which
     /// the span starts or ends (inclusive).
     #[unstable(feature = "proc_macro_span", issue = "54725")]
-    pub column: usize
+    pub column: usize,
 }
 
 #[unstable(feature = "proc_macro_span", issue = "54725")]
@@ -416,7 +416,6 @@ impl SourceFile {
     }
 }
 
-
 #[unstable(feature = "proc_macro_span", issue = "54725")]
 impl fmt::Debug for SourceFile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -443,28 +442,16 @@ impl Eq for SourceFile {}
 pub enum TokenTree {
     /// A token stream surrounded by bracket delimiters.
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-    Group(
-        #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-        Group
-    ),
+    Group(#[stable(feature = "proc_macro_lib2", since = "1.29.0")] Group),
     /// An identifier.
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-    Ident(
-        #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-        Ident
-    ),
+    Ident(#[stable(feature = "proc_macro_lib2", since = "1.29.0")] Ident),
     /// A single punctuation character (`+`, `,`, `$`, etc.).
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-    Punct(
-        #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-        Punct
-    ),
+    Punct(#[stable(feature = "proc_macro_lib2", since = "1.29.0")] Punct),
     /// A literal character (`'a'`), string (`"hello"`), number (`2.3`), etc.
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-    Literal(
-        #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
-        Literal
-    ),
+    Literal(#[stable(feature = "proc_macro_lib2", since = "1.29.0")] Literal),
 }
 
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
@@ -1093,10 +1080,7 @@ impl Literal {
             }
         }
 
-        self.0.subspan(
-            cloned_bound(range.start_bound()),
-            cloned_bound(range.end_bound()),
-        ).map(Span)
+        self.0.subspan(cloned_bound(range.start_bound()), cloned_bound(range.end_bound())).map(Span)
     }
 }
 

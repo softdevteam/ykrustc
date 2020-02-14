@@ -3,19 +3,19 @@
 //! This module implements parsing `config.toml` configuration files to tweak
 //! how the build runs.
 
+use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
-use std::cmp;
 
-use build_helper::t;
-use toml;
-use serde::Deserialize;
-use crate::cache::{INTERNER, Interned};
+use crate::cache::{Interned, INTERNER};
 use crate::flags::Flags;
 pub use crate::flags::Subcommand;
+use build_helper::t;
+use serde::Deserialize;
 
 /// Global configuration for the entire build and/or bootstrap.
 ///
@@ -66,6 +66,7 @@ pub struct Config {
     pub backtrace_on_ice: bool,
 
     // llvm codegen options
+    pub llvm_skip_rebuild: bool,
     pub llvm_assertions: bool,
     pub llvm_optimize: bool,
     pub llvm_thin_lto: bool,
@@ -81,6 +82,7 @@ pub struct Config {
     pub llvm_use_linker: Option<String>,
     pub llvm_allow_old_toolchain: Option<bool>,
 
+    pub use_lld: bool,
     pub lld_enabled: bool,
     pub lldb_enabled: bool,
     pub llvm_tools_enabled: bool,
@@ -105,8 +107,8 @@ pub struct Config {
     pub rust_optimize_tests: bool,
     pub rust_dist_src: bool,
     pub rust_codegen_backends: Vec<Interned<String>>,
-    pub rust_codegen_backends_dir: String,
     pub rust_verify_llvm_ir: bool,
+    pub rust_thin_lto_import_instr_limit: Option<u32>,
     pub rust_remap_debuginfo: bool,
 
     pub build: Interned<String>,
@@ -114,6 +116,7 @@ pub struct Config {
     pub targets: Vec<Interned<String>>,
     pub local_rebuild: bool,
     pub jemalloc: bool,
+    pub control_flow_guard: bool,
 
     // dist misc
     pub dist_sign_folder: Option<PathBuf>,
@@ -150,6 +153,7 @@ pub struct Config {
     // These are either the stage0 downloaded binaries or the locally installed ones.
     pub initial_cargo: PathBuf,
     pub initial_rustc: PathBuf,
+    pub initial_rustfmt: Option<PathBuf>,
     pub out: PathBuf,
 }
 
@@ -200,6 +204,7 @@ struct Build {
     target: Vec<String>,
     cargo: Option<String>,
     rustc: Option<String>,
+    rustfmt: Option<String>, /* allow bootstrap.py to use rustfmt key */
     docs: Option<bool>,
     compiler_docs: Option<bool>,
     submodules: Option<bool>,
@@ -243,6 +248,7 @@ struct Install {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Llvm {
+    skip_rebuild: Option<bool>,
     optimize: Option<bool>,
     thin_lto: Option<bool>,
     release_debuginfo: Option<bool>,
@@ -316,17 +322,19 @@ struct Rust {
     dist_src: Option<bool>,
     save_toolstates: Option<String>,
     codegen_backends: Option<Vec<String>>,
-    codegen_backends_dir: Option<String>,
     lld: Option<bool>,
+    use_lld: Option<bool>,
     llvm_tools: Option<bool>,
     lldb: Option<bool>,
     deny_warnings: Option<bool>,
     backtrace_on_ice: Option<bool>,
     verify_llvm_ir: Option<bool>,
+    thin_lto_import_instr_limit: Option<u32>,
     remap_debuginfo: Option<bool>,
     jemalloc: Option<bool>,
     test_compare_mode: Option<bool>,
     llvm_libunwind: Option<bool>,
+    control_flow_guard: Option<bool>,
 }
 
 /// TOML representation of how each build target is configured.
@@ -350,10 +358,14 @@ struct TomlTarget {
 impl Config {
     fn path_from_python(var_key: &str) -> PathBuf {
         match env::var_os(var_key) {
-            // Do not trust paths from Python and normalize them slightly (#49785).
-            Some(var_val) => Path::new(&var_val).components().collect(),
+            Some(var_val) => Self::normalize_python_path(var_val),
             _ => panic!("expected '{}' to be set", var_key),
         }
+    }
+
+    /// Normalizes paths from Python slightly. We don't trust paths from Python (#49785).
+    fn normalize_python_path(path: OsString) -> PathBuf {
+        Path::new(&path).components().collect()
     }
 
     pub fn default_opts() -> Config {
@@ -372,7 +384,6 @@ impl Config {
         config.ignore_git = false;
         config.rust_dist_src = true;
         config.rust_codegen_backends = vec![INTERNER.intern_str("llvm")];
-        config.rust_codegen_backends_dir = "codegen-backends".to_owned();
         config.deny_warnings = true;
         config.missing_tools = false;
 
@@ -383,6 +394,7 @@ impl Config {
 
         config.initial_rustc = Config::path_from_python("RUSTC");
         config.initial_cargo = Config::path_from_python("CARGO");
+        config.initial_rustfmt = env::var_os("RUSTFMT").map(Config::normalize_python_path);
 
         config
     }
@@ -416,17 +428,22 @@ impl Config {
         let has_targets = !flags.target.is_empty();
         config.skip_only_host_steps = !has_hosts && has_targets;
 
-        let toml = file.map(|file| {
-            let contents = t!(fs::read_to_string(&file));
-            match toml::from_str(&contents) {
-                Ok(table) => table,
-                Err(err) => {
-                    println!("failed to parse TOML configuration '{}': {}",
-                        file.display(), err);
-                    process::exit(2);
+        let toml = file
+            .map(|file| {
+                let contents = t!(fs::read_to_string(&file));
+                match toml::from_str(&contents) {
+                    Ok(table) => table,
+                    Err(err) => {
+                        println!(
+                            "failed to parse TOML configuration '{}': {}",
+                            file.display(),
+                            err
+                        );
+                        process::exit(2);
+                    }
                 }
-            }
-        }).unwrap_or_else(|| TomlConfig::default());
+            })
+            .unwrap_or_else(TomlConfig::default);
 
         let build = toml.build.clone().unwrap_or_default();
         // set by bootstrap.py
@@ -437,24 +454,15 @@ impl Config {
                 config.hosts.push(host);
             }
         }
-        for target in config.hosts.iter().cloned()
-            .chain(build.target.iter().map(|s| INTERNER.intern_str(s)))
+        for target in
+            config.hosts.iter().cloned().chain(build.target.iter().map(|s| INTERNER.intern_str(s)))
         {
             if !config.targets.contains(&target) {
                 config.targets.push(target);
             }
         }
-        config.hosts = if !flags.host.is_empty() {
-            flags.host
-        } else {
-            config.hosts
-        };
-        config.targets = if !flags.target.is_empty() {
-            flags.target
-        } else {
-            config.targets
-        };
-
+        config.hosts = if !flags.host.is_empty() { flags.host } else { config.hosts };
+        config.targets = if !flags.target.is_empty() { flags.target } else { config.targets };
 
         config.nodejs = build.nodejs.map(PathBuf::from);
         config.gdb = build.gdb.map(PathBuf::from);
@@ -488,6 +496,11 @@ impl Config {
             config.mandir = install.mandir.clone().map(PathBuf::from);
         }
 
+        // We want the llvm-skip-rebuild flag to take precedence over the
+        // skip-rebuild config.toml option so we store it separately
+        // so that we can infer the right value
+        let mut llvm_skip_rebuild = flags.llvm_skip_rebuild;
+
         // Store off these values as options because if they're not provided
         // we'll infer default values for them later
         let mut llvm_assertions = None;
@@ -503,9 +516,7 @@ impl Config {
 
         if let Some(ref llvm) = toml.llvm {
             match llvm.ccache {
-                Some(StringOrBool::String(ref s)) => {
-                    config.ccache = Some(s.to_string())
-                }
+                Some(StringOrBool::String(ref s)) => config.ccache = Some(s.to_string()),
                 Some(StringOrBool::Bool(true)) => {
                     config.ccache = Some("ccache".to_string());
                 }
@@ -513,6 +524,7 @@ impl Config {
             }
             set(&mut config.ninja, llvm.ninja);
             llvm_assertions = llvm.assertions;
+            llvm_skip_rebuild = llvm_skip_rebuild.or(llvm.skip_rebuild);
             set(&mut config.llvm_optimize, llvm.optimize);
             set(&mut config.llvm_thin_lto, llvm.thin_lto);
             set(&mut config.llvm_release_debuginfo, llvm.release_debuginfo);
@@ -530,7 +542,7 @@ impl Config {
             config.llvm_ldflags = llvm.ldflags.clone();
             set(&mut config.llvm_use_libcxx, llvm.use_libcxx);
             config.llvm_use_linker = llvm.use_linker.clone();
-            config.llvm_allow_old_toolchain = llvm.allow_old_toolchain.clone();
+            config.llvm_allow_old_toolchain = llvm.allow_old_toolchain;
         }
 
         if let Some(ref rust) = toml.rust {
@@ -557,6 +569,7 @@ impl Config {
             if let Some(true) = rust.incremental {
                 config.incremental = true;
             }
+            set(&mut config.use_lld, rust.use_lld);
             set(&mut config.lld_enabled, rust.lld);
             set(&mut config.lldb_enabled, rust.lldb);
             set(&mut config.llvm_tools_enabled, rust.llvm_tools);
@@ -567,15 +580,14 @@ impl Config {
             set(&mut config.deny_warnings, flags.deny_warnings.or(rust.deny_warnings));
             set(&mut config.backtrace_on_ice, rust.backtrace_on_ice);
             set(&mut config.rust_verify_llvm_ir, rust.verify_llvm_ir);
+            config.rust_thin_lto_import_instr_limit = rust.thin_lto_import_instr_limit;
             set(&mut config.rust_remap_debuginfo, rust.remap_debuginfo);
+            set(&mut config.control_flow_guard, rust.control_flow_guard);
 
             if let Some(ref backends) = rust.codegen_backends {
-                config.rust_codegen_backends = backends.iter()
-                    .map(|s| INTERNER.intern_str(s))
-                    .collect();
+                config.rust_codegen_backends =
+                    backends.iter().map(|s| INTERNER.intern_str(s)).collect();
             }
-
-            set(&mut config.rust_codegen_backends_dir, rust.codegen_backends_dir.clone());
 
             config.rust_codegen_units = rust.codegen_units.map(threads_from_config);
             config.rust_codegen_units_std = rust.codegen_units_std.map(threads_from_config);
@@ -599,7 +611,7 @@ impl Config {
                 target.ar = cfg.ar.clone().map(PathBuf::from);
                 target.ranlib = cfg.ranlib.clone().map(PathBuf::from);
                 target.linker = cfg.linker.clone().map(PathBuf::from);
-                target.crt_static = cfg.crt_static.clone();
+                target.crt_static = cfg.crt_static;
                 target.musl_root = cfg.musl_root.clone().map(PathBuf::from);
                 target.wasi_root = cfg.wasi_root.clone().map(PathBuf::from);
                 target.qemu_rootfs = cfg.qemu_rootfs.clone().map(PathBuf::from);
@@ -622,6 +634,8 @@ impl Config {
         set(&mut config.initial_rustc, build.rustc.map(PathBuf::from));
         set(&mut config.initial_cargo, build.cargo.map(PathBuf::from));
 
+        config.llvm_skip_rebuild = llvm_skip_rebuild.unwrap_or(false);
+
         let default = false;
         config.llvm_assertions = llvm_assertions.unwrap_or(default);
 
@@ -632,9 +646,11 @@ impl Config {
         config.rust_debug_assertions = debug_assertions.unwrap_or(default);
 
         let with_defaults = |debuginfo_level_specific: Option<u32>| {
-            debuginfo_level_specific
-                .or(debuginfo_level)
-                .unwrap_or(if debug == Some(true) { 2 } else { 0 })
+            debuginfo_level_specific.or(debuginfo_level).unwrap_or(if debug == Some(true) {
+                2
+            } else {
+                0
+            })
         };
         config.rust_debuginfo_level_rustc = with_defaults(debuginfo_level_rustc);
         config.rust_debuginfo_level_std = with_defaults(debuginfo_level_std);
@@ -645,6 +661,20 @@ impl Config {
         config.ignore_git = ignore_git.unwrap_or(default);
 
         config
+    }
+
+    /// Try to find the relative path of `bindir`, otherwise return it in full.
+    pub fn bindir_relative(&self) -> &Path {
+        let bindir = &self.bindir;
+        if bindir.is_absolute() {
+            // Try to make it relative to the prefix.
+            if let Some(prefix) = &self.prefix {
+                if let Ok(stripped) = bindir.strip_prefix(prefix) {
+                    return stripped;
+                }
+            }
+        }
+        bindir
     }
 
     /// Try to find the relative path of `libdir`.

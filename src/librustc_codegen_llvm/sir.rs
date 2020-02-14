@@ -5,18 +5,21 @@
 
 #![allow(dead_code, unused_imports)]
 
-use std::default::Default;
-use rustc_index::{newtype_index, vec::{Idx, IndexVec}};
+use crate::llvm::{self, BasicBlock};
+use crate::value::Value;
+use crate::{common, ModuleLlvm};
+use rustc::session::config::OutputType;
+use rustc::ty::TyCtxt;
+use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc::hir::def_id::LOCAL_CRATE;
-use rustc::ty::TyCtxt;
-use rustc::session::config::OutputType;
-use crate::value::Value;
-use crate::llvm::{self, BasicBlock};
-use crate::{common, ModuleLlvm};
+use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_index::{
+    newtype_index,
+    vec::{Idx, IndexVec},
+};
+use std::default::Default;
 use std::ffi::CString;
-use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
 use ykpack;
 
 const SIR_SECTION: &str = ".yk_sir";
@@ -24,10 +27,7 @@ const SIR_GLOBAL_SYM_PREFIX: &str = ".yksir";
 
 /// Writes the SIR into a buffer which will be linked in into an ELF section via LLVM.
 /// This is based on write_compressed_metadata().
-pub fn write_sir<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    sir_llvm_module: &mut ModuleLlvm,
-) {
+pub fn write_sir<'tcx>(tcx: TyCtxt<'tcx>, sir_llvm_module: &mut ModuleLlvm) {
     let sir_cxs = tcx.finished_sir_cxs.replace(Vec::new());
     let mut buf = Vec::new();
     let mut encoder = ykpack::Encoder::from(&mut buf);
@@ -51,18 +51,18 @@ pub fn write_sir<'tcx>(
     let llconst = common::struct_in_context(sir_llcx, &[llmeta], false);
 
     // Borrowed from exported_symbols::metadata_symbol_name().
-    let sym_name = format!("{}_{}_{}",
+    let sym_name = format!(
+        "{}_{}_{}",
         SIR_GLOBAL_SYM_PREFIX,
         tcx.original_crate_name(LOCAL_CRATE),
-        tcx.crate_disambiguator(LOCAL_CRATE).to_fingerprint().to_hex());
+        tcx.crate_disambiguator(LOCAL_CRATE).to_fingerprint().to_hex()
+    );
 
     let buf = CString::new(sym_name).unwrap();
-    let llglobal = unsafe {
-        llvm::LLVMAddGlobal(sir_llmod, common::val_ty(llconst), buf.as_ptr())
-    };
+    let llglobal = unsafe { llvm::LLVMAddGlobal(sir_llmod, common::val_ty(llconst), buf.as_ptr()) };
 
-    let section_name = format!("{}{}", ykpack::SIR_SECTION_PREFIX,
-        &*tcx.crate_name(LOCAL_CRATE).as_str());
+    let section_name =
+        format!("{}{}", ykpack::SIR_SECTION_PREFIX, &*tcx.crate_name(LOCAL_CRATE).as_str());
     unsafe {
         llvm::LLVMSetInitializer(llglobal, llconst);
         let name = SmallCStr::new(&section_name);

@@ -1,6 +1,6 @@
-use rustc::hir::def_id::DefId;
 use rustc::ty::{self, OutlivesPredicate, TyCtxt};
-use crate::util::nodemap::FxHashMap;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_hir::def_id::DefId;
 
 use super::utils::*;
 
@@ -11,9 +11,7 @@ pub struct ExplicitPredicatesMap<'tcx> {
 
 impl<'tcx> ExplicitPredicatesMap<'tcx> {
     pub fn new() -> ExplicitPredicatesMap<'tcx> {
-        ExplicitPredicatesMap {
-            map: FxHashMap::default(),
-        }
+        ExplicitPredicatesMap { map: FxHashMap::default() }
     }
 
     pub fn explicit_predicates_of(

@@ -1,92 +1,89 @@
 // ignore-tidy-filelength
 
-pub use self::Variance::*;
+pub use self::fold::{TypeFoldable, TypeVisitor};
 pub use self::AssocItemContainer::*;
 pub use self::BorrowKind::*;
 pub use self::IntVarValue::*;
-pub use self::fold::{TypeFoldable, TypeVisitor};
+pub use self::Variance::*;
 
-use crate::hir::{map as hir_map, GlobMap, TraitMap};
-use crate::hir::Node;
-use crate::hir::def::{Res, DefKind, CtorOf, CtorKind, ExportMap};
-use crate::hir::def_id::{CrateNum, DefId, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc_data_structures::svh::Svh;
-use rustc_macros::HashStable;
+use crate::arena::Arena;
+use crate::hir::exports::ExportMap;
+use crate::hir::map as hir_map;
+
 use crate::ich::Fingerprint;
 use crate::ich::StableHashingContext;
 use crate::infer::canonical::Canonical;
 use crate::middle::cstore::CrateStoreDyn;
-use crate::middle::lang_items::{FnTraitLangItem, FnMutTraitLangItem, FnOnceTraitLangItem};
+use crate::middle::lang_items::{FnMutTraitLangItem, FnOnceTraitLangItem, FnTraitLangItem};
 use crate::middle::resolve_lifetime::ObjectLifetimeDefault;
-use crate::mir::Body;
-use crate::mir::interpret::{GlobalId, ErrorHandled};
+use crate::mir::interpret::ErrorHandled;
 use crate::mir::GeneratorLayout;
-use crate::session::CrateDisambiguator;
+use crate::mir::ReadOnlyBodyAndCache;
+use crate::session::DataTypeKind;
 use crate::traits::{self, Reveal};
 use crate::ty;
 use crate::ty::layout::VariantIdx;
-use crate::ty::subst::{Subst, InternalSubsts, SubstsRef};
-use crate::ty::util::{IntTypeExt, Discr};
+use crate::ty::subst::{InternalSubsts, Subst, SubstsRef};
+use crate::ty::util::{Discr, IntTypeExt};
 use crate::ty::walk::TypeWalker;
-use crate::util::captures::Captures;
-use crate::util::nodemap::{NodeMap, NodeSet, DefIdMap, FxHashMap};
-use arena::SyncDroplessArena;
-use crate::session::DataTypeKind;
-
+use rustc_attr as attr;
+use rustc_data_structures::captures::Captures;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::fx::FxIndexMap;
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+use rustc_data_structures::sync::{self, par_iter, Lrc, ParallelIterator};
+use rustc_hir as hir;
+use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
+use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
+use rustc_hir::{Constness, GlobMap, Node, TraitMap};
+use rustc_index::vec::{Idx, IndexVec};
+use rustc_macros::HashStable;
 use rustc_serialize::{self, Encodable, Encoder};
+use rustc_span::hygiene::ExpnId;
+use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::Span;
 use rustc_target::abi::Align;
+use syntax::ast::{self, Ident, Name};
+use syntax::node_id::{NodeId, NodeMap, NodeSet};
+
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use rustc_data_structures::sync::{self, Lrc, ParallelIterator, par_iter};
+use std::ops::Range;
 use std::slice;
 use std::{mem, ptr};
-use std::ops::Range;
-use syntax::ast::{self, Name, Ident, NodeId};
-use syntax::attr;
-use syntax_pos::symbol::{kw, sym, Symbol};
-use syntax_pos::hygiene::ExpnId;
-use syntax_pos::Span;
 
-use smallvec;
-use rustc_data_structures::fx::{FxIndexMap};
-use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
-use rustc_index::vec::{Idx, IndexVec};
-
-use crate::hir;
-
-pub use self::sty::{Binder, BoundTy, BoundTyKind, BoundVar, DebruijnIndex, INNERMOST};
-pub use self::sty::{FnSig, GenSig, CanonicalPolyFnSig, PolyFnSig, PolyGenSig};
-pub use self::sty::{InferTy, ParamTy, ParamConst, InferConst, ProjectionTy, ExistentialPredicate};
-pub use self::sty::{ClosureSubsts, GeneratorSubsts, UpvarSubsts, TypeAndMut};
-pub use self::sty::{TraitRef, TyKind, PolyTraitRef};
-pub use self::sty::{ExistentialTraitRef, PolyExistentialTraitRef};
-pub use self::sty::{ExistentialProjection, PolyExistentialProjection, Const};
-pub use self::sty::{BoundRegion, EarlyBoundRegion, FreeRegion, Region};
-pub use self::sty::RegionKind;
-pub use self::sty::{TyVid, IntVid, FloatVid, ConstVid, RegionVid};
 pub use self::sty::BoundRegion::*;
 pub use self::sty::InferTy::*;
+pub use self::sty::RegionKind;
 pub use self::sty::RegionKind::*;
 pub use self::sty::TyKind::*;
+pub use self::sty::{Binder, BoundTy, BoundTyKind, BoundVar, DebruijnIndex, INNERMOST};
+pub use self::sty::{BoundRegion, EarlyBoundRegion, FreeRegion, Region};
+pub use self::sty::{CanonicalPolyFnSig, FnSig, GenSig, PolyFnSig, PolyGenSig};
+pub use self::sty::{ClosureSubsts, GeneratorSubsts, TypeAndMut, UpvarSubsts};
+pub use self::sty::{Const, ConstKind, ExistentialProjection, PolyExistentialProjection};
+pub use self::sty::{ConstVid, FloatVid, IntVid, RegionVid, TyVid};
+pub use self::sty::{ExistentialPredicate, InferConst, InferTy, ParamConst, ParamTy, ProjectionTy};
+pub use self::sty::{ExistentialTraitRef, PolyExistentialTraitRef};
+pub use self::sty::{PolyTraitRef, TraitRef, TyKind};
+pub use crate::ty::diagnostics::*;
 
 pub use self::binding::BindingMode;
 pub use self::binding::BindingMode::*;
 
-pub use self::context::{TyCtxt, FreeRegionInfo, AllArenas, tls, keep_local};
-pub use self::context::{Lift, GeneratorInteriorTypeCause, TypeckTables, CtxtInterners, GlobalCtxt};
+pub use self::context::{keep_local, tls, FreeRegionInfo, TyCtxt};
 pub use self::context::{
-    UserTypeAnnotationIndex, UserType, CanonicalUserType,
-    CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, ResolvedOpaqueTy,
+    CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, ResolvedOpaqueTy,
+    UserType, UserTypeAnnotationIndex,
+};
+pub use self::context::{
+    CtxtInterners, GeneratorInteriorTypeCause, GlobalCtxt, Lift, TypeckTables,
 };
 
 pub use self::instance::{Instance, InstanceDef};
-
-pub use self::structural_match::search_for_structural_match_violation;
-pub use self::structural_match::type_marked_structural;
-pub use self::structural_match::NonStructuralMatchTy;
 
 pub use self::trait_def::TraitDef;
 
@@ -97,15 +94,16 @@ pub mod binding;
 pub mod cast;
 #[macro_use]
 pub mod codec;
-mod constness;
-pub mod error;
+pub mod _match;
 mod erase_regions;
+pub mod error;
 pub mod fast_reject;
 pub mod flags;
 pub mod fold;
+pub mod free_region_map;
 pub mod inhabitedness;
 pub mod layout;
-pub mod _match;
+pub mod normalize_erasing_regions;
 pub mod outlives;
 pub mod print;
 pub mod query;
@@ -113,14 +111,13 @@ pub mod relate;
 pub mod steal;
 pub mod subst;
 pub mod trait_def;
-pub mod walk;
-pub mod wf;
 pub mod util;
+pub mod walk;
 
 mod context;
+mod diagnostics;
 mod instance;
 mod structural_impls;
-mod structural_match;
 mod sty;
 
 // Data types
@@ -151,7 +148,7 @@ impl AssocItemContainer {
     pub fn assert_trait(&self) -> DefId {
         match *self {
             TraitContainer(id) => id,
-            _ => bug!("associated item has wrong container type: {:?}", self)
+            _ => bug!("associated item has wrong container type: {:?}", self),
         }
     }
 
@@ -166,7 +163,7 @@ impl AssocItemContainer {
 /// The "header" of an impl is everything outside the body: a Self type, a trait
 /// ref (in the case of a trait impl), and a set of predicates (from the
 /// bounds / where-clauses).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, TypeFoldable)]
 pub struct ImplHeader<'tcx> {
     pub impl_def_id: DefId,
     pub self_ty: Ty<'tcx>,
@@ -207,7 +204,17 @@ pub enum AssocKind {
     Const,
     Method,
     OpaqueTy,
-    Type
+    Type,
+}
+
+impl AssocKind {
+    pub fn suggestion_descr(&self) -> &'static str {
+        match self {
+            ty::AssocKind::Method => "method call",
+            ty::AssocKind::Type | ty::AssocKind::OpaqueTy => "associated type",
+            ty::AssocKind::Const => "associated constant",
+        }
+    }
 }
 
 impl AssocItem {
@@ -224,9 +231,7 @@ impl AssocItem {
     /// for !
     pub fn relevant_for_never(&self) -> bool {
         match self.kind {
-            AssocKind::OpaqueTy |
-            AssocKind::Const |
-            AssocKind::Type => true,
+            AssocKind::OpaqueTy | AssocKind::Const | AssocKind::Type => true,
             // FIXME(canndrew): Be more thorough here, check if any argument is uninhabited.
             AssocKind::Method => !self.method_has_self_argument,
         }
@@ -286,7 +291,7 @@ impl<'tcx> DefIdTree for TyCtxt<'tcx> {
 }
 
 impl Visibility {
-    pub fn from_hir(visibility: &hir::Visibility, id: hir::HirId, tcx: TyCtxt<'_>) -> Self {
+    pub fn from_hir(visibility: &hir::Visibility<'_>, id: hir::HirId, tcx: TyCtxt<'_>) -> Self {
         match visibility.node {
             hir::VisibilityKind::Public => Visibility::Public,
             hir::VisibilityKind::Crate(_) => Visibility::Restricted(DefId::local(CRATE_DEF_INDEX)),
@@ -340,10 +345,10 @@ impl Visibility {
 
 #[derive(Copy, Clone, PartialEq, RustcDecodable, RustcEncodable, HashStable)]
 pub enum Variance {
-    Covariant,      // T<A> <: T<B> iff A <: B -- e.g., function return type
-    Invariant,      // T<A> <: T<B> iff B == A -- e.g., type of mutable cell
-    Contravariant,  // T<A> <: T<B> iff B <: A -- e.g., function param type
-    Bivariant,      // T<A> <: T<B>            -- e.g., unused type parameter
+    Covariant,     // T<A> <: T<B> iff A <: B -- e.g., function return type
+    Invariant,     // T<A> <: T<B> iff B == A -- e.g., type of mutable cell
+    Contravariant, // T<A> <: T<B> iff B <: A -- e.g., function param type
+    Bivariant,     // T<A> <: T<B>            -- e.g., unused type parameter
 }
 
 /// The crate variances map is computed during typeck and contains the
@@ -552,37 +557,6 @@ impl<'tcx> Hash for TyS<'tcx> {
     }
 }
 
-impl<'tcx> TyS<'tcx> {
-    pub fn is_primitive_ty(&self) -> bool {
-        match self.kind {
-            Bool |
-            Char |
-            Int(_) |
-            Uint(_) |
-            Float(_) |
-            Infer(InferTy::IntVar(_)) |
-            Infer(InferTy::FloatVar(_)) |
-            Infer(InferTy::FreshIntTy(_)) |
-            Infer(InferTy::FreshFloatTy(_)) => true,
-            Ref(_, x, _) => x.is_primitive_ty(),
-            _ => false,
-        }
-    }
-
-    pub fn is_suggestable(&self) -> bool {
-        match self.kind {
-            Opaque(..) |
-            FnDef(..) |
-            FnPtr(..) |
-            Dynamic(..) |
-            Closure(..) |
-            Infer(..) |
-            Projection(..) => false,
-            _ => true,
-        }
-    }
-}
-
 impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ty::TyS<'tcx> {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         let ty::TyS {
@@ -607,7 +581,7 @@ impl<'tcx> rustc_serialize::UseSpecializedDecodable for Ty<'tcx> {}
 
 pub type CanonicalTy<'tcx> = Canonical<'tcx, Ty<'tcx>>;
 
-extern {
+extern "C" {
     /// A dummy type used to force `List` to be unsized while not requiring references to it be wide
     /// pointers.
     type OpaqueListContents;
@@ -630,7 +604,7 @@ unsafe impl<T: Sync> Sync for List<T> {}
 
 impl<T: Copy> List<T> {
     #[inline]
-    fn from_arena<'tcx>(arena: &'tcx SyncDroplessArena, slice: &[T]) -> &'tcx List<T> {
+    fn from_arena<'tcx>(arena: &'tcx Arena<'tcx>, slice: &[T]) -> &'tcx List<T> {
         assert!(!mem::needs_drop::<T>());
         assert!(mem::size_of::<T>() != 0);
         assert!(slice.len() != 0);
@@ -643,9 +617,9 @@ impl<T: Copy> List<T> {
 
         let size = offset + slice.len() * mem::size_of::<T>();
 
-        let mem = arena.alloc_raw(
-            size,
-            cmp::max(mem::align_of::<T>(), mem::align_of::<usize>()));
+        let mem = arena
+            .dropless
+            .alloc_raw(size, cmp::max(mem::align_of::<T>(), mem::align_of::<usize>()));
         unsafe {
             let result = &mut *(mem.as_mut_ptr() as *mut List<T>);
             // Write the length
@@ -673,17 +647,23 @@ impl<T: Encodable> Encodable for List<T> {
     }
 }
 
-impl<T> Ord for List<T> where T: Ord {
+impl<T> Ord for List<T>
+where
+    T: Ord,
+{
     fn cmp(&self, other: &List<T>) -> Ordering {
-        if self == other { Ordering::Equal } else {
-            <[T] as Ord>::cmp(&**self, &**other)
-        }
+        if self == other { Ordering::Equal } else { <[T] as Ord>::cmp(&**self, &**other) }
     }
 }
 
-impl<T> PartialOrd for List<T> where T: PartialOrd {
+impl<T> PartialOrd for List<T>
+where
+    T: PartialOrd,
+{
     fn partial_cmp(&self, other: &List<T>) -> Option<Ordering> {
-        if self == other { Some(Ordering::Equal) } else {
+        if self == other {
+            Some(Ordering::Equal)
+        } else {
             <[T] as PartialOrd>::partial_cmp(&**self, &**other)
         }
     }
@@ -715,9 +695,7 @@ impl<T> Deref for List<T> {
 impl<T> AsRef<[T]> for List<T> {
     #[inline(always)]
     fn as_ref(&self) -> &[T] {
-        unsafe {
-            slice::from_raw_parts(self.data.as_ptr(), self.len)
-        }
+        unsafe { slice::from_raw_parts(self.data.as_ptr(), self.len) }
     }
 }
 
@@ -739,9 +717,7 @@ impl<T> List<T> {
         struct EmptySlice([u8; 64]);
         static EMPTY_SLICE: EmptySlice = EmptySlice([0; 64]);
         assert!(mem::align_of::<T>() <= 64);
-        unsafe {
-            &*(&EMPTY_SLICE as *const _ as *const List<T>)
-        }
+        unsafe { &*(&EMPTY_SLICE as *const _ as *const List<T>) }
     }
 }
 
@@ -802,7 +778,7 @@ pub enum BorrowKind {
     UniqueImmBorrow,
 
     /// Data is mutable and not aliasable.
-    MutBorrow
+    MutBorrow,
 }
 
 /// Information describing the capture of an upvar. This is computed
@@ -831,13 +807,6 @@ pub struct UpvarBorrow<'tcx> {
 
 pub type UpvarListMap = FxHashMap<DefId, FxIndexMap<hir::HirId, UpvarId>>;
 pub type UpvarCaptureMap<'tcx> = FxHashMap<UpvarId, UpvarCapture<'tcx>>;
-
-#[derive(Copy, Clone)]
-pub struct ClosureUpvar<'tcx> {
-    pub res: Res,
-    pub span: Span,
-    pub ty: Ty<'tcx>,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IntVarValue {
@@ -888,11 +857,7 @@ pub struct GenericParamDef {
 impl GenericParamDef {
     pub fn to_early_bound_region_data(&self) -> ty::EarlyBoundRegion {
         if let GenericParamDefKind::Lifetime = self.kind {
-            ty::EarlyBoundRegion {
-                def_id: self.def_id,
-                index: self.index,
-                name: self.name,
-            }
+            ty::EarlyBoundRegion { def_id: self.def_id, index: self.index, name: self.name }
         } else {
             bug!("cannot convert a non-lifetime parameter def to an early bound region")
         }
@@ -987,11 +952,11 @@ impl<'tcx> Generics {
             let param = &self.params[index as usize];
             match param.kind {
                 GenericParamDefKind::Lifetime => param,
-                _ => bug!("expected lifetime parameter, but found another generic parameter")
+                _ => bug!("expected lifetime parameter, but found another generic parameter"),
             }
         } else {
             tcx.generics_of(self.parent.expect("parent_count > 0 but no parent?"))
-               .region_param(param, tcx)
+                .region_param(param, tcx)
         }
     }
 
@@ -1001,11 +966,11 @@ impl<'tcx> Generics {
             let param = &self.params[index as usize];
             match param.kind {
                 GenericParamDefKind::Type { .. } => param,
-                _ => bug!("expected type parameter, but found another generic parameter")
+                _ => bug!("expected type parameter, but found another generic parameter"),
             }
         } else {
             tcx.generics_of(self.parent.expect("parent_count > 0 but no parent?"))
-               .type_param(param, tcx)
+                .type_param(param, tcx)
         }
     }
 
@@ -1015,7 +980,7 @@ impl<'tcx> Generics {
             let param = &self.params[index as usize];
             match param.kind {
                 GenericParamDefKind::Const => param,
-                _ => bug!("expected const parameter, but found another generic parameter")
+                _ => bug!("expected const parameter, but found another generic parameter"),
             }
         } else {
             tcx.generics_of(self.parent.expect("parent_count>0 but no parent?"))
@@ -1049,6 +1014,7 @@ impl<'tcx> GenericPredicates<'tcx> {
     ) -> InstantiatedPredicates<'tcx> {
         InstantiatedPredicates {
             predicates: self.predicates.iter().map(|(p, _)| p.subst(tcx, substs)).collect(),
+            spans: self.predicates.iter().map(|(_, sp)| *sp).collect(),
         }
     }
 
@@ -1061,9 +1027,8 @@ impl<'tcx> GenericPredicates<'tcx> {
         if let Some(def_id) = self.parent {
             tcx.predicates_of(def_id).instantiate_into(tcx, instantiated, substs);
         }
-        instantiated.predicates.extend(
-            self.predicates.iter().map(|(p, _)| p.subst(tcx, substs)),
-        );
+        instantiated.predicates.extend(self.predicates.iter().map(|(p, _)| p.subst(tcx, substs)));
+        instantiated.spans.extend(self.predicates.iter().map(|(_, sp)| *sp));
     }
 
     pub fn instantiate_identity(&self, tcx: TyCtxt<'tcx>) -> InstantiatedPredicates<'tcx> {
@@ -1080,7 +1045,8 @@ impl<'tcx> GenericPredicates<'tcx> {
         if let Some(def_id) = self.parent {
             tcx.predicates_of(def_id).instantiate_identity_into(tcx, instantiated);
         }
-        instantiated.predicates.extend(self.predicates.iter().map(|&(p, _)| p))
+        instantiated.predicates.extend(self.predicates.iter().map(|(p, _)| p));
+        instantiated.spans.extend(self.predicates.iter().map(|(_, s)| s));
     }
 
     pub fn instantiate_supertrait(
@@ -1090,19 +1056,27 @@ impl<'tcx> GenericPredicates<'tcx> {
     ) -> InstantiatedPredicates<'tcx> {
         assert_eq!(self.parent, None);
         InstantiatedPredicates {
-            predicates: self.predicates.iter().map(|(pred, _)| {
-                pred.subst_supertrait(tcx, poly_trait_ref)
-            }).collect()
+            predicates: self
+                .predicates
+                .iter()
+                .map(|(pred, _)| pred.subst_supertrait(tcx, poly_trait_ref))
+                .collect(),
+            spans: self.predicates.iter().map(|(_, sp)| *sp).collect(),
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable)]
 pub enum Predicate<'tcx> {
     /// Corresponds to `where Foo: Bar<A, B, C>`. `Foo` here would be
     /// the `Self` type of the trait reference and `A`, `B`, and `C`
     /// would be the type parameters.
-    Trait(PolyTraitPredicate<'tcx>),
+    ///
+    /// A trait predicate will have `Constness::Const` if it originates
+    /// from a bound on a `const fn` without the `?const` opt-out (e.g.,
+    /// `const fn foobar<Foo: Bar>() {}`).
+    Trait(PolyTraitPredicate<'tcx>, Constness),
 
     /// `where 'a: 'b`
     RegionOutlives(PolyRegionOutlivesPredicate<'tcx>),
@@ -1225,31 +1199,37 @@ impl<'tcx> Predicate<'tcx> {
 
         let substs = &trait_ref.skip_binder().substs;
         match *self {
-            Predicate::Trait(ref binder) =>
-                Predicate::Trait(binder.map_bound(|data| data.subst(tcx, substs))),
-            Predicate::Subtype(ref binder) =>
-                Predicate::Subtype(binder.map_bound(|data| data.subst(tcx, substs))),
-            Predicate::RegionOutlives(ref binder) =>
-                Predicate::RegionOutlives(binder.map_bound(|data| data.subst(tcx, substs))),
-            Predicate::TypeOutlives(ref binder) =>
-                Predicate::TypeOutlives(binder.map_bound(|data| data.subst(tcx, substs))),
-            Predicate::Projection(ref binder) =>
-                Predicate::Projection(binder.map_bound(|data| data.subst(tcx, substs))),
-            Predicate::WellFormed(data) =>
-                Predicate::WellFormed(data.subst(tcx, substs)),
-            Predicate::ObjectSafe(trait_def_id) =>
-                Predicate::ObjectSafe(trait_def_id),
-            Predicate::ClosureKind(closure_def_id, closure_substs, kind) =>
-                Predicate::ClosureKind(closure_def_id, closure_substs.subst(tcx, substs), kind),
-            Predicate::ConstEvaluatable(def_id, const_substs) =>
-                Predicate::ConstEvaluatable(def_id, const_substs.subst(tcx, substs)),
+            Predicate::Trait(ref binder, constness) => {
+                Predicate::Trait(binder.map_bound(|data| data.subst(tcx, substs)), constness)
+            }
+            Predicate::Subtype(ref binder) => {
+                Predicate::Subtype(binder.map_bound(|data| data.subst(tcx, substs)))
+            }
+            Predicate::RegionOutlives(ref binder) => {
+                Predicate::RegionOutlives(binder.map_bound(|data| data.subst(tcx, substs)))
+            }
+            Predicate::TypeOutlives(ref binder) => {
+                Predicate::TypeOutlives(binder.map_bound(|data| data.subst(tcx, substs)))
+            }
+            Predicate::Projection(ref binder) => {
+                Predicate::Projection(binder.map_bound(|data| data.subst(tcx, substs)))
+            }
+            Predicate::WellFormed(data) => Predicate::WellFormed(data.subst(tcx, substs)),
+            Predicate::ObjectSafe(trait_def_id) => Predicate::ObjectSafe(trait_def_id),
+            Predicate::ClosureKind(closure_def_id, closure_substs, kind) => {
+                Predicate::ClosureKind(closure_def_id, closure_substs.subst(tcx, substs), kind)
+            }
+            Predicate::ConstEvaluatable(def_id, const_substs) => {
+                Predicate::ConstEvaluatable(def_id, const_substs.subst(tcx, substs))
+            }
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable)]
 pub struct TraitPredicate<'tcx> {
-    pub trait_ref: TraitRef<'tcx>
+    pub trait_ref: TraitRef<'tcx>,
 }
 
 pub type PolyTraitPredicate<'tcx> = ty::Binder<TraitPredicate<'tcx>>;
@@ -1275,8 +1255,8 @@ impl<'tcx> PolyTraitPredicate<'tcx> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
-         Hash, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable)]
 pub struct OutlivesPredicate<A, B>(pub A, pub B); // `A: B`
 pub type PolyOutlivesPredicate<A, B> = ty::Binder<OutlivesPredicate<A, B>>;
 pub type RegionOutlivesPredicate<'tcx> = OutlivesPredicate<ty::Region<'tcx>, ty::Region<'tcx>>;
@@ -1284,11 +1264,12 @@ pub type TypeOutlivesPredicate<'tcx> = OutlivesPredicate<Ty<'tcx>, ty::Region<'t
 pub type PolyRegionOutlivesPredicate<'tcx> = ty::Binder<RegionOutlivesPredicate<'tcx>>;
 pub type PolyTypeOutlivesPredicate<'tcx> = ty::Binder<TypeOutlivesPredicate<'tcx>>;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable)]
 pub struct SubtypePredicate<'tcx> {
     pub a_is_expected: bool,
     pub a: Ty<'tcx>,
-    pub b: Ty<'tcx>
+    pub b: Ty<'tcx>,
 }
 pub type PolySubtypePredicate<'tcx> = ty::Binder<SubtypePredicate<'tcx>>;
 
@@ -1304,7 +1285,8 @@ pub type PolySubtypePredicate<'tcx> = ty::Binder<SubtypePredicate<'tcx>>;
 /// equality between arbitrary types. Processing an instance of
 /// Form #2 eventually yields one of these `ProjectionPredicate`
 /// instances to normalize the LHS.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable)]
 pub struct ProjectionPredicate<'tcx> {
     pub projection_ty: ProjectionTy<'tcx>,
     pub ty: Ty<'tcx>,
@@ -1319,7 +1301,7 @@ impl<'tcx> PolyProjectionPredicate<'tcx> {
     }
 
     #[inline]
-    pub fn to_poly_trait_ref(&self, tcx: TyCtxt<'_>) -> PolyTraitRef<'tcx> {
+    pub fn to_poly_trait_ref(&self, tcx: TyCtxt<'tcx>) -> PolyTraitRef<'tcx> {
         // Note: unlike with `TraitRef::to_poly_trait_ref()`,
         // `self.0.trait_ref` is permitted to have escaping regions.
         // This is because here `self` has a `Binder` and so does our
@@ -1348,7 +1330,7 @@ pub trait ToPolyTraitRef<'tcx> {
 
 impl<'tcx> ToPolyTraitRef<'tcx> for TraitRef<'tcx> {
     fn to_poly_trait_ref(&self) -> PolyTraitRef<'tcx> {
-        ty::Binder::dummy(self.clone())
+        ty::Binder::dummy(*self)
     }
 }
 
@@ -1362,56 +1344,74 @@ pub trait ToPredicate<'tcx> {
     fn to_predicate(&self) -> Predicate<'tcx>;
 }
 
-impl<'tcx> ToPredicate<'tcx> for TraitRef<'tcx> {
+impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<TraitRef<'tcx>> {
     fn to_predicate(&self) -> Predicate<'tcx> {
-        ty::Predicate::Trait(ty::Binder::dummy(ty::TraitPredicate {
-            trait_ref: self.clone()
-        }))
+        ty::Predicate::Trait(
+            ty::Binder::dummy(ty::TraitPredicate { trait_ref: self.value }),
+            self.constness,
+        )
     }
 }
 
-impl<'tcx> ToPredicate<'tcx> for PolyTraitRef<'tcx> {
+impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&TraitRef<'tcx>> {
     fn to_predicate(&self) -> Predicate<'tcx> {
-        ty::Predicate::Trait(self.to_poly_trait_predicate())
+        ty::Predicate::Trait(
+            ty::Binder::dummy(ty::TraitPredicate { trait_ref: self.value.clone() }),
+            self.constness,
+        )
+    }
+}
+
+impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<PolyTraitRef<'tcx>> {
+    fn to_predicate(&self) -> Predicate<'tcx> {
+        ty::Predicate::Trait(self.value.to_poly_trait_predicate(), self.constness)
+    }
+}
+
+impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&PolyTraitRef<'tcx>> {
+    fn to_predicate(&self) -> Predicate<'tcx> {
+        ty::Predicate::Trait(self.value.to_poly_trait_predicate(), self.constness)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyRegionOutlivesPredicate<'tcx> {
     fn to_predicate(&self) -> Predicate<'tcx> {
-        Predicate::RegionOutlives(self.clone())
+        Predicate::RegionOutlives(*self)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyTypeOutlivesPredicate<'tcx> {
     fn to_predicate(&self) -> Predicate<'tcx> {
-        Predicate::TypeOutlives(self.clone())
+        Predicate::TypeOutlives(*self)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyProjectionPredicate<'tcx> {
     fn to_predicate(&self) -> Predicate<'tcx> {
-        Predicate::Projection(self.clone())
+        Predicate::Projection(*self)
     }
 }
 
 // A custom iterator used by `Predicate::walk_tys`.
 enum WalkTysIter<'tcx, I, J, K>
-    where I: Iterator<Item = Ty<'tcx>>,
-          J: Iterator<Item = Ty<'tcx>>,
-          K: Iterator<Item = Ty<'tcx>>
+where
+    I: Iterator<Item = Ty<'tcx>>,
+    J: Iterator<Item = Ty<'tcx>>,
+    K: Iterator<Item = Ty<'tcx>>,
 {
     None,
     One(Ty<'tcx>),
     Two(Ty<'tcx>, Ty<'tcx>),
     Types(I),
     InputTypes(J),
-    ProjectionTypes(K)
+    ProjectionTypes(K),
 }
 
 impl<'tcx, I, J, K> Iterator for WalkTysIter<'tcx, I, J, K>
-    where I: Iterator<Item = Ty<'tcx>>,
-          J: Iterator<Item = Ty<'tcx>>,
-          K: Iterator<Item = Ty<'tcx>>
+where
+    I: Iterator<Item = Ty<'tcx>>,
+    J: Iterator<Item = Ty<'tcx>>,
+    K: Iterator<Item = Ty<'tcx>>,
 {
     type Item = Ty<'tcx>;
 
@@ -1421,20 +1421,14 @@ impl<'tcx, I, J, K> Iterator for WalkTysIter<'tcx, I, J, K>
             WalkTysIter::One(item) => {
                 *self = WalkTysIter::None;
                 Some(item)
-            },
+            }
             WalkTysIter::Two(item1, item2) => {
                 *self = WalkTysIter::One(item2);
                 Some(item1)
-            },
-            WalkTysIter::Types(ref mut iter) => {
-                iter.next()
-            },
-            WalkTysIter::InputTypes(ref mut iter) => {
-                iter.next()
-            },
-            WalkTysIter::ProjectionTypes(ref mut iter) => {
-                iter.next()
             }
+            WalkTysIter::Types(ref mut iter) => iter.next(),
+            WalkTysIter::InputTypes(ref mut iter) => iter.next(),
+            WalkTysIter::ProjectionTypes(ref mut iter) => iter.next(),
         }
     }
 }
@@ -1445,72 +1439,55 @@ impl<'tcx> Predicate<'tcx> {
     /// with depth 0 are bound by the predicate.
     pub fn walk_tys(&'a self) -> impl Iterator<Item = Ty<'tcx>> + 'a {
         match *self {
-            ty::Predicate::Trait(ref data) => {
+            ty::Predicate::Trait(ref data, _) => {
                 WalkTysIter::InputTypes(data.skip_binder().input_types())
             }
             ty::Predicate::Subtype(binder) => {
                 let SubtypePredicate { a, b, a_is_expected: _ } = binder.skip_binder();
                 WalkTysIter::Two(a, b)
             }
-            ty::Predicate::TypeOutlives(binder) => {
-                WalkTysIter::One(binder.skip_binder().0)
-            }
-            ty::Predicate::RegionOutlives(..) => {
-                WalkTysIter::None
-            }
+            ty::Predicate::TypeOutlives(binder) => WalkTysIter::One(binder.skip_binder().0),
+            ty::Predicate::RegionOutlives(..) => WalkTysIter::None,
             ty::Predicate::Projection(ref data) => {
                 let inner = data.skip_binder();
                 WalkTysIter::ProjectionTypes(
-                    inner.projection_ty.substs.types().chain(Some(inner.ty)))
+                    inner.projection_ty.substs.types().chain(Some(inner.ty)),
+                )
             }
-            ty::Predicate::WellFormed(data) => {
-                WalkTysIter::One(data)
-            }
-            ty::Predicate::ObjectSafe(_trait_def_id) => {
-                WalkTysIter::None
-            }
+            ty::Predicate::WellFormed(data) => WalkTysIter::One(data),
+            ty::Predicate::ObjectSafe(_trait_def_id) => WalkTysIter::None,
             ty::Predicate::ClosureKind(_closure_def_id, closure_substs, _kind) => {
                 WalkTysIter::Types(closure_substs.types())
             }
-            ty::Predicate::ConstEvaluatable(_, substs) => {
-                WalkTysIter::Types(substs.types())
-            }
+            ty::Predicate::ConstEvaluatable(_, substs) => WalkTysIter::Types(substs.types()),
         }
     }
 
     pub fn to_opt_poly_trait_ref(&self) -> Option<PolyTraitRef<'tcx>> {
         match *self {
-            Predicate::Trait(ref t) => {
-                Some(t.to_poly_trait_ref())
-            }
-            Predicate::Projection(..) |
-            Predicate::Subtype(..) |
-            Predicate::RegionOutlives(..) |
-            Predicate::WellFormed(..) |
-            Predicate::ObjectSafe(..) |
-            Predicate::ClosureKind(..) |
-            Predicate::TypeOutlives(..) |
-            Predicate::ConstEvaluatable(..) => {
-                None
-            }
+            Predicate::Trait(ref t, _) => Some(t.to_poly_trait_ref()),
+            Predicate::Projection(..)
+            | Predicate::Subtype(..)
+            | Predicate::RegionOutlives(..)
+            | Predicate::WellFormed(..)
+            | Predicate::ObjectSafe(..)
+            | Predicate::ClosureKind(..)
+            | Predicate::TypeOutlives(..)
+            | Predicate::ConstEvaluatable(..) => None,
         }
     }
 
     pub fn to_opt_type_outlives(&self) -> Option<PolyTypeOutlivesPredicate<'tcx>> {
         match *self {
-            Predicate::TypeOutlives(data) => {
-                Some(data)
-            }
-            Predicate::Trait(..) |
-            Predicate::Projection(..) |
-            Predicate::Subtype(..) |
-            Predicate::RegionOutlives(..) |
-            Predicate::WellFormed(..) |
-            Predicate::ObjectSafe(..) |
-            Predicate::ClosureKind(..) |
-            Predicate::ConstEvaluatable(..) => {
-                None
-            }
+            Predicate::TypeOutlives(data) => Some(data),
+            Predicate::Trait(..)
+            | Predicate::Projection(..)
+            | Predicate::Subtype(..)
+            | Predicate::RegionOutlives(..)
+            | Predicate::WellFormed(..)
+            | Predicate::ObjectSafe(..)
+            | Predicate::ClosureKind(..)
+            | Predicate::ConstEvaluatable(..) => None,
         }
     }
 }
@@ -1534,14 +1511,15 @@ impl<'tcx> Predicate<'tcx> {
 /// `[[], [U:Bar<T>]]`. Now if there were some particular reference
 /// like `Foo<isize,usize>`, then the `InstantiatedPredicates` would be `[[],
 /// [usize:Bar<isize>]]`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, TypeFoldable)]
 pub struct InstantiatedPredicates<'tcx> {
     pub predicates: Vec<Predicate<'tcx>>,
+    pub spans: Vec<Span>,
 }
 
 impl<'tcx> InstantiatedPredicates<'tcx> {
     pub fn empty() -> InstantiatedPredicates<'tcx> {
-        InstantiatedPredicates { predicates: vec![] }
+        InstantiatedPredicates { predicates: vec![], spans: vec![] }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1586,11 +1564,10 @@ rustc_index::newtype_index! {
     /// type -- an idealized representative of "types in general" that we
     /// use for checking generic functions.
     pub struct UniverseIndex {
+        derive [HashStable]
         DEBUG_FORMAT = "U{}",
     }
 }
-
-impl_stable_hash_for!(struct UniverseIndex { private });
 
 impl UniverseIndex {
     pub const ROOT: UniverseIndex = UniverseIndex::from_u32_const(0);
@@ -1658,7 +1635,7 @@ pub type PlaceholderConst = Placeholder<BoundVar>;
 /// When type checking, we use the `ParamEnv` to track
 /// details about the set of where-clauses that are in scope at this
 /// particular point.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable, TypeFoldable)]
 pub struct ParamEnv<'tcx> {
     /// `Obligation`s that the caller must satisfy. This is basically
     /// the set of bounds on the in-scope type parameters, translated
@@ -1703,7 +1680,7 @@ impl<'tcx> ParamEnv<'tcx> {
     pub fn new(
         caller_bounds: &'tcx List<ty::Predicate<'tcx>>,
         reveal: Reveal,
-        def_id: Option<DefId>
+        def_id: Option<DefId>,
     ) -> Self {
         ty::ParamEnv { caller_bounds, reveal, def_id }
     }
@@ -1737,27 +1714,13 @@ impl<'tcx> ParamEnv<'tcx> {
     /// although the surrounding function is never reachable.
     pub fn and<T: TypeFoldable<'tcx>>(self, value: T) -> ParamEnvAnd<'tcx, T> {
         match self.reveal {
-            Reveal::UserFacing => {
-                ParamEnvAnd {
-                    param_env: self,
-                    value,
-                }
-            }
+            Reveal::UserFacing => ParamEnvAnd { param_env: self, value },
 
             Reveal::All => {
-                if value.has_placeholders()
-                    || value.needs_infer()
-                    || value.has_param_types()
-                {
-                    ParamEnvAnd {
-                        param_env: self,
-                        value,
-                    }
+                if value.has_placeholders() || value.needs_infer() || value.has_param_types() {
+                    ParamEnvAnd { param_env: self, value }
                 } else {
-                    ParamEnvAnd {
-                        param_env: self.without_caller_bounds(),
-                        value,
-                    }
+                    ParamEnvAnd { param_env: self.without_caller_bounds(), value }
                 }
             }
         }
@@ -1765,6 +1728,33 @@ impl<'tcx> ParamEnv<'tcx> {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ConstnessAnd<T> {
+    pub constness: Constness,
+    pub value: T,
+}
+
+// FIXME(ecstaticmorse): Audit all occurrences of `without_const().to_predicate()` to ensure that
+// the constness of trait bounds is being propagated correctly.
+pub trait WithConstness: Sized {
+    #[inline]
+    fn with_constness(self, constness: Constness) -> ConstnessAnd<Self> {
+        ConstnessAnd { constness, value: self }
+    }
+
+    #[inline]
+    fn with_const(self) -> ConstnessAnd<Self> {
+        self.with_constness(Constness::Const)
+    }
+
+    #[inline]
+    fn without_const(self) -> ConstnessAnd<Self> {
+        self.with_constness(Constness::NotConst)
+    }
+}
+
+impl<T> WithConstness for T {}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, TypeFoldable)]
 pub struct ParamEnvAnd<'tcx, T> {
     pub param_env: ParamEnv<'tcx>,
     pub value: T,
@@ -1781,10 +1771,7 @@ where
     T: HashStable<StableHashingContext<'a>>,
 {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let ParamEnvAnd {
-            ref param_env,
-            ref value
-        } = *self;
+        let ParamEnvAnd { ref param_env, ref value } = *self;
 
         param_env.hash_stable(hcx, hasher);
         value.hash_stable(hcx, hasher);
@@ -1809,19 +1796,22 @@ bitflags! {
         const IS_STRUCT           = 1 << 2;
         /// Indicates whether the ADT is a struct and has a constructor.
         const HAS_CTOR            = 1 << 3;
-        /// Indicates whether the type is a `PhantomData`.
+        /// Indicates whether the type is `PhantomData`.
         const IS_PHANTOM_DATA     = 1 << 4;
         /// Indicates whether the type has a `#[fundamental]` attribute.
         const IS_FUNDAMENTAL      = 1 << 5;
-        /// Indicates whether the type is a `Box`.
+        /// Indicates whether the type is `Box`.
         const IS_BOX              = 1 << 6;
+        /// Indicates whether the type is `ManuallyDrop`.
+        const IS_MANUALLY_DROP    = 1 << 7;
+        // FIXME(matthewjasper) replace these with diagnostic items
         /// Indicates whether the type is an `Arc`.
-        const IS_ARC              = 1 << 7;
+        const IS_ARC              = 1 << 8;
         /// Indicates whether the type is an `Rc`.
-        const IS_RC               = 1 << 8;
+        const IS_RC               = 1 << 9;
         /// Indicates whether the variant list of this ADT is `#[non_exhaustive]`.
         /// (i.e., this flag is never set unless this ADT is an enum).
-        const IS_VARIANT_LIST_NON_EXHAUSTIVE = 1 << 9;
+        const IS_VARIANT_LIST_NON_EXHAUSTIVE = 1 << 10;
     }
 }
 
@@ -1835,7 +1825,7 @@ bitflags! {
 }
 
 /// Definition of a variant -- a struct's fields or a enum variant.
-#[derive(Debug)]
+#[derive(Debug, HashStable)]
 pub struct VariantDef {
     /// `DefId` that identifies the variant itself.
     /// If this variant belongs to a struct or union, then this is a copy of its `DefId`.
@@ -1844,6 +1834,7 @@ pub struct VariantDef {
     /// If this variant is a struct variant, then this is `None`.
     pub ctor_def_id: Option<DefId>,
     /// Variant or struct name.
+    #[stable_hasher(project(name))]
     pub ident: Ident,
     /// Discriminant of this variant.
     pub discr: VariantDiscr,
@@ -1890,7 +1881,7 @@ impl<'tcx> VariantDef {
         debug!(
             "VariantDef::new(ident = {:?}, variant_did = {:?}, ctor_def_id = {:?}, discr = {:?},
              fields = {:?}, ctor_kind = {:?}, adt_kind = {:?}, parent_did = {:?})",
-             ident, variant_did, ctor_def_id, discr, fields, ctor_kind, adt_kind, parent_did,
+            ident, variant_did, ctor_def_id, discr, fields, ctor_kind, adt_kind, parent_did,
         );
 
         let mut flags = VariantFlags::NO_VARIANT_FLAGS;
@@ -1923,17 +1914,6 @@ impl<'tcx> VariantDef {
     }
 }
 
-impl_stable_hash_for!(struct VariantDef {
-    def_id,
-    ctor_def_id,
-    ident -> (ident.name),
-    discr,
-    fields,
-    ctor_kind,
-    flags,
-    recovered
-});
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
 pub enum VariantDiscr {
     /// Explicit value for this variant, i.e., `X = 123`.
@@ -1959,17 +1939,17 @@ pub struct FieldDef {
 ///
 /// These are all interned (by `intern_adt_def`) into the `adt_defs` table.
 ///
-/// The initialism *"Adt"* stands for an [*algebraic data type (ADT)*][adt].
+/// The initialism *ADT* stands for an [*algebraic data type (ADT)*][adt].
 /// This is slightly wrong because `union`s are not ADTs.
 /// Moreover, Rust only allows recursive data types through indirection.
 ///
 /// [adt]: https://en.wikipedia.org/wiki/Algebraic_data_type
 pub struct AdtDef {
-    /// `DefId` of the struct, enum or union item.
+    /// The `DefId` of the struct, enum or union item.
     pub did: DefId,
     /// Variants of the ADT. If this is a struct or union, then there will be a single variant.
     pub variants: IndexVec<self::layout::VariantIdx, VariantDef>,
-    /// Flags of the ADT (e.g. is this a struct? is this non-exhaustive?)
+    /// Flags of the ADT (e.g., is this a struct? is this non-exhaustive?).
     flags: AdtFlags,
     /// Repr options provided by the user.
     pub repr: ReprOptions,
@@ -1990,9 +1970,11 @@ impl Ord for AdtDef {
 }
 
 impl PartialEq for AdtDef {
-    // AdtDef are always interned and this is part of TyS equality
+    // `AdtDef`s are always interned, and this is part of `TyS` equality.
     #[inline]
-    fn eq(&self, other: &Self) -> bool { ptr::eq(self, other) }
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self, other)
+    }
 }
 
 impl Eq for AdtDef {}
@@ -2012,7 +1994,6 @@ impl<'tcx> rustc_serialize::UseSpecializedEncodable for &'tcx AdtDef {
 
 impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx AdtDef {}
 
-
 impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         thread_local! {
@@ -2022,12 +2003,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
         let hash: Fingerprint = CACHE.with(|cache| {
             let addr = self as *const AdtDef as usize;
             *cache.borrow_mut().entry(addr).or_insert_with(|| {
-                let ty::AdtDef {
-                    did,
-                    ref variants,
-                    ref flags,
-                    ref repr,
-                } = *self;
+                let ty::AdtDef { did, ref variants, ref flags, ref repr } = *self;
 
                 let mut hasher = StableHasher::new();
                 did.hash_stable(hcx, &mut hasher);
@@ -2036,7 +2012,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
                 repr.hash_stable(hcx, &mut hasher);
 
                 hasher.finish()
-           })
+            })
         });
 
         hash.hash_stable(hcx, hasher);
@@ -2044,7 +2020,11 @@ impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum AdtKind { Struct, Union, Enum }
+pub enum AdtKind {
+    Struct,
+    Union,
+    Enum,
+}
 
 impl Into<DataTypeKind> for AdtKind {
     fn into(self) -> DataTypeKind {
@@ -2057,14 +2037,15 @@ impl Into<DataTypeKind> for AdtKind {
 }
 
 bitflags! {
-    #[derive(RustcEncodable, RustcDecodable, Default)]
+    #[derive(RustcEncodable, RustcDecodable, Default, HashStable)]
     pub struct ReprFlags: u8 {
         const IS_C               = 1 << 0;
         const IS_SIMD            = 1 << 1;
         const IS_TRANSPARENT     = 1 << 2;
         // Internal only for now. If true, don't reorder fields.
         const IS_LINEAR          = 1 << 3;
-
+        // If true, don't expose any niche to type's context.
+        const HIDE_NICHE         = 1 << 4;
         // Any of these flags being set prevent field reordering optimisation.
         const IS_UNOPTIMISABLE   = ReprFlags::IS_C.bits |
                                    ReprFlags::IS_SIMD.bits |
@@ -2072,25 +2053,14 @@ bitflags! {
     }
 }
 
-impl_stable_hash_for!(struct ReprFlags {
-    bits
-});
-
 /// Represents the repr options provided by the user,
-#[derive(Copy, Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable, Default, HashStable)]
 pub struct ReprOptions {
     pub int: Option<attr::IntType>,
     pub align: Option<Align>,
     pub pack: Option<Align>,
     pub flags: ReprFlags,
 }
-
-impl_stable_hash_for!(struct ReprOptions {
-    align,
-    pack,
-    int,
-    flags
-});
 
 impl ReprOptions {
     pub fn new(tcx: TyCtxt<'_>, did: DefId) -> ReprOptions {
@@ -2110,17 +2080,18 @@ impl ReprOptions {
                             pack
                         });
                         ReprFlags::empty()
-                    },
+                    }
                     attr::ReprTransparent => ReprFlags::IS_TRANSPARENT,
+                    attr::ReprNoNiche => ReprFlags::HIDE_NICHE,
                     attr::ReprSimd => ReprFlags::IS_SIMD,
                     attr::ReprInt(i) => {
                         size = Some(i);
                         ReprFlags::empty()
-                    },
+                    }
                     attr::ReprAlign(align) => {
                         max_align = max_align.max(Some(Align::from_bytes(align as u64).unwrap()));
                         ReprFlags::empty()
-                    },
+                    }
                 });
             }
         }
@@ -2133,15 +2104,29 @@ impl ReprOptions {
     }
 
     #[inline]
-    pub fn simd(&self) -> bool { self.flags.contains(ReprFlags::IS_SIMD) }
+    pub fn simd(&self) -> bool {
+        self.flags.contains(ReprFlags::IS_SIMD)
+    }
     #[inline]
-    pub fn c(&self) -> bool { self.flags.contains(ReprFlags::IS_C) }
+    pub fn c(&self) -> bool {
+        self.flags.contains(ReprFlags::IS_C)
+    }
     #[inline]
-    pub fn packed(&self) -> bool { self.pack.is_some() }
+    pub fn packed(&self) -> bool {
+        self.pack.is_some()
+    }
     #[inline]
-    pub fn transparent(&self) -> bool { self.flags.contains(ReprFlags::IS_TRANSPARENT) }
+    pub fn transparent(&self) -> bool {
+        self.flags.contains(ReprFlags::IS_TRANSPARENT)
+    }
     #[inline]
-    pub fn linear(&self) -> bool { self.flags.contains(ReprFlags::IS_LINEAR) }
+    pub fn linear(&self) -> bool {
+        self.flags.contains(ReprFlags::IS_LINEAR)
+    }
+    #[inline]
+    pub fn hide_niche(&self) -> bool {
+        self.flags.contains(ReprFlags::HIDE_NICHE)
+    }
 
     pub fn discr_type(&self) -> attr::IntType {
         self.int.unwrap_or(attr::SignedInt(ast::IntTy::Isize))
@@ -2208,6 +2193,9 @@ impl<'tcx> AdtDef {
         if Some(did) == tcx.lang_items().owned_box() {
             flags |= AdtFlags::IS_BOX;
         }
+        if Some(did) == tcx.lang_items().manually_drop() {
+            flags |= AdtFlags::IS_MANUALLY_DROP;
+        }
         if Some(did) == tcx.lang_items().arc() {
             flags |= AdtFlags::IS_ARC;
         }
@@ -2215,12 +2203,7 @@ impl<'tcx> AdtDef {
             flags |= AdtFlags::IS_RC;
         }
 
-        AdtDef {
-            did,
-            variants,
-            flags,
-            repr,
-        }
+        AdtDef { did, variants, flags, repr }
     }
 
     /// Returns `true` if this is a struct.
@@ -2313,6 +2296,12 @@ impl<'tcx> AdtDef {
         self.flags.contains(AdtFlags::IS_BOX)
     }
 
+    /// Returns `true` if this is `ManuallyDrop<T>`.
+    #[inline]
+    pub fn is_manually_drop(&self) -> bool {
+        self.flags.contains(AdtFlags::IS_MANUALLY_DROP)
+    }
+
     /// Returns `true` if this type has a destructor.
     pub fn has_dtor(&self, tcx: TyCtxt<'tcx>) -> bool {
         self.destructor(tcx).is_some()
@@ -2332,47 +2321,56 @@ impl<'tcx> AdtDef {
     /// Returns an iterator over all fields contained
     /// by this ADT.
     #[inline]
-    pub fn all_fields(&self) -> impl Iterator<Item=&FieldDef> + Clone {
+    pub fn all_fields(&self) -> impl Iterator<Item = &FieldDef> + Clone {
         self.variants.iter().flat_map(|v| v.fields.iter())
     }
 
     pub fn is_payloadfree(&self) -> bool {
-        !self.variants.is_empty() &&
-            self.variants.iter().all(|v| v.fields.is_empty())
+        !self.variants.is_empty() && self.variants.iter().all(|v| v.fields.is_empty())
     }
 
     /// Return a `VariantDef` given a variant id.
     pub fn variant_with_id(&self, vid: DefId) -> &VariantDef {
-        self.variants.iter().find(|v| v.def_id == vid)
-            .expect("variant_with_id: unknown variant")
+        self.variants.iter().find(|v| v.def_id == vid).expect("variant_with_id: unknown variant")
     }
 
     /// Return a `VariantDef` given a constructor id.
     pub fn variant_with_ctor_id(&self, cid: DefId) -> &VariantDef {
-        self.variants.iter().find(|v| v.ctor_def_id == Some(cid))
+        self.variants
+            .iter()
+            .find(|v| v.ctor_def_id == Some(cid))
             .expect("variant_with_ctor_id: unknown variant")
     }
 
     /// Return the index of `VariantDef` given a variant id.
     pub fn variant_index_with_id(&self, vid: DefId) -> VariantIdx {
-        self.variants.iter_enumerated().find(|(_, v)| v.def_id == vid)
-            .expect("variant_index_with_id: unknown variant").0
+        self.variants
+            .iter_enumerated()
+            .find(|(_, v)| v.def_id == vid)
+            .expect("variant_index_with_id: unknown variant")
+            .0
     }
 
     /// Return the index of `VariantDef` given a constructor id.
     pub fn variant_index_with_ctor_id(&self, cid: DefId) -> VariantIdx {
-        self.variants.iter_enumerated().find(|(_, v)| v.ctor_def_id == Some(cid))
-            .expect("variant_index_with_ctor_id: unknown variant").0
+        self.variants
+            .iter_enumerated()
+            .find(|(_, v)| v.ctor_def_id == Some(cid))
+            .expect("variant_index_with_ctor_id: unknown variant")
+            .0
     }
 
     pub fn variant_of_res(&self, res: Res) -> &VariantDef {
         match res {
             Res::Def(DefKind::Variant, vid) => self.variant_with_id(vid),
             Res::Def(DefKind::Ctor(..), cid) => self.variant_with_ctor_id(cid),
-            Res::Def(DefKind::Struct, _) | Res::Def(DefKind::Union, _) |
-            Res::Def(DefKind::TyAlias, _) | Res::Def(DefKind::AssocTy, _) | Res::SelfTy(..) |
-            Res::SelfCtor(..) => self.non_enum_variant(),
-            _ => bug!("unexpected res {:?} in variant_of_res", res)
+            Res::Def(DefKind::Struct, _)
+            | Res::Def(DefKind::Union, _)
+            | Res::Def(DefKind::TyAlias, _)
+            | Res::Def(DefKind::AssocTy, _)
+            | Res::SelfTy(..)
+            | Res::SelfCtor(..) => self.non_enum_variant(),
+            _ => bug!("unexpected res {:?} in variant_of_res", res),
         }
     }
 
@@ -2380,42 +2378,35 @@ impl<'tcx> AdtDef {
     pub fn eval_explicit_discr(&self, tcx: TyCtxt<'tcx>, expr_did: DefId) -> Option<Discr<'tcx>> {
         let param_env = tcx.param_env(expr_did);
         let repr_type = self.repr.discr_type();
-        let substs = InternalSubsts::identity_for_item(tcx, expr_did);
-        let instance = ty::Instance::new(expr_did, substs);
-        let cid = GlobalId {
-            instance,
-            promoted: None
-        };
-        match tcx.const_eval(param_env.and(cid)) {
+        match tcx.const_eval_poly(expr_did) {
             Ok(val) => {
                 // FIXME: Find the right type and use it instead of `val.ty` here
                 if let Some(b) = val.try_eval_bits(tcx, param_env, val.ty) {
                     trace!("discriminants: {} ({:?})", b, repr_type);
-                    Some(Discr {
-                        val: b,
-                        ty: val.ty,
-                    })
+                    Some(Discr { val: b, ty: val.ty })
                 } else {
                     info!("invalid enum discriminant: {:#?}", val);
                     crate::mir::interpret::struct_error(
                         tcx.at(tcx.def_span(expr_did)),
                         "constant evaluation of enum discriminant resulted in non-integer",
-                    ).emit();
+                    )
+                    .emit();
                     None
                 }
             }
             Err(ErrorHandled::Reported) => {
                 if !expr_did.is_local() {
-                    span_bug!(tcx.def_span(expr_did),
+                    span_bug!(
+                        tcx.def_span(expr_did),
                         "variant discriminant evaluation succeeded \
-                         in its crate but failed locally");
+                         in its crate but failed locally"
+                    );
                 }
                 None
             }
-            Err(ErrorHandled::TooGeneric) => span_bug!(
-                tcx.def_span(expr_did),
-                "enum discriminant depends on generic arguments",
-            ),
+            Err(ErrorHandled::TooGeneric) => {
+                span_bug!(tcx.def_span(expr_did), "enum discriminant depends on generic arguments",)
+            }
         }
     }
 
@@ -2442,7 +2433,7 @@ impl<'tcx> AdtDef {
 
     #[inline]
     pub fn variant_range(&self) -> Range<VariantIdx> {
-        (VariantIdx::new(0)..VariantIdx::new(self.variants.len()))
+        VariantIdx::new(0)..VariantIdx::new(self.variants.len())
     }
 
     /// Computes the discriminant value used by a specific variant.
@@ -2466,10 +2457,7 @@ impl<'tcx> AdtDef {
     /// Yields a `DefId` for the discriminant and an offset to add to it
     /// Alternatively, if there is no explicit discriminant, returns the
     /// inferred discriminant directly.
-    pub fn discriminant_def_for_variant(
-        &self,
-        variant_index: VariantIdx,
-    ) -> (Option<DefId>, u32) {
+    pub fn discriminant_def_for_variant(&self, variant_index: VariantIdx) -> (Option<DefId>, u32) {
         let mut explicit_index = variant_index.as_u32();
         let expr_did;
         loop {
@@ -2477,7 +2465,7 @@ impl<'tcx> AdtDef {
                 ty::VariantDiscr::Relative(0) => {
                     expr_did = None;
                     break;
-                },
+                }
                 ty::VariantDiscr::Relative(distance) => {
                     explicit_index -= distance;
                 }
@@ -2507,82 +2495,6 @@ impl<'tcx> AdtDef {
     pub fn sized_constraint(&self, tcx: TyCtxt<'tcx>) -> &'tcx [Ty<'tcx>] {
         tcx.adt_sized_constraint(self.did).0
     }
-
-    fn sized_constraint_for_ty(&self, tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> Vec<Ty<'tcx>> {
-        let result = match ty.kind {
-            Bool | Char | Int(..) | Uint(..) | Float(..) |
-            RawPtr(..) | Ref(..) | FnDef(..) | FnPtr(_) |
-            Array(..) | Closure(..) | Generator(..) | Never => {
-                vec![]
-            }
-
-            Str |
-            Dynamic(..) |
-            Slice(_) |
-            Foreign(..) |
-            Error |
-            GeneratorWitness(..) => {
-                // these are never sized - return the target type
-                vec![ty]
-            }
-
-            Tuple(ref tys) => {
-                match tys.last() {
-                    None => vec![],
-                    Some(ty) => self.sized_constraint_for_ty(tcx, ty.expect_ty()),
-                }
-            }
-
-            Adt(adt, substs) => {
-                // recursive case
-                let adt_tys = adt.sized_constraint(tcx);
-                debug!("sized_constraint_for_ty({:?}) intermediate = {:?}",
-                       ty, adt_tys);
-                adt_tys.iter()
-                       .map(|ty| ty.subst(tcx, substs))
-                       .flat_map(|ty| self.sized_constraint_for_ty(tcx, ty))
-                       .collect()
-            }
-
-            Projection(..) | Opaque(..) => {
-                // must calculate explicitly.
-                // FIXME: consider special-casing always-Sized projections
-                vec![ty]
-            }
-
-            UnnormalizedProjection(..) => bug!("only used with chalk-engine"),
-
-            Param(..) => {
-                // perf hack: if there is a `T: Sized` bound, then
-                // we know that `T` is Sized and do not need to check
-                // it on the impl.
-
-                let sized_trait = match tcx.lang_items().sized_trait() {
-                    Some(x) => x,
-                    _ => return vec![ty]
-                };
-                let sized_predicate = Binder::dummy(TraitRef {
-                    def_id: sized_trait,
-                    substs: tcx.mk_substs_trait(ty, &[])
-                }).to_predicate();
-                let predicates = tcx.predicates_of(self.did).predicates;
-                if predicates.iter().any(|(p, _)| *p == sized_predicate) {
-                    vec![]
-                } else {
-                    vec![ty]
-                }
-            }
-
-            Placeholder(..) |
-            Bound(..) |
-            Infer(..) => {
-                bug!("unexpected type `{:?}` in sized_constraint_for_ty",
-                     ty)
-            }
-        };
-        debug!("sized_constraint_for_ty({:?}) = {:?}", ty, result);
-        result
-    }
 }
 
 impl<'tcx> FieldDef {
@@ -2599,8 +2511,19 @@ impl<'tcx> FieldDef {
 ///
 /// You can get the environment type of a closure using
 /// `tcx.closure_env_ty()`.
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug,
-         RustcEncodable, RustcDecodable, HashStable)]
+#[derive(
+    Clone,
+    Copy,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Debug,
+    RustcEncodable,
+    RustcDecodable,
+    HashStable
+)]
 pub enum ClosureKind {
     // Warning: Ordering is significant here! The ordering is chosen
     // because the trait Fn is a subtrait of FnMut and so in turn, and
@@ -2617,12 +2540,8 @@ impl<'tcx> ClosureKind {
     pub fn trait_did(&self, tcx: TyCtxt<'tcx>) -> DefId {
         match *self {
             ClosureKind::Fn => tcx.require_lang_item(FnTraitLangItem, None),
-            ClosureKind::FnMut => {
-                tcx.require_lang_item(FnMutTraitLangItem, None)
-            }
-            ClosureKind::FnOnce => {
-                tcx.require_lang_item(FnOnceTraitLangItem, None)
-            }
+            ClosureKind::FnMut => tcx.require_lang_item(FnMutTraitLangItem, None),
+            ClosureKind::FnOnce => tcx.require_lang_item(FnOnceTraitLangItem, None),
         }
     }
 
@@ -2679,7 +2598,8 @@ impl<'tcx> TyS<'tcx> {
     ///
     /// Note: prefer `ty.walk()` where possible.
     pub fn maybe_walk<F>(&'tcx self, mut f: F)
-        where F: FnMut(Ty<'tcx>) -> bool
+    where
+        F: FnMut(Ty<'tcx>) -> bool,
     {
         let mut walker = self.walk();
         while let Some(ty) = walker.next() {
@@ -2693,8 +2613,8 @@ impl<'tcx> TyS<'tcx> {
 impl BorrowKind {
     pub fn from_mutbl(m: hir::Mutability) -> BorrowKind {
         match m {
-            hir::MutMutable => MutBorrow,
-            hir::MutImmutable => ImmBorrow,
+            hir::Mutability::Mut => MutBorrow,
+            hir::Mutability::Not => ImmBorrow,
         }
     }
 
@@ -2704,13 +2624,13 @@ impl BorrowKind {
     /// question.
     pub fn to_mutbl_lossy(self) -> hir::Mutability {
         match self {
-            MutBorrow => hir::MutMutable,
-            ImmBorrow => hir::MutImmutable,
+            MutBorrow => hir::Mutability::Mut,
+            ImmBorrow => hir::Mutability::Not,
 
             // We have no type corresponding to a unique imm borrow, so
             // use `&mut`. It gives all the capabilities of an `&uniq`
             // and hence is a safe "over approximation".
-            UniqueImmBorrow => hir::MutMutable,
+            UniqueImmBorrow => hir::Mutability::Mut,
         }
     }
 
@@ -2735,7 +2655,7 @@ impl<'tcx> ::std::ops::Deref for Attributes<'tcx> {
     fn deref(&self) -> &[ast::Attribute] {
         match self {
             &Attributes::Owned(ref data) => &data,
-            &Attributes::Borrowed(data) => data
+            &Attributes::Borrowed(data) => data,
         }
     }
 }
@@ -2743,7 +2663,10 @@ impl<'tcx> ::std::ops::Deref for Attributes<'tcx> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ImplOverlapKind {
     /// These impls are always allowed to overlap.
-    Permitted,
+    Permitted {
+        /// Whether or not the impl is permitted due to the trait being a `#[marker]` trait
+        marker: bool,
+    },
     /// These impls are allowed to overlap, but that raises
     /// an issue #33140 future-compatibility warning.
     ///
@@ -2776,7 +2699,7 @@ pub enum ImplOverlapKind {
     /// 4. Neither of the impls can have any where-clauses.
     ///
     /// Once `traitobject` 0.1.0 is no longer an active concern, this hack can be removed.
-    Issue33140
+    Issue33140,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -2788,28 +2711,26 @@ impl<'tcx> TyCtxt<'tcx> {
     /// crate. If you would prefer to iterate over the bodies
     /// themselves, you can do `self.hir().krate().body_ids.iter()`.
     pub fn body_owners(self) -> impl Iterator<Item = DefId> + Captures<'tcx> + 'tcx {
-        self.hir().krate()
-                  .body_ids
-                  .iter()
-                  .map(move |&body_id| self.hir().body_owner_def_id(body_id))
+        self.hir()
+            .krate()
+            .body_ids
+            .iter()
+            .map(move |&body_id| self.hir().body_owner_def_id(body_id))
     }
 
     pub fn par_body_owners<F: Fn(DefId) + sync::Sync + sync::Send>(self, f: F) {
-        par_iter(&self.hir().krate().body_ids).for_each(|&body_id| {
-            f(self.hir().body_owner_def_id(body_id))
-        });
+        par_iter(&self.hir().krate().body_ids)
+            .for_each(|&body_id| f(self.hir().body_owner_def_id(body_id)));
     }
 
-    pub fn provided_trait_methods(self, id: DefId) -> Vec<AssocItem> {
+    pub fn provided_trait_methods(self, id: DefId) -> impl Iterator<Item = &'tcx AssocItem> {
         self.associated_items(id)
+            .iter()
             .filter(|item| item.kind == AssocKind::Method && item.defaultness.has_value())
-            .collect()
     }
 
     pub fn trait_relevant_for_never(self, did: DefId) -> bool {
-        self.associated_items(did).any(|item| {
-            item.relevant_for_never()
-        })
+        self.associated_items(did).iter().any(|item| item.relevant_for_never())
     }
 
     pub fn opt_item_name(self, def_id: DefId) -> Option<Ident> {
@@ -2824,71 +2745,12 @@ impl<'tcx> TyCtxt<'tcx> {
             }
         } else {
             match self.def_kind(def_id).expect("no def for `DefId`") {
-                DefKind::AssocConst
-                | DefKind::Method
-                | DefKind::AssocTy => true,
+                DefKind::AssocConst | DefKind::Method | DefKind::AssocTy => true,
                 _ => false,
             }
         };
 
-        if is_associated_item {
-            Some(self.associated_item(def_id))
-        } else {
-            None
-        }
-    }
-
-    fn associated_item_from_trait_item_ref(self,
-                                           parent_def_id: DefId,
-                                           parent_vis: &hir::Visibility,
-                                           trait_item_ref: &hir::TraitItemRef)
-                                           -> AssocItem {
-        let def_id = self.hir().local_def_id(trait_item_ref.id.hir_id);
-        let (kind, has_self) = match trait_item_ref.kind {
-            hir::AssocItemKind::Const => (ty::AssocKind::Const, false),
-            hir::AssocItemKind::Method { has_self } => {
-                (ty::AssocKind::Method, has_self)
-            }
-            hir::AssocItemKind::Type => (ty::AssocKind::Type, false),
-            hir::AssocItemKind::OpaqueTy => bug!("only impls can have opaque types"),
-        };
-
-        AssocItem {
-            ident: trait_item_ref.ident,
-            kind,
-            // Visibility of trait items is inherited from their traits.
-            vis: Visibility::from_hir(parent_vis, trait_item_ref.id.hir_id, self),
-            defaultness: trait_item_ref.defaultness,
-            def_id,
-            container: TraitContainer(parent_def_id),
-            method_has_self_argument: has_self
-        }
-    }
-
-    fn associated_item_from_impl_item_ref(self,
-                                          parent_def_id: DefId,
-                                          impl_item_ref: &hir::ImplItemRef)
-                                          -> AssocItem {
-        let def_id = self.hir().local_def_id(impl_item_ref.id.hir_id);
-        let (kind, has_self) = match impl_item_ref.kind {
-            hir::AssocItemKind::Const => (ty::AssocKind::Const, false),
-            hir::AssocItemKind::Method { has_self } => {
-                (ty::AssocKind::Method, has_self)
-            }
-            hir::AssocItemKind::Type => (ty::AssocKind::Type, false),
-            hir::AssocItemKind::OpaqueTy => (ty::AssocKind::OpaqueTy, false),
-        };
-
-        AssocItem {
-            ident: impl_item_ref.ident,
-            kind,
-            // Visibility of trait impl items doesn't matter.
-            vis: ty::Visibility::from_hir(&impl_item_ref.vis, impl_item_ref.id.hir_id, self),
-            defaultness: impl_item_ref.defaultness,
-            def_id,
-            container: ImplContainer(parent_def_id),
-            method_has_self_argument: has_self
-        }
+        is_associated_item.then(|| self.associated_item(def_id))
     }
 
     pub fn field_index(self, hir_id: hir::HirId, tables: &TypeckTables<'_>) -> usize {
@@ -2896,66 +2758,47 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn find_field_index(self, ident: Ident, variant: &VariantDef) -> Option<usize> {
-        variant.fields.iter().position(|field| {
-            self.hygienic_eq(ident, field.ident, variant.def_id)
-        })
-    }
-
-    pub fn associated_items(self, def_id: DefId) -> AssocItemsIterator<'tcx> {
-        // Ideally, we would use `-> impl Iterator` here, but it falls
-        // afoul of the conservative "capture [restrictions]" we put
-        // in place, so we use a hand-written iterator.
-        //
-        // [restrictions]: https://github.com/rust-lang/rust/issues/34511#issuecomment-373423999
-        AssocItemsIterator {
-            tcx: self,
-            def_ids: self.associated_item_def_ids(def_id),
-            next_index: 0,
-        }
+        variant.fields.iter().position(|field| self.hygienic_eq(ident, field.ident, variant.def_id))
     }
 
     /// Returns `true` if the impls are the same polarity and the trait either
     /// has no items or is annotated #[marker] and prevents item overrides.
-    pub fn impls_are_allowed_to_overlap(self, def_id1: DefId, def_id2: DefId)
-                                        -> Option<ImplOverlapKind>
-    {
+    pub fn impls_are_allowed_to_overlap(
+        self,
+        def_id1: DefId,
+        def_id2: DefId,
+    ) -> Option<ImplOverlapKind> {
         // If either trait impl references an error, they're allowed to overlap,
         // as one of them essentially doesn't exist.
-        if self.impl_trait_ref(def_id1).map_or(false, |tr| tr.references_error()) ||
-            self.impl_trait_ref(def_id2).map_or(false, |tr| tr.references_error()) {
-            return Some(ImplOverlapKind::Permitted);
+        if self.impl_trait_ref(def_id1).map_or(false, |tr| tr.references_error())
+            || self.impl_trait_ref(def_id2).map_or(false, |tr| tr.references_error())
+        {
+            return Some(ImplOverlapKind::Permitted { marker: false });
         }
 
         match (self.impl_polarity(def_id1), self.impl_polarity(def_id2)) {
-            (ImplPolarity::Reservation, _) |
-            (_, ImplPolarity::Reservation) => {
+            (ImplPolarity::Reservation, _) | (_, ImplPolarity::Reservation) => {
                 // `#[rustc_reservation_impl]` impls don't overlap with anything
-                debug!("impls_are_allowed_to_overlap({:?}, {:?}) = Some(Permitted) (reservations)",
-                       def_id1, def_id2);
-                return Some(ImplOverlapKind::Permitted);
+                debug!(
+                    "impls_are_allowed_to_overlap({:?}, {:?}) = Some(Permitted) (reservations)",
+                    def_id1, def_id2
+                );
+                return Some(ImplOverlapKind::Permitted { marker: false });
             }
-            (ImplPolarity::Positive, ImplPolarity::Negative) |
-            (ImplPolarity::Negative, ImplPolarity::Positive) => {
+            (ImplPolarity::Positive, ImplPolarity::Negative)
+            | (ImplPolarity::Negative, ImplPolarity::Positive) => {
                 // `impl AutoTrait for Type` + `impl !AutoTrait for Type`
-                debug!("impls_are_allowed_to_overlap({:?}, {:?}) - None (differing polarities)",
-                       def_id1, def_id2);
+                debug!(
+                    "impls_are_allowed_to_overlap({:?}, {:?}) - None (differing polarities)",
+                    def_id1, def_id2
+                );
                 return None;
             }
-            (ImplPolarity::Positive, ImplPolarity::Positive) |
-            (ImplPolarity::Negative, ImplPolarity::Negative) => {}
+            (ImplPolarity::Positive, ImplPolarity::Positive)
+            | (ImplPolarity::Negative, ImplPolarity::Negative) => {}
         };
 
-        let is_marker_overlap = if self.features().overlapping_marker_traits {
-            let trait1_is_empty = self.impl_trait_ref(def_id1)
-                .map_or(false, |trait_ref| {
-                    self.associated_item_def_ids(trait_ref.def_id).is_empty()
-                });
-            let trait2_is_empty = self.impl_trait_ref(def_id2)
-                .map_or(false, |trait_ref| {
-                    self.associated_item_def_ids(trait_ref.def_id).is_empty()
-                });
-            trait1_is_empty && trait2_is_empty
-        } else {
+        let is_marker_overlap = {
             let is_marker_impl = |def_id: DefId| -> bool {
                 let trait_ref = self.impl_trait_ref(def_id);
                 trait_ref.map_or(false, |tr| self.trait_def(tr.def_id).is_marker)
@@ -2963,27 +2806,31 @@ impl<'tcx> TyCtxt<'tcx> {
             is_marker_impl(def_id1) && is_marker_impl(def_id2)
         };
 
-
         if is_marker_overlap {
-            debug!("impls_are_allowed_to_overlap({:?}, {:?}) = Some(Permitted) (marker overlap)",
-                   def_id1, def_id2);
-            Some(ImplOverlapKind::Permitted)
+            debug!(
+                "impls_are_allowed_to_overlap({:?}, {:?}) = Some(Permitted) (marker overlap)",
+                def_id1, def_id2
+            );
+            Some(ImplOverlapKind::Permitted { marker: true })
         } else {
             if let Some(self_ty1) = self.issue33140_self_ty(def_id1) {
                 if let Some(self_ty2) = self.issue33140_self_ty(def_id2) {
                     if self_ty1 == self_ty2 {
-                        debug!("impls_are_allowed_to_overlap({:?}, {:?}) - issue #33140 HACK",
-                               def_id1, def_id2);
+                        debug!(
+                            "impls_are_allowed_to_overlap({:?}, {:?}) - issue #33140 HACK",
+                            def_id1, def_id2
+                        );
                         return Some(ImplOverlapKind::Issue33140);
                     } else {
-                        debug!("impls_are_allowed_to_overlap({:?}, {:?}) - found {:?} != {:?}",
-                              def_id1, def_id2, self_ty1, self_ty2);
+                        debug!(
+                            "impls_are_allowed_to_overlap({:?}, {:?}) - found {:?} != {:?}",
+                            def_id1, def_id2, self_ty1, self_ty2
+                        );
                     }
                 }
             }
 
-            debug!("impls_are_allowed_to_overlap({:?}, {:?}) = None",
-                  def_id1, def_id2);
+            debug!("impls_are_allowed_to_overlap({:?}, {:?}) = None", def_id1, def_id2);
             None
         }
     }
@@ -3008,7 +2855,7 @@ impl<'tcx> TyCtxt<'tcx> {
                 let struct_did = self.parent(ctor_did).expect("struct ctor has no parent");
                 self.adt_def(struct_did).non_enum_variant()
             }
-            _ => bug!("expect_variant_res used with unexpected res {:?}", res)
+            _ => bug!("expect_variant_res used with unexpected res {:?}", res),
         }
     }
 
@@ -3019,11 +2866,9 @@ impl<'tcx> TyCtxt<'tcx> {
             let def_key = self.def_key(id);
             match def_key.disambiguated_data.data {
                 // The name of a constructor is that of its parent.
-                hir_map::DefPathData::Ctor =>
-                    self.item_name(DefId {
-                        krate: id.krate,
-                        index: def_key.parent.unwrap()
-                    }),
+                hir_map::DefPathData::Ctor => {
+                    self.item_name(DefId { krate: id.krate, index: def_key.parent.unwrap() })
+                }
                 _ => def_key.disambiguated_data.data.get_opt_name().unwrap_or_else(|| {
                     bug!("item_name: no name for {:?}", self.def_path(id));
                 }),
@@ -3032,21 +2877,17 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     /// Returns the possibly-auto-generated MIR of a `(DefId, Subst)` pair.
-    pub fn instance_mir(self, instance: ty::InstanceDef<'tcx>) -> &'tcx Body<'tcx> {
+    pub fn instance_mir(self, instance: ty::InstanceDef<'tcx>) -> ReadOnlyBodyAndCache<'tcx, 'tcx> {
         match instance {
-            ty::InstanceDef::Item(did) => {
-                self.optimized_mir(did)
-            }
-            ty::InstanceDef::VtableShim(..) |
-            ty::InstanceDef::ReifyShim(..) |
-            ty::InstanceDef::Intrinsic(..) |
-            ty::InstanceDef::FnPtrShim(..) |
-            ty::InstanceDef::Virtual(..) |
-            ty::InstanceDef::ClosureOnceShim { .. } |
-            ty::InstanceDef::DropGlue(..) |
-            ty::InstanceDef::CloneShim(..) => {
-                self.mir_shims(instance)
-            }
+            ty::InstanceDef::Item(did) => self.optimized_mir(did).unwrap_read_only(),
+            ty::InstanceDef::VtableShim(..)
+            | ty::InstanceDef::ReifyShim(..)
+            | ty::InstanceDef::Intrinsic(..)
+            | ty::InstanceDef::FnPtrShim(..)
+            | ty::InstanceDef::Virtual(..)
+            | ty::InstanceDef::ClosureOnceShim { .. }
+            | ty::InstanceDef::DropGlue(..)
+            | ty::InstanceDef::CloneShim(..) => self.mir_shims(instance).unwrap_read_only(),
         }
     }
 
@@ -3092,12 +2933,10 @@ impl<'tcx> TyCtxt<'tcx> {
             self.opt_associated_item(def_id)
         };
 
-        item.and_then(|trait_item|
-            match trait_item.container {
-                TraitContainer(_) => None,
-                ImplContainer(def_id) => Some(def_id),
-            }
-        )
+        item.and_then(|trait_item| match trait_item.container {
+            TraitContainer(_) => None,
+            ImplContainer(def_id) => Some(def_id),
+        })
     }
 
     /// Looks up the span of `impl_did` if the impl is local; otherwise returns `Err`
@@ -3118,9 +2957,11 @@ impl<'tcx> TyCtxt<'tcx> {
         // We could use `Ident::eq` here, but we deliberately don't. The name
         // comparison fails frequently, and we want to avoid the expensive
         // `modern()` calls required for the span comparison whenever possible.
-        use_name.name == def_name.name &&
-        use_name.span.ctxt().hygienic_eq(def_name.span.ctxt(),
-                                         self.expansion_that_defined(def_parent_def_id))
+        use_name.name == def_name.name
+            && use_name
+                .span
+                .ctxt()
+                .hygienic_eq(def_name.span.ctxt(), self.expansion_that_defined(def_parent_def_id))
     }
 
     fn expansion_that_defined(self, scope: DefId) -> ExpnId {
@@ -3135,132 +2976,24 @@ impl<'tcx> TyCtxt<'tcx> {
         ident
     }
 
-    pub fn adjust_ident_and_get_scope(self, mut ident: Ident, scope: DefId, block: hir::HirId)
-                                      -> (Ident, DefId) {
+    pub fn adjust_ident_and_get_scope(
+        self,
+        mut ident: Ident,
+        scope: DefId,
+        block: hir::HirId,
+    ) -> (Ident, DefId) {
         let scope = match ident.span.modernize_and_adjust(self.expansion_that_defined(scope)) {
-            Some(actual_expansion) =>
-                self.hir().definitions().parent_module_of_macro_def(actual_expansion),
+            Some(actual_expansion) => {
+                self.hir().definitions().parent_module_of_macro_def(actual_expansion)
+            }
             None => self.hir().get_module_parent(block),
         };
         (ident, scope)
     }
 }
 
-#[derive(Clone)]
-pub struct AssocItemsIterator<'tcx> {
-    tcx: TyCtxt<'tcx>,
-    def_ids: &'tcx [DefId],
-    next_index: usize,
-}
-
-impl Iterator for AssocItemsIterator<'_> {
-    type Item = AssocItem;
-
-    fn next(&mut self) -> Option<AssocItem> {
-        let def_id = self.def_ids.get(self.next_index)?;
-        self.next_index += 1;
-        Some(self.tcx.associated_item(*def_id))
-    }
-}
-
-fn associated_item(tcx: TyCtxt<'_>, def_id: DefId) -> AssocItem {
-    let id = tcx.hir().as_local_hir_id(def_id).unwrap();
-    let parent_id = tcx.hir().get_parent_item(id);
-    let parent_def_id = tcx.hir().local_def_id(parent_id);
-    let parent_item = tcx.hir().expect_item(parent_id);
-    match parent_item.kind {
-        hir::ItemKind::Impl(.., ref impl_item_refs) => {
-            if let Some(impl_item_ref) = impl_item_refs.iter().find(|i| i.id.hir_id == id) {
-                let assoc_item = tcx.associated_item_from_impl_item_ref(parent_def_id,
-                                                                        impl_item_ref);
-                debug_assert_eq!(assoc_item.def_id, def_id);
-                return assoc_item;
-            }
-        }
-
-        hir::ItemKind::Trait(.., ref trait_item_refs) => {
-            if let Some(trait_item_ref) = trait_item_refs.iter().find(|i| i.id.hir_id == id) {
-                let assoc_item = tcx.associated_item_from_trait_item_ref(parent_def_id,
-                                                                         &parent_item.vis,
-                                                                         trait_item_ref);
-                debug_assert_eq!(assoc_item.def_id, def_id);
-                return assoc_item;
-            }
-        }
-
-        _ => { }
-    }
-
-    span_bug!(parent_item.span,
-              "unexpected parent of trait or impl item or item not found: {:?}",
-              parent_item.kind)
-}
-
 #[derive(Clone, HashStable)]
 pub struct AdtSizedConstraint<'tcx>(pub &'tcx [Ty<'tcx>]);
-
-/// Calculates the `Sized` constraint.
-///
-/// In fact, there are only a few options for the types in the constraint:
-///     - an obviously-unsized type
-///     - a type parameter or projection whose Sizedness can't be known
-///     - a tuple of type parameters or projections, if there are multiple
-///       such.
-///     - a Error, if a type contained itself. The representability
-///       check should catch this case.
-fn adt_sized_constraint(tcx: TyCtxt<'_>, def_id: DefId) -> AdtSizedConstraint<'_> {
-    let def = tcx.adt_def(def_id);
-
-    let result = tcx.mk_type_list(def.variants.iter().flat_map(|v| {
-        v.fields.last()
-    }).flat_map(|f| {
-        def.sized_constraint_for_ty(tcx, tcx.type_of(f.did))
-    }));
-
-    debug!("adt_sized_constraint: {:?} => {:?}", def, result);
-
-    AdtSizedConstraint(result)
-}
-
-fn associated_item_def_ids(tcx: TyCtxt<'_>, def_id: DefId) -> &[DefId] {
-    let id = tcx.hir().as_local_hir_id(def_id).unwrap();
-    let item = tcx.hir().expect_item(id);
-    match item.kind {
-        hir::ItemKind::Trait(.., ref trait_item_refs) => {
-            tcx.arena.alloc_from_iter(
-                trait_item_refs.iter()
-                               .map(|trait_item_ref| trait_item_ref.id)
-                               .map(|id| tcx.hir().local_def_id(id.hir_id))
-            )
-        }
-        hir::ItemKind::Impl(.., ref impl_item_refs) => {
-            tcx.arena.alloc_from_iter(
-                impl_item_refs.iter()
-                              .map(|impl_item_ref| impl_item_ref.id)
-                              .map(|id| tcx.hir().local_def_id(id.hir_id))
-            )
-        }
-        hir::ItemKind::TraitAlias(..) => &[],
-        _ => span_bug!(item.span, "associated_item_def_ids: not impl or trait")
-    }
-}
-
-fn def_span(tcx: TyCtxt<'_>, def_id: DefId) -> Span {
-    tcx.hir().span_if_local(def_id).unwrap()
-}
-
-/// If the given `DefId` describes an item belonging to a trait,
-/// returns the `DefId` of the trait that the trait item belongs to;
-/// otherwise, returns `None`.
-fn trait_of_item(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
-    tcx.opt_associated_item(def_id)
-        .and_then(|associated_item| {
-            match associated_item.container {
-                TraitContainer(def_id) => Some(def_id),
-                ImplContainer(_) => None
-            }
-        })
-}
 
 /// Yields the parent function's `DefId` if `def_id` is an `impl Trait` definition.
 pub fn is_impl_trait_defn(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
@@ -3274,155 +3007,12 @@ pub fn is_impl_trait_defn(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
     None
 }
 
-/// See `ParamEnv` struct definition for details.
-fn param_env(tcx: TyCtxt<'_>, def_id: DefId) -> ParamEnv<'_> {
-    // The param_env of an impl Trait type is its defining function's param_env
-    if let Some(parent) = is_impl_trait_defn(tcx, def_id) {
-        return param_env(tcx, parent);
-    }
-    // Compute the bounds on Self and the type parameters.
-
-    let InstantiatedPredicates { predicates } =
-        tcx.predicates_of(def_id).instantiate_identity(tcx);
-
-    // Finally, we have to normalize the bounds in the environment, in
-    // case they contain any associated type projections. This process
-    // can yield errors if the put in illegal associated types, like
-    // `<i32 as Foo>::Bar` where `i32` does not implement `Foo`. We
-    // report these errors right here; this doesn't actually feel
-    // right to me, because constructing the environment feels like a
-    // kind of a "idempotent" action, but I'm not sure where would be
-    // a better place. In practice, we construct environments for
-    // every fn once during type checking, and we'll abort if there
-    // are any errors at that point, so after type checking you can be
-    // sure that this will succeed without errors anyway.
-
-    let unnormalized_env = ty::ParamEnv::new(
-        tcx.intern_predicates(&predicates),
-        traits::Reveal::UserFacing,
-        if tcx.sess.opts.debugging_opts.chalk { Some(def_id) } else { None }
-    );
-
-    let body_id = tcx.hir().as_local_hir_id(def_id).map_or(hir::DUMMY_HIR_ID, |id| {
-        tcx.hir().maybe_body_owned_by(id).map_or(id, |body| body.hir_id)
-    });
-    let cause = traits::ObligationCause::misc(tcx.def_span(def_id), body_id);
-    traits::normalize_param_env_or_error(tcx, def_id, unnormalized_env, cause)
-}
-
-fn crate_disambiguator(tcx: TyCtxt<'_>, crate_num: CrateNum) -> CrateDisambiguator {
-    assert_eq!(crate_num, LOCAL_CRATE);
-    tcx.sess.local_crate_disambiguator()
-}
-
-fn original_crate_name(tcx: TyCtxt<'_>, crate_num: CrateNum) -> Symbol {
-    assert_eq!(crate_num, LOCAL_CRATE);
-    tcx.crate_name.clone()
-}
-
-fn crate_hash(tcx: TyCtxt<'_>, crate_num: CrateNum) -> Svh {
-    assert_eq!(crate_num, LOCAL_CRATE);
-    tcx.hir().crate_hash
-}
-
-fn instance_def_size_estimate<'tcx>(tcx: TyCtxt<'tcx>, instance_def: InstanceDef<'tcx>) -> usize {
-    match instance_def {
-        InstanceDef::Item(..) |
-        InstanceDef::DropGlue(..) => {
-            let mir = tcx.instance_mir(instance_def);
-            mir.basic_blocks().iter().map(|bb| bb.statements.len()).sum()
-        },
-        // Estimate the size of other compiler-generated shims to be 1.
-        _ => 1
-    }
-}
-
-/// If `def_id` is an issue 33140 hack impl, returns its self type; otherwise, returns `None`.
-///
-/// See [`ImplOverlapKind::Issue33140`] for more details.
-fn issue33140_self_ty(tcx: TyCtxt<'_>, def_id: DefId) -> Option<Ty<'_>> {
-    debug!("issue33140_self_ty({:?})", def_id);
-
-    let trait_ref = tcx.impl_trait_ref(def_id).unwrap_or_else(|| {
-        bug!("issue33140_self_ty called on inherent impl {:?}", def_id)
-    });
-
-    debug!("issue33140_self_ty({:?}), trait-ref={:?}", def_id, trait_ref);
-
-    let is_marker_like =
-        tcx.impl_polarity(def_id) == ty::ImplPolarity::Positive &&
-        tcx.associated_item_def_ids(trait_ref.def_id).is_empty();
-
-    // Check whether these impls would be ok for a marker trait.
-    if !is_marker_like {
-        debug!("issue33140_self_ty - not marker-like!");
-        return None;
-    }
-
-    // impl must be `impl Trait for dyn Marker1 + Marker2 + ...`
-    if trait_ref.substs.len() != 1 {
-        debug!("issue33140_self_ty - impl has substs!");
-        return None;
-    }
-
-    let predicates = tcx.predicates_of(def_id);
-    if predicates.parent.is_some() || !predicates.predicates.is_empty() {
-        debug!("issue33140_self_ty - impl has predicates {:?}!", predicates);
-        return None;
-    }
-
-    let self_ty = trait_ref.self_ty();
-    let self_ty_matches = match self_ty.kind {
-        ty::Dynamic(ref data, ty::ReStatic) => data.principal().is_none(),
-        _ => false
-    };
-
-    if self_ty_matches {
-        debug!("issue33140_self_ty - MATCHES!");
-        Some(self_ty)
-    } else {
-        debug!("issue33140_self_ty - non-matching self type");
-        None
-    }
-}
-
-/// Check if a function is async.
-fn asyncness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::IsAsync {
-    let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap_or_else(|| {
-        bug!("asyncness: expected local `DefId`, got `{:?}`", def_id)
-    });
-
-    let node = tcx.hir().get(hir_id);
-
-    let fn_like = hir::map::blocks::FnLikeNode::from_node(node).unwrap_or_else(|| {
-        bug!("asyncness: expected fn-like node but got `{:?}`", def_id);
-    });
-
-    fn_like.asyncness()
-}
-
 pub fn provide(providers: &mut ty::query::Providers<'_>) {
     context::provide(providers);
     erase_regions::provide(providers);
     layout::provide(providers);
-    util::provide(providers);
-    constness::provide(providers);
-    *providers = ty::query::Providers {
-        asyncness,
-        associated_item,
-        associated_item_def_ids,
-        adt_sized_constraint,
-        def_span,
-        param_env,
-        trait_of_item,
-        crate_disambiguator,
-        original_crate_name,
-        crate_hash,
-        trait_impls_of: trait_def::trait_impls_of_provider,
-        instance_def_size_estimate,
-        issue33140_self_ty,
-        ..*providers
-    };
+    *providers =
+        ty::query::Providers { trait_impls_of: trait_def::trait_impls_of_provider, ..*providers };
 }
 
 /// A map for the local crate mapping each type to a vector of its
@@ -3435,22 +3025,16 @@ pub struct CrateInherentImpls {
     pub inherent_impls: DefIdMap<Vec<DefId>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
 pub struct SymbolName {
     // FIXME: we don't rely on interning or equality here - better have
     // this be a `&'tcx str`.
-    pub name: Symbol
+    pub name: Symbol,
 }
-
-impl_stable_hash_for!(struct self::SymbolName {
-    name
-});
 
 impl SymbolName {
     pub fn new(name: &str) -> SymbolName {
-        SymbolName {
-            name: Symbol::intern(name)
-        }
+        SymbolName { name: Symbol::intern(name) }
     }
 }
 

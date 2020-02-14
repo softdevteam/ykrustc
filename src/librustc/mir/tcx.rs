@@ -4,13 +4,13 @@
  */
 
 use crate::mir::*;
-use crate::ty::subst::Subst;
-use crate::ty::{self, Ty, TyCtxt};
 use crate::ty::layout::VariantIdx;
-use crate::hir;
+use crate::ty::subst::Subst;
 use crate::ty::util::IntTypeExt;
+use crate::ty::{self, Ty, TyCtxt};
+use rustc_hir as hir;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, TypeFoldable)]
 pub struct PlaceTy<'tcx> {
     pub ty: Ty<'tcx>,
     /// Downcast to a particular variant of an enum, if included.
@@ -78,83 +78,68 @@ impl<'tcx> PlaceTy<'tcx> {
     {
         let answer = match *elem {
             ProjectionElem::Deref => {
-                let ty = self.ty
-                             .builtin_deref(true)
-                             .unwrap_or_else(|| {
-                                 bug!("deref projection of non-dereferencable ty {:?}", self)
-                             })
-                             .ty;
+                let ty = self
+                    .ty
+                    .builtin_deref(true)
+                    .unwrap_or_else(|| {
+                        bug!("deref projection of non-dereferenceable ty {:?}", self)
+                    })
+                    .ty;
                 PlaceTy::from_ty(ty)
             }
-            ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } =>
-                PlaceTy::from_ty(self.ty.builtin_index().unwrap()),
-            ProjectionElem::Subslice { from, to } => {
+            ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } => {
+                PlaceTy::from_ty(self.ty.builtin_index().unwrap())
+            }
+            ProjectionElem::Subslice { from, to, from_end } => {
                 PlaceTy::from_ty(match self.ty.kind {
-                    ty::Array(inner, size) => {
+                    ty::Slice(..) => self.ty,
+                    ty::Array(inner, _) if !from_end => tcx.mk_array(inner, (to - from) as u64),
+                    ty::Array(inner, size) if from_end => {
                         let size = size.eval_usize(tcx, param_env);
                         let len = size - (from as u64) - (to as u64);
                         tcx.mk_array(inner, len)
                     }
-                    ty::Slice(..) => self.ty,
-                    _ => {
-                        bug!("cannot subslice non-array type: `{:?}`", self)
-                    }
+                    _ => bug!("cannot subslice non-array type: `{:?}`", self),
                 })
             }
-            ProjectionElem::Downcast(_name, index) =>
-                PlaceTy { ty: self.ty, variant_index: Some(index) },
-            ProjectionElem::Field(ref f, ref fty) =>
-                PlaceTy::from_ty(handle_field(&self, f, fty)),
+            ProjectionElem::Downcast(_name, index) => {
+                PlaceTy { ty: self.ty, variant_index: Some(index) }
+            }
+            ProjectionElem::Field(ref f, ref fty) => PlaceTy::from_ty(handle_field(&self, f, fty)),
         };
         debug!("projection_ty self: {:?} elem: {:?} yields: {:?}", self, elem, answer);
         answer
     }
 }
 
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for PlaceTy<'tcx> {
-        ty,
-        variant_index,
-    }
-}
-
 impl<'tcx> Place<'tcx> {
     pub fn ty_from<D>(
-        base: &PlaceBase<'tcx>,
+        local: Local,
         projection: &[PlaceElem<'tcx>],
         local_decls: &D,
-        tcx: TyCtxt<'tcx>
+        tcx: TyCtxt<'tcx>,
     ) -> PlaceTy<'tcx>
-        where D: HasLocalDecls<'tcx>
+    where
+        D: HasLocalDecls<'tcx>,
     {
-        projection.iter().fold(
-            base.ty(local_decls),
-            |place_ty, elem| place_ty.projection_ty(tcx, elem)
-        )
+        projection
+            .iter()
+            .fold(PlaceTy::from_ty(local_decls.local_decls()[local].ty), |place_ty, elem| {
+                place_ty.projection_ty(tcx, elem)
+            })
     }
 
     pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> PlaceTy<'tcx>
     where
         D: HasLocalDecls<'tcx>,
     {
-        Place::ty_from(&self.base, &self.projection, local_decls, tcx)
-    }
-}
-
-impl<'tcx> PlaceBase<'tcx> {
-    pub fn ty<D>(&self, local_decls: &D) -> PlaceTy<'tcx>
-        where D: HasLocalDecls<'tcx>
-    {
-        match self {
-            PlaceBase::Local(index) => PlaceTy::from_ty(local_decls.local_decls()[*index].ty),
-            PlaceBase::Static(data) => PlaceTy::from_ty(data.ty),
-        }
+        Place::ty_from(self.local, &self.projection, local_decls, tcx)
     }
 }
 
 pub enum RvalueInitializationState {
     Shallow,
-    Deep
+    Deep,
 }
 
 impl<'tcx> Rvalue<'tcx> {
@@ -164,17 +149,14 @@ impl<'tcx> Rvalue<'tcx> {
     {
         match *self {
             Rvalue::Use(ref operand) => operand.ty(local_decls, tcx),
-            Rvalue::Repeat(ref operand, count) => {
-                tcx.mk_array(operand.ty(local_decls, tcx), count)
-            }
+            Rvalue::Repeat(ref operand, count) => tcx.mk_array(operand.ty(local_decls, tcx), count),
             Rvalue::Ref(reg, bk, ref place) => {
                 let place_ty = place.ty(local_decls, tcx).ty;
-                tcx.mk_ref(reg,
-                    ty::TypeAndMut {
-                        ty: place_ty,
-                        mutbl: bk.to_mutbl_lossy()
-                    }
-                )
+                tcx.mk_ref(reg, ty::TypeAndMut { ty: place_ty, mutbl: bk.to_mutbl_lossy() })
+            }
+            Rvalue::AddressOf(mutability, ref place) => {
+                let place_ty = place.ty(local_decls, tcx).ty;
+                tcx.mk_ptr(ty::TypeAndMut { ty: place_ty, mutbl: mutability.into() })
             }
             Rvalue::Len(..) => tcx.types.usize,
             Rvalue::Cast(.., ty) => ty,
@@ -189,8 +171,7 @@ impl<'tcx> Rvalue<'tcx> {
                 let ty = op.ty(tcx, lhs_ty, rhs_ty);
                 tcx.intern_tup(&[ty, tcx.types.bool])
             }
-            Rvalue::UnaryOp(UnOp::Not, ref operand) |
-            Rvalue::UnaryOp(UnOp::Neg, ref operand) => {
+            Rvalue::UnaryOp(UnOp::Not, ref operand) | Rvalue::UnaryOp(UnOp::Neg, ref operand) => {
                 operand.ty(local_decls, tcx)
             }
             Rvalue::Discriminant(ref place) => {
@@ -206,25 +187,15 @@ impl<'tcx> Rvalue<'tcx> {
             }
             Rvalue::NullaryOp(NullOp::Box, t) => tcx.mk_box(t),
             Rvalue::NullaryOp(NullOp::SizeOf, _) => tcx.types.usize,
-            Rvalue::Aggregate(ref ak, ref ops) => {
-                match **ak {
-                    AggregateKind::Array(ty) => {
-                        tcx.mk_array(ty, ops.len() as u64)
-                    }
-                    AggregateKind::Tuple => {
-                        tcx.mk_tup(ops.iter().map(|op| op.ty(local_decls, tcx)))
-                    }
-                    AggregateKind::Adt(def, _, substs, _, _) => {
-                        tcx.type_of(def.did).subst(tcx, substs)
-                    }
-                    AggregateKind::Closure(did, substs) => {
-                        tcx.mk_closure(did, substs)
-                    }
-                    AggregateKind::Generator(did, substs, movability) => {
-                        tcx.mk_generator(did, substs, movability)
-                    }
+            Rvalue::Aggregate(ref ak, ref ops) => match **ak {
+                AggregateKind::Array(ty) => tcx.mk_array(ty, ops.len() as u64),
+                AggregateKind::Tuple => tcx.mk_tup(ops.iter().map(|op| op.ty(local_decls, tcx))),
+                AggregateKind::Adt(def, _, substs, _, _) => tcx.type_of(def.did).subst(tcx, substs),
+                AggregateKind::Closure(did, substs) => tcx.mk_closure(did, substs),
+                AggregateKind::Generator(did, substs, movability) => {
+                    tcx.mk_generator(did, substs, movability)
                 }
-            }
+            },
         }
     }
 
@@ -234,7 +205,7 @@ impl<'tcx> Rvalue<'tcx> {
     pub fn initialization_state(&self) -> RvalueInitializationState {
         match *self {
             Rvalue::NullaryOp(NullOp::Box, _) => RvalueInitializationState::Shallow,
-            _ => RvalueInitializationState::Deep
+            _ => RvalueInitializationState::Deep,
         }
     }
 }
@@ -245,8 +216,7 @@ impl<'tcx> Operand<'tcx> {
         D: HasLocalDecls<'tcx>,
     {
         match self {
-            &Operand::Copy(ref l) |
-            &Operand::Move(ref l) => l.ty(local_decls, tcx).ty,
+            &Operand::Copy(ref l) | &Operand::Move(ref l) => l.ty(local_decls, tcx).ty,
             &Operand::Constant(ref c) => c.literal.ty,
         }
     }
@@ -256,8 +226,14 @@ impl<'tcx> BinOp {
     pub fn ty(&self, tcx: TyCtxt<'tcx>, lhs_ty: Ty<'tcx>, rhs_ty: Ty<'tcx>) -> Ty<'tcx> {
         // FIXME: handle SIMD correctly
         match self {
-            &BinOp::Add | &BinOp::Sub | &BinOp::Mul | &BinOp::Div | &BinOp::Rem |
-            &BinOp::BitXor | &BinOp::BitAnd | &BinOp::BitOr => {
+            &BinOp::Add
+            | &BinOp::Sub
+            | &BinOp::Mul
+            | &BinOp::Div
+            | &BinOp::Rem
+            | &BinOp::BitXor
+            | &BinOp::BitAnd
+            | &BinOp::BitOr => {
                 // these should be integers or floats of the same size.
                 assert_eq!(lhs_ty, rhs_ty);
                 lhs_ty
@@ -265,8 +241,7 @@ impl<'tcx> BinOp {
             &BinOp::Shl | &BinOp::Shr | &BinOp::Offset => {
                 lhs_ty // lhs_ty can be != rhs_ty
             }
-            &BinOp::Eq | &BinOp::Lt | &BinOp::Le |
-            &BinOp::Ne | &BinOp::Ge | &BinOp::Gt => {
+            &BinOp::Eq | &BinOp::Lt | &BinOp::Le | &BinOp::Ne | &BinOp::Ge | &BinOp::Gt => {
                 tcx.types.bool
             }
         }
@@ -276,17 +251,17 @@ impl<'tcx> BinOp {
 impl BorrowKind {
     pub fn to_mutbl_lossy(self) -> hir::Mutability {
         match self {
-            BorrowKind::Mut { .. } => hir::MutMutable,
-            BorrowKind::Shared => hir::MutImmutable,
+            BorrowKind::Mut { .. } => hir::Mutability::Mut,
+            BorrowKind::Shared => hir::Mutability::Not,
 
             // We have no type corresponding to a unique imm borrow, so
             // use `&mut`. It gives all the capabilities of an `&uniq`
             // and hence is a safe "over approximation".
-            BorrowKind::Unique => hir::MutMutable,
+            BorrowKind::Unique => hir::Mutability::Mut,
 
             // We have no type corresponding to a shallow borrow, so use
             // `&` as an approximation.
-            BorrowKind::Shallow => hir::MutImmutable,
+            BorrowKind::Shallow => hir::Mutability::Not,
         }
     }
 }
@@ -310,7 +285,7 @@ impl BinOp {
             BinOp::Gt => hir::BinOpKind::Gt,
             BinOp::Le => hir::BinOpKind::Le,
             BinOp::Ge => hir::BinOpKind::Ge,
-            BinOp::Offset => unreachable!()
+            BinOp::Offset => unreachable!(),
         }
     }
 }

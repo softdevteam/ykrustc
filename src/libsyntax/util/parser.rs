@@ -1,6 +1,6 @@
-use crate::parse::token::{self, Token, BinOpToken};
-use crate::symbol::kw;
 use crate::ast::{self, BinOpKind};
+use crate::token::{self, BinOpToken, Token};
+use rustc_span::symbol::kw;
 
 /// Associative operator with precedence.
 ///
@@ -64,12 +64,12 @@ pub enum Fixity {
     /// The operator is right-associative
     Right,
     /// The operator is not associative
-    None
+    None,
 }
 
 impl AssocOp {
     /// Creates a new AssocOP from a token
-    crate fn from_token(t: &Token) -> Option<AssocOp> {
+    pub fn from_token(t: &Token) -> Option<AssocOp> {
         use AssocOp::*;
         match t.kind {
             token::BinOpEq(k) => Some(AssignOp(k)),
@@ -100,7 +100,7 @@ impl AssocOp {
             // `<-` should probably be `< -`
             token::LArrow => Some(Less),
             _ if t.is_keyword(kw::As) => Some(As),
-            _ => None
+            _ => None,
         }
     }
 
@@ -125,7 +125,7 @@ impl AssocOp {
             BinOpKind::BitXor => BitXor,
             BinOpKind::BitOr => BitOr,
             BinOpKind::And => LAnd,
-            BinOpKind::Or => LOr
+            BinOpKind::Or => LOr,
         }
     }
 
@@ -154,10 +154,10 @@ impl AssocOp {
         // NOTE: it is a bug to have an operators that has same precedence but different fixities!
         match *self {
             Assign | AssignOp(_) => Fixity::Right,
-            As | Multiply | Divide | Modulus | Add | Subtract | ShiftLeft | ShiftRight | BitAnd |
-            BitXor | BitOr | Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual |
-            LAnd | LOr | Colon => Fixity::Left,
-            DotDot | DotDotEq => Fixity::None
+            As | Multiply | Divide | Modulus | Add | Subtract | ShiftLeft | ShiftRight | BitAnd
+            | BitXor | BitOr | Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual
+            | LAnd | LOr | Colon => Fixity::Left,
+            DotDot | DotDotEq => Fixity::None,
         }
     }
 
@@ -165,9 +165,9 @@ impl AssocOp {
         use AssocOp::*;
         match *self {
             Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual => true,
-            Assign | AssignOp(_) | As | Multiply | Divide | Modulus | Add |
-            Subtract | ShiftLeft | ShiftRight | BitAnd | BitXor | BitOr | LAnd | LOr |
-            DotDot | DotDotEq | Colon => false
+            Assign | AssignOp(_) | As | Multiply | Divide | Modulus | Add | Subtract
+            | ShiftLeft | ShiftRight | BitAnd | BitXor | BitOr | LAnd | LOr | DotDot | DotDotEq
+            | Colon => false,
         }
     }
 
@@ -175,9 +175,9 @@ impl AssocOp {
         use AssocOp::*;
         match *self {
             Assign | AssignOp(_) => true,
-            Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual | As | Multiply | Divide |
-            Modulus | Add | Subtract | ShiftLeft | ShiftRight | BitAnd | BitXor | BitOr | LAnd |
-            LOr | DotDot | DotDotEq | Colon => false
+            Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual | As | Multiply
+            | Divide | Modulus | Add | Subtract | ShiftLeft | ShiftRight | BitAnd | BitXor
+            | BitOr | LAnd | LOr | DotDot | DotDotEq | Colon => false,
         }
     }
 
@@ -202,7 +202,7 @@ impl AssocOp {
             BitOr => Some(BinOpKind::BitOr),
             LAnd => Some(BinOpKind::And),
             LOr => Some(BinOpKind::Or),
-            Assign | AssignOp(_) | As | DotDot | DotDotEq | Colon => None
+            Assign | AssignOp(_) | As | DotDot | DotDotEq | Colon => None,
         }
     }
 
@@ -358,7 +358,7 @@ impl ExprPrecedence {
 }
 
 /// In `let p = e`, operators with precedence `<=` this one requires parenthesis in `e`.
-crate fn prec_let_scrutinee_needs_par() -> usize {
+pub fn prec_let_scrutinee_needs_par() -> usize {
     AssocOp::LAnd.precedence()
 }
 
@@ -367,7 +367,7 @@ crate fn prec_let_scrutinee_needs_par() -> usize {
 ///
 /// Conversely, suppose that we have `(let _ = a) OP b` and `order` is that of `OP`.
 /// Can we print this as `let _ = a OP b`?
-crate fn needs_par_as_let_scrutinee(order: i8) -> bool {
+pub fn needs_par_as_let_scrutinee(order: i8) -> bool {
     order <= prec_let_scrutinee_needs_par() as i8
 }
 
@@ -378,18 +378,18 @@ pub fn contains_exterior_struct_lit(value: &ast::Expr) -> bool {
     match value.kind {
         ast::ExprKind::Struct(..) => true,
 
-        ast::ExprKind::Assign(ref lhs, ref rhs) |
-        ast::ExprKind::AssignOp(_, ref lhs, ref rhs) |
-        ast::ExprKind::Binary(_, ref lhs, ref rhs) => {
+        ast::ExprKind::Assign(ref lhs, ref rhs, _)
+        | ast::ExprKind::AssignOp(_, ref lhs, ref rhs)
+        | ast::ExprKind::Binary(_, ref lhs, ref rhs) => {
             // X { y: 1 } + X { y: 2 }
             contains_exterior_struct_lit(&lhs) || contains_exterior_struct_lit(&rhs)
         }
-        ast::ExprKind::Await(ref x) |
-        ast::ExprKind::Unary(_, ref x) |
-        ast::ExprKind::Cast(ref x, _) |
-        ast::ExprKind::Type(ref x, _) |
-        ast::ExprKind::Field(ref x, _) |
-        ast::ExprKind::Index(ref x, _) => {
+        ast::ExprKind::Await(ref x)
+        | ast::ExprKind::Unary(_, ref x)
+        | ast::ExprKind::Cast(ref x, _)
+        | ast::ExprKind::Type(ref x, _)
+        | ast::ExprKind::Field(ref x, _)
+        | ast::ExprKind::Index(ref x, _) => {
             // &X { y: 1 }, X { y: 1 }.y
             contains_exterior_struct_lit(&x)
         }

@@ -1,5 +1,5 @@
 // Regr. test that using HIR inlined from another krate does *not* add
-// a dependency from the local Krate node. We can't easily test that
+// a dependency from the local hir_crate node. We can't easily test that
 // directly anymore, so now we test that we get reuse.
 
 // revisions: rpass1 rpass2
@@ -7,8 +7,8 @@
 
 #![allow(warnings)]
 #![feature(rustc_attrs)]
-#![rustc_partition_reused(module="krate_inlined-x", cfg="rpass2")]
 #![no_sw_trace]
+#![rustc_partition_reused(module = "krate_inlined-x", cfg = "rpass2")]
 
 fn main() {
     x::method();

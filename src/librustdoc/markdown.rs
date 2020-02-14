@@ -2,18 +2,16 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::PathBuf;
 
-use errors;
-use testing;
-use syntax::edition::Edition;
-use syntax::source_map::DUMMY_SP;
-use syntax::feature_gate::UnstableFeatures;
+use rustc_feature::UnstableFeatures;
+use rustc_span::edition::Edition;
+use rustc_span::source_map::DUMMY_SP;
 
-use crate::externalfiles::{LoadStringError, load_string};
 use crate::config::{Options, RenderOptions};
+use crate::externalfiles::{load_string, LoadStringError};
 use crate::html::escape::Escape;
 use crate::html::markdown;
-use crate::html::markdown::{ErrorCodes, IdMap, Markdown, MarkdownWithToc, find_testable_code};
-use crate::test::{TestOptions, Collector};
+use crate::html::markdown::{find_testable_code, ErrorCodes, IdMap, Markdown, MarkdownWithToc};
+use crate::test::{Collector, TestOptions};
 
 /// Separate any lines at the start of the file that begin with `# ` or `%`.
 fn extract_leading_metadata(s: &str) -> (Vec<&str>, &str) {
@@ -39,8 +37,8 @@ fn extract_leading_metadata(s: &str) -> (Vec<&str>, &str) {
 pub fn render(
     input: PathBuf,
     options: RenderOptions,
-    diag: &errors::Handler,
-    edition: Edition
+    diag: &rustc_errors::Handler,
+    edition: Edition,
 ) -> i32 {
     let mut output = options.output;
     output.push(input.file_name().unwrap());
@@ -57,12 +55,8 @@ pub fn render(
         Err(LoadStringError::ReadFail) => return 1,
         Err(LoadStringError::BadUtf8) => return 2,
     };
-    let playground_url = options.markdown_playground_url
-                            .or(options.playground_url);
-    let playground = playground_url.map(|url| markdown::Playground {
-        crate_name: None,
-        url,
-    });
+    let playground_url = options.markdown_playground_url.or(options.playground_url);
+    let playground = playground_url.map(|url| markdown::Playground { crate_name: None, url });
 
     let mut out = match File::create(&output) {
         Err(e) => {
@@ -132,7 +126,7 @@ pub fn render(
 }
 
 /// Runs any tests/code examples in the markdown file `input`.
-pub fn test(mut options: Options, diag: &errors::Handler) -> i32 {
+pub fn test(mut options: Options, diag: &rustc_errors::Handler) -> i32 {
     let input_str = match load_string(&options.input, diag) {
         Ok(s) => s,
         Err(LoadStringError::ReadFail) => return 1,
@@ -142,16 +136,25 @@ pub fn test(mut options: Options, diag: &errors::Handler) -> i32 {
     let mut opts = TestOptions::default();
     opts.no_crate_inject = true;
     opts.display_warnings = options.display_warnings;
-    let mut collector = Collector::new(options.input.display().to_string(), options.clone(),
-                                       true, opts, None, Some(options.input),
-                                       options.enable_per_target_ignores);
+    let mut collector = Collector::new(
+        options.input.display().to_string(),
+        options.clone(),
+        true,
+        opts,
+        None,
+        Some(options.input),
+        options.enable_per_target_ignores,
+    );
     collector.set_position(DUMMY_SP);
     let codes = ErrorCodes::from(UnstableFeatures::from_environment().is_nightly_build());
 
     find_testable_code(&input_str, &mut collector, codes, options.enable_per_target_ignores);
 
     options.test_args.insert(0, "rustdoctest".to_string());
-    testing::test_main(&options.test_args, collector.tests,
-                       Some(testing::Options::new().display_output(options.display_warnings)));
+    testing::test_main(
+        &options.test_args,
+        collector.tests,
+        Some(testing::Options::new().display_output(options.display_warnings)),
+    );
     0
 }

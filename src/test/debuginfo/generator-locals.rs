@@ -80,9 +80,9 @@ fn main() {
         _zzz(); // #break
         a = c;
     };
-    Pin::new(&mut b).resume();
-    Pin::new(&mut b).resume();
-    Pin::new(&mut b).resume();
+    Pin::new(&mut b).resume(());
+    Pin::new(&mut b).resume(());
+    Pin::new(&mut b).resume(());
     _zzz(); // #break
 }
 

@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use rand::{thread_rng, Rng};
-use test::{black_box, Bencher};
+use test::Bencher;
 
 fn random(n: usize) -> BTreeSet<usize> {
     let mut rng = thread_rng();
@@ -14,23 +14,16 @@ fn random(n: usize) -> BTreeSet<usize> {
 }
 
 fn neg(n: usize) -> BTreeSet<i32> {
-    let mut set = BTreeSet::new();
-    for i in -(n as i32)..=-1 {
-        set.insert(i);
-    }
+    let set: BTreeSet<i32> = (-(n as i32)..=-1).collect();
     assert_eq!(set.len(), n);
     set
 }
 
 fn pos(n: usize) -> BTreeSet<i32> {
-    let mut set = BTreeSet::new();
-    for i in 1..=(n as i32) {
-        set.insert(i);
-    }
+    let set: BTreeSet<i32> = (1..=(n as i32)).collect();
     assert_eq!(set.len(), n);
     set
 }
-
 
 fn stagger(n1: usize, factor: usize) -> [BTreeSet<u32>; 2] {
     let n2 = n1 * factor;
@@ -52,12 +45,46 @@ macro_rules! set_bench {
             let sets = $sets;
 
             // measure
-            b.iter(|| {
-                let x = sets[0].$set_func(&sets[1]).$result_func();
-                black_box(x);
-            })
+            b.iter(|| sets[0].$set_func(&sets[1]).$result_func())
         }
     };
+}
+
+const BUILD_SET_SIZE: usize = 100;
+
+#[bench]
+pub fn build_and_clear(b: &mut Bencher) {
+    b.iter(|| pos(BUILD_SET_SIZE).clear())
+}
+
+#[bench]
+pub fn build_and_drop(b: &mut Bencher) {
+    b.iter(|| pos(BUILD_SET_SIZE))
+}
+
+#[bench]
+pub fn build_and_into_iter(b: &mut Bencher) {
+    b.iter(|| pos(BUILD_SET_SIZE).into_iter().count())
+}
+
+#[bench]
+pub fn build_and_pop_all(b: &mut Bencher) {
+    b.iter(|| {
+        let mut s = pos(BUILD_SET_SIZE);
+        while s.pop_first().is_some() {}
+        s
+    });
+}
+
+#[bench]
+pub fn build_and_remove_all(b: &mut Bencher) {
+    b.iter(|| {
+        let mut s = pos(BUILD_SET_SIZE);
+        while let Some(elt) = s.iter().copied().next() {
+            s.remove(&elt);
+        }
+        s
+    });
 }
 
 set_bench! {intersection_100_neg_vs_100_pos, intersection, count, [neg(100), pos(100)]}

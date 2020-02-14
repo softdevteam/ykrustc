@@ -1,4 +1,4 @@
-error[E0283]: type annotations needed: cannot resolve `_: A`
+error[E0283]: type annotations needed
   --> $DIR/issue-63496.rs:4:21
    |
 LL |     const C: usize;
@@ -6,8 +6,14 @@ LL |     const C: usize;
 LL | 
 LL |     fn f() -> ([u8; A::C], [u8; A::C]);
    |                     ^^^^
+   |                     |
+   |                     cannot infer type
+   |                     help: use the fully qualified path to an implementation: `<Type as A>::C`
+   |
+   = note: cannot resolve `_: A`
+   = note: associated constants cannot be accessed directly on a `trait`, they can only be accessed through a specific `impl`
 
-error[E0283]: type annotations needed: cannot resolve `_: A`
+error[E0283]: type annotations needed
   --> $DIR/issue-63496.rs:4:33
    |
 LL |     const C: usize;
@@ -15,6 +21,12 @@ LL |     const C: usize;
 LL | 
 LL |     fn f() -> ([u8; A::C], [u8; A::C]);
    |                                 ^^^^
+   |                                 |
+   |                                 cannot infer type
+   |                                 help: use the fully qualified path to an implementation: `<Type as A>::C`
+   |
+   = note: cannot resolve `_: A`
+   = note: associated constants cannot be accessed directly on a `trait`, they can only be accessed through a specific `impl`
 
 error: aborting due to 2 previous errors
 

@@ -2,7 +2,6 @@
 // This is not a semantic test. We only test parsing.
 
 #![feature(or_patterns)]
-//~^ WARN the feature `or_patterns` is incomplete and may cause the compiler to crash
 
 fn main() {}
 
@@ -21,7 +20,7 @@ use E::*;
 
 fn no_top_level_or_patterns() {
     // We do *not* allow or-patterns at the top level of lambdas...
-    let _ = |A | B: E| (); //~ ERROR binary operation `|` cannot be applied to type `E`
+    let _ = |A | B: E| (); //~ ERROR no implementation for `E | ()`
     //           -------- This looks like an or-pattern but is in fact `|A| (B: E | ())`.
 
     // ...and for now neither do we allow or-patterns at the top level of functions.

@@ -1,12 +1,10 @@
-note: External requirements
+note: external requirements
   --> $DIR/projection-one-region-closure.rs:45:29
    |
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = note: defining type: DefId(0:19 ~ projection_one_region_closure[317d]::no_relationships_late[0]::{{closure}}[0]) with closure substs [
-               '_#1r,
-               T,
+   = note: defining type: no_relationships_late::<'_#1r, T>::{{closure}}#0 with closure substs [
                i32,
                extern "rust-call" fn((std::cell::Cell<&'_#2r ()>, T)),
            ]
@@ -15,7 +13,7 @@ LL |     with_signature(cell, t, |cell, t| require(cell, t));
    = note: where T: '_#2r
    = note: where '_#1r: '_#2r
 
-note: No external requirements
+note: no external requirements
   --> $DIR/projection-one-region-closure.rs:41:1
    |
 LL | / fn no_relationships_late<'a, 'b, T>(cell: Cell<&'a ()>, t: T)
@@ -27,10 +25,7 @@ LL | |
 LL | | }
    | |_^
    |
-   = note: defining type: DefId(0:15 ~ projection_one_region_closure[317d]::no_relationships_late[0]) with substs [
-               '_#1r,
-               T,
-           ]
+   = note: defining type: no_relationships_late::<'_#1r, T>
 
 error[E0309]: the parameter type `T` may not live long enough
   --> $DIR/projection-one-region-closure.rs:45:29
@@ -38,7 +33,7 @@ error[E0309]: the parameter type `T` may not live long enough
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = help: consider adding an explicit lifetime bound `T: ReFree(DefId(0:15 ~ projection_one_region_closure[317d]::no_relationships_late[0]), BrNamed(crate0:DefIndex(16), 'a))`...
+   = help: consider adding an explicit lifetime bound `T: 'a`...
 
 error: lifetime may not live long enough
   --> $DIR/projection-one-region-closure.rs:45:39
@@ -50,17 +45,16 @@ LL | fn no_relationships_late<'a, 'b, T>(cell: Cell<&'a ()>, t: T)
 ...
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                                       ^^^^^^^^^^^^^^^^ argument requires that `'b` must outlive `'a`
+   |
+   = help: consider adding the following bound: `'b: 'a`
 
-note: External requirements
+note: external requirements
   --> $DIR/projection-one-region-closure.rs:56:29
    |
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = note: defining type: DefId(0:24 ~ projection_one_region_closure[317d]::no_relationships_early[0]::{{closure}}[0]) with closure substs [
-               '_#1r,
-               '_#2r,
-               T,
+   = note: defining type: no_relationships_early::<'_#1r, '_#2r, T>::{{closure}}#0 with closure substs [
                i32,
                extern "rust-call" fn((std::cell::Cell<&'_#3r ()>, T)),
            ]
@@ -68,7 +62,7 @@ LL |     with_signature(cell, t, |cell, t| require(cell, t));
    = note: where T: '_#3r
    = note: where '_#2r: '_#3r
 
-note: No external requirements
+note: no external requirements
   --> $DIR/projection-one-region-closure.rs:51:1
    |
 LL | / fn no_relationships_early<'a, 'b, T>(cell: Cell<&'a ()>, t: T)
@@ -80,11 +74,7 @@ LL | |
 LL | | }
    | |_^
    |
-   = note: defining type: DefId(0:20 ~ projection_one_region_closure[317d]::no_relationships_early[0]) with substs [
-               '_#1r,
-               '_#2r,
-               T,
-           ]
+   = note: defining type: no_relationships_early::<'_#1r, '_#2r, T>
 
 error[E0309]: the parameter type `T` may not live long enough
   --> $DIR/projection-one-region-closure.rs:56:29
@@ -92,7 +82,7 @@ error[E0309]: the parameter type `T` may not live long enough
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = help: consider adding an explicit lifetime bound `T: ReEarlyBound(0, 'a)`...
+   = help: consider adding an explicit lifetime bound `T: 'a`...
 
 error: lifetime may not live long enough
   --> $DIR/projection-one-region-closure.rs:56:39
@@ -104,24 +94,23 @@ LL | fn no_relationships_early<'a, 'b, T>(cell: Cell<&'a ()>, t: T)
 ...
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                                       ^^^^^^^^^^^^^^^^ argument requires that `'b` must outlive `'a`
+   |
+   = help: consider adding the following bound: `'b: 'a`
 
-note: External requirements
+note: external requirements
   --> $DIR/projection-one-region-closure.rs:70:29
    |
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = note: defining type: DefId(0:29 ~ projection_one_region_closure[317d]::projection_outlives[0]::{{closure}}[0]) with closure substs [
-               '_#1r,
-               '_#2r,
-               T,
+   = note: defining type: projection_outlives::<'_#1r, '_#2r, T>::{{closure}}#0 with closure substs [
                i32,
                extern "rust-call" fn((std::cell::Cell<&'_#3r ()>, T)),
            ]
    = note: number of external vids: 4
    = note: where <T as Anything<ReClosureBound('_#2r)>>::AssocType: '_#3r
 
-note: No external requirements
+note: no external requirements
   --> $DIR/projection-one-region-closure.rs:62:1
    |
 LL | / fn projection_outlives<'a, 'b, T>(cell: Cell<&'a ()>, t: T)
@@ -133,22 +122,15 @@ LL | |     with_signature(cell, t, |cell, t| require(cell, t));
 LL | | }
    | |_^
    |
-   = note: defining type: DefId(0:25 ~ projection_one_region_closure[317d]::projection_outlives[0]) with substs [
-               '_#1r,
-               '_#2r,
-               T,
-           ]
+   = note: defining type: projection_outlives::<'_#1r, '_#2r, T>
 
-note: External requirements
+note: external requirements
   --> $DIR/projection-one-region-closure.rs:80:29
    |
 LL |     with_signature(cell, t, |cell, t| require(cell, t));
    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
-   = note: defining type: DefId(0:34 ~ projection_one_region_closure[317d]::elements_outlive[0]::{{closure}}[0]) with closure substs [
-               '_#1r,
-               '_#2r,
-               T,
+   = note: defining type: elements_outlive::<'_#1r, '_#2r, T>::{{closure}}#0 with closure substs [
                i32,
                extern "rust-call" fn((std::cell::Cell<&'_#3r ()>, T)),
            ]
@@ -156,7 +138,7 @@ LL |     with_signature(cell, t, |cell, t| require(cell, t));
    = note: where T: '_#3r
    = note: where '_#2r: '_#3r
 
-note: No external requirements
+note: no external requirements
   --> $DIR/projection-one-region-closure.rs:74:1
    |
 LL | / fn elements_outlive<'a, 'b, T>(cell: Cell<&'a ()>, t: T)
@@ -168,11 +150,7 @@ LL | |     with_signature(cell, t, |cell, t| require(cell, t));
 LL | | }
    | |_^
    |
-   = note: defining type: DefId(0:30 ~ projection_one_region_closure[317d]::elements_outlive[0]) with substs [
-               '_#1r,
-               '_#2r,
-               T,
-           ]
+   = note: defining type: elements_outlive::<'_#1r, '_#2r, T>
 
 error: aborting due to 4 previous errors
 

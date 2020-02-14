@@ -1,8 +1,12 @@
+// build-fail
 // compile-flags: -Zunleash-the-miri-inside-of-you
+
 #![feature(const_fn)]
 #![allow(const_err)]
 
-fn double(x: usize) -> usize { x * 2 }
+fn double(x: usize) -> usize {
+    x * 2
+}
 const X: fn(usize) -> usize = double;
 
 const fn bar(x: fn(usize) -> usize, y: usize) -> usize {

@@ -4,9 +4,10 @@
 //! has interior mutability or needs to be dropped, as well as the visitor that emits errors when
 //! it finds operations that are invalid in a certain context.
 
-use rustc::hir::{self, def_id::DefId};
 use rustc::mir;
 use rustc::ty::{self, TyCtxt};
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
 
 use std::fmt;
 
@@ -20,7 +21,7 @@ pub mod validation;
 /// Information about the item currently being const-checked, as well as a reference to the global
 /// context.
 pub struct Item<'mir, 'tcx> {
-    pub body: &'mir mir::Body<'tcx>,
+    pub body: mir::ReadOnlyBodyAndCache<'mir, 'tcx>,
     pub tcx: TyCtxt<'tcx>,
     pub def_id: DefId,
     pub param_env: ty::ParamEnv<'tcx>,
@@ -31,18 +32,12 @@ impl Item<'mir, 'tcx> {
     pub fn new(
         tcx: TyCtxt<'tcx>,
         def_id: DefId,
-        body: &'mir mir::Body<'tcx>,
+        body: mir::ReadOnlyBodyAndCache<'mir, 'tcx>,
     ) -> Self {
         let param_env = tcx.param_env(def_id);
         let const_kind = ConstKind::for_item(tcx, def_id);
 
-        Item {
-            body,
-            tcx,
-            def_id,
-            param_env,
-            const_kind,
-        }
+        Item { body, tcx, def_id, param_env, const_kind }
     }
 
     /// Returns the kind of const context this `Item` represents (`const`, `static`, etc.).
@@ -77,13 +72,18 @@ impl ConstKind {
         let mode = match tcx.hir().body_owner_kind(hir_id) {
             HirKind::Closure => return None,
 
-            HirKind::Fn if tcx.is_const_fn(def_id) => ConstKind::ConstFn,
+            // Note: this is deliberately checking for `is_const_fn_raw`, as the `is_const_fn`
+            // checks take into account the `rustc_const_unstable` attribute combined with enabled
+            // feature gates. Otherwise, const qualification would _not check_ whether this
+            // function body follows the `const fn` rules, as an unstable `const fn` would
+            // be considered "not const". More details are available in issue #67053.
+            HirKind::Fn if tcx.is_const_fn_raw(def_id) => ConstKind::ConstFn,
             HirKind::Fn => return None,
 
             HirKind::Const => ConstKind::Const,
 
-            HirKind::Static(hir::MutImmutable) => ConstKind::Static,
-            HirKind::Static(hir::MutMutable) => ConstKind::StaticMut,
+            HirKind::Static(hir::Mutability::Not) => ConstKind::Static,
+            HirKind::Static(hir::Mutability::Mut) => ConstKind::StaticMut,
         };
 
         Some(mode)
@@ -93,16 +93,6 @@ impl ConstKind {
         match self {
             ConstKind::Static | ConstKind::StaticMut => true,
             ConstKind::ConstFn | ConstKind::Const => false,
-        }
-    }
-
-    /// Returns `true` if the value returned by this item must be `Sync`.
-    ///
-    /// This returns false for `StaticMut` since all accesses to one are `unsafe` anyway.
-    pub fn requires_sync(self) -> bool {
-        match self {
-            ConstKind::Static => true,
-            ConstKind::ConstFn | ConstKind::Const |  ConstKind::StaticMut => false,
         }
     }
 }
@@ -119,6 +109,5 @@ impl fmt::Display for ConstKind {
 
 /// Returns `true` if this `DefId` points to one of the official `panic` lang items.
 pub fn is_lang_panic_fn(tcx: TyCtxt<'tcx>, def_id: DefId) -> bool {
-    Some(def_id) == tcx.lang_items().panic_fn() ||
-    Some(def_id) == tcx.lang_items().begin_panic_fn()
+    Some(def_id) == tcx.lang_items().panic_fn() || Some(def_id) == tcx.lang_items().begin_panic_fn()
 }

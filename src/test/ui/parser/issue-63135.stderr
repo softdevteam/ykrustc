@@ -1,11 +1,20 @@
-error: this file contains an un-closed delimiter
+error: this file contains an unclosed delimiter
   --> $DIR/issue-63135.rs:3:16
    |
 LL | fn i(n{...,f #
    |     - -        ^
    |     | |
-   |     | un-closed delimiter
-   |     un-closed delimiter
+   |     | unclosed delimiter
+   |     unclosed delimiter
+
+error: this file contains an unclosed delimiter
+  --> $DIR/issue-63135.rs:3:16
+   |
+LL | fn i(n{...,f #
+   |     - -        ^
+   |     | |
+   |     | unclosed delimiter
+   |     unclosed delimiter
 
 error: expected field pattern, found `...`
   --> $DIR/issue-63135.rs:3:8
@@ -32,7 +41,13 @@ error: expected one of `:` or `|`, found `)`
   --> $DIR/issue-63135.rs:3:16
    |
 LL | fn i(n{...,f #
-   |                ^ expected one of `:` or `|` here
+   |                ^ expected one of `:` or `|`
 
-error: aborting due to 5 previous errors
+error: expected `;` or `{`, found `<eof>`
+  --> $DIR/issue-63135.rs:3:16
+   |
+LL | fn i(n{...,f #
+   |                ^ expected `;` or `{`
+
+error: aborting due to 7 previous errors
 

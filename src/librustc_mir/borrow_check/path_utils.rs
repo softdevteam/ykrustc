@@ -1,10 +1,10 @@
-use crate::borrow_check::borrow_set::{BorrowSet, BorrowData, TwoPhaseActivation};
+use crate::borrow_check::borrow_set::{BorrowData, BorrowSet, TwoPhaseActivation};
 use crate::borrow_check::places_conflict;
 use crate::borrow_check::AccessDepth;
 use crate::dataflow::indexes::BorrowIndex;
-use rustc::mir::{BasicBlock, Location, Body, Place, PlaceBase};
 use rustc::mir::BorrowKind;
-use rustc::ty::{self, TyCtxt};
+use rustc::mir::{BasicBlock, Body, Location, Place};
+use rustc::ty::TyCtxt;
 use rustc_data_structures::graph::dominators::Dominators;
 
 /// Returns `true` if the borrow represented by `kind` is
@@ -25,7 +25,6 @@ pub(super) enum Control {
 pub(super) fn each_borrow_involving_path<'tcx, F, I, S>(
     s: &mut S,
     tcx: TyCtxt<'tcx>,
-    param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     _location: Location,
     access_place: (AccessDepth, &Place<'tcx>),
@@ -48,7 +47,6 @@ pub(super) fn each_borrow_involving_path<'tcx, F, I, S>(
 
         if places_conflict::borrow_conflicts_with_place(
             tcx,
-            param_env,
             body,
             &borrowed.borrowed_place,
             borrowed.kind,
@@ -71,7 +69,7 @@ pub(super) fn each_borrow_involving_path<'tcx, F, I, S>(
 pub(super) fn is_active<'tcx>(
     dominators: &Dominators<BasicBlock>,
     borrow_data: &BorrowData<'tcx>,
-    location: Location
+    location: Location,
 ) -> bool {
     debug!("is_active(borrow_data={:?}, location={:?})", borrow_data, location);
 
@@ -131,13 +129,9 @@ pub(super) fn is_active<'tcx>(
 }
 
 /// Determines if a given borrow is borrowing local data
-/// This is called for all Yield statements on movable generators
+/// This is called for all Yield expressions on movable generators
 pub(super) fn borrow_of_local_data(place: &Place<'_>) -> bool {
-    match place.base {
-        PlaceBase::Static(_) => false,
-
-        // Reborrow of already borrowed data is ignored
-        // Any errors will be caught on the initial borrow
-        PlaceBase::Local(_) => !place.is_indirect(),
-    }
+    // Reborrow of already borrowed data is ignored
+    // Any errors will be caught on the initial borrow
+    !place.is_indirect()
 }

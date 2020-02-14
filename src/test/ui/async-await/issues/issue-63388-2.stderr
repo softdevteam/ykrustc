@@ -1,6 +1,8 @@
 error[E0106]: missing lifetime specifier
   --> $DIR/issue-63388-2.rs:12:10
    |
+LL |         foo: &dyn Foo, bar: &'a dyn Foo
+   |              --------       -----------
 LL |     ) -> &dyn Foo
    |          ^ help: consider using the named lifetime: `&'a`
    |
@@ -20,10 +22,6 @@ note: ...can't outlive the lifetime `'_` as defined on the method body at 11:14
    |
 LL |         foo: &dyn Foo, bar: &'a dyn Foo
    |              ^
-help: you can add a constraint to the return type to make it last less than `'static` and match the lifetime `'_` as defined on the method body at 11:14
-   |
-LL |         foo + '_
-   |
 
 error: aborting due to 2 previous errors
 

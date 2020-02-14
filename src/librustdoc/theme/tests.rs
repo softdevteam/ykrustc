@@ -44,9 +44,11 @@ rule j end {}
 "#;
 
     let mut ret = Vec::new();
-    get_differences(&load_css_paths(against.as_bytes()),
-                    &load_css_paths(text.as_bytes()),
-                    &mut ret);
+    get_differences(
+        &load_css_paths(against.as_bytes()),
+        &load_css_paths(text.as_bytes()),
+        &mut ret,
+    );
     assert!(ret.is_empty());
 }
 
@@ -99,4 +101,17 @@ fn check_empty_css() {
 fn check_invalid_css() {
     let events = load_css_events(b"*");
     assert_eq!(events.len(), 0);
+}
+
+#[test]
+fn test_with_minification() {
+    let text = include_str!("../html/static/themes/dark.css");
+    let minified = minifier::css::minify(&text).expect("CSS minification failed");
+
+    let against = load_css_paths(text.as_bytes());
+    let other = load_css_paths(minified.as_bytes());
+
+    let mut ret = Vec::new();
+    get_differences(&against, &other, &mut ret);
+    assert!(ret.is_empty());
 }

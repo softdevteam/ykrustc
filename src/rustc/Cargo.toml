@@ -9,12 +9,7 @@ name = "rustc_binary"
 path = "rustc.rs"
 
 [dependencies]
-rustc_target = { path = "../librustc_target" }
 rustc_driver = { path = "../librustc_driver" }
-
-# This is not a real dependency. It's just needed for linkage disambiguation.
-# See the librustc Cargo.toml for more.
-unicode-width = "0.1.5"
 
 # Make sure rustc_codegen_ssa ends up in the sysroot, because this
 # crate is intended to be used by codegen backends, which may not be in-tree.
@@ -27,3 +22,4 @@ features = ['unprefixed_malloc_on_supported_platforms']
 
 [features]
 jemalloc = ['jemalloc-sys']
+llvm = ['rustc_driver/llvm']

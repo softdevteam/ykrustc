@@ -7,16 +7,17 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use cc;
+//use cc;
 
 fn main() {
-    let mut c_build = cc::Build::new();
-
-    c_build.file("yk/yk_swt_impl.c");
-    c_build.compile("yk_swt_impl");
-    c_build.flag("-std=c11");
-    c_build.warnings(true);
-    c_build.extra_warnings(true);
-
-    println!("cargo:rerun-if-changed=yk/yk_swt_impl.c");
+    // FIXME cc depends on itself...
+    //    let mut c_build = cc::Build::new();
+    //
+    //    c_build.file("yk/yk_swt_impl.c");
+    //    c_build.compile("yk_swt_impl");
+    //    c_build.flag("-std=c11");
+    //    c_build.warnings(true);
+    //    c_build.extra_warnings(true);
+    //
+    //    println!("cargo:rerun-if-changed=yk/yk_swt_impl.c");
 }

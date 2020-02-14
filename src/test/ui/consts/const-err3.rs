@@ -1,6 +1,8 @@
 // needed because negating int::MIN will behave differently between
 // optimized compilation and unoptimized compilation and thus would
 // lead to different lints being emitted
+
+// build-fail
 // compile-flags: -C overflow-checks=on -O
 
 #![feature(rustc_attrs)]
@@ -15,7 +17,11 @@ fn black_box<T>(_: T) {
 fn main() {
     let a = -std::i8::MIN;
     //~^ ERROR const_err
+    let a_i128 = -std::i128::MIN;
+    //~^ ERROR const_err
     let b = 200u8 + 200u8 + 200u8;
+    //~^ ERROR const_err
+    let b_i128 = std::i128::MIN - std::i128::MAX;
     //~^ ERROR const_err
     let c = 200u8 * 4;
     //~^ ERROR const_err
@@ -23,9 +29,10 @@ fn main() {
     //~^ ERROR const_err
     let _e = [5u8][1];
     //~^ ERROR const_err
-    //~| ERROR this expression will panic at runtime
     black_box(a);
+    black_box(a_i128);
     black_box(b);
+    black_box(b_i128);
     black_box(c);
     black_box(d);
 }

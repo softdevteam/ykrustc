@@ -1,10 +1,11 @@
-use rustc::hir::{self, Node};
-use rustc::hir::def_id::DefId;
-use rustc::hir::itemlikevisit::ItemLikeVisitor;
-use rustc::ty::subst::{GenericArg, Subst, GenericArgKind};
+use rustc::ty::subst::{GenericArg, GenericArgKind, Subst};
 use rustc::ty::{self, Ty, TyCtxt};
-use rustc::util::nodemap::FxHashMap;
-use syntax_pos::Span;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
+use rustc_hir::itemlikevisit::ItemLikeVisitor;
+use rustc_hir::Node;
+use rustc_span::Span;
 
 use super::explicit::ExplicitPredicatesMap;
 use super::utils::*;
@@ -51,16 +52,12 @@ pub struct InferVisitor<'cx, 'tcx> {
 }
 
 impl<'cx, 'tcx> ItemLikeVisitor<'tcx> for InferVisitor<'cx, 'tcx> {
-    fn visit_item(&mut self, item: &hir::Item) {
+    fn visit_item(&mut self, item: &hir::Item<'_>) {
         let item_did = self.tcx.hir().local_def_id(item.hir_id);
 
         debug!("InferVisitor::visit_item(item={:?})", item_did);
 
-        let hir_id = self
-            .tcx
-            .hir()
-            .as_local_hir_id(item_did)
-            .expect("expected local def-id");
+        let hir_id = self.tcx.hir().as_local_hir_id(item_did).expect("expected local def-id");
         let item = match self.tcx.hir().get(hir_id) {
             Node::Item(item) => item,
             _ => bug!(),
@@ -101,21 +98,17 @@ impl<'cx, 'tcx> ItemLikeVisitor<'tcx> for InferVisitor<'cx, 'tcx> {
         // Therefore mark `predicates_added` as true and which will ensure
         // we walk the crates again and re-calculate predicates for all
         // items.
-        let item_predicates_len: usize = self
-            .global_inferred_outlives
-            .get(&item_did)
-            .map(|p| p.len())
-            .unwrap_or(0);
+        let item_predicates_len: usize =
+            self.global_inferred_outlives.get(&item_did).map(|p| p.len()).unwrap_or(0);
         if item_required_predicates.len() > item_predicates_len {
             *self.predicates_added = true;
-            self.global_inferred_outlives
-                .insert(item_did, item_required_predicates);
+            self.global_inferred_outlives.insert(item_did, item_required_predicates);
         }
     }
 
-    fn visit_trait_item(&mut self, _trait_item: &'tcx hir::TraitItem) {}
+    fn visit_trait_item(&mut self, _trait_item: &'tcx hir::TraitItem<'tcx>) {}
 
-    fn visit_impl_item(&mut self, _impl_item: &'tcx hir::ImplItem) {}
+    fn visit_impl_item(&mut self, _impl_item: &'tcx hir::ImplItem<'tcx>) {}
 }
 
 fn insert_required_predicates_to_be_wf<'tcx>(
@@ -206,10 +199,8 @@ fn insert_required_predicates_to_be_wf<'tcx>(
                     // predicates in `check_explicit_predicates` we
                     // need to ignore checking the explicit_map for
                     // Self type.
-                    let substs = ex_trait_ref
-                        .with_self_ty(tcx, tcx.types.usize)
-                        .skip_binder()
-                        .substs;
+                    let substs =
+                        ex_trait_ref.with_self_ty(tcx, tcx.types.usize).skip_binder().substs;
                     check_explicit_predicates(
                         tcx,
                         ex_trait_ref.skip_binder().def_id,
@@ -269,11 +260,7 @@ pub fn check_explicit_predicates<'tcx>(
          explicit_map={:?}, \
          required_predicates={:?}, \
          ignored_self_ty={:?})",
-        def_id,
-        substs,
-        explicit_map,
-        required_predicates,
-        ignored_self_ty,
+        def_id, substs, explicit_map, required_predicates, ignored_self_ty,
     );
     let explicit_predicates = explicit_map.explicit_predicates_of(tcx, def_id);
 

@@ -1,21 +1,19 @@
 //! Error Reporting for Anonymous Region Lifetime Errors
 //! where one region is named and the other is anonymous.
 use crate::infer::error_reporting::nice_region_error::NiceRegionError;
-use crate::hir::{FunctionRetTy, TyKind};
 use crate::ty;
-use errors::{Applicability, DiagnosticBuilder};
+use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
+use rustc_hir::{FunctionRetTy, TyKind};
 
 impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// When given a `ConcreteFailure` for a function with parameters containing a named region and
     /// an anonymous region, emit an descriptive diagnostic error.
     pub(super) fn try_report_named_anon_conflict(&self) -> Option<DiagnosticBuilder<'a>> {
-        let (span, sub, sup) = self.get_regions();
+        let (span, sub, sup) = self.regions()?;
 
         debug!(
             "try_report_named_anon_conflict(sub={:?}, sup={:?}, error={:?})",
-            sub,
-            sup,
-            self.error,
+            sub, sup, self.error,
         );
 
         // Determine whether the sub and sup consist of one named region ('a)
@@ -34,7 +32,8 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                 self.find_param_with_region(sup, sub).unwrap(),
                 self.tcx().is_suitable_region(sup).unwrap(),
             )
-        } else if self.is_named_region(sup) && self.tcx().is_suitable_region(sub).is_some()
+        } else if self.is_named_region(sup)
+            && self.tcx().is_suitable_region(sub).is_some()
             && self.find_param_with_region(sub, sup).is_some()
         {
             (
@@ -48,14 +47,8 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
         };
 
         debug!("try_report_named_anon_conflict: named = {:?}", named);
-        debug!(
-            "try_report_named_anon_conflict: anon_param_info = {:?}",
-            anon_param_info
-        );
-        debug!(
-            "try_report_named_anon_conflict: region_info = {:?}",
-            region_info
-        );
+        debug!("try_report_named_anon_conflict: anon_param_info = {:?}", anon_param_info);
+        debug!("try_report_named_anon_conflict: region_info = {:?}", region_info);
 
         let (param, new_ty, new_ty_span, br, is_first, scope_def_id, is_impl_item) = (
             anon_param_info.param,

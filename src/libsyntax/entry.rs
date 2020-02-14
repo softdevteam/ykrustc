@@ -1,6 +1,6 @@
-use crate::attr;
 use crate::ast::{Item, ItemKind};
-use crate::symbol::sym;
+use crate::attr;
+use rustc_span::symbol::sym;
 
 pub enum EntryPointType {
     None,

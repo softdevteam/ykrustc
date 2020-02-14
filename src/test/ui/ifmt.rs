@@ -90,6 +90,7 @@ pub fn main() {
     t!(format!("{foo} {bar}", foo=0, bar=1), "0 1");
     t!(format!("{foo} {1} {bar} {0}", 0, 1, foo=2, bar=3), "2 1 3 0");
     t!(format!("{} {0}", "a"), "a a");
+    t!(format!("{_foo}", _foo = 6usize), "6");
     t!(format!("{foo_bar}", foo_bar=1), "1");
     t!(format!("{}", 5 + 5), "10");
     t!(format!("{:#4}", C), "☃123");
@@ -97,7 +98,6 @@ pub fn main() {
 
     let a: &dyn fmt::Debug = &1;
     t!(format!("{:?}", a), "1");
-
 
     // Formatting strings and their arguments
     t!(format!("{}", "a"), "a");
@@ -125,6 +125,7 @@ pub fn main() {
     t!(format!("{:.*}", 4, "aaaaaaaaaaaaaaaaaa"), "aaaa");
     t!(format!("{:.1$}", "aaaaaaaaaaaaaaaaaa", 4), "aaaa");
     t!(format!("{:.a$}", "aaaaaaaaaaaaaaaaaa", a=4), "aaaa");
+    t!(format!("{:._a$}", "aaaaaaaaaaaaaaaaaa", _a=4), "aaaa");
     t!(format!("{:1$}", "a", 4), "a   ");
     t!(format!("{1:0$}", 4, "a"), "a   ");
     t!(format!("{:a$}", "a", a=4), "a   ");
@@ -185,10 +186,6 @@ pub fn main() {
     // Ergonomic format_args!
     t!(format!("{0:x} {0:X}", 15), "f F");
     t!(format!("{0:x} {0:X} {}", 15), "f F 15");
-    // NOTE: For now the longer test cases must not be followed immediately by
-    // >1 empty lines, or the pretty printer will break. Since no one wants to
-    // touch the current pretty printer (#751), we have no choice but to work
-    // around it. Some of the following test cases are also affected.
     t!(format!("{:x}{0:X}{a:x}{:X}{1:x}{a:X}", 13, 14, a=15), "dDfEeF");
     t!(format!("{a:x} {a:X}", a=15), "f F");
 
@@ -198,7 +195,6 @@ pub fn main() {
                "abcd hijk 4\nabc hij 3");
     t!(format!("{a:.*} {0} {:.*}", 4, 3, "efgh", a="abcdef"), "abcd 4 efg");
     t!(format!("{:.a$} {a} {a:#x}", "aaaaaa", a=2), "aa 2 0x2");
-
 
     // Test that pointers don't get truncated.
     {

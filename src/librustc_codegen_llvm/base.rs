@@ -13,58 +13,57 @@
 //!   but one `llvm::Type` corresponds to many `Ty`s; for instance, `tup(int, int,
 //!   int)` and `rec(x=int, y=int, z=int)` will have the same `llvm::Type`.
 
-use super::{LlvmCodegenBackend, ModuleLlvm};
-use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
-use rustc_codegen_ssa::base::maybe_create_entry_wrapper;
+use super::ModuleLlvm;
 
-use crate::llvm;
-use crate::metadata;
+use crate::attributes;
 use crate::builder::Builder;
 use crate::common;
 use crate::context::CodegenCx;
+use crate::llvm;
+use crate::metadata;
+use crate::value::Value;
+
 use rustc::dep_graph;
-use rustc::mir::mono::{Linkage, Visibility};
-use rustc::middle::cstore::{EncodedMetadata};
-use rustc::ty::{TyCtxt, Instance};
+use rustc::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
+use rustc::middle::cstore::EncodedMetadata;
 use rustc::middle::exported_symbols;
+use rustc::mir::mono::{Linkage, Visibility};
 use rustc::session::config::DebugInfo;
+use rustc::ty::{Instance, TyCtxt};
+use rustc_codegen_ssa::base::maybe_create_entry_wrapper;
 use rustc_codegen_ssa::mono_item::MonoItemExt;
-use rustc_data_structures::small_c_str::SmallCStr;
-
 use rustc_codegen_ssa::traits::*;
-use rustc_codegen_ssa::back::write::submit_codegened_module_to_llvm;
+use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
+use rustc_data_structures::small_c_str::SmallCStr;
+use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_span::symbol::Symbol;
 
+use rustc::sir;
 use std::ffi::CString;
 use std::time::Instant;
-use syntax_pos::symbol::Symbol;
-use rustc::hir::CodegenFnAttrs;
-use rustc::hir::def_id::LOCAL_CRATE;
-use rustc::sir;
 use ykpack::BLOCK_LABEL_PREFIX;
-
-use crate::value::Value;
 
 pub fn write_compressed_metadata<'tcx>(
     tcx: TyCtxt<'tcx>,
     metadata: &EncodedMetadata,
     llvm_module: &mut ModuleLlvm,
 ) {
-    use std::io::Write;
-    use flate2::Compression;
     use flate2::write::DeflateEncoder;
+    use flate2::Compression;
+    use std::io::Write;
 
     let (metadata_llcx, metadata_llmod) = (&*llvm_module.llcx, llvm_module.llmod());
     let mut compressed = tcx.metadata_encoding_version();
     DeflateEncoder::new(&mut compressed, Compression::fast())
-        .write_all(&metadata.raw_data).unwrap();
+        .write_all(&metadata.raw_data)
+        .unwrap();
 
     let llmeta = common::bytes_in_context(metadata_llcx, &compressed);
     let llconst = common::struct_in_context(metadata_llcx, &[llmeta], false);
     let name = exported_symbols::metadata_symbol_name(tcx);
     let buf = CString::new(name).unwrap();
-    let llglobal = unsafe {
-        llvm::LLVMAddGlobal(metadata_llmod, common::val_ty(llconst), buf.as_ptr())
-    };
+    let llglobal =
+        unsafe { llvm::LLVMAddGlobal(metadata_llmod, common::val_ty(llconst), buf.as_ptr()) };
     unsafe {
         llvm::LLVMSetInitializer(llglobal, llconst);
         let section_name = metadata::metadata_section_name(&tcx.sess.target.target);
@@ -98,51 +97,33 @@ impl Iterator for ValueIter<'ll> {
 }
 
 pub fn iter_globals(llmod: &'ll llvm::Module) -> ValueIter<'ll> {
-    unsafe {
-        ValueIter {
-            cur: llvm::LLVMGetFirstGlobal(llmod),
-            step: llvm::LLVMGetNextGlobal,
-        }
-    }
+    unsafe { ValueIter { cur: llvm::LLVMGetFirstGlobal(llmod), step: llvm::LLVMGetNextGlobal } }
 }
 
 pub fn compile_codegen_unit(
     tcx: TyCtxt<'tcx>,
     cgu_name: Symbol,
-    tx_to_llvm_workers: &std::sync::mpsc::Sender<Box<dyn std::any::Any + Send>>,
-) {
+) -> (ModuleCodegen<ModuleLlvm>, u64) {
     let prof_timer = tcx.prof.generic_activity("codegen_module");
     let start_time = Instant::now();
 
     let dep_node = tcx.codegen_unit(cgu_name).codegen_dep_node(tcx);
-    let (module, _) = tcx.dep_graph.with_task(
-        dep_node,
-        tcx,
-        cgu_name,
-        module_codegen,
-        dep_graph::hash_result,
-    );
+    let (module, _) =
+        tcx.dep_graph.with_task(dep_node, tcx, cgu_name, module_codegen, dep_graph::hash_result);
     let time_to_codegen = start_time.elapsed();
     drop(prof_timer);
 
     // We assume that the cost to run LLVM on a CGU is proportional to
     // the time we needed for codegenning it.
-    let cost = time_to_codegen.as_secs() * 1_000_000_000 +
-               time_to_codegen.subsec_nanos() as u64;
+    let cost = time_to_codegen.as_secs() * 1_000_000_000 + time_to_codegen.subsec_nanos() as u64;
 
-    submit_codegened_module_to_llvm(&LlvmCodegenBackend(()), tx_to_llvm_workers, module, cost);
-
-    fn module_codegen(
-        tcx: TyCtxt<'_>,
-        cgu_name: Symbol,
-    ) -> ModuleCodegen<ModuleLlvm> {
+    fn module_codegen(tcx: TyCtxt<'_>, cgu_name: Symbol) -> ModuleCodegen<ModuleLlvm> {
         let cgu = tcx.codegen_unit(cgu_name);
         // Instantiate monomorphizations without filling out definitions yet...
         let llvm_module = ModuleLlvm::new(tcx, &cgu_name.as_str());
         {
             let cx = CodegenCx::new(tcx, cgu, &llvm_module);
-            let mono_items = cx.codegen_unit
-                               .items_in_deterministic_order(cx.tcx);
+            let mono_items = cx.codegen_unit.items_in_deterministic_order(cx.tcx);
             for &(mono_item, (linkage, visibility)) in &mono_items {
                 mono_item.predefine::<Builder<'_, '_, '_>>(&cx, linkage, visibility);
             }
@@ -154,7 +135,9 @@ pub fn compile_codegen_unit(
 
             // If this codegen unit contains the main function, also create the
             // wrapper here
-            maybe_create_entry_wrapper::<Builder<'_, '_, '_>>(&cx);
+            if let Some(entry) = maybe_create_entry_wrapper::<Builder<'_, '_, '_>>(&cx) {
+                attributes::sanitize(&cx, CodegenFnAttrFlags::empty(), entry);
+            }
 
             // Run replace-all-uses-with for statics that need it
             for &(old_g, new_g) in cx.statics_to_rauw().borrow().iter() {
@@ -173,8 +156,8 @@ pub fn compile_codegen_unit(
 
             if cx.has_debug() {
                 if let Some(sir_cx) = cx.sir_cx.borrow_mut().as_mut() {
-                    for (func_idx, blocks) in sir_cx.funcs_and_blocks_deterministic()
-                        .iter_enumerated()
+                    for (func_idx, blocks) in
+                        sir_cx.funcs_and_blocks_deterministic().iter_enumerated()
                     {
                         let sir_func = &sir_cx.funcs[func_idx];
                         let sym_name = &sir_func.symbol_name;
@@ -202,8 +185,13 @@ pub fn compile_codegen_unit(
                                 &*(*bb as *const sir::BasicBlock as *const llvm::BasicBlock)
                             };
 
-                            let lbl_name = CString::new(format!("{}:{}:{}",
-                                    BLOCK_LABEL_PREFIX, sym_name, bb_idx.index())).unwrap();
+                            let lbl_name = CString::new(format!(
+                                "{}:{}:{}",
+                                BLOCK_LABEL_PREFIX,
+                                sym_name,
+                                bb_idx.index()
+                            ))
+                            .unwrap();
                             let mut bx = Builder::with_cx(&cx);
                             bx.position_at_end(llbb);
                             bx.add_yk_block_label(llbb, lbl_name);
@@ -230,6 +218,8 @@ pub fn compile_codegen_unit(
             kind: ModuleKind::Regular,
         }
     }
+
+    (module, cost)
 }
 
 pub fn set_link_section(llval: &Value, attrs: &CodegenFnAttrs) {

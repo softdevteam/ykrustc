@@ -27,7 +27,7 @@ mod statics;
 mod type_;
 mod write;
 
-pub use self::abi::{AbiBuilderMethods};
+pub use self::abi::AbiBuilderMethods;
 pub use self::asm::{AsmBuilderMethods, AsmMethods};
 pub use self::backend::{Backend, BackendTypes, ExtraBackendMethods};
 pub use self::builder::{BuilderMethods, OverflowOp};
@@ -36,14 +36,14 @@ pub use self::debuginfo::{DebugInfoBuilderMethods, DebugInfoMethods};
 pub use self::declare::{DeclareMethods, PreDefineMethods};
 pub use self::intrinsic::IntrinsicCallMethods;
 pub use self::misc::MiscMethods;
-pub use self::statics::{StaticMethods, StaticBuilderMethods};
+pub use self::statics::{StaticBuilderMethods, StaticMethods};
 pub use self::type_::{
     ArgAbiMethods, BaseTypeMethods, DerivedTypeMethods, LayoutTypeMethods, TypeMethods,
 };
 pub use self::write::{ModuleBufferMethods, ThinBufferMethods, WriteBackendMethods};
-use rustc::ty::layout::{HasParamEnv, HasTyCtxt};
-use rustc_target::spec::{HasTargetSpec};
 
+use rustc::ty::layout::{HasParamEnv, HasTyCtxt};
+use rustc_target::spec::HasTargetSpec;
 
 use std::fmt;
 
@@ -93,5 +93,6 @@ pub trait HasCodegen<'tcx>:
             Type = Self::Type,
             Funclet = Self::Funclet,
             DIScope = Self::DIScope,
+            DIVariable = Self::DIVariable,
         >;
 }

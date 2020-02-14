@@ -8,7 +8,8 @@ use super::from_u32_unchecked;
 #[stable(feature = "decode_utf16", since = "1.9.0")]
 #[derive(Clone, Debug)]
 pub struct DecodeUtf16<I>
-    where I: Iterator<Item = u16>
+where
+    I: Iterator<Item = u16>,
 {
     iter: I,
     buf: Option<u16>,
@@ -70,10 +71,7 @@ pub struct DecodeUtf16Error {
 #[stable(feature = "decode_utf16", since = "1.9.0")]
 #[inline]
 pub fn decode_utf16<I: IntoIterator<Item = u16>>(iter: I) -> DecodeUtf16<I::IntoIter> {
-    DecodeUtf16 {
-        iter: iter.into_iter(),
-        buf: None,
-    }
+    DecodeUtf16 { iter: iter.into_iter(), buf: None }
 }
 
 #[stable(feature = "decode_utf16", since = "1.9.0")]
@@ -83,11 +81,11 @@ impl<I: Iterator<Item = u16>> Iterator for DecodeUtf16<I> {
     fn next(&mut self) -> Option<Result<char, DecodeUtf16Error>> {
         let u = match self.buf.take() {
             Some(buf) => buf,
-            None => self.iter.next()?
+            None => self.iter.next()?,
         };
 
         if u < 0xD800 || 0xDFFF < u {
-            // not a surrogate
+            // SAFETY: not a surrogate
             Some(Ok(unsafe { from_u32_unchecked(u as u32) }))
         } else if u >= 0xDC00 {
             // a trailing surrogate
@@ -107,6 +105,7 @@ impl<I: Iterator<Item = u16>> Iterator for DecodeUtf16<I> {
 
             // all ok, so lets decode it.
             let c = (((u - 0xD800) as u32) << 10 | (u2 - 0xDC00) as u32) + 0x1_0000;
+            // SAFETY: we checked that it's a legal unicode value
             Some(Ok(unsafe { from_u32_unchecked(c) }))
         }
     }

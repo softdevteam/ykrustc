@@ -374,10 +374,11 @@
 
 #![stable(feature = "pin", since = "1.33.0")]
 
-use crate::fmt;
-use crate::marker::{Sized, Unpin};
 use crate::cmp::{self, PartialEq, PartialOrd};
-use crate::ops::{Deref, DerefMut, Receiver, CoerceUnsized, DispatchFromDyn};
+use crate::fmt;
+use crate::hash::{Hash, Hasher};
+use crate::marker::{Sized, Unpin};
+use crate::ops::{CoerceUnsized, Deref, DerefMut, DispatchFromDyn, Receiver};
 
 /// A pinned pointer.
 ///
@@ -390,55 +391,78 @@ use crate::ops::{Deref, DerefMut, Receiver, CoerceUnsized, DispatchFromDyn};
 /// [`Unpin`]: ../../std/marker/trait.Unpin.html
 /// [`pin` module]: ../../std/pin/index.html
 //
-// Note: the derives below, and the explicit `PartialEq` and `PartialOrd`
-// implementations, are allowed because they all only use `&P`, so they cannot move
-// the value behind `pointer`.
+// Note: the `Clone` derive below causes unsoundness as it's possible to implement
+// `Clone` for mutable references.
+// See <https://internals.rust-lang.org/t/unsoundness-in-pin/11311> for more details.
 #[stable(feature = "pin", since = "1.33.0")]
 #[lang = "pin"]
 #[fundamental]
 #[repr(transparent)]
-#[derive(Copy, Clone, Hash, Eq, Ord)]
+#[derive(Copy, Clone)]
 pub struct Pin<P> {
     pointer: P,
 }
 
-#[stable(feature = "pin_partialeq_partialord_impl_applicability", since = "1.34.0")]
-impl<P, Q> PartialEq<Pin<Q>> for Pin<P>
+// The following implementations aren't derived in order to avoid soundness
+// issues. `&self.pointer` should not be accessible to untrusted trait
+// implementations.
+//
+// See <https://internals.rust-lang.org/t/unsoundness-in-pin/11311/73> for more details.
+
+#[stable(feature = "pin_trait_impls", since = "1.41.0")]
+impl<P: Deref, Q: Deref> PartialEq<Pin<Q>> for Pin<P>
 where
-    P: PartialEq<Q>,
+    P::Target: PartialEq<Q::Target>,
 {
     fn eq(&self, other: &Pin<Q>) -> bool {
-        self.pointer == other.pointer
+        P::Target::eq(self, other)
     }
 
     fn ne(&self, other: &Pin<Q>) -> bool {
-        self.pointer != other.pointer
+        P::Target::ne(self, other)
     }
 }
 
-#[stable(feature = "pin_partialeq_partialord_impl_applicability", since = "1.34.0")]
-impl<P, Q> PartialOrd<Pin<Q>> for Pin<P>
+#[stable(feature = "pin_trait_impls", since = "1.41.0")]
+impl<P: Deref<Target: Eq>> Eq for Pin<P> {}
+
+#[stable(feature = "pin_trait_impls", since = "1.41.0")]
+impl<P: Deref, Q: Deref> PartialOrd<Pin<Q>> for Pin<P>
 where
-    P: PartialOrd<Q>,
+    P::Target: PartialOrd<Q::Target>,
 {
     fn partial_cmp(&self, other: &Pin<Q>) -> Option<cmp::Ordering> {
-        self.pointer.partial_cmp(&other.pointer)
+        P::Target::partial_cmp(self, other)
     }
 
     fn lt(&self, other: &Pin<Q>) -> bool {
-        self.pointer < other.pointer
+        P::Target::lt(self, other)
     }
 
     fn le(&self, other: &Pin<Q>) -> bool {
-        self.pointer <= other.pointer
+        P::Target::le(self, other)
     }
 
     fn gt(&self, other: &Pin<Q>) -> bool {
-        self.pointer > other.pointer
+        P::Target::gt(self, other)
     }
 
     fn ge(&self, other: &Pin<Q>) -> bool {
-        self.pointer >= other.pointer
+        P::Target::ge(self, other)
+    }
+}
+
+#[stable(feature = "pin_trait_impls", since = "1.41.0")]
+impl<P: Deref<Target: Ord>> Ord for Pin<P> {
+    fn cmp(&self, other: &Self) -> cmp::Ordering {
+        P::Target::cmp(self, other)
+    }
+}
+
+#[stable(feature = "pin_trait_impls", since = "1.41.0")]
+impl<P: Deref<Target: Hash>> Hash for Pin<P> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        P::Target::hash(self, state);
     }
 }
 
@@ -552,6 +576,7 @@ impl<P: Deref> Pin<P> {
     #[stable(feature = "pin", since = "1.33.0")]
     #[inline(always)]
     pub fn as_ref(&self) -> Pin<&P::Target> {
+        // SAFETY: see documentation on this function
         unsafe { Pin::new_unchecked(&*self.pointer) }
     }
 
@@ -610,6 +635,7 @@ impl<P: DerefMut> Pin<P> {
     #[stable(feature = "pin", since = "1.33.0")]
     #[inline(always)]
     pub fn as_mut(&mut self) -> Pin<&mut P::Target> {
+        // SAFETY: see documentation on this function
         unsafe { Pin::new_unchecked(&mut *self.pointer) }
     }
 
@@ -644,7 +670,9 @@ impl<'a, T: ?Sized> Pin<&'a T> {
     ///
     /// [`pin` module]: ../../std/pin/index.html#projections-and-structural-pinning
     #[stable(feature = "pin", since = "1.33.0")]
-    pub unsafe fn map_unchecked<U, F>(self, func: F) -> Pin<&'a U> where
+    pub unsafe fn map_unchecked<U, F>(self, func: F) -> Pin<&'a U>
+    where
+        U: ?Sized,
         F: FnOnce(&T) -> &U,
     {
         let pointer = &*self.pointer;
@@ -696,7 +724,8 @@ impl<'a, T: ?Sized> Pin<&'a mut T> {
     #[stable(feature = "pin", since = "1.33.0")]
     #[inline(always)]
     pub fn get_mut(self) -> &'a mut T
-        where T: Unpin,
+    where
+        T: Unpin,
     {
         self.pointer
     }
@@ -733,7 +762,9 @@ impl<'a, T: ?Sized> Pin<&'a mut T> {
     ///
     /// [`pin` module]: ../../std/pin/index.html#projections-and-structural-pinning
     #[stable(feature = "pin", since = "1.33.0")]
-    pub unsafe fn map_unchecked_mut<U, F>(self, func: F) -> Pin<&'a mut U> where
+    pub unsafe fn map_unchecked_mut<U, F>(self, func: F) -> Pin<&'a mut U>
+    where
+        U: ?Sized,
         F: FnOnce(&mut T) -> &mut U,
     {
         let pointer = Pin::get_unchecked_mut(self);
@@ -757,7 +788,7 @@ impl<P: DerefMut<Target: Unpin>> DerefMut for Pin<P> {
     }
 }
 
-#[unstable(feature = "receiver_trait", issue = "0")]
+#[unstable(feature = "receiver_trait", issue = "none")]
 impl<P: Receiver> Receiver for Pin<P> {}
 
 #[stable(feature = "pin", since = "1.33.0")]
@@ -787,13 +818,7 @@ impl<P: fmt::Pointer> fmt::Pointer for Pin<P> {
 // for other reasons, though, so we just need to take care not to allow such
 // impls to land in std.
 #[stable(feature = "pin", since = "1.33.0")]
-impl<P, U> CoerceUnsized<Pin<U>> for Pin<P>
-where
-    P: CoerceUnsized<U>,
-{}
+impl<P, U> CoerceUnsized<Pin<U>> for Pin<P> where P: CoerceUnsized<U> {}
 
 #[stable(feature = "pin", since = "1.33.0")]
-impl<P, U> DispatchFromDyn<Pin<U>> for Pin<P>
-where
-    P: DispatchFromDyn<U>,
-{}
+impl<P, U> DispatchFromDyn<Pin<U>> for Pin<P> where P: DispatchFromDyn<U> {}

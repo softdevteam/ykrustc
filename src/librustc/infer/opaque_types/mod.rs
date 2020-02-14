@@ -1,20 +1,19 @@
-use crate::hir;
-use crate::hir::def_id::DefId;
-use crate::hir::Node;
-use crate::infer::outlives::free_region_map::FreeRegionRelations;
+use crate::infer::error_reporting::{note_and_explain_free_region, note_and_explain_region};
 use crate::infer::{self, InferCtxt, InferOk, TypeVariableOrigin, TypeVariableOriginKind};
 use crate::middle::region;
-use crate::mir::interpret::ConstValue;
 use crate::traits::{self, PredicateObligation};
 use crate::ty::fold::{BottomUpFolder, TypeFoldable, TypeFolder, TypeVisitor};
-use crate::ty::subst::{InternalSubsts, GenericArg, SubstsRef, GenericArgKind};
+use crate::ty::free_region_map::FreeRegionRelations;
+use crate::ty::subst::{GenericArg, GenericArgKind, InternalSubsts, SubstsRef};
 use crate::ty::{self, GenericParamDefKind, Ty, TyCtxt};
-use crate::util::nodemap::DefIdMap;
-use errors::DiagnosticBuilder;
 use rustc::session::config::nightly_options;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
-use syntax_pos::Span;
+use rustc_errors::{struct_span_err, DiagnosticBuilder};
+use rustc_hir as hir;
+use rustc_hir::def_id::{DefId, DefIdMap};
+use rustc_hir::Node;
+use rustc_span::Span;
 
 pub type OpaqueTypeMap<'tcx> = DefIdMap<OpaqueTypeDecl<'tcx>>;
 
@@ -23,6 +22,9 @@ pub type OpaqueTypeMap<'tcx> = DefIdMap<OpaqueTypeDecl<'tcx>>;
 /// appear in the return type).
 #[derive(Copy, Clone, Debug)]
 pub struct OpaqueTypeDecl<'tcx> {
+    /// The opaque type (`ty::Opaque`) for this declaration.
+    pub opaque_type: Ty<'tcx>,
+
     /// The substitutions that we apply to the opaque type that this
     /// `impl Trait` desugars to. e.g., if:
     ///
@@ -346,7 +348,8 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             debug!("constrain_opaque_type: bounds={:#?}", bounds);
             let opaque_type = tcx.mk_opaque(def_id, opaque_defn.substs);
 
-            let required_region_bounds = tcx.required_region_bounds(opaque_type, bounds.predicates);
+            let required_region_bounds =
+                required_region_bounds(tcx, opaque_type, bounds.predicates);
             debug_assert!(!required_region_bounds.is_empty());
 
             for required_region in required_region_bounds {
@@ -381,9 +384,9 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             match least_region {
                 None => least_region = Some(subst_arg),
                 Some(lr) => {
-                    if free_region_relations.sub_free_regions(lr, subst_arg) {
+                    if free_region_relations.sub_free_regions(self.tcx, lr, subst_arg) {
                         // keep the current least region
-                    } else if free_region_relations.sub_free_regions(subst_arg, lr) {
+                    } else if free_region_relations.sub_free_regions(self.tcx, subst_arg, lr) {
                         // switch to `subst_arg`
                         least_region = Some(subst_arg);
                     } else {
@@ -462,13 +465,15 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
         concrete_ty.visit_with(&mut ConstrainOpaqueTypeRegionVisitor {
             tcx: self.tcx,
-            op: |r| self.member_constraint(
-                opaque_type_def_id,
-                opaque_defn.definition_span,
-                concrete_ty,
-                r,
-                &choice_regions,
-            ),
+            op: |r| {
+                self.member_constraint(
+                    opaque_type_def_id,
+                    opaque_defn.definition_span,
+                    concrete_ty,
+                    r,
+                    &choice_regions,
+                )
+            },
         });
     }
 
@@ -517,9 +522,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         err.span_label(span, label);
 
         if nightly_options::is_nightly_build() {
-            help!(err,
-                  "add #![feature(member_constraints)] to the crate attributes \
-                   to enable");
+            err.help("add #![feature(member_constraints)] to the crate attributes to enable");
         }
 
         err.emit();
@@ -608,7 +611,7 @@ pub fn unexpected_hidden_region_diagnostic(
     );
 
     // Explain the region we are capturing.
-    if let ty::ReEarlyBound(_) | ty::ReFree(_) | ty::ReStatic | ty::ReEmpty = hidden_region {
+    if let ty::ReEarlyBound(_) | ty::ReFree(_) | ty::ReStatic | ty::ReEmpty(_) = hidden_region {
         // Assuming regionck succeeded (*), we ought to always be
         // capturing *some* region from the fn header, and hence it
         // ought to be free. So under normal circumstances, we will go
@@ -617,7 +620,8 @@ pub fn unexpected_hidden_region_diagnostic(
         //
         // (*) if not, the `tainted_by_errors` flag would be set to
         // true in any case, so we wouldn't be here at all.
-        tcx.note_and_explain_free_region(
+        note_and_explain_free_region(
+            tcx,
             &mut err,
             &format!("hidden type `{}` captures ", hidden_ty),
             hidden_region,
@@ -642,7 +646,8 @@ pub fn unexpected_hidden_region_diagnostic(
             // If the `region_scope_tree` is available, this is being
             // invoked from the "region inferencer error". We can at
             // least report a really cryptic error for now.
-            tcx.note_and_explain_region(
+            note_and_explain_region(
+                tcx,
                 region_scope_tree,
                 &mut err,
                 &format!("hidden type `{}` captures ", hidden_ty),
@@ -739,6 +744,7 @@ where
 
                 substs.as_generator().return_ty(def_id, self.tcx).visit_with(self);
                 substs.as_generator().yield_ty(def_id, self.tcx).visit_with(self);
+                substs.as_generator().resume_ty(def_id, self.tcx).visit_with(self);
             }
             _ => {
                 ty.super_visit_with(self);
@@ -834,26 +840,28 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
                             self.opaque_type_def_id,
                             hidden_ty,
                             r,
-                        ).emit();
+                        )
+                        .emit();
                     }
                 }
-                self.tcx.lifetimes.re_empty
+                self.tcx.lifetimes.re_root_empty
             }
             None => {
-                self.tcx.sess
-                    .struct_span_err(
-                        self.span,
-                        "non-defining opaque type use in defining scope"
-                    )
+                self.tcx
+                    .sess
+                    .struct_span_err(self.span, "non-defining opaque type use in defining scope")
                     .span_label(
                         self.span,
-                        format!("lifetime `{}` is part of concrete type but not used in \
-                                 parameter list of the `impl Trait` type alias", r),
+                        format!(
+                            "lifetime `{}` is part of concrete type but not used in \
+                                 parameter list of the `impl Trait` type alias",
+                            r
+                        ),
                     )
                     .emit();
 
                 self.tcx().mk_region(ty::ReStatic)
-            },
+            }
         }
     }
 
@@ -885,32 +893,30 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
                 // during codegen.
 
                 let generics = self.tcx.generics_of(def_id);
-                let substs =
-                    self.tcx.mk_substs(substs.iter().enumerate().map(|(index, &kind)| {
-                        if index < generics.parent_count {
-                            // Accommodate missing regions in the parent kinds...
-                            self.fold_kind_mapping_missing_regions_to_empty(kind)
-                        } else {
-                            // ...but not elsewhere.
-                            self.fold_kind_normally(kind)
-                        }
-                    }));
+                let substs = self.tcx.mk_substs(substs.iter().enumerate().map(|(index, &kind)| {
+                    if index < generics.parent_count {
+                        // Accommodate missing regions in the parent kinds...
+                        self.fold_kind_mapping_missing_regions_to_empty(kind)
+                    } else {
+                        // ...but not elsewhere.
+                        self.fold_kind_normally(kind)
+                    }
+                }));
 
                 self.tcx.mk_closure(def_id, substs)
             }
 
             ty::Generator(def_id, substs, movability) => {
                 let generics = self.tcx.generics_of(def_id);
-                let substs =
-                    self.tcx.mk_substs(substs.iter().enumerate().map(|(index, &kind)| {
-                        if index < generics.parent_count {
-                            // Accommodate missing regions in the parent kinds...
-                            self.fold_kind_mapping_missing_regions_to_empty(kind)
-                        } else {
-                            // ...but not elsewhere.
-                            self.fold_kind_normally(kind)
-                        }
-                    }));
+                let substs = self.tcx.mk_substs(substs.iter().enumerate().map(|(index, &kind)| {
+                    if index < generics.parent_count {
+                        // Accommodate missing regions in the parent kinds...
+                        self.fold_kind_mapping_missing_regions_to_empty(kind)
+                    } else {
+                        // ...but not elsewhere.
+                        self.fold_kind_normally(kind)
+                    }
+                }));
 
                 self.tcx.mk_generator(def_id, substs, movability)
             }
@@ -923,12 +929,15 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
                     Some(GenericArgKind::Type(t1)) => t1,
                     Some(u) => panic!("type mapped to unexpected kind: {:?}", u),
                     None => {
-                        self.tcx.sess
+                        self.tcx
+                            .sess
                             .struct_span_err(
                                 self.span,
-                                &format!("type parameter `{}` is part of concrete type but not \
+                                &format!(
+                                    "type parameter `{}` is part of concrete type but not \
                                           used in parameter list for the `impl Trait` type alias",
-                                         ty),
+                                    ty
+                                ),
                             )
                             .emit();
 
@@ -945,7 +954,7 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
         trace!("checking const {:?}", ct);
         // Find a const parameter
         match ct.val {
-            ConstValue::Param(..) => {
+            ty::ConstKind::Param(..) => {
                 // Look it up in the substitution list.
                 match self.map.get(&ct.into()).map(|k| k.unpack()) {
                     // Found it in the substitution list, replace with the parameter from the
@@ -953,12 +962,15 @@ impl TypeFolder<'tcx> for ReverseMapper<'tcx> {
                     Some(GenericArgKind::Const(c1)) => c1,
                     Some(u) => panic!("const mapped to unexpected kind: {:?}", u),
                     None => {
-                        self.tcx.sess
+                        self.tcx
+                            .sess
                             .struct_span_err(
                                 self.span,
-                                &format!("const parameter `{}` is part of concrete type but not \
+                                &format!(
+                                    "const parameter `{}` is part of concrete type but not \
                                           used in parameter list for the `impl Trait` type alias",
-                                         ct)
+                                    ct
+                                ),
                             )
                             .emit();
 
@@ -1030,8 +1042,7 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
                         let parent_def_id = self.parent_def_id;
                         let def_scope_default = || {
                             let opaque_parent_hir_id = tcx.hir().get_parent_item(opaque_hir_id);
-                            parent_def_id == tcx.hir()
-                                                .local_def_id(opaque_parent_hir_id)
+                            parent_def_id == tcx.hir().local_def_id(opaque_parent_hir_id)
                         };
                         let (in_definition_scope, origin) = match tcx.hir().find(opaque_hir_id) {
                             Some(Node::Item(item)) => match item.kind {
@@ -1047,29 +1058,17 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
                                     origin,
                                     ..
                                 }) => (
-                                    may_define_opaque_type(
-                                        tcx,
-                                        self.parent_def_id,
-                                        opaque_hir_id,
-                                    ),
+                                    may_define_opaque_type(tcx, self.parent_def_id, opaque_hir_id),
                                     origin,
                                 ),
-                                _ => {
-                                    (def_scope_default(), hir::OpaqueTyOrigin::TypeAlias)
-                                }
+                                _ => (def_scope_default(), hir::OpaqueTyOrigin::TypeAlias),
                             },
                             Some(Node::ImplItem(item)) => match item.kind {
                                 hir::ImplItemKind::OpaqueTy(_) => (
-                                    may_define_opaque_type(
-                                        tcx,
-                                        self.parent_def_id,
-                                        opaque_hir_id,
-                                    ),
+                                    may_define_opaque_type(tcx, self.parent_def_id, opaque_hir_id),
                                     hir::OpaqueTyOrigin::TypeAlias,
                                 ),
-                                _ => {
-                                    (def_scope_default(), hir::OpaqueTyOrigin::TypeAlias)
-                                }
+                                _ => (def_scope_default(), hir::OpaqueTyOrigin::TypeAlias),
                             },
                             _ => bug!(
                                 "expected (impl) item, found {}",
@@ -1130,7 +1129,7 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
 
         debug!("instantiate_opaque_types: bounds={:?}", bounds);
 
-        let required_region_bounds = tcx.required_region_bounds(ty, bounds.predicates.clone());
+        let required_region_bounds = required_region_bounds(tcx, ty, bounds.predicates.clone());
         debug!("instantiate_opaque_types: required_region_bounds={:?}", required_region_bounds);
 
         // Make sure that we are in fact defining the *entire* type
@@ -1149,6 +1148,7 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
         self.opaque_types.insert(
             def_id,
             OpaqueTypeDecl {
+                opaque_type: ty,
                 substs,
                 definition_span,
                 concrete_ty: ty_var,
@@ -1205,11 +1205,7 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
 /// Here, `def_id` is the `DefId` of the defining use of the opaque type (e.g., `f1` or `f2`),
 /// and `opaque_hir_id` is the `HirId` of the definition of the opaque type `Baz`.
 /// For the above example, this function returns `true` for `f1` and `false` for `f2`.
-pub fn may_define_opaque_type(
-    tcx: TyCtxt<'_>,
-    def_id: DefId,
-    opaque_hir_id: hir::HirId,
-) -> bool {
+pub fn may_define_opaque_type(tcx: TyCtxt<'_>, def_id: DefId, opaque_hir_id: hir::HirId) -> bool {
     let mut hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
 
     // Named opaque types can be defined by any siblings or children of siblings.
@@ -1222,9 +1218,73 @@ pub fn may_define_opaque_type(
     let res = hir_id == scope;
     trace!(
         "may_define_opaque_type(def={:?}, opaque_node={:?}) = {}",
-        tcx.hir().get(hir_id),
+        tcx.hir().find(hir_id),
         tcx.hir().get(opaque_hir_id),
         res
     );
     res
+}
+
+/// Given a set of predicates that apply to an object type, returns
+/// the region bounds that the (erased) `Self` type must
+/// outlive. Precisely *because* the `Self` type is erased, the
+/// parameter `erased_self_ty` must be supplied to indicate what type
+/// has been used to represent `Self` in the predicates
+/// themselves. This should really be a unique type; `FreshTy(0)` is a
+/// popular choice.
+///
+/// N.B., in some cases, particularly around higher-ranked bounds,
+/// this function returns a kind of conservative approximation.
+/// That is, all regions returned by this function are definitely
+/// required, but there may be other region bounds that are not
+/// returned, as well as requirements like `for<'a> T: 'a`.
+///
+/// Requires that trait definitions have been processed so that we can
+/// elaborate predicates and walk supertraits.
+//
+// FIXME: callers may only have a `&[Predicate]`, not a `Vec`, so that's
+// what this code should accept.
+crate fn required_region_bounds(
+    tcx: TyCtxt<'tcx>,
+    erased_self_ty: Ty<'tcx>,
+    predicates: Vec<ty::Predicate<'tcx>>,
+) -> Vec<ty::Region<'tcx>> {
+    debug!(
+        "required_region_bounds(erased_self_ty={:?}, predicates={:?})",
+        erased_self_ty, predicates
+    );
+
+    assert!(!erased_self_ty.has_escaping_bound_vars());
+
+    traits::elaborate_predicates(tcx, predicates)
+        .filter_map(|predicate| {
+            match predicate {
+                ty::Predicate::Projection(..)
+                | ty::Predicate::Trait(..)
+                | ty::Predicate::Subtype(..)
+                | ty::Predicate::WellFormed(..)
+                | ty::Predicate::ObjectSafe(..)
+                | ty::Predicate::ClosureKind(..)
+                | ty::Predicate::RegionOutlives(..)
+                | ty::Predicate::ConstEvaluatable(..) => None,
+                ty::Predicate::TypeOutlives(predicate) => {
+                    // Search for a bound of the form `erased_self_ty
+                    // : 'a`, but be wary of something like `for<'a>
+                    // erased_self_ty : 'a` (we interpret a
+                    // higher-ranked bound like that as 'static,
+                    // though at present the code in `fulfill.rs`
+                    // considers such bounds to be unsatisfiable, so
+                    // it's kind of a moot point since you could never
+                    // construct such an object, but this seems
+                    // correct even if that code changes).
+                    let ty::OutlivesPredicate(ref t, ref r) = predicate.skip_binder();
+                    if t == &erased_self_ty && !r.has_escaping_bound_vars() {
+                        Some(*r)
+                    } else {
+                        None
+                    }
+                }
+            }
+        })
+        .collect()
 }
