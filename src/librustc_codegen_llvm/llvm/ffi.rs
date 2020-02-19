@@ -916,6 +916,7 @@ extern "C" {
     pub fn LLVMIsAInstruction(Val: &Value) -> Option<&Value>;
     pub fn LLVMGetFirstBasicBlock(Fn: &Value) -> &BasicBlock;
     pub fn LLVMGetFirstInstruction(BB: &BasicBlock) -> Option<&Value>;
+    pub fn LLVMGetInstructionParent(I: &Value) -> &BasicBlock;
 
     // Operations on call sites
     pub fn LLVMSetInstructionCallConv(Instr: &Value, CC: c_uint);
@@ -1861,6 +1862,8 @@ extern "C" {
         Block: &BasicBlock,
         Name: *const c_char,
     );
+
+    pub fn LLVMRustInstructionIndex(Instr: &Value) -> usize;
 
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTypeToString(Type: &Type, s: &RustString);

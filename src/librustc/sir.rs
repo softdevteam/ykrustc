@@ -19,6 +19,9 @@ extern "C" {
 extern "C" {
     pub type BasicBlock;
 }
+extern "C" {
+    pub type Builder;
+}
 
 newtype_index! {
     pub struct SirFuncIdx {
@@ -55,6 +58,8 @@ pub struct SirCx {
     pub llvm_blocks: FxHashMap<*const BasicBlock, (SirFuncIdx, SirBlockIdx)>,
     /// Function store. Also owns the blocks
     pub funcs: IndexVec<SirFuncIdx, ykpack::Body>,
+    /// Mirrors the insertion point for each LLVM `IrBuilder`.
+    pub builders: FxHashMap<*const Builder, (*const BasicBlock, usize)>,
 }
 
 impl SirCx {
@@ -63,6 +68,7 @@ impl SirCx {
             llvm_values: Default::default(),
             llvm_blocks: FxHashMap::default(),
             funcs: Default::default(),
+            builders: Default::default(),
         }
     }
 
@@ -136,5 +142,33 @@ impl SirCx {
         }
 
         Ok(())
+    }
+
+    /// Given an llvm::BasicBlock returns the equivalent ykpack::BasicBlock in the SIR.
+    fn get_sir_block(&mut self, bb: *const BasicBlock) -> &mut ykpack::BasicBlock {
+        let (sirfuncidx, sirblockidx) = self.llvm_blocks[&bb];
+        let sir_func = &mut self.funcs[sirfuncidx];
+        &mut sir_func.blocks[sirblockidx.index()]
+    }
+
+    /// Set the current position of builder to `pos`. Equivalent to LLVMPositionBuilderBefore.
+    pub fn position_before(&mut self, builder: *const Builder, bb: *const BasicBlock, pos: usize) {
+        self.builders.insert(builder, (bb, pos));
+    }
+
+    /// Set the current position of builder to the end of `bb`. Equivalent to
+    /// LLVMPositionBuilderAtEnd.
+    pub fn position_at_end(&mut self, builder: *const Builder, bb: *const BasicBlock) {
+        let sir_block = self.get_sir_block(bb);
+        let pos = sir_block.stmts.len();
+        self.builders.insert(builder, (bb, pos));
+    }
+
+    /// Create a return void instruction in the SIR.
+    pub fn ret_void(&mut self, builder: *const Builder) {
+        let (bb, idx) = self.builders[&builder];
+        let sir_block = self.get_sir_block(bb);
+        let instr = ykpack::Statement::Return;
+        sir_block.stmts.insert(idx, instr);
     }
 }

@@ -153,12 +153,28 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         unsafe {
             llvm::LLVMPositionBuilderBefore(self.llbuilder, instr);
         }
+
+        let pos = unsafe { llvm::LLVMRustInstructionIndex(instr) };
+
+        let bb = unsafe { llvm::LLVMGetInstructionParent(instr) } as *const llvm::BasicBlock
+            as *const sir::BasicBlock;
+
+        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
+
+        self.cx.with_sir_cx_mut(|sir_cx| {
+            sir_cx.position_before(builder, bb, pos);
+        });
     }
 
     fn position_at_end(&mut self, llbb: &'ll BasicBlock) {
         unsafe {
             llvm::LLVMPositionBuilderAtEnd(self.llbuilder, llbb);
         }
+        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
+        let bb = llbb as *const llvm::BasicBlock as *const sir::BasicBlock;
+        self.cx.with_sir_cx_mut(|sir_cx| {
+            sir_cx.position_at_end(builder, bb);
+        });
     }
 
     fn add_yk_block_label(&mut self, block: &'ll BasicBlock, lbl_name: CString) {
@@ -177,6 +193,10 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         unsafe {
             llvm::LLVMBuildRetVoid(self.llbuilder);
         }
+        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
+        self.cx.with_sir_cx_mut(|sir_cx| {
+            sir_cx.ret_void(builder);
+        });
     }
 
     fn ret(&mut self, v: &'ll Value) {
