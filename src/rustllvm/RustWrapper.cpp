@@ -1000,6 +1000,20 @@ extern "C" bool LLVMRustAddYkBlockLabel(LLVMBuilderRef Builder,
     return true;
 }
 
+extern "C" unsigned int LLVMRustInstructionIndex(LLVMValueRef Value) {
+    Instruction *Instr = unwrap<Instruction>(Value);
+    BasicBlock *B = Instr->getParent();
+    unsigned int index = 0;
+    for (BasicBlock::iterator I = B->begin(), IE = B->end(); I != IE; ++I) {
+        Instruction *CI = cast<Instruction>(I);
+        if (CI == Instr) {
+            break;
+        }
+        index++;
+    }
+    return index;
+}
+
 extern "C" void LLVMRustWriteTypeToString(LLVMTypeRef Ty, RustStringRef Str) {
   RawRustStringOstream OS(Str);
   unwrap<llvm::Type>(Ty)->print(OS);

@@ -155,6 +155,7 @@ pub fn compile_codegen_unit(
             }
 
             if cx.has_debug() {
+                let mut labels = Vec::new();
                 if let Some(sir_cx) = cx.sir_cx.borrow_mut().as_mut() {
                     for (func_idx, blocks) in
                         sir_cx.funcs_and_blocks_deterministic().iter_enumerated()
@@ -192,11 +193,16 @@ pub fn compile_codegen_unit(
                                 bb_idx.index()
                             ))
                             .unwrap();
-                            let mut bx = Builder::with_cx(&cx);
-                            bx.position_at_end(llbb);
-                            bx.add_yk_block_label(llbb, lbl_name);
+                            labels.push((llbb, lbl_name));
                         }
                     }
+                }
+                // Only apply labels after collecting them in the previous step to avoid a double
+                // mutable borrow of sir_cx.
+                let mut bx = Builder::with_cx(&cx);
+                for (llbb, lbl_name) in labels {
+                    bx.position_at_end(llbb);
+                    bx.add_yk_block_label(llbb, lbl_name);
                 }
             }
 
