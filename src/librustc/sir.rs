@@ -5,6 +5,7 @@
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_index::{newtype_index, vec::IndexVec};
+use std::collections::hash_map::Entry;
 use std::default::Default;
 use std::io::{self, Write};
 use ykpack;
@@ -38,16 +39,38 @@ newtype_index! {
     }
 }
 
+// A local variable index.
+// Note that these indices are not globally unique. For a globally unique local variable
+// identifier, a (SirFuncIdx, SirLocalIdx) pair must be used.
+newtype_index! {
+    pub struct SirLocalIdx {
+        DEBUG_FORMAT = "SirLocalIdx({})"
+    }
+}
+
 /// Sir equivalents of LLVM values.
 #[derive(Debug)]
 pub enum SirValue {
     Func(SirFuncIdx),
+    /// A variable local to a function.
+    Local(SirFuncIdx, SirLocalIdx),
 }
 
 impl SirValue {
-    pub fn func_idx(&self) -> SirFuncIdx {
-        let Self::Func(idx) = self;
-        *idx
+    pub fn func(&self) -> SirFuncIdx {
+        if let Self::Func(idx) = self {
+            *idx
+        } else {
+            panic!("tried to make a function from something else");
+        }
+    }
+
+    pub fn local(&self) -> (SirFuncIdx, SirLocalIdx) {
+        if let Self::Local(func_idx, local_idx) = self {
+            (*func_idx, *local_idx)
+        } else {
+            panic!("tried to make a local from something else");
+        }
     }
 }
 
@@ -58,6 +81,8 @@ pub struct SirCx {
     pub llvm_blocks: FxHashMap<*const BasicBlock, (SirFuncIdx, SirBlockIdx)>,
     /// Function store. Also owns the blocks
     pub funcs: IndexVec<SirFuncIdx, ykpack::Body>,
+    /// Keeps track of local variables on a per-function basis.
+    pub locals: IndexVec<SirFuncIdx, IndexVec<SirLocalIdx, *const Value>>,
     /// Mirrors the insertion point for each LLVM `IrBuilder`.
     pub builders: FxHashMap<*const Builder, (*const BasicBlock, usize)>,
 }
@@ -68,7 +93,31 @@ impl SirCx {
             llvm_values: Default::default(),
             llvm_blocks: FxHashMap::default(),
             funcs: Default::default(),
+            locals: Default::default(),
             builders: Default::default(),
+        }
+    }
+
+    /// Gets the Sir local variable index for the LLVM pointer `local`. If we don't know about the
+    /// pointer yet, this function creates a new index, updates our records and returns the new
+    /// index.
+    fn get_or_add_local(
+        &mut self,
+        func_idx: SirFuncIdx,
+        local: *const Value,
+    ) -> (SirFuncIdx, SirLocalIdx) {
+        match self.llvm_values.entry(local) {
+            Entry::Occupied(e) => {
+                let (got_func_idx, got_local_idx) = e.get().local();
+                debug_assert!(got_func_idx == func_idx);
+                (got_func_idx, got_local_idx)
+            }
+            Entry::Vacant(e) => {
+                let local_idx = SirLocalIdx::from_usize(self.locals[func_idx].len());
+                self.locals[func_idx].push(local);
+                e.insert(SirValue::Local(func_idx, local_idx));
+                (func_idx, local_idx)
+            }
         }
     }
 
@@ -85,10 +134,13 @@ impl SirCx {
         // each time (i.e. it updates the existing record). This doesn't seem to happen though, as
         // proven by this assertion.
         debug_assert!(existing.is_none());
+
+        // Make space for the function's local variables.
+        self.locals.push(Default::default());
     }
 
     pub fn add_block(&mut self, func: *const Value, block: *const BasicBlock) {
-        let func_idx = self.llvm_values[&func].func_idx();
+        let func_idx = self.llvm_values[&func].func();
         let sir_func = &mut self.funcs[func_idx];
         let block_idx = SirBlockIdx::from_usize(sir_func.blocks.len());
         sir_func.blocks.push(ykpack::BasicBlock {
@@ -100,7 +152,7 @@ impl SirCx {
     }
 
     pub fn get_symbol_name(&mut self, func: *const Value) -> &String {
-        let func_idx = self.llvm_values[&func].func_idx();
+        let func_idx = self.llvm_values[&func].func();
         let sir_func = &mut self.funcs[func_idx];
         &sir_func.symbol_name
     }
@@ -164,11 +216,47 @@ impl SirCx {
         self.builders.insert(builder, (bb, pos));
     }
 
-    /// Create a return void instruction in the SIR.
-    pub fn ret_void(&mut self, builder: *const Builder) {
+    /// Inserts a statement at the insertion point corresponding with `builder`.
+    pub fn emit(&mut self, builder: *const Builder, stmt: ykpack::Statement) {
         let (bb, idx) = self.builders[&builder];
         let sir_block = self.get_sir_block(bb);
-        let instr = ykpack::Statement::Return;
-        sir_block.stmts.insert(idx, instr);
+        sir_block.stmts.insert(idx, stmt);
+    }
+
+    /// Returns the function containing the insertion point of the supplied builder.
+    pub fn current_func(&mut self, builder: *const Builder) -> SirFuncIdx {
+        let (llbb, _) = self.builders[&builder];
+        self.llvm_blocks[&llbb].0
+    }
+
+    pub fn emit_assign(
+        &mut self,
+        builder: *const Builder,
+        result: SirLocalIdx,
+        rhs: ykpack::Rvalue,
+    ) {
+        self.emit(builder, ykpack::Statement::Assign(result.as_u32(), rhs));
+    }
+
+    pub fn emit_load(&mut self, builder: *const Builder, result: *const Value, arg: *const Value) {
+        // FIXME deal with volatile loads.
+        let func_idx = self.current_func(builder);
+        let arg_local = self.get_or_add_local(func_idx, arg).1;
+        // FIXME this assumes that the argument is a local for now.
+        let res_local = self.get_or_add_local(func_idx, result).1;
+        self.emit(
+            builder,
+            ykpack::Statement::Assign(res_local.as_u32(), ykpack::Rvalue::Load(arg_local.as_u32())),
+        );
+    }
+
+    pub fn emit_store(&mut self, builder: *const Builder) {
+        // FIXME argument to store.
+        self.emit(builder, ykpack::Statement::Store);
+    }
+
+    pub fn emit_ret(&mut self, builder: *const Builder) {
+        // FIXME optional argument to return terminator.
+        self.emit(builder, ykpack::Statement::Return);
     }
 }

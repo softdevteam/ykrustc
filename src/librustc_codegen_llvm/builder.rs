@@ -195,7 +195,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
         let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
         self.cx.with_sir_cx_mut(|sir_cx| {
-            sir_cx.ret_void(builder);
+            sir_cx.emit_ret(builder);
         });
     }
 
@@ -436,11 +436,22 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     fn load(&mut self, ptr: &'ll Value, align: Align) -> &'ll Value {
-        unsafe {
+        let ret = unsafe {
             let load = llvm::LLVMBuildLoad(self.llbuilder, ptr, UNNAMED);
             llvm::LLVMSetAlignment(load, align.bytes() as c_uint);
             load
-        }
+        };
+
+        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
+        self.cx.with_sir_cx_mut(|sir_cx| {
+            sir_cx.emit_load(
+                builder,
+                ret as *const Value as *const sir::Value,
+                ptr as *const Value as *const sir::Value,
+            );
+        });
+
+        ret
     }
 
     fn volatile_load(&mut self, ptr: &'ll Value) -> &'ll Value {
@@ -618,6 +629,12 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         flags: MemFlags,
     ) -> &'ll Value {
         debug!("Store {:?} -> {:?} ({:?})", val, ptr, flags);
+
+        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
+        self.cx.with_sir_cx_mut(|sir_cx| {
+            sir_cx.emit_store(builder);
+        });
+
         let ptr = self.check_store(val, ptr);
         unsafe {
             let store = llvm::LLVMBuildStore(self.llbuilder, val, ptr);

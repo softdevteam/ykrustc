@@ -57,7 +57,7 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         // Set function flags in Yorick SIR.
         self.with_sir_cx_mut(|sir_cx| {
             let sir_lldecl = lldecl as *const llvm::Value as *const sir::Value;
-            let func_idx = sir_cx.llvm_values[&sir_lldecl].func_idx();
+            let func_idx = sir_cx.llvm_values[&sir_lldecl].func();
             let func = &mut sir_cx.funcs[func_idx];
             for attr in self.tcx.get_attrs(instance.def_id()).iter() {
                 if attr.check_name(sym::trace_head) {
