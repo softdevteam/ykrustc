@@ -48,6 +48,12 @@ newtype_index! {
     }
 }
 
+impl Into<ykpack::Local> for SirLocalIdx {
+    fn into(self) -> ykpack::Local {
+        ykpack::Local(self.as_u32())
+    }
+}
+
 /// Sir equivalents of LLVM values.
 #[derive(Debug)]
 pub enum SirValue {
@@ -235,7 +241,7 @@ impl SirCx {
         result: SirLocalIdx,
         rhs: ykpack::Rvalue,
     ) {
-        self.emit(builder, ykpack::Statement::Assign(result.as_u32(), rhs));
+        self.emit(builder, ykpack::Statement::Assign(result.into(), rhs));
     }
 
     pub fn emit_load(&mut self, builder: *const Builder, result: *const Value, arg: *const Value) {
@@ -246,7 +252,7 @@ impl SirCx {
         let res_local = self.get_or_add_local(func_idx, result).1;
         self.emit(
             builder,
-            ykpack::Statement::Assign(res_local.as_u32(), ykpack::Rvalue::Load(arg_local.as_u32())),
+            ykpack::Statement::Assign(res_local.into(), ykpack::Rvalue::Load(arg_local.as_u32())),
         );
     }
 
