@@ -13,10 +13,9 @@ use crate::mir::place::PlaceRef;
 use crate::MemFlags;
 
 use rustc::ty::layout::{Align, HasParamEnv, Size};
-use rustc::ty::Ty;
+use rustc::ty::{SymbolName, Ty};
 use rustc_target::spec::HasTargetSpec;
 
-use std::ffi::CString;
 use std::iter::TrustedLen;
 use std::ops::Range;
 
@@ -45,7 +44,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn llbb(&self) -> Self::BasicBlock;
 
     fn first_instruction(&mut self, llbb: Self::BasicBlock) -> Option<Self::Value>;
-    fn add_yk_block_label(&mut self, block: Self::BasicBlock, lbl_name: CString);
+    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName, bbidx: usize);
     fn position_before(&mut self, instr: Self::Value);
     fn position_at_end(&mut self, llbb: Self::BasicBlock);
     fn ret_void(&mut self);

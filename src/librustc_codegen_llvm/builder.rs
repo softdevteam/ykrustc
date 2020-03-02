@@ -8,9 +8,8 @@ use crate::value::Value;
 use libc::{c_char, c_uint};
 use log::debug;
 use rustc::session::config::{self, Sanitizer};
-use rustc::sir;
 use rustc::ty::layout::{self, Align, Size, TyLayout};
-use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::{self, Instance, SymbolName, Ty, TyCtxt};
 use rustc_codegen_ssa::base::to_immediate;
 use rustc_codegen_ssa::common::{IntPredicate, RealPredicate, TypeKind};
 use rustc_codegen_ssa::mir::operand::{OperandRef, OperandValue};
@@ -19,13 +18,14 @@ use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::MemFlags;
 use rustc_data_structures::const_cstr;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 use std::iter::TrustedLen;
 use std::ops::{Deref, Range};
 use std::ptr;
+use ykpack::BLOCK_LABEL_PREFIX;
 
 // All Builders must have an llfn associated with them
 #[must_use]
@@ -124,13 +124,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
             llvm::LLVMAppendBasicBlockInContext(cx.llcx, llfn, name.as_ptr())
         };
 
-        cx.with_sir_cx_mut(|sir_cx| {
-            sir_cx.add_block(
-                llfn as *const llvm::Value as *const sir::Value,
-                llbb as *const llvm::BasicBlock as *const sir::BasicBlock,
-            );
-        });
-
         bx.position_at_end(llbb);
         bx
     }
@@ -153,35 +146,58 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         unsafe {
             llvm::LLVMPositionBuilderBefore(self.llbuilder, instr);
         }
-
-        let pos = unsafe { llvm::LLVMRustInstructionIndex(instr) };
-
-        let bb = unsafe { llvm::LLVMGetInstructionParent(instr) } as *const llvm::BasicBlock
-            as *const sir::BasicBlock;
-
-        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
-
-        self.cx.with_sir_cx_mut(|sir_cx| {
-            sir_cx.position_before(builder, bb, pos);
-        });
     }
 
     fn position_at_end(&mut self, llbb: &'ll BasicBlock) {
         unsafe {
             llvm::LLVMPositionBuilderAtEnd(self.llbuilder, llbb);
         }
-        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
-        let bb = llbb as *const llvm::BasicBlock as *const sir::BasicBlock;
-        self.cx.with_sir_cx_mut(|sir_cx| {
-            sir_cx.position_at_end(builder, bb);
-        });
     }
 
-    fn add_yk_block_label(&mut self, block: &'ll BasicBlock, lbl_name: CString) {
-        let dbg_cx = self.cx().dbg_cx.as_ref().unwrap();
-        let di_bldr = dbg_cx.get_builder();
-        unsafe {
-            llvm::LLVMRustAddYkBlockLabel(self.llbuilder, di_bldr, block, lbl_name.as_ptr());
+    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName, bbidx: usize) {
+        if !self.tcx.sess.opts.cg.tracer.sir_labels() {
+            // We are not in hardware tracing mode.
+            return;
+        }
+
+        if self.tcx.crate_name(LOCAL_CRATE).as_str().starts_with("rustc") {
+            // Skip rustc crates since we will never trace them.
+            return;
+        }
+
+        // Auto-generated testing entry points cause our label insertion to crash. We don't need
+        // to trace them anyway.
+        if self.tcx.sess.opts.test {
+            let entry_fn = self.tcx.entry_fn(LOCAL_CRATE).unwrap().0;
+            let entry_inst = Instance::mono(self.tcx, entry_fn);
+            let entry_sym = &*self.tcx.symbol_name(entry_inst).name.as_str();
+            if sym.name.as_str() == entry_sym {
+                return;
+            }
+        }
+
+        if fname == "core::intrinsics::drop_in_place"
+            || fname == "std::intrinsics::drop_in_place"
+            || fname == "ptr::drop_in_place"
+            || sym.name.as_str() == "main"
+        {
+            // Generating labels for these functions results in segfaults.
+            return;
+        }
+
+        // Create the label
+        let lbl_name = CString::new(format!("{}:{}:{}", BLOCK_LABEL_PREFIX, sym, bbidx)).unwrap();
+
+        if let Some(dbg_cx) = self.cx().dbg_cx.as_ref() {
+            let di_bldr = dbg_cx.get_builder();
+            unsafe {
+                llvm::LLVMRustAddYkBlockLabel(
+                    self.llbuilder,
+                    di_bldr,
+                    self.llbb(),
+                    lbl_name.as_ptr(),
+                );
+            }
         }
     }
 
@@ -193,10 +209,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         unsafe {
             llvm::LLVMBuildRetVoid(self.llbuilder);
         }
-        let builder = self.llbuilder as *const llvm::Builder<'_> as *const sir::Builder;
-        self.cx.with_sir_cx_mut(|sir_cx| {
-            sir_cx.ret_void(builder);
-        });
     }
 
     fn ret(&mut self, v: &'ll Value) {

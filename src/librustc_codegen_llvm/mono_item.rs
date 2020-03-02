@@ -6,12 +6,10 @@ use crate::llvm;
 use crate::type_of::LayoutLlvmExt;
 use log::debug;
 use rustc::mir::mono::{Linkage, Visibility};
-use rustc::sir;
 use rustc::ty::layout::{FnAbiExt, LayoutOf};
 use rustc::ty::{Instance, TypeFoldable};
 use rustc_codegen_ssa::traits::*;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
-use rustc_span::symbol::sym;
 
 pub use rustc::mir::mono::MonoItem;
 
@@ -53,20 +51,6 @@ impl PreDefineMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
         let fn_abi = FnAbi::of_instance(self, instance, &[]);
         let lldecl = self.declare_fn(symbol_name, &fn_abi);
-
-        // Set function flags in Yorick SIR.
-        self.with_sir_cx_mut(|sir_cx| {
-            let sir_lldecl = lldecl as *const llvm::Value as *const sir::Value;
-            let func_idx = sir_cx.llvm_values[&sir_lldecl].func_idx();
-            let func = &mut sir_cx.funcs[func_idx];
-            for attr in self.tcx.get_attrs(instance.def_id()).iter() {
-                if attr.check_name(sym::trace_head) {
-                    func.flags |= ykpack::bodyflags::TRACE_HEAD;
-                } else if attr.check_name(sym::trace_tail) {
-                    func.flags |= ykpack::bodyflags::TRACE_TAIL;
-                }
-            }
-        });
 
         unsafe { llvm::LLVMRustSetLinkage(lldecl, base::linkage_to_llvm(linkage)) };
         let attrs = self.tcx.codegen_fn_attrs(instance.def_id());

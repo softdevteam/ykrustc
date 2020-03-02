@@ -1,7 +1,7 @@
 use super::BackendTypes;
 use rustc::mir::mono::CodegenUnit;
 use rustc::session::Session;
-use rustc::sir::SirCx;
+use rustc::sir::SirFuncCx;
 use rustc::ty::{self, Instance, Ty};
 use rustc_data_structures::fx::FxHashMap;
 use std::cell::RefCell;
@@ -22,7 +22,5 @@ pub trait MiscMethods<'tcx>: BackendTypes {
     fn set_frame_pointer_elimination(&self, llfn: Self::Function);
     fn apply_target_cpu_attr(&self, llfn: Self::Function);
     fn create_used_variable(&self);
-    fn with_sir_cx_mut<F>(&self, f: F)
-    where
-        F: Fn(&mut SirCx);
+    fn push_sir_func(&self, func_cx: SirFuncCx);
 }
