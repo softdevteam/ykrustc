@@ -21,6 +21,16 @@ use rustc_target::spec::abi::Abi;
 
 use std::borrow::Cow;
 
+macro_rules! set_unimplemented_sir_term {
+    ($func_cx:ident, $bb:expr, $term:expr) => {
+        if let Some(sfcx) = &mut $func_cx.sir_func_cx {
+            let note =
+                format!("{}:{}: unimplemented terminator: {:?}", file!(), line!(), $term.kind);
+            sfcx.set_terminator($bb.as_u32(), ykpack::Terminator::Unimplemented(note))
+        }
+    };
+}
+
 /// Used by `FunctionCx::codegen_terminator` for emitting common patterns
 /// e.g., creating a basic block, calling a function, etc.
 struct TerminatorCodegenHelper<'tcx> {
@@ -443,6 +453,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         args: &Vec<mir::Operand<'tcx>>,
         destination: &Option<(mir::Place<'tcx>, mir::BasicBlock)>,
         cleanup: Option<mir::BasicBlock>,
+        bb: mir::BasicBlock,
     ) {
         let span = terminator.source_info.span;
         // Create the callee. This is a fn ptr or zero-sized and hence a kind of scalar.
@@ -460,6 +471,23 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             _ => bug!("{} is not callable", callee.layout.ty),
         };
         let def = instance.map(|i| i.def);
+
+        if let Some(sfcx) = &mut self.sir_func_cx {
+            let sir_opnd = if let Some(inst) = instance {
+                let sym = (&*bx.tcx().symbol_name(inst).name.as_str()).to_owned();
+                ykpack::CallOperand::Fn(sym)
+            } else {
+                ykpack::CallOperand::Unknown
+            };
+
+            sfcx.set_terminator(
+                bb.as_u32(),
+                ykpack::Terminator::Call {
+                    operand: sir_opnd,
+                    ret_bb: destination.map(|d| d.1.as_u32()),
+                },
+            );
+        }
 
         if let Some(ty::InstanceDef::DropGlue(_, None)) = def {
             // Empty drop glue; a no-op.
@@ -782,9 +810,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
 
         self.codegen_terminator(bx, bb, data.terminator());
-        if let Some(fcx) = self.sir_func_cx.as_mut() {
-            fcx.codegen_terminator(bb.as_u32(), data.terminator());
-        }
 
         let mut bx = self.build_block(bb);
         let sym = bx.cx().tcx().symbol_name(self.instance);
@@ -806,40 +831,50 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         self.set_debug_loc(&mut bx, terminator.source_info);
         match terminator.kind {
-            mir::TerminatorKind::Resume => self.codegen_resume_terminator(helper, bx),
+            mir::TerminatorKind::Resume => {
+                self.codegen_resume_terminator(helper, bx);
+                set_unimplemented_sir_term!(self, bb, terminator);
+            }
 
             mir::TerminatorKind::Abort => {
                 bx.abort();
                 // `abort` does not terminate the block, so we still need to generate
                 // an `unreachable` terminator after it.
                 bx.unreachable();
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::Goto { target } => {
                 helper.maybe_sideeffect(self.mir, &mut bx, &[target]);
                 helper.funclet_br(self, &mut bx, target);
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::SwitchInt { ref discr, switch_ty, ref values, ref targets } => {
                 self.codegen_switchint_terminator(helper, bx, discr, switch_ty, values, targets);
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::Return => {
                 self.codegen_return_terminator(bx);
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::Unreachable => {
                 bx.unreachable();
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::Drop { ref location, target, unwind } => {
                 self.codegen_drop_terminator(helper, bx, location, target, unwind);
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::Assert { ref cond, expected, ref msg, target, cleanup } => {
                 self.codegen_assert_terminator(
                     helper, bx, terminator, cond, expected, msg, target, cleanup,
                 );
+                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::DropAndReplace { .. } => {
@@ -861,6 +896,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     args,
                     destination,
                     cleanup,
+                    bb,
                 );
             }
             mir::TerminatorKind::GeneratorDrop | mir::TerminatorKind::Yield { .. } => {
