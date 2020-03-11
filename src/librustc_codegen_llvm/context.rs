@@ -12,7 +12,7 @@ use rustc_codegen_ssa::traits::*;
 use crate::callee::get_fn;
 use rustc::bug;
 use rustc::mir::mono::CodegenUnit;
-use rustc::session::config::{self, CFGuard, DebugInfo, OutputType};
+use rustc::session::config::{self, CFGuard, DebugInfo};
 use rustc::session::Session;
 use rustc::ty::layout::{
     FnAbiExt, HasParamEnv, LayoutError, LayoutOf, PointeeInfo, Size, TyLayout, VariantIdx,
@@ -23,10 +23,11 @@ use rustc_data_structures::base_n;
 use rustc_data_structures::const_cstr;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_hir::{def_id::LOCAL_CRATE, Unsafety};
+use rustc_hir::Unsafety;
 use rustc_target::spec::{HasTargetSpec, Target};
 
 use crate::abi::Abi;
+use rustc::sir;
 use rustc_span::source_map::{Span, DUMMY_SP};
 use rustc_span::symbol::Symbol;
 use std::cell::{Cell, RefCell};
@@ -34,8 +35,6 @@ use std::ffi::CStr;
 use std::iter;
 use std::str;
 use std::sync::Arc;
-
-use rustc::sir::SirCx;
 
 /// There is one `CodegenCx` per compilation unit. Each one has its own LLVM
 /// `llvm::Context` so that several compilation units may be optimized in parallel.
@@ -97,7 +96,7 @@ pub struct CodegenCx<'ll, 'tcx> {
     /// A counter that is used for generating local symbol names
     local_gen_sym_counter: Cell<usize>,
 
-    pub sir_cx: RefCell<Option<SirCx>>,
+    pub sir: Option<sir::Sir>,
 }
 
 impl<'ll, 'tcx> DepGraphSafe for CodegenCx<'ll, 'tcx> {}
@@ -311,16 +310,10 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 
         let isize_ty = Type::ix_llcx(llcx, tcx.data_layout.pointer_size.bits());
 
-        // If we are putting SIR into the binary or dumping it to disk, then create a SirCx. Also
-        // skip generating SIR for build scripts (we will never trace them).
-        let sir_cx = if (tcx.sess.opts.cg.tracer.encode_sir()
-            || tcx.sess.opts.output_types.contains_key(&OutputType::YkSir))
-            && tcx.crate_name(LOCAL_CRATE).as_str() != "build_script_build"
-        {
-            Some(SirCx::new())
-        } else {
-            None
-        };
+        // If we are putting SIR into the binary or dumping it to disk, then create a place to
+        // store it until it is serialised. Also skip generating SIR for build scripts (we will
+        // never trace them).
+        let sir = if sir::Sir::is_required(tcx) { Some(Default::default()) } else { None };
 
         CodegenCx {
             tcx,
@@ -347,7 +340,7 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
             rust_try_fn: Cell::new(None),
             intrinsics: Default::default(),
             local_gen_sym_counter: Cell::new(0),
-            sir_cx: RefCell::new(sir_cx),
+            sir,
         }
     }
 
@@ -499,14 +492,9 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         }
     }
 
-    /// If there is a SirCx, then call the function `f` passing in a mutable reference to the
-    /// SirCx. Otherwise do nothing.
-    fn with_sir_cx_mut<F>(&self, f: F)
-    where
-        F: Fn(&mut SirCx),
-    {
-        if let Some(cx) = self.sir_cx.borrow_mut().as_mut() {
-            f(cx);
+    fn push_sir_func(&self, func_cx: sir::SirFuncCx) {
+        if let Some(sir) = &self.sir {
+            sir.funcs.borrow_mut().push(func_cx.func);
         }
     }
 }

@@ -14,6 +14,7 @@ use self::analyze::CleanupKind;
 use self::debuginfo::{FunctionDebugContext, PerLocalVarDebugInfo};
 use self::place::PlaceRef;
 use rustc::mir::traversal;
+use rustc::sir::{Sir, SirFuncCx};
 
 use self::operand::{OperandRef, OperandValue};
 
@@ -81,6 +82,8 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     /// Caller location propagated if this function has `#[track_caller]`.
     caller_location: Option<OperandRef<'tcx, Bx::Value>>,
+
+    pub sir_func_cx: Option<SirFuncCx>,
 }
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
@@ -170,6 +173,13 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 
     let (landing_pads, funclets) = create_funclets(&mir, &mut bx, &cleanup_kinds, &block_bxs);
     let mir_body: &mir::Body<'_> = *mir;
+
+    let sir_func_cx = if Sir::is_required(cx.tcx()) {
+        Some(SirFuncCx::new(cx.tcx(), &instance, mir.basic_blocks().len()))
+    } else {
+        None
+    };
+
     let mut fx = FunctionCx {
         instance,
         mir,
@@ -186,6 +196,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         debug_context,
         per_local_var_debug_info: None,
         caller_location: None,
+        sir_func_cx,
     };
 
     fx.per_local_var_debug_info = fx.compute_per_local_var_debug_info();
@@ -253,6 +264,16 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             unsafe {
                 bx.delete_basic_block(fx.blocks[bb]);
             }
+        }
+    }
+
+    if let Some(sfcx) = fx.sir_func_cx {
+        // Often there are function declarations with no blocks. I think these are call targets
+        // from other crates or compilation units, which have to be declared to keep LLVM happy.
+        // There's no use in serialising these "empty functions" and they clash with the real
+        // declarations.
+        if !sfcx.is_empty() {
+            cx.tcx().sir.funcs.borrow_mut().push(sfcx.func);
         }
     }
 }

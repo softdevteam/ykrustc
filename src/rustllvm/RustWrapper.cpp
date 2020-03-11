@@ -979,16 +979,10 @@ extern "C" int64_t LLVMRustDIBuilderCreateOpPlusUconst() {
 extern "C" bool LLVMRustAddYkBlockLabel(LLVMBuilderRef Builder,
         LLVMRustDIBuilderRef DBuilder, LLVMBasicBlockRef Block, char *Name) {
 
-    // Use C++ call FIXME
     BasicBlock *B = unwrap(Block);
     Function *f = B->getParent();
     DISubprogram *SP = f->getSubprogram();
     auto Loc = DebugLoc::get(0, 0, SP);
-    if (B->isLandingPad()) {
-        // FIXME We may want to add labels to the landingpad instruction
-        // (getLandingPadInst) here in the future.
-        return false;
-    }
     auto First = B->getFirstNonPHI();
     if (First == nullptr) {
         // There is no instruction to attach a label to, so bail out.

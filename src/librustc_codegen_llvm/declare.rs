@@ -19,7 +19,6 @@ use crate::llvm::AttributePlace::Function;
 use crate::type_::Type;
 use crate::value::Value;
 use log::debug;
-use rustc::sir;
 use rustc::ty::Ty;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::small_c_str::SmallCStr;
@@ -37,13 +36,6 @@ fn declare_raw_fn(
     debug!("declare_raw_fn(name={:?}, ty={:?})", name, ty);
     let namebuf = SmallCStr::new(name);
     let llfn = unsafe { llvm::LLVMRustGetOrInsertFunction(cx.llmod, namebuf.as_ptr(), ty) };
-
-    cx.with_sir_cx_mut(|sir_cx| {
-        sir_cx.add_func(
-            llfn as *const llvm::Value as *const sir::Value,
-            String::from(namebuf.as_c_str().to_str().unwrap()),
-        )
-    });
 
     llvm::SetFunctionCallConv(llfn, callconv);
     // Function addresses in Rust are never significant, allowing functions to

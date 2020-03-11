@@ -20,7 +20,7 @@ use crate::mir::interpret::{Allocation, ConstValue, Scalar};
 use crate::mir::{
     interpret, BodyAndCache, Field, Local, Place, PlaceElem, ProjectionKind, Promoted,
 };
-use crate::sir::SirCx;
+use crate::sir::Sir;
 use crate::traits;
 use crate::traits::{Clause, Clauses, Goal, GoalKind, Goals};
 use crate::ty::free_region_map::FreeRegionMap;
@@ -73,7 +73,6 @@ use syntax::node_id::NodeMap;
 use smallvec::SmallVec;
 use std::any::Any;
 use std::borrow::Borrow;
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::hash_map::{self, Entry};
 use std::fmt;
@@ -1025,8 +1024,8 @@ pub struct GlobalCtxt<'tcx> {
 
     output_filenames: Arc<OutputFilenames>,
 
-    /// As each codegen unit completes, it copies the SIR here for serialisation later.
-    pub finished_sir_cxs: RefCell<Vec<SirCx>>,
+    /// Yorick seriliased IR.
+    pub sir: Sir,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -1221,7 +1220,7 @@ impl<'tcx> TyCtxt<'tcx> {
             allocation_interner: Default::default(),
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames.clone()),
-            finished_sir_cxs: RefCell::new(Vec::new()),
+            sir: Default::default(),
         }
     }
 

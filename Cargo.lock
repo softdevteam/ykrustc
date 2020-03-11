@@ -3645,6 +3645,7 @@ dependencies = [
  "serialize",
  "syntax",
  "tempfile",
+ "ykpack",
 ]
 
 [[package]]

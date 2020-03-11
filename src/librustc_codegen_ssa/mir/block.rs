@@ -774,10 +774,22 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         debug!("codegen_block({:?}={:?})", bb, data);
 
         for statement in &data.statements {
-            bx = self.codegen_statement(bx, statement);
+            bx = self.codegen_statement(bx, bb, statement);
+
+            if let Some(fcx) = self.sir_func_cx.as_mut() {
+                fcx.codegen_statement(bb.as_u32(), statement);
+            }
         }
 
         self.codegen_terminator(bx, bb, data.terminator());
+        if let Some(fcx) = self.sir_func_cx.as_mut() {
+            fcx.codegen_terminator(bb.as_u32(), data.terminator());
+        }
+
+        let mut bx = self.build_block(bb);
+        let sym = bx.cx().tcx().symbol_name(self.instance);
+        let fname = bx.tcx().def_path_str(self.instance.def_id());
+        bx.add_yk_block_label(&fname, &sym, bb.index());
     }
 
     fn codegen_terminator(

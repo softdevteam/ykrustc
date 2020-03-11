@@ -716,9 +716,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
     // If we generated Sir and we are not dumping it textually, then encode it into an LLVM module
     // for later linkage.
-    if !tcx.sess.opts.output_types.contains_key(&OutputType::YkSir)
-        && !tcx.finished_sir_cxs.borrow().is_empty()
-    {
+    if !tcx.sess.opts.output_types.contains_key(&OutputType::YkSir) && !tcx.sir.is_empty() {
         let sir_cgu_name =
             cgu_name_builder.build_cgu_name(LOCAL_CRATE, &["crate"], Some("yksir")).to_string();
         let mut sir_module = backend.new_metadata(tcx, &sir_cgu_name);
