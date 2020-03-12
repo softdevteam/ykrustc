@@ -11,7 +11,7 @@ use crate::{early_error, early_warn, Session};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::impl_stable_hash_via_hash;
 
-use rustc_target::spec::{Target, TargetTriple};
+use rustc_target::spec::{PanicStrategy, Target, TargetTriple};
 
 use crate::parse::CrateConfig;
 use rustc_feature::UnstableFeatures;
@@ -1752,6 +1752,12 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     // reorder things, thus destroying the correctness of our SIR and DILabels.
     if opt_level != OptLevel::No && cg.tracer != TracerMode::Off {
         early_error(error_format, &format!("optimisation cannot be enabled with a tracer"));
+    }
+
+    // If a tracer is enabled, we use only the abort panic strategy.
+    if cg.tracer != TracerMode::Off {
+        cg.panic = Some(PanicStrategy::Abort);
+        debugging_opts.panic_abort_tests = true;
     }
 
     let cg = cg;
