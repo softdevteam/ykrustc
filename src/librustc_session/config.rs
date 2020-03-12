@@ -1474,12 +1474,6 @@ fn parse_opt_level(
         }
     };
 
-    // We don't allow optimisation and tracing to be enabled simultaneously as LLVM is likely to
-    // reorder things, thus destroying the correctness of our SIR and DILabels.
-    if opt_level != OptLevel::No && cg.tracer != TracerMode::Off {
-        early_error(error_format, &format!("optimisation cannot be enabled with a tracer"));
-    }
-
     opt_level
 }
 
@@ -1753,6 +1747,12 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
     let sysroot_opt = matches.opt_str("sysroot").map(|m| PathBuf::from(&m));
     let target_triple = parse_target_triple(matches, error_format);
     let opt_level = parse_opt_level(matches, &mut cg, error_format);
+
+    // We don't allow optimisation and tracing to be enabled simultaneously as LLVM is likely to
+    // reorder things, thus destroying the correctness of our SIR and DILabels.
+    if opt_level != OptLevel::No && cg.tracer != TracerMode::Off {
+        early_error(error_format, &format!("optimisation cannot be enabled with a tracer"));
+    }
 
     let cg = cg;
 
