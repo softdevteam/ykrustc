@@ -857,7 +857,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
             mir::TerminatorKind::Return => {
                 self.codegen_return_terminator(bx);
-                set_unimplemented_sir_term!(self, bb, terminator);
+                if let Some(sfcx) = &mut self.sir_func_cx {
+                    sfcx.set_terminator(bb.as_u32(), ykpack::Terminator::Return);
+                }
             }
 
             mir::TerminatorKind::Unreachable => {
