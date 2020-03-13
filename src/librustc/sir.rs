@@ -109,6 +109,9 @@ impl SirFuncCx {
                 let assign = self.lower_assign_stmt(place, rvalue);
                 self.push_stmt(bb, assign);
             }
+            mir::StatementKind::StorageLive(..) | mir::StatementKind::StorageDead(..) => {
+                // Ignore. Tracer doesn't need to know about these.
+            }
             _ => self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt))),
         }
     }
