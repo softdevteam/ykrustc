@@ -4,7 +4,8 @@
 //! into an ELF section at link time.
 
 use crate::ty::{Instance, TyCtxt};
-use rustc::mir;
+use rustc::ty::Ty;
+use rustc::{mir, ty};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_session::config::OutputType;
 use rustc_span::sym;
@@ -12,6 +13,7 @@ use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::default::Default;
 use std::io;
+use syntax::ast;
 use ykpack;
 
 const BUILD_SCRIPT_CRATE: &str = "build_script_build";
@@ -102,7 +104,96 @@ impl SirFuncCx {
 
     /// Converts a MIR statement to SIR, appending the result to `bb`.
     pub fn codegen_statement(&mut self, bb: ykpack::BasicBlockIndex, stmt: &mir::Statement<'_>) {
-        // FIXME: Nothing is implemented yet.
-        self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt)));
+        match stmt.kind {
+            mir::StatementKind::Assign(box (ref place, ref rvalue)) => {
+                let assign = self.lower_assign_stmt(place, rvalue);
+                self.push_stmt(bb, assign);
+            }
+            _ => self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt))),
+        }
+    }
+
+    fn lower_assign_stmt(
+        &self,
+        lvalue: &mir::Place<'_>,
+        rvalue: &mir::Rvalue<'_>,
+    ) -> ykpack::Statement {
+        match self.lower_place(lvalue) {
+            Ok(lhs) => {
+                let rhs = self.lower_rvalue(rvalue);
+                ykpack::Statement::Assign(ykpack::Place::from(lhs), rhs)
+            }
+            Err(_) => ykpack::Statement::Unimplemented(format!("Assign({:?})", lvalue)),
+        }
+    }
+
+    fn lower_rvalue(&self, rvalue: &mir::Rvalue<'_>) -> ykpack::Rvalue {
+        match rvalue {
+            mir::Rvalue::Use(mir::Operand::Copy(place))
+            | mir::Rvalue::Use(mir::Operand::Move(place)) => match self.lower_place(place) {
+                Ok(p) => ykpack::Rvalue::Use(ykpack::Operand::from(p)),
+                Err(_) => ykpack::Rvalue::Unimplemented(format!("Use({:?})", place).to_string()),
+            },
+            mir::Rvalue::Use(mir::Operand::Constant(box constant)) => {
+                match self.lower_constant(constant) {
+                    Ok(c) => ykpack::Rvalue::Use(ykpack::Operand::Constant(c)),
+                    Err(_) => {
+                        ykpack::Rvalue::Unimplemented(format!("Use({:?})", constant).to_string())
+                    }
+                }
+            }
+            _ => ykpack::Rvalue::Unimplemented(format!("{:?}", rvalue).to_string()),
+        }
+    }
+
+    fn lower_place(&self, place: &mir::Place<'_>) -> Result<ykpack::Local, ()> {
+        if place.projection.len() == 0 {
+            Ok(self.lower_local(place.local))
+        } else {
+            // For now we are not dealing with projections.
+            Err(())
+        }
+    }
+
+    fn lower_local(&self, local: mir::Local) -> ykpack::Local {
+        // For the lowering of `Local`s we currently assume a 1:1 mapping from MIR to SIR. If this
+        // mapping turns out to be impossible or impractial, this is the place to change it.
+        ykpack::Local(local.as_u32())
+    }
+
+    fn lower_constant(&self, constant: &mir::Constant<'_>) -> Result<ykpack::Constant, ()> {
+        match constant.literal.val {
+            ty::ConstKind::Value(mir::interpret::ConstValue::Scalar(s)) => {
+                self.lower_scalar(constant.literal.ty, s)
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn lower_scalar(&self, ty: Ty<'_>, s: mir::interpret::Scalar) -> Result<ykpack::Constant, ()> {
+        match ty.kind {
+            ty::Uint(uint) => self
+                .lower_uint(uint, s)
+                .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(i))),
+            _ => Err(()),
+        }
+    }
+
+    fn lower_uint(
+        &self,
+        uint: ast::UintTy,
+        s: mir::interpret::Scalar,
+    ) -> Result<ykpack::UnsignedInt, ()> {
+        match uint {
+            ast::UintTy::U8 => match s.to_u8() {
+                Ok(val) => Ok(ykpack::UnsignedInt::U8(val)),
+                Err(e) => panic!("Could not lower scalar to u8: {}", e),
+            },
+            ast::UintTy::U16 => match s.to_u16() {
+                Ok(val) => Ok(ykpack::UnsignedInt::U16(val)),
+                Err(e) => panic!("Could not lower scalar to u16: {}", e),
+            },
+            _ => Err(()),
+        }
     }
 }
