@@ -60,8 +60,6 @@ pub struct SirFuncCx {
 
 impl SirFuncCx {
     pub fn new<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>, num_blocks: usize) -> Self {
-        let symbol_name = format!("new__{}", tcx.symbol_name(*instance).name.as_str());
-
         let mut flags = 0;
         for attr in tcx.get_attrs(instance.def_id()).iter() {
             if attr.check_name(sym::trace_head) {
@@ -81,6 +79,7 @@ impl SirFuncCx {
             num_blocks
         ];
 
+        let symbol_name = String::from(&*tcx.symbol_name(*instance).name.as_str());
         Self { func: ykpack::Body { symbol_name, blocks, flags } }
     }
 
@@ -108,6 +107,9 @@ impl SirFuncCx {
             mir::StatementKind::Assign(box (ref place, ref rvalue)) => {
                 let assign = self.lower_assign_stmt(place, rvalue);
                 self.push_stmt(bb, assign);
+            }
+            mir::StatementKind::StorageLive(..) | mir::StatementKind::StorageDead(..) => {
+                // Ignore. Tracer doesn't need to know about these.
             }
             _ => self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt))),
         }
