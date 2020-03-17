@@ -484,7 +484,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bb.as_u32(),
                 ykpack::Terminator::Call {
                     operand: sir_opnd,
-                    ret_bb: destination.map(|d| d.1.as_u32()),
+                    args: args.iter().map(|a| sfcx.lower_operand(a)).collect(),
+                    destination: destination
+                        .map(|(ret_val, ret_bb)| (sfcx.lower_place(&ret_val), ret_bb.as_u32())),
                 },
             );
         }

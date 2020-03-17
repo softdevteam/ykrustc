@@ -120,40 +120,36 @@ impl SirFuncCx {
         lvalue: &mir::Place<'_>,
         rvalue: &mir::Rvalue<'_>,
     ) -> ykpack::Statement {
-        match self.lower_place(lvalue) {
-            Ok(lhs) => {
-                let rhs = self.lower_rvalue(rvalue);
-                ykpack::Statement::Assign(ykpack::Place::from(lhs), rhs)
+        let lhs = self.lower_place(lvalue);
+        let rhs = self.lower_rvalue(rvalue);
+        ykpack::Statement::Assign(lhs, rhs)
+    }
+
+    pub fn lower_operand(&self, operand: &mir::Operand<'_>) -> ykpack::Operand {
+        match operand {
+            mir::Operand::Copy(place) | mir::Operand::Move(place) => {
+                ykpack::Operand::Place(self.lower_place(place))
             }
-            Err(_) => ykpack::Statement::Unimplemented(format!("Assign({:?})", lvalue)),
+            mir::Operand::Constant(cst) => ykpack::Operand::Constant(self.lower_constant(cst)),
         }
     }
 
     fn lower_rvalue(&self, rvalue: &mir::Rvalue<'_>) -> ykpack::Rvalue {
         match rvalue {
-            mir::Rvalue::Use(mir::Operand::Copy(place))
-            | mir::Rvalue::Use(mir::Operand::Move(place)) => match self.lower_place(place) {
-                Ok(p) => ykpack::Rvalue::Use(ykpack::Operand::from(p)),
-                Err(_) => ykpack::Rvalue::Unimplemented(format!("Use({:?})", place).to_string()),
-            },
-            mir::Rvalue::Use(mir::Operand::Constant(box constant)) => {
-                match self.lower_constant(constant) {
-                    Ok(c) => ykpack::Rvalue::Use(ykpack::Operand::Constant(c)),
-                    Err(_) => {
-                        ykpack::Rvalue::Unimplemented(format!("Use({:?})", constant).to_string())
-                    }
-                }
-            }
-            _ => ykpack::Rvalue::Unimplemented(format!("{:?}", rvalue).to_string()),
+            mir::Rvalue::Use(opnd) => ykpack::Rvalue::Use(self.lower_operand(opnd)),
+            _ => ykpack::Rvalue::Unimplemented(format!("unimplemented rvalue: {:?}", rvalue)),
         }
     }
 
-    fn lower_place(&self, place: &mir::Place<'_>) -> Result<ykpack::Local, ()> {
-        if place.projection.len() == 0 {
-            Ok(self.lower_local(place.local))
-        } else {
-            // For now we are not dealing with projections.
-            Err(())
+    pub fn lower_place(&self, place: &mir::Place<'_>) -> ykpack::Place {
+        ykpack::Place {
+            local: self.lower_local(place.local),
+            // FIXME projections not yet implemented.
+            projection: place
+                .projection
+                .iter()
+                .map(|p| ykpack::PlaceElem::Unimplemented(format!("{:?}", p)))
+                .collect(),
         }
     }
 
@@ -163,21 +159,27 @@ impl SirFuncCx {
         ykpack::Local(local.as_u32())
     }
 
-    fn lower_constant(&self, constant: &mir::Constant<'_>) -> Result<ykpack::Constant, ()> {
+    fn lower_constant(&self, constant: &mir::Constant<'_>) -> ykpack::Constant {
         match constant.literal.val {
             ty::ConstKind::Value(mir::interpret::ConstValue::Scalar(s)) => {
                 self.lower_scalar(constant.literal.ty, s)
             }
-            _ => Err(()),
+            _ => ykpack::Constant::Unimplemented(format!("unimplemented constant: {:?}", constant)),
         }
     }
 
-    fn lower_scalar(&self, ty: Ty<'_>, s: mir::interpret::Scalar) -> Result<ykpack::Constant, ()> {
+    fn lower_scalar(&self, ty: Ty<'_>, s: mir::interpret::Scalar) -> ykpack::Constant {
         match ty.kind {
             ty::Uint(uint) => self
                 .lower_uint(uint, s)
-                .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(i))),
-            _ => Err(()),
+                .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(i)))
+                .unwrap_or_else(|_| {
+                    ykpack::Constant::Unimplemented(format!(
+                        "unimplemented uint scalar: {:?}",
+                        ty.kind
+                    ))
+                }),
+            _ => ykpack::Constant::Unimplemented(format!("unimplemented scalar: {:?}", ty.kind)),
         }
     }
 
