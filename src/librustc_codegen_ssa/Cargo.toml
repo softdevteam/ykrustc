@@ -34,4 +34,4 @@ rustc_incremental = { path = "../librustc_incremental" }
 rustc_index = { path = "../librustc_index" }
 rustc_target = { path = "../librustc_target" }
 rustc_session = { path = "../librustc_session" }
-ykpack = { git = "https://github.com/vext01/yk", rev = "dde95dd15e714f4d676f77f564488aadc9d263da" }
+ykpack = { git = "https://github.com/softdevteam/yk" }
