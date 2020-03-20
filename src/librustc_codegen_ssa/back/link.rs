@@ -1,15 +1,15 @@
 use rustc::middle::cstore::{EncodedMetadata, LibSource, NativeLibrary, NativeLibraryKind};
 use rustc::middle::dependency_format::Linkage;
-use rustc::session::config::{
-    self, CFGuard, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer, TracerMode,
-};
-use rustc::session::search_paths::PathKind;
-/// For all the linkers we support, and information they might
-/// need out of the shared crate context before we get rid of it.
-use rustc::session::{filesearch, Session};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_fs_util::fix_windows_verbatim_for_gcc;
 use rustc_hir::def_id::CrateNum;
+use rustc_session::config::{
+    self, CFGuard, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer, TracerMode,
+};
+use rustc_session::search_paths::PathKind;
+/// For all the linkers we support, and information they might
+/// need out of the shared crate context before we get rid of it.
+use rustc_session::{filesearch, Session};
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::{LinkerFlavor, PanicStrategy, RelroLevel};
 
@@ -187,7 +187,7 @@ pub fn get_linker(sess: &Session, linker: &Path, flavor: LinkerFlavor) -> (PathB
     if flavor == LinkerFlavor::Msvc && t.target_vendor == "uwp" {
         if let Some(ref tool) = msvc_tool {
             let original_path = tool.path();
-            if let Some(ref root_lib_path) = original_path.ancestors().skip(4).next() {
+            if let Some(ref root_lib_path) = original_path.ancestors().nth(4) {
                 let arch = match t.arch.as_str() {
                     "x86_64" => Some("x64".to_string()),
                     "x86" => Some("x86".to_string()),
@@ -501,6 +501,11 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
     info!("preparing {:?} to {:?}", crate_type, out_filename);
     let (linker, flavor) = linker_and_flavor(sess);
 
+    let any_dynamic_crate = crate_type == config::CrateType::Dylib
+        || codegen_results.crate_info.dependency_formats.iter().any(|(ty, list)| {
+            *ty == crate_type && list.iter().any(|&linkage| linkage == Linkage::Dynamic)
+        });
+
     // The invocations of cc share some flags across platforms
     let (pname, mut cmd) = get_linker(sess, &linker, flavor);
 
@@ -508,7 +513,7 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
         cmd.args(args);
     }
     if let Some(args) = sess.target.target.options.pre_link_args_crt.get(&flavor) {
-        if sess.crt_static() {
+        if sess.crt_static(Some(crate_type)) {
             cmd.args(args);
         }
     }
@@ -534,7 +539,7 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
         cmd.arg(get_file_path(sess, obj));
     }
 
-    if crate_type == config::CrateType::Executable && sess.crt_static() {
+    if crate_type == config::CrateType::Executable && sess.crt_static(Some(crate_type)) {
         for obj in &sess.target.target.options.pre_link_objects_exe_crt {
             cmd.arg(get_file_path(sess, obj));
         }
@@ -566,10 +571,19 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
     if let Some(args) = sess.target.target.options.late_link_args.get(&flavor) {
         cmd.args(args);
     }
+    if any_dynamic_crate {
+        if let Some(args) = sess.target.target.options.late_link_args_dynamic.get(&flavor) {
+            cmd.args(args);
+        }
+    } else {
+        if let Some(args) = sess.target.target.options.late_link_args_static.get(&flavor) {
+            cmd.args(args);
+        }
+    }
     for obj in &sess.target.target.options.post_link_objects {
         cmd.arg(get_file_path(sess, obj));
     }
-    if sess.crt_static() {
+    if sess.crt_static(Some(crate_type)) {
         for obj in &sess.target.target.options.post_link_objects_crt {
             cmd.arg(get_file_path(sess, obj));
         }
@@ -1027,20 +1041,26 @@ fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
                     x if x == "x86" => "i686",
                     x => x,
                 };
+                let mingw_bits = &sess.target.target.target_pointer_width;
                 let mingw_dir = format!("{}-w64-mingw32", mingw_arch);
                 // Here we have path/bin/gcc but we need path/
                 let mut path = linker_path;
                 path.pop();
                 path.pop();
-                // Based on Clang MinGW driver
-                let probe_path = path.join(&mingw_dir).join("lib");
-                if probe_path.exists() {
-                    return Some(probe_path);
-                };
-                let probe_path = path.join(&mingw_dir).join("sys-root/mingw/lib");
-                if probe_path.exists() {
-                    return Some(probe_path);
-                };
+                // Loosely based on Clang MinGW driver
+                let probe_paths = vec![
+                    path.join(&mingw_dir).join("lib"),                // Typical path
+                    path.join(&mingw_dir).join("sys-root/mingw/lib"), // Rare path
+                    path.join(format!(
+                        "lib/mingw/tools/install/mingw{}/{}/lib",
+                        &mingw_bits, &mingw_dir
+                    )), // Chocolatey is creative
+                ];
+                for probe_path in probe_paths {
+                    if probe_path.join("crt2.o").exists() {
+                        return Some(probe_path);
+                    };
+                }
             };
         };
         None
@@ -1310,7 +1330,8 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
             let more_args = &sess.opts.cg.link_arg;
             let mut args = args.iter().chain(more_args.iter()).chain(used_link_args.iter());
 
-            if is_pic(sess) && !sess.crt_static() && !args.any(|x| *x == "-static") {
+            if is_pic(sess) && !sess.crt_static(Some(crate_type)) && !args.any(|x| *x == "-static")
+            {
                 position_independent_executable = true;
             }
         }
@@ -1395,7 +1416,7 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
     if crate_type != config::CrateType::Executable {
         cmd.build_dylib(out_filename);
     }
-    if crate_type == config::CrateType::Executable && sess.crt_static() {
+    if crate_type == config::CrateType::Executable && sess.crt_static(Some(crate_type)) {
         cmd.build_static_executable();
     }
 
@@ -1541,17 +1562,25 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
     // for the current implementation of the standard library.
     let mut group_end = None;
     let mut group_start = None;
-    let mut end_with = FxHashSet::default();
+    // Crates available for linking thus far.
+    let mut available = FxHashSet::default();
+    // Crates required to satisfy dependencies discovered so far.
+    let mut required = FxHashSet::default();
+
     let info = &codegen_results.crate_info;
     for &(cnum, _) in deps.iter().rev() {
         if let Some(missing) = info.missing_lang_items.get(&cnum) {
-            end_with.extend(missing.iter().cloned());
-            if end_with.len() > 0 && group_end.is_none() {
-                group_end = Some(cnum);
-            }
+            let missing_crates = missing.iter().map(|i| info.lang_item_to_crate.get(i).copied());
+            required.extend(missing_crates);
         }
-        end_with.retain(|item| info.lang_item_to_crate.get(item) != Some(&cnum));
-        if end_with.len() == 0 && group_end.is_some() {
+
+        required.insert(Some(cnum));
+        available.insert(Some(cnum));
+
+        if required.len() > available.len() && group_end.is_none() {
+            group_end = Some(cnum);
+        }
+        if required.len() == available.len() && group_end.is_some() {
             group_start = Some(cnum);
             break;
         }

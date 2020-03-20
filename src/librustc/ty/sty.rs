@@ -17,6 +17,7 @@ use crate::ty::{
 };
 use crate::ty::{List, ParamEnv, ParamEnvAnd, TyS};
 use polonius_engine::Atom;
+use rustc_ast::ast::{self, Ident};
 use rustc_data_structures::captures::Captures;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -29,7 +30,6 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::ops::Range;
-use syntax::ast::{self, Ident};
 
 #[derive(
     Clone,
@@ -118,7 +118,7 @@ impl BoundRegion {
 }
 
 /// N.B., if you change this, you'll probably want to change the corresponding
-/// AST structure in `libsyntax/ast.rs` as well.
+/// AST structure in `librustc_ast/ast.rs` as well.
 #[derive(
     Clone,
     PartialEq,
@@ -1066,11 +1066,7 @@ impl<'tcx> ProjectionTy<'tcx> {
     ) -> ProjectionTy<'tcx> {
         let item_def_id = tcx
             .associated_items(trait_ref.def_id)
-            .iter()
-            .find(|item| {
-                item.kind == ty::AssocKind::Type
-                    && tcx.hygienic_eq(item_name, item.ident, trait_ref.def_id)
-            })
+            .find_by_name_and_kind(tcx, item_name, ty::AssocKind::Type, trait_ref.def_id)
             .unwrap()
             .def_id;
 
@@ -1197,7 +1193,7 @@ pub struct ParamTy {
 
 impl<'tcx> ParamTy {
     pub fn new(index: u32, name: Symbol) -> ParamTy {
-        ParamTy { index, name: name }
+        ParamTy { index, name }
     }
 
     pub fn for_self() -> ParamTy {
@@ -1400,11 +1396,11 @@ pub type Region<'tcx> = &'tcx RegionKind;
 /// the inference variable is supposed to satisfy the relation
 /// *for every value of the placeholder region*. To ensure that doesn't
 /// happen, you can use `leak_check`. This is more clearly explained
-/// by the [rustc guide].
+/// by the [rustc dev guide].
 ///
 /// [1]: http://smallcultfollowing.com/babysteps/blog/2013/10/29/intermingled-parameter-lists/
 /// [2]: http://smallcultfollowing.com/babysteps/blog/2013/11/04/intermingled-parameter-lists/
-/// [rustc guide]: https://rust-lang.github.io/rustc-guide/traits/hrtb.html
+/// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/hrtb.html
 #[derive(Clone, PartialEq, Eq, Hash, Copy, RustcEncodable, RustcDecodable, PartialOrd, Ord)]
 pub enum RegionKind {
     /// Region bound in a type or fn declaration which will be
@@ -1747,45 +1743,42 @@ impl RegionKind {
         }
     }
 
-    pub fn keep_in_local_tcx(&self) -> bool {
-        if let ty::ReVar(..) = self { true } else { false }
-    }
-
     pub fn type_flags(&self) -> TypeFlags {
         let mut flags = TypeFlags::empty();
-
-        if self.keep_in_local_tcx() {
-            flags = flags | TypeFlags::KEEP_IN_LOCAL_TCX;
-        }
 
         match *self {
             ty::ReVar(..) => {
                 flags = flags | TypeFlags::HAS_FREE_REGIONS;
+                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
                 flags = flags | TypeFlags::HAS_RE_INFER;
+                flags = flags | TypeFlags::KEEP_IN_LOCAL_TCX;
             }
             ty::RePlaceholder(..) => {
                 flags = flags | TypeFlags::HAS_FREE_REGIONS;
+                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
                 flags = flags | TypeFlags::HAS_RE_PLACEHOLDER;
+            }
+            ty::ReEarlyBound(..) => {
+                flags = flags | TypeFlags::HAS_FREE_REGIONS;
+                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
+                flags = flags | TypeFlags::HAS_RE_PARAM;
+            }
+            ty::ReFree { .. } | ty::ReScope { .. } => {
+                flags = flags | TypeFlags::HAS_FREE_REGIONS;
+                flags = flags | TypeFlags::HAS_FREE_LOCAL_REGIONS;
+            }
+            ty::ReEmpty(_) | ty::ReStatic => {
+                flags = flags | TypeFlags::HAS_FREE_REGIONS;
+            }
+            ty::ReClosureBound(..) => {
+                flags = flags | TypeFlags::HAS_FREE_REGIONS;
             }
             ty::ReLateBound(..) => {
                 flags = flags | TypeFlags::HAS_RE_LATE_BOUND;
             }
-            ty::ReEarlyBound(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-                flags = flags | TypeFlags::HAS_RE_EARLY_BOUND;
+            ty::ReErased => {
+                flags = flags | TypeFlags::HAS_RE_ERASED;
             }
-            ty::ReEmpty(_) | ty::ReStatic | ty::ReFree { .. } | ty::ReScope { .. } => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-            }
-            ty::ReErased => {}
-            ty::ReClosureBound(..) => {
-                flags = flags | TypeFlags::HAS_FREE_REGIONS;
-            }
-        }
-
-        match *self {
-            ty::ReStatic | ty::ReEmpty(_) | ty::ReErased | ty::ReLateBound(..) => (),
-            _ => flags = flags | TypeFlags::HAS_FREE_LOCAL_NAMES,
         }
 
         debug!("type_flags({:?}) = {:?}", self, flags);
@@ -2416,8 +2409,13 @@ static_assert_size!(Const<'_>, 48);
 
 impl<'tcx> Const<'tcx> {
     #[inline]
+    pub fn from_value(tcx: TyCtxt<'tcx>, val: ConstValue<'tcx>, ty: Ty<'tcx>) -> &'tcx Self {
+        tcx.mk_const(Self { val: ConstKind::Value(val), ty })
+    }
+
+    #[inline]
     pub fn from_scalar(tcx: TyCtxt<'tcx>, val: Scalar, ty: Ty<'tcx>) -> &'tcx Self {
-        tcx.mk_const(Self { val: ConstKind::Value(ConstValue::Scalar(val)), ty })
+        Self::from_value(tcx, ConstValue::Scalar(val), ty)
     }
 
     #[inline]
@@ -2481,7 +2479,9 @@ impl<'tcx> Const<'tcx> {
 
             // try to resolve e.g. associated constants to their definition on an impl, and then
             // evaluate the const.
-            tcx.const_eval_resolve(param_env, did, substs, promoted, None).ok()
+            tcx.const_eval_resolve(param_env, did, substs, promoted, None)
+                .ok()
+                .map(|val| Const::from_value(tcx, val, self.ty))
         };
 
         match self.val {
@@ -2489,8 +2489,8 @@ impl<'tcx> Const<'tcx> {
                 // HACK(eddyb) when substs contain e.g. inference variables,
                 // attempt using identity substs instead, that will succeed
                 // when the expression doesn't depend on any parameters.
-                // FIXME(eddyb) make `const_eval` a canonical query instead,
-                // that would properly handle inference variables in `substs`.
+                // FIXME(eddyb, skinny121) pass `InferCtxt` into here when it's available, so that
+                // we can call `infcx.const_eval_resolve` which handles inference variables.
                 if substs.has_local_value() {
                     let identity_substs = InternalSubsts::identity_for_item(tcx, did);
                     // The `ParamEnv` needs to match the `identity_substs`.
@@ -2581,7 +2581,7 @@ impl<'tcx> ConstKind<'tcx> {
 
     #[inline]
     pub fn try_to_bits(&self, size: ty::layout::Size) -> Option<u128> {
-        self.try_to_scalar()?.to_bits(size).ok()
+        if let ConstKind::Value(val) = self { val.try_to_bits(size) } else { None }
     }
 }
 

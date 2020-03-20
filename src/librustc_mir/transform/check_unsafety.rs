@@ -1,5 +1,3 @@
-use rustc::hir::map::Map;
-use rustc::lint::builtin::{SAFE_PACKED_BORROWS, UNUSED_UNSAFE};
 use rustc::mir::visit::{MutatingUseContext, PlaceContext, Visitor};
 use rustc::mir::*;
 use rustc::ty::cast::CastTy;
@@ -11,6 +9,7 @@ use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit;
 use rustc_hir::Node;
+use rustc_session::lint::builtin::{SAFE_PACKED_BORROWS, UNUSED_UNSAFE};
 use rustc_span::symbol::{sym, Symbol};
 
 use std::ops::Bound;
@@ -178,6 +177,16 @@ impl<'a, 'tcx> Visitor<'tcx> for UnsafetyChecker<'a, 'tcx> {
     }
 
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, _location: Location) {
+        // prevent
+        // * `&mut x.field`
+        // * `x.field = y;`
+        // * `&x.field` if `field`'s type has interior mutability
+        // because either of these would allow modifying the layout constrained field and
+        // insert values that violate the layout constraints.
+        if context.is_mutating_use() || context.is_borrow() {
+            self.check_mut_borrowing_layout_constrained_field(place, context.is_mutating_use());
+        }
+
         for (i, elem) in place.projection.iter().enumerate() {
             let proj_base = &place.projection[..i];
 
@@ -198,24 +207,9 @@ impl<'a, 'tcx> Visitor<'tcx> for UnsafetyChecker<'a, 'tcx> {
                     );
                 }
             }
-            let is_borrow_of_interior_mut = context.is_borrow()
-                && !Place::ty_from(place.local, proj_base, self.body, self.tcx).ty.is_freeze(
-                    self.tcx,
-                    self.param_env,
-                    self.source_info.span,
-                );
-            // prevent
-            // * `&mut x.field`
-            // * `x.field = y;`
-            // * `&x.field` if `field`'s type has interior mutability
-            // because either of these would allow modifying the layout constrained field and
-            // insert values that violate the layout constraints.
-            if context.is_mutating_use() || is_borrow_of_interior_mut {
-                self.check_mut_borrowing_layout_constrained_field(place, context.is_mutating_use());
-            }
             let old_source_info = self.source_info;
-            if let (local, []) = (&place.local, proj_base) {
-                let decl = &self.body.local_decls[*local];
+            if let [] = proj_base {
+                let decl = &self.body.local_decls[place.local];
                 if decl.internal {
                     if let LocalInfo::StaticRef { def_id, .. } = decl.local_info {
                         if self.tcx.is_mutable_static(def_id) {
@@ -240,7 +234,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UnsafetyChecker<'a, 'tcx> {
                         // Internal locals are used in the `move_val_init` desugaring.
                         // We want to check unsafety against the source info of the
                         // desugaring, rather than the source info of the RHS.
-                        self.source_info = self.body.local_decls[*local].source_info;
+                        self.source_info = self.body.local_decls[place.local].source_info;
                     }
                 }
             }
@@ -396,6 +390,9 @@ impl<'a, 'tcx> UnsafetyChecker<'a, 'tcx> {
             cursor = proj_base;
 
             match elem {
+                // Modifications behind a dereference don't affect the value of
+                // the pointer.
+                ProjectionElem::Deref => return,
                 ProjectionElem::Field(..) => {
                     let ty =
                         Place::ty_from(place.local, proj_base, &self.body.local_decls, self.tcx).ty;
@@ -409,7 +406,14 @@ impl<'a, 'tcx> UnsafetyChecker<'a, 'tcx> {
                                         "mutating layout constrained fields cannot statically be \
                                         checked for valid values",
                                     )
-                                } else {
+
+                                // Check `is_freeze` as late as possible to avoid cycle errors
+                                // with opaque types.
+                                } else if !place.ty(self.body, self.tcx).ty.is_freeze(
+                                    self.tcx,
+                                    self.param_env,
+                                    self.source_info.span,
+                                ) {
                                     (
                                         "borrow of layout constrained field with interior \
                                         mutability",
@@ -417,6 +421,8 @@ impl<'a, 'tcx> UnsafetyChecker<'a, 'tcx> {
                                         lose the constraints. Coupled with interior mutability, \
                                         the field can be changed to invalid values",
                                     )
+                                } else {
+                                    continue;
                                 };
                                 self.require_unsafe(
                                     description,
@@ -444,9 +450,9 @@ struct UnusedUnsafeVisitor<'a> {
 }
 
 impl<'a, 'tcx> intravisit::Visitor<'tcx> for UnusedUnsafeVisitor<'a> {
-    type Map = Map<'tcx>;
+    type Map = intravisit::ErasedMap<'tcx>;
 
-    fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, Self::Map> {
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
         intravisit::NestedVisitorMap::None
     }
 
@@ -637,7 +643,7 @@ pub fn check_unsafety(tcx: TyCtxt<'_>, def_id: DefId) {
         }
     }
 
-    let mut unsafe_blocks: Vec<_> = unsafe_blocks.into_iter().collect();
+    let mut unsafe_blocks: Vec<_> = unsafe_blocks.iter().collect();
     unsafe_blocks.sort_by_cached_key(|(hir_id, _)| tcx.hir().hir_to_node_id(*hir_id));
     let used_unsafe: FxHashSet<_> =
         unsafe_blocks.iter().flat_map(|&&(id, used)| used.then_some(id)).collect();

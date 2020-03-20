@@ -410,6 +410,14 @@ where
                 stride * field
             }
             layout::FieldPlacement::Union(count) => {
+                // This is a narrow bug-fix for rust-lang/rust#69191: if we are
+                // trying to access absent field of uninhabited variant, then
+                // signal UB (but don't ICE the compiler).
+                // FIXME temporary hack to work around incoherence between
+                // layout computation and MIR building
+                if field >= count as u64 && base.layout.abi == layout::Abi::Uninhabited {
+                    throw_ub!(Unreachable);
+                }
                 assert!(
                     field < count as u64,
                     "Tried to access field {} of union {:#?} with {} fields",
@@ -647,7 +655,7 @@ where
             }
             local => PlaceTy {
                 // This works even for dead/uninitialized locals; we check further when writing
-                place: Place::Local { frame: self.cur_frame(), local: local },
+                place: Place::Local { frame: self.cur_frame(), local },
                 layout: self.layout_of_local(self.frame(), local, None)?,
             },
         };
@@ -681,7 +689,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(self.place_to_op(dest)?, vec![], None)?;
+            self.validate_operand(self.place_to_op(dest)?)?;
         }
 
         Ok(())
@@ -698,7 +706,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(dest.into(), vec![], None)?;
+            self.validate_operand(dest.into())?;
         }
 
         Ok(())
@@ -835,7 +843,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(self.place_to_op(dest)?, vec![], None)?;
+            self.validate_operand(self.place_to_op(dest)?)?;
         }
 
         Ok(())
@@ -918,7 +926,7 @@ where
             // most likey we *are* running `typeck` right now. Investigate whether we can bail out
             // on `typeck_tables().has_errors` at all const eval entry points.
             debug!("Size mismatch when transmuting!\nsrc: {:#?}\ndest: {:#?}", src, dest);
-            throw_unsup!(TransmuteSizeDiff(src.layout.ty, dest.layout.ty));
+            throw_inval!(TransmuteSizeDiff(src.layout.ty, dest.layout.ty));
         }
         // Unsized copies rely on interpreting `src.meta` with `dest.layout`, we want
         // to avoid that here.
@@ -943,7 +951,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(dest.into(), vec![], None)?;
+            self.validate_operand(dest.into())?;
         }
 
         Ok(())

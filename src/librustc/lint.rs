@@ -5,7 +5,7 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_errors::{pluralize, Applicability, DiagnosticBuilder, DiagnosticId};
 use rustc_hir::HirId;
-pub use rustc_session::lint::{builtin, Level, Lint, LintId, LintPass};
+use rustc_session::lint::{builtin, Level, Lint, LintId};
 use rustc_session::{DiagnosticMessageId, Session};
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::{DesugaringKind, ExpnKind, MultiSpan};
@@ -344,15 +344,8 @@ pub fn in_external_macro(sess: &Session, span: Span) -> bool {
         ExpnKind::Root | ExpnKind::Desugaring(DesugaringKind::ForLoop) => false,
         ExpnKind::AstPass(_) | ExpnKind::Desugaring(_) => true, // well, it's "external"
         ExpnKind::Macro(MacroKind::Bang, _) => {
-            if expn_data.def_site.is_dummy() {
-                // Dummy span for the `def_site` means it's an external macro.
-                return true;
-            }
-            match sess.source_map().span_to_snippet(expn_data.def_site) {
-                Ok(code) => !code.starts_with("macro_rules"),
-                // No snippet means external macro or compiler-builtin expansion.
-                Err(_) => true,
-            }
+            // Dummy span for the `def_site` means it's an external macro.
+            expn_data.def_site.is_dummy() || sess.source_map().is_imported(expn_data.def_site)
         }
         ExpnKind::Macro(..) => true, // definitely a plugin
     }

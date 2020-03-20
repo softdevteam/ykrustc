@@ -1,30 +1,27 @@
-use crate::session::{self, DataTypeKind};
-use crate::ty::{self, subst::SubstsRef, ReprOptions, Ty, TyCtxt, TypeFoldable};
-
-use rustc_attr as attr;
-use rustc_span::DUMMY_SP;
-use syntax::ast::{self, Ident, IntTy, UintTy};
-
-use std::cmp;
-use std::fmt;
-use std::i128;
-use std::iter;
-use std::mem;
-use std::ops::Bound;
-
 use crate::ich::StableHashingContext;
 use crate::mir::{GeneratorLayout, GeneratorSavedLocal};
 use crate::ty::subst::Subst;
+use crate::ty::{self, subst::SubstsRef, ReprOptions, Ty, TyCtxt, TypeFoldable};
+
+use rustc_ast::ast::{self, Ident, IntTy, UintTy};
+use rustc_attr as attr;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir as hir;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::{Idx, IndexVec};
-
+use rustc_session::{DataTypeKind, FieldInfo, SizeKind, VariantInfo};
+use rustc_span::DUMMY_SP;
 use rustc_target::abi::call::{
     ArgAbi, ArgAttribute, ArgAttributes, Conv, FnAbi, PassMode, Reg, RegKind,
 };
 pub use rustc_target::abi::*;
 use rustc_target::spec::{abi::Abi as SpecAbi, HasTargetSpec};
+
+use std::cmp;
+use std::fmt;
+use std::iter;
+use std::mem;
+use std::ops::Bound;
 
 pub trait IntegerExt {
     fn to_ty<'tcx>(&self, tcx: TyCtxt<'tcx>, signed: bool) -> Ty<'tcx>;
@@ -502,7 +499,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
         let univariant = |fields: &[TyLayout<'_>], repr: &ReprOptions, kind| {
             Ok(tcx.intern_layout(self.univariant_uninterned(ty, fields, repr, kind)?))
         };
-        debug_assert!(!ty.has_infer_types());
+        debug_assert!(!ty.has_infer_types_or_consts());
 
         Ok(match ty.kind {
             // Basic scalars.
@@ -798,7 +795,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     // (Typechecking will reject discriminant-sizing attrs.)
 
                     let v = present_first.unwrap();
-                    let kind = if def.is_enum() || variants[v].len() == 0 {
+                    let kind = if def.is_enum() || variants[v].is_empty() {
                         StructKind::AlwaysSized
                     } else {
                         let param_env = tcx.param_env(def.did);
@@ -1001,7 +998,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     }
                 }
 
-                let (mut min, mut max) = (i128::max_value(), i128::min_value());
+                let (mut min, mut max) = (i128::MAX, i128::MIN);
                 let discr_type = def.repr.discr_type();
                 let bits = Integer::from_attr(self, discr_type).size().bits();
                 for (i, discr) in def.discriminants(tcx) {
@@ -1021,7 +1018,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     }
                 }
                 // We might have no inhabited variants, so pretend there's at least one.
-                if (min, max) == (i128::max_value(), i128::min_value()) {
+                if (min, max) == (i128::MAX, i128::MIN) {
                     min = 0;
                     max = 0;
                 }
@@ -1382,10 +1379,8 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
         // Write down the order of our locals that will be promoted to the prefix.
         {
-            let mut idx = 0u32;
-            for local in ineligible_locals.iter() {
-                assignments[local] = Ineligible(Some(idx));
-                idx += 1;
+            for (idx, local) in ineligible_locals.iter().enumerate() {
+                assignments[local] = Ineligible(Some(idx as u32));
             }
         }
         debug!("generator saved local assignments: {:?}", assignments);
@@ -1412,12 +1407,15 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
         // locals as part of the prefix. We compute the layout of all of
         // these fields at once to get optimal packing.
         let discr_index = substs.as_generator().prefix_tys(def_id, tcx).count();
-        // FIXME(eddyb) set the correct vaidity range for the discriminant.
-        let discr_layout = self.layout_of(substs.as_generator().discr_ty(tcx))?;
-        let discr = match &discr_layout.abi {
-            Abi::Scalar(s) => s.clone(),
-            _ => bug!(),
-        };
+
+        // `info.variant_fields` already accounts for the reserved variants, so no need to add them.
+        let max_discr = (info.variant_fields.len() - 1) as u128;
+        let discr_int = Integer::fit_unsigned(max_discr);
+        let discr_int_ty = discr_int.to_ty(tcx, false);
+        let discr = Scalar { value: Primitive::Int(discr_int, false), valid_range: 0..=max_discr };
+        let discr_layout = self.tcx.intern_layout(LayoutDetails::scalar(self, discr.clone()));
+        let discr_layout = TyLayout { ty: discr_int_ty, details: discr_layout };
+
         let promoted_layouts = ineligible_locals
             .iter()
             .map(|local| subst_field(info.field_tys[local]))
@@ -1651,7 +1649,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                         if min_size < field_end {
                             min_size = field_end;
                         }
-                        session::FieldInfo {
+                        FieldInfo {
                             name: name.to_string(),
                             offset: offset.bytes(),
                             size: field_layout.size.bytes(),
@@ -1661,13 +1659,9 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                 })
                 .collect();
 
-            session::VariantInfo {
+            VariantInfo {
                 name: n.map(|n| n.to_string()),
-                kind: if layout.is_unsized() {
-                    session::SizeKind::Min
-                } else {
-                    session::SizeKind::Exact
-                },
+                kind: if layout.is_unsized() { SizeKind::Min } else { SizeKind::Exact },
                 align: layout.align.abi.bytes(),
                 size: if min_size.bytes() == 0 { layout.size.bytes() } else { min_size.bytes() },
                 fields: field_info,
@@ -1752,7 +1746,7 @@ impl<'tcx> SizeSkeleton<'tcx> {
         tcx: TyCtxt<'tcx>,
         param_env: ty::ParamEnv<'tcx>,
     ) -> Result<SizeSkeleton<'tcx>, LayoutError<'tcx>> {
-        debug_assert!(!ty.has_infer_types());
+        debug_assert!(!ty.has_infer_types_or_consts());
 
         // First try computing a static layout.
         let err = match tcx.layout_of(param_env.and(ty)) {
@@ -1904,36 +1898,6 @@ impl<'tcx, T: HasDataLayout> HasDataLayout for LayoutCx<'tcx, T> {
 impl<'tcx, T: HasTyCtxt<'tcx>> HasTyCtxt<'tcx> for LayoutCx<'tcx, T> {
     fn tcx(&self) -> TyCtxt<'tcx> {
         self.tcx.tcx()
-    }
-}
-
-pub trait MaybeResult<T> {
-    type Error;
-
-    fn from(x: Result<T, Self::Error>) -> Self;
-    fn to_result(self) -> Result<T, Self::Error>;
-}
-
-impl<T> MaybeResult<T> for T {
-    type Error = !;
-
-    fn from(x: Result<T, Self::Error>) -> Self {
-        let Ok(x) = x;
-        x
-    }
-    fn to_result(self) -> Result<T, Self::Error> {
-        Ok(self)
-    }
-}
-
-impl<T, E> MaybeResult<T> for Result<T, E> {
-    type Error = E;
-
-    fn from(x: Result<T, Self::Error>) -> Self {
-        x
-    }
-    fn to_result(self) -> Result<T, Self::Error> {
-        self
     }
 }
 
@@ -2541,12 +2505,15 @@ where
         };
 
         let target = &cx.tcx().sess.target.target;
+        let target_env_gnu_like = matches!(&target.target_env[..], "gnu" | "musl");
         let win_x64_gnu =
             target.target_os == "windows" && target.arch == "x86_64" && target.target_env == "gnu";
-        let linux_s390x =
-            target.target_os == "linux" && target.arch == "s390x" && target.target_env == "gnu";
-        let linux_sparc64 =
-            target.target_os == "linux" && target.arch == "sparc64" && target.target_env == "gnu";
+        let linux_s390x_gnu_like =
+            target.target_os == "linux" && target.arch == "s390x" && target_env_gnu_like;
+        let linux_sparc64_gnu_like =
+            target.target_os == "linux" && target.arch == "sparc64" && target_env_gnu_like;
+        let linux_powerpc_gnu_like =
+            target.target_os == "linux" && target.arch == "powerpc" && target_env_gnu_like;
         let rust_abi = match sig.abi {
             RustIntrinsic | PlatformIntrinsic | Rust | RustCall => true,
             _ => false,
@@ -2579,7 +2546,7 @@ where
                 if let Some(kind) = pointee.safe {
                     attrs.pointee_align = Some(pointee.align);
 
-                    // `Box` (`UniqueBorrowed`) are not necessarily dereferencable
+                    // `Box` (`UniqueBorrowed`) are not necessarily dereferenceable
                     // for the entire duration of the function as they can be deallocated
                     // any time. Set their valid size to 0.
                     attrs.pointee_size = match kind {
@@ -2617,9 +2584,14 @@ where
             if arg.layout.is_zst() {
                 // For some forsaken reason, x86_64-pc-windows-gnu
                 // doesn't ignore zero-sized struct arguments.
-                // The same is true for s390x-unknown-linux-gnu
-                // and sparc64-unknown-linux-gnu.
-                if is_return || rust_abi || (!win_x64_gnu && !linux_s390x && !linux_sparc64) {
+                // The same is true for {s390x,sparc64,powerpc}-unknown-linux-{gnu,musl}.
+                if is_return
+                    || rust_abi
+                    || (!win_x64_gnu
+                        && !linux_s390x_gnu_like
+                        && !linux_sparc64_gnu_like
+                        && !linux_powerpc_gnu_like)
+                {
                     arg.mode = PassMode::Ignore;
                 }
             }

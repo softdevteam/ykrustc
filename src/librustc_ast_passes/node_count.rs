@@ -1,8 +1,8 @@
 // Simply gives a rought count of the number of nodes in an AST.
 
+use rustc_ast::ast::*;
+use rustc_ast::visit::*;
 use rustc_span::Span;
-use syntax::ast::*;
-use syntax::visit::*;
 
 pub struct NodeCounter {
     pub count: usize,
@@ -113,7 +113,7 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_lifetime(self, lifetime)
     }
-    fn visit_mac(&mut self, _mac: &Mac) {
+    fn visit_mac(&mut self, _mac: &MacCall) {
         self.count += 1;
         walk_mac(self, _mac)
     }

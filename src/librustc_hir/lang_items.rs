@@ -12,12 +12,12 @@ pub use self::LangItem::*;
 use crate::def_id::DefId;
 use crate::Target;
 
+use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_macros::HashStable_Generic;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::Span;
-use syntax::ast;
 
 use lazy_static::lazy_static;
 
@@ -240,7 +240,6 @@ language_item_table! {
     StartFnLangItem,             "start",              start_fn,                Target::Fn;
 
     EhPersonalityLangItem,       "eh_personality",     eh_personality,          Target::Fn;
-    EhUnwindResumeLangItem,      "eh_unwind_resume",   eh_unwind_resume,        Target::Fn;
     EhCatchTypeinfoLangItem,     "eh_catch_typeinfo",  eh_catch_typeinfo,       Target::Static;
 
     OwnedBoxLangItem,            "owned_box",          owned_box,               Target::Struct;

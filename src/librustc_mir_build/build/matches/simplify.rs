@@ -113,7 +113,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // value being matched, taking the variance field into account.
                 candidate.ascriptions.push(Ascription {
                     span: user_ty_span,
-                    user_ty: user_ty,
+                    user_ty,
                     source: match_pair.place,
                     variance,
                 });
@@ -209,7 +209,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     i == variant_index || {
                         self.hir.tcx().features().exhaustive_patterns
                             && !v
-                                .uninhabited_from(self.hir.tcx(), substs, adt_def.adt_kind())
+                                .uninhabited_from(
+                                    self.hir.tcx(),
+                                    substs,
+                                    adt_def.adt_kind(),
+                                    self.hir.param_env,
+                                )
                                 .is_empty()
                     }
                 }) && (adt_def.did.is_local()

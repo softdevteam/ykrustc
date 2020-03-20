@@ -6,6 +6,9 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(crate_visibility_modifier)]
+#![feature(const_if_match)]
+#![feature(const_fn)]
+#![feature(const_panic)]
 #![feature(nll)]
 #![feature(optin_builtin_traits)]
 #![feature(specialization)]
@@ -24,7 +27,7 @@ pub mod hygiene;
 use hygiene::Transparency;
 pub use hygiene::{DesugaringKind, ExpnData, ExpnId, ExpnKind, MacroKind, SyntaxContext};
 pub mod def_id;
-use def_id::DefId;
+use def_id::{CrateNum, DefId, LOCAL_CRATE};
 mod span_encoding;
 pub use span_encoding::{Span, DUMMY_SP};
 
@@ -83,13 +86,11 @@ scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
 )]
 pub enum FileName {
     Real(PathBuf),
-    /// A macro. This includes the full name of the macro, so that there are no clashes.
-    Macros(String),
     /// Call to `quote!`.
     QuoteExpansion(u64),
     /// Command line.
     Anon(u64),
-    /// Hack in `src/libsyntax/parse.rs`.
+    /// Hack in `src/librustc_ast/parse.rs`.
     // FIXME(jseyfried)
     MacroExpansion(u64),
     ProcMacroSourceCode(u64),
@@ -107,7 +108,6 @@ impl std::fmt::Display for FileName {
         use FileName::*;
         match *self {
             Real(ref path) => write!(fmt, "{}", path.display()),
-            Macros(ref name) => write!(fmt, "<{} macros>", name),
             QuoteExpansion(_) => write!(fmt, "<quote expansion>"),
             MacroExpansion(_) => write!(fmt, "<macro expansion>"),
             Anon(_) => write!(fmt, "<anon>"),
@@ -132,8 +132,7 @@ impl FileName {
         use FileName::*;
         match *self {
             Real(_) => true,
-            Macros(_)
-            | Anon(_)
+            Anon(_)
             | MacroExpansion(_)
             | ProcMacroSourceCode(_)
             | CfgSpec(_)
@@ -141,22 +140,6 @@ impl FileName {
             | Custom(_)
             | QuoteExpansion(_)
             | DocTest(_, _) => false,
-        }
-    }
-
-    pub fn is_macros(&self) -> bool {
-        use FileName::*;
-        match *self {
-            Real(_)
-            | Anon(_)
-            | MacroExpansion(_)
-            | ProcMacroSourceCode(_)
-            | CfgSpec(_)
-            | CliCrateAttr(_)
-            | Custom(_)
-            | QuoteExpansion(_)
-            | DocTest(_, _) => false,
-            Macros(_) => true,
         }
     }
 
@@ -568,9 +551,9 @@ impl Span {
     }
 
     #[inline]
-    pub fn modernize_and_adjust(&mut self, expn_id: ExpnId) -> Option<ExpnId> {
+    pub fn normalize_to_macros_2_0_and_adjust(&mut self, expn_id: ExpnId) -> Option<ExpnId> {
         let mut span = self.data();
-        let mark = span.ctxt.modernize_and_adjust(expn_id);
+        let mark = span.ctxt.normalize_to_macros_2_0_and_adjust(expn_id);
         *self = Span::new(span.lo, span.hi, span.ctxt);
         mark
     }
@@ -596,15 +579,15 @@ impl Span {
     }
 
     #[inline]
-    pub fn modern(self) -> Span {
+    pub fn normalize_to_macros_2_0(self) -> Span {
         let span = self.data();
-        span.with_ctxt(span.ctxt.modern())
+        span.with_ctxt(span.ctxt.normalize_to_macros_2_0())
     }
 
     #[inline]
-    pub fn modern_and_legacy(self) -> Span {
+    pub fn normalize_to_macro_rules(self) -> Span {
         let span = self.data();
-        span.with_ctxt(span.ctxt.modern_and_legacy())
+        span.with_ctxt(span.ctxt.normalize_to_macro_rules())
     }
 }
 
@@ -856,30 +839,42 @@ pub struct NormalizedPos {
     pub diff: u32,
 }
 
-/// The state of the lazy external source loading mechanism of a `SourceFile`.
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum ExternalSource {
+    /// No external source has to be loaded, since the `SourceFile` represents a local crate.
+    Unneeded,
+    Foreign {
+        kind: ExternalSourceKind,
+        /// This SourceFile's byte-offset within the source_map of its original crate
+        original_start_pos: BytePos,
+        /// The end of this SourceFile within the source_map of its original crate
+        original_end_pos: BytePos,
+    },
+}
+
+/// The state of the lazy external source loading mechanism of a `SourceFile`.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum ExternalSourceKind {
     /// The external source has been loaded already.
-    Present(String),
+    Present(Lrc<String>),
     /// No attempt has been made to load the external source.
     AbsentOk,
     /// A failed attempt has been made to load the external source.
     AbsentErr,
-    /// No external source has to be loaded, since the `SourceFile` represents a local crate.
     Unneeded,
 }
 
 impl ExternalSource {
     pub fn is_absent(&self) -> bool {
-        match *self {
-            ExternalSource::Present(_) => false,
+        match self {
+            ExternalSource::Foreign { kind: ExternalSourceKind::Present(_), .. } => false,
             _ => true,
         }
     }
 
-    pub fn get_source(&self) -> Option<&str> {
-        match *self {
-            ExternalSource::Present(ref src) => Some(src),
+    pub fn get_source(&self) -> Option<&Lrc<String>> {
+        match self {
+            ExternalSource::Foreign { kind: ExternalSourceKind::Present(ref src), .. } => Some(src),
             _ => None,
         }
     }
@@ -900,8 +895,6 @@ pub struct SourceFile {
     /// The unmapped path of the file that the source came from.
     /// Set to `None` if the `SourceFile` was imported from an external crate.
     pub unmapped_path: Option<FileName>,
-    /// Indicates which crate this `SourceFile` was imported from.
-    pub crate_of_origin: u32,
     /// The complete source code.
     pub src: Option<Lrc<String>>,
     /// The source code's hash.
@@ -923,6 +916,8 @@ pub struct SourceFile {
     pub normalized_pos: Vec<NormalizedPos>,
     /// A hash of the filename, used for speeding up hashing in incremental compilation.
     pub name_hash: u128,
+    /// Indicates which crate this `SourceFile` was imported from.
+    pub cnum: CrateNum,
 }
 
 impl Encodable for SourceFile {
@@ -989,7 +984,8 @@ impl Encodable for SourceFile {
             s.emit_struct_field("multibyte_chars", 6, |s| self.multibyte_chars.encode(s))?;
             s.emit_struct_field("non_narrow_chars", 7, |s| self.non_narrow_chars.encode(s))?;
             s.emit_struct_field("name_hash", 8, |s| self.name_hash.encode(s))?;
-            s.emit_struct_field("normalized_pos", 9, |s| self.normalized_pos.encode(s))
+            s.emit_struct_field("normalized_pos", 9, |s| self.normalized_pos.encode(s))?;
+            s.emit_struct_field("cnum", 10, |s| self.cnum.encode(s))
         })
     }
 }
@@ -1039,24 +1035,24 @@ impl Decodable for SourceFile {
             let name_hash: u128 = d.read_struct_field("name_hash", 8, |d| Decodable::decode(d))?;
             let normalized_pos: Vec<NormalizedPos> =
                 d.read_struct_field("normalized_pos", 9, |d| Decodable::decode(d))?;
+            let cnum: CrateNum = d.read_struct_field("cnum", 10, |d| Decodable::decode(d))?;
             Ok(SourceFile {
                 name,
                 name_was_remapped,
                 unmapped_path: None,
-                // `crate_of_origin` has to be set by the importer.
-                // This value matches up with `rustc_hir::def_id::INVALID_CRATE`.
-                // That constant is not available here, unfortunately.
-                crate_of_origin: std::u32::MAX - 1,
                 start_pos,
                 end_pos,
                 src: None,
                 src_hash,
-                external_src: Lock::new(ExternalSource::AbsentOk),
+                // Unused - the metadata decoder will construct
+                // a new SourceFile, filling in `external_src` properly
+                external_src: Lock::new(ExternalSource::Unneeded),
                 lines,
                 multibyte_chars,
                 non_narrow_chars,
                 normalized_pos,
                 name_hash,
+                cnum,
             })
         })
     }
@@ -1075,7 +1071,7 @@ impl SourceFile {
         unmapped_path: FileName,
         mut src: String,
         start_pos: BytePos,
-    ) -> Result<SourceFile, OffsetOverflowError> {
+    ) -> Self {
         let normalized_pos = normalize_src(&mut src, start_pos);
 
         let src_hash = {
@@ -1089,18 +1085,15 @@ impl SourceFile {
             hasher.finish::<u128>()
         };
         let end_pos = start_pos.to_usize() + src.len();
-        if end_pos > u32::max_value() as usize {
-            return Err(OffsetOverflowError);
-        }
+        assert!(end_pos <= u32::max_value() as usize);
 
         let (lines, multibyte_chars, non_narrow_chars) =
             analyze_source_file::analyze_source_file(&src[..], start_pos);
 
-        Ok(SourceFile {
+        SourceFile {
             name,
             name_was_remapped,
             unmapped_path: Some(unmapped_path),
-            crate_of_origin: 0,
             src: Some(Lrc::new(src)),
             src_hash,
             external_src: Lock::new(ExternalSource::Unneeded),
@@ -1111,7 +1104,8 @@ impl SourceFile {
             non_narrow_chars,
             normalized_pos,
             name_hash,
-        })
+            cnum: LOCAL_CRATE,
+        }
     }
 
     /// Returns the `BytePos` of the beginning of the current line.
@@ -1128,21 +1122,27 @@ impl SourceFile {
     where
         F: FnOnce() -> Option<String>,
     {
-        if *self.external_src.borrow() == ExternalSource::AbsentOk {
+        if matches!(
+            *self.external_src.borrow(),
+            ExternalSource::Foreign { kind: ExternalSourceKind::AbsentOk, .. }
+        ) {
             let src = get_src();
             let mut external_src = self.external_src.borrow_mut();
             // Check that no-one else have provided the source while we were getting it
-            if *external_src == ExternalSource::AbsentOk {
+            if let ExternalSource::Foreign {
+                kind: src_kind @ ExternalSourceKind::AbsentOk, ..
+            } = &mut *external_src
+            {
                 if let Some(src) = src {
                     let mut hasher: StableHasher = StableHasher::new();
                     hasher.write(src.as_bytes());
 
                     if hasher.finish::<u128>() == self.src_hash {
-                        *external_src = ExternalSource::Present(src);
+                        *src_kind = ExternalSourceKind::Present(Lrc::new(src));
                         return true;
                     }
                 } else {
-                    *external_src = ExternalSource::AbsentErr;
+                    *src_kind = ExternalSourceKind::AbsentErr;
                 }
 
                 false
@@ -1169,11 +1169,7 @@ impl SourceFile {
         }
 
         let begin = {
-            let line = if let Some(line) = self.lines.get(line_number) {
-                line
-            } else {
-                return None;
-            };
+            let line = self.lines.get(line_number)?;
             let begin: BytePos = *line - self.start_pos;
             begin.to_usize()
         };
@@ -1207,7 +1203,7 @@ impl SourceFile {
     /// number. If the source_file is empty or the position is located before the
     /// first line, `None` is returned.
     pub fn lookup_line(&self, pos: BytePos) -> Option<usize> {
-        if self.lines.len() == 0 {
+        if self.lines.is_empty() {
             return None;
         }
 

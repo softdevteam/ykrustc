@@ -4,7 +4,6 @@
 //! types computed here.
 
 use super::FnCtxt;
-use rustc::hir::map::Map;
 use rustc::middle::region::{self, YieldData};
 use rustc::ty::{self, Ty};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -209,9 +208,9 @@ pub fn resolve_interior<'a, 'tcx>(
 // librustc/middle/region.rs since `expr_count` is compared against the results
 // there.
 impl<'a, 'tcx> Visitor<'tcx> for InteriorVisitor<'a, 'tcx> {
-    type Map = Map<'tcx>;
+    type Map = intravisit::ErasedMap<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 
@@ -237,7 +236,7 @@ impl<'a, 'tcx> Visitor<'tcx> for InteriorVisitor<'a, 'tcx> {
                         // ZST in a temporary, so skip its type, just in case it
                         // can significantly complicate the generator type.
                         Res::Def(DefKind::Fn, _)
-                        | Res::Def(DefKind::Method, _)
+                        | Res::Def(DefKind::AssocFn, _)
                         | Res::Def(DefKind::Ctor(_, CtorKind::Fn), _) => {
                             // NOTE(eddyb) this assumes a path expression has
                             // no nested expressions to keep track of.

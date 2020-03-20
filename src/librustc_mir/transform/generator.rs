@@ -49,9 +49,8 @@
 //! For generators with state 1 (returned) and state 2 (poisoned) it does nothing.
 //! Otherwise it drops all the values in scope at the last suspension point.
 
-use crate::dataflow::{do_dataflow, DataflowResultsCursor, DebugFormatted};
-use crate::dataflow::{DataflowResults, DataflowResultsConsumer, FlowAtLocation};
-use crate::dataflow::{HaveBeenBorrowedLocals, MaybeStorageLive, RequiresStorage};
+use crate::dataflow::generic::{self as dataflow, Analysis};
+use crate::dataflow::{MaybeBorrowedLocals, MaybeRequiresStorage, MaybeStorageLive};
 use crate::transform::no_landing_pads::no_landing_pads;
 use crate::transform::simplify;
 use crate::transform::{MirPass, MirSource};
@@ -108,15 +107,15 @@ impl<'tcx> MutVisitor<'tcx> for DerefArgVisitor<'tcx> {
     }
 
     fn visit_local(&mut self, local: &mut Local, _: PlaceContext, _: Location) {
-        assert_ne!(*local, self_arg());
+        assert_ne!(*local, SELF_ARG);
     }
 
     fn visit_place(&mut self, place: &mut Place<'tcx>, context: PlaceContext, location: Location) {
-        if place.local == self_arg() {
+        if place.local == SELF_ARG {
             replace_base(
                 place,
                 Place {
-                    local: self_arg(),
+                    local: SELF_ARG,
                     projection: self.tcx().intern_place_elems(&[ProjectionElem::Deref]),
                 },
                 self.tcx,
@@ -126,7 +125,7 @@ impl<'tcx> MutVisitor<'tcx> for DerefArgVisitor<'tcx> {
 
             for elem in place.projection.iter() {
                 if let PlaceElem::Index(local) = elem {
-                    assert_ne!(*local, self_arg());
+                    assert_ne!(*local, SELF_ARG);
                 }
             }
         }
@@ -144,15 +143,15 @@ impl<'tcx> MutVisitor<'tcx> for PinArgVisitor<'tcx> {
     }
 
     fn visit_local(&mut self, local: &mut Local, _: PlaceContext, _: Location) {
-        assert_ne!(*local, self_arg());
+        assert_ne!(*local, SELF_ARG);
     }
 
     fn visit_place(&mut self, place: &mut Place<'tcx>, context: PlaceContext, location: Location) {
-        if place.local == self_arg() {
+        if place.local == SELF_ARG {
             replace_base(
                 place,
                 Place {
-                    local: self_arg(),
+                    local: SELF_ARG,
                     projection: self.tcx().intern_place_elems(&[ProjectionElem::Field(
                         Field::new(0),
                         self.ref_gen_ty,
@@ -165,7 +164,7 @@ impl<'tcx> MutVisitor<'tcx> for PinArgVisitor<'tcx> {
 
             for elem in place.projection.iter() {
                 if let PlaceElem::Index(local) = elem {
-                    assert_ne!(*local, self_arg());
+                    assert_ne!(*local, SELF_ARG);
                 }
             }
         }
@@ -181,22 +180,26 @@ fn replace_base<'tcx>(place: &mut Place<'tcx>, new_base: Place<'tcx>, tcx: TyCtx
     place.projection = tcx.intern_place_elems(&new_projection);
 }
 
-fn self_arg() -> Local {
-    Local::new(1)
-}
+const SELF_ARG: Local = Local::from_u32(1);
 
-/// Generator have not been resumed yet
+/// Generator has not been resumed yet.
 const UNRESUMED: usize = GeneratorSubsts::UNRESUMED;
-/// Generator has returned / is completed
+/// Generator has returned / is completed.
 const RETURNED: usize = GeneratorSubsts::RETURNED;
-/// Generator has been poisoned
+/// Generator has panicked and is poisoned.
 const POISONED: usize = GeneratorSubsts::POISONED;
 
+/// A `yield` point in the generator.
 struct SuspensionPoint<'tcx> {
+    /// State discriminant used when suspending or resuming at this point.
     state: usize,
+    /// The block to jump to after resumption.
     resume: BasicBlock,
+    /// Where to move the resume argument after resumption.
     resume_arg: Place<'tcx>,
+    /// Which block to jump to if the generator is dropped in this state.
     drop: Option<BasicBlock>,
+    /// Set of locals that have live storage while at this suspension point.
     storage_liveness: liveness::LiveVarSet,
 }
 
@@ -232,7 +235,7 @@ impl TransformVisitor<'tcx> {
 
     // Create a Place referencing a generator struct field
     fn make_field(&self, variant_index: VariantIdx, idx: usize, ty: Ty<'tcx>) -> Place<'tcx> {
-        let self_place = Place::from(self_arg());
+        let self_place = Place::from(SELF_ARG);
         let base = self.tcx.mk_place_downcast_unnamed(self_place, variant_index);
         let mut projection = base.projection.to_vec();
         projection.push(ProjectionElem::Field(Field::new(idx), ty));
@@ -242,7 +245,7 @@ impl TransformVisitor<'tcx> {
 
     // Create a statement which changes the discriminant
     fn set_discr(&self, state_disc: VariantIdx, source_info: SourceInfo) -> Statement<'tcx> {
-        let self_place = Place::from(self_arg());
+        let self_place = Place::from(SELF_ARG);
         Statement {
             source_info,
             kind: StatementKind::SetDiscriminant {
@@ -258,7 +261,7 @@ impl TransformVisitor<'tcx> {
         let local_decls_len = body.local_decls.push(temp_decl);
         let temp = Place::from(local_decls_len);
 
-        let self_place = Place::from(self_arg());
+        let self_place = Place::from(SELF_ARG);
         let assign = Statement {
             source_info: source_info(body),
             kind: StatementKind::Assign(box (temp, Rvalue::Discriminant(self_place))),
@@ -323,6 +326,15 @@ impl MutVisitor<'tcx> for TransformVisitor<'tcx> {
             let state = if let Some((resume, resume_arg)) = resume {
                 // Yield
                 let state = 3 + self.suspension_points.len();
+
+                // The resume arg target location might itself be remapped if its base local is
+                // live across a yield.
+                let resume_arg =
+                    if let Some(&(ty, variant, idx)) = self.remap.get(&resume_arg.local) {
+                        self.make_field(variant, idx, ty)
+                    } else {
+                        resume_arg
+                    };
 
                 self.suspension_points.push(SuspensionPoint {
                     state,
@@ -451,18 +463,15 @@ fn locals_live_across_suspend_points(
     source: MirSource<'tcx>,
     movable: bool,
 ) -> LivenessInfo {
-    let dead_unwinds = BitSet::new_empty(body.basic_blocks().len());
     let def_id = source.def_id();
     let body_ref: &Body<'_> = &body;
 
     // Calculate when MIR locals have live storage. This gives us an upper bound of their
     // lifetimes.
-    let storage_live_analysis = MaybeStorageLive::new(body_ref);
-    let storage_live_results =
-        do_dataflow(tcx, body_ref, def_id, &[], &dead_unwinds, storage_live_analysis, |bd, p| {
-            DebugFormatted::new(&bd.body().local_decls[p])
-        });
-    let mut storage_live_cursor = DataflowResultsCursor::new(&storage_live_results, body_ref);
+    let mut storage_live = MaybeStorageLive
+        .into_engine(tcx, body_ref, def_id)
+        .iterate_to_fixpoint()
+        .into_results_cursor(body_ref);
 
     // Find the MIR locals which do not use StorageLive/StorageDead statements.
     // The storage of these locals are always live.
@@ -471,32 +480,19 @@ fn locals_live_across_suspend_points(
 
     // Calculate the MIR locals which have been previously
     // borrowed (even if they are still active).
-    let borrowed_locals_analysis = HaveBeenBorrowedLocals::new(body_ref);
-    let borrowed_locals_results = do_dataflow(
-        tcx,
-        body_ref,
-        def_id,
-        &[],
-        &dead_unwinds,
-        borrowed_locals_analysis,
-        |bd, p| DebugFormatted::new(&bd.body().local_decls[p]),
-    );
-    let mut borrowed_locals_cursor = DataflowResultsCursor::new(&borrowed_locals_results, body_ref);
+    let borrowed_locals_results =
+        MaybeBorrowedLocals::all_borrows().into_engine(tcx, body_ref, def_id).iterate_to_fixpoint();
+
+    let mut borrowed_locals_cursor =
+        dataflow::ResultsCursor::new(body_ref, &borrowed_locals_results);
 
     // Calculate the MIR locals that we actually need to keep storage around
     // for.
-    let requires_storage_analysis = RequiresStorage::new(body, &borrowed_locals_results);
-    let requires_storage_results = do_dataflow(
-        tcx,
-        body_ref,
-        def_id,
-        &[],
-        &dead_unwinds,
-        requires_storage_analysis,
-        |bd, p| DebugFormatted::new(&bd.body().local_decls[p]),
-    );
+    let requires_storage_results = MaybeRequiresStorage::new(body, &borrowed_locals_results)
+        .into_engine(tcx, body_ref, def_id)
+        .iterate_to_fixpoint();
     let mut requires_storage_cursor =
-        DataflowResultsCursor::new(&requires_storage_results, body_ref);
+        dataflow::ResultsCursor::new(body_ref, &requires_storage_results);
 
     // Calculate the liveness of MIR locals ignoring borrows.
     let mut live_locals = liveness::LiveVarSet::new_empty(body.local_decls.len());
@@ -508,7 +504,7 @@ fn locals_live_across_suspend_points(
 
     for (block, data) in body.basic_blocks().iter_enumerated() {
         if let TerminatorKind::Yield { .. } = data.terminator().kind {
-            let loc = Location { block: block, statement_index: data.statements.len() };
+            let loc = Location { block, statement_index: data.statements.len() };
 
             if !movable {
                 // The `liveness` variable contains the liveness of MIR locals ignoring borrows.
@@ -521,18 +517,18 @@ fn locals_live_across_suspend_points(
                 // If a borrow is converted to a raw reference, we must also assume that it lives
                 // forever. Note that the final liveness is still bounded by the storage liveness
                 // of the local, which happens using the `intersect` operation below.
-                borrowed_locals_cursor.seek(loc);
+                borrowed_locals_cursor.seek_before(loc);
                 liveness.outs[block].union(borrowed_locals_cursor.get());
             }
 
-            storage_live_cursor.seek(loc);
-            let storage_liveness = storage_live_cursor.get();
+            storage_live.seek_before(loc);
+            let storage_liveness = storage_live.get();
 
             // Store the storage liveness for later use so we can restore the state
             // after a suspension point
             storage_liveness_map.insert(block, storage_liveness.clone());
 
-            requires_storage_cursor.seek(loc);
+            requires_storage_cursor.seek_before(loc);
             let storage_required = requires_storage_cursor.get().clone();
 
             // Locals live are live at this point only if they are used across
@@ -541,8 +537,8 @@ fn locals_live_across_suspend_points(
             let mut live_locals_here = storage_required;
             live_locals_here.intersect(&liveness.outs[block]);
 
-            // The generator argument is ignored
-            live_locals_here.remove(self_arg());
+            // The generator argument is ignored.
+            live_locals_here.remove(SELF_ARG);
 
             debug!("loc = {:?}, live_locals_here = {:?}", loc, live_locals_here);
 
@@ -602,7 +598,7 @@ fn compute_storage_conflicts(
     body: &'mir Body<'tcx>,
     stored_locals: &liveness::LiveVarSet,
     ignored: &StorageIgnored,
-    requires_storage: DataflowResults<'tcx, RequiresStorage<'mir, 'tcx>>,
+    requires_storage: dataflow::Results<'tcx, MaybeRequiresStorage<'mir, 'tcx>>,
 ) -> BitMatrix<GeneratorSavedLocal, GeneratorSavedLocal> {
     assert_eq!(body.local_decls.len(), ignored.0.domain_size());
     assert_eq!(body.local_decls.len(), stored_locals.domain_size());
@@ -620,8 +616,11 @@ fn compute_storage_conflicts(
         stored_locals: &stored_locals,
         local_conflicts: BitMatrix::from_row_n(&ineligible_locals, body.local_decls.len()),
     };
-    let mut state = FlowAtLocation::new(requires_storage);
-    visitor.analyze_results(&mut state);
+
+    // Visit only reachable basic blocks. The exact order is not important.
+    let reachable_blocks = traversal::preorder(body).map(|(bb, _)| bb);
+    requires_storage.visit_with(body, reachable_blocks, &mut visitor);
+
     let local_conflicts = visitor.local_conflicts;
 
     // Compress the matrix using only stored locals (Local -> GeneratorSavedLocal).
@@ -650,60 +649,45 @@ fn compute_storage_conflicts(
     storage_conflicts
 }
 
-struct StorageConflictVisitor<'body, 'tcx, 's> {
-    body: &'body Body<'tcx>,
+struct StorageConflictVisitor<'mir, 'tcx, 's> {
+    body: &'mir Body<'tcx>,
     stored_locals: &'s liveness::LiveVarSet,
     // FIXME(tmandry): Consider using sparse bitsets here once we have good
     // benchmarks for generators.
     local_conflicts: BitMatrix<Local, Local>,
 }
 
-impl<'body, 'tcx, 's> DataflowResultsConsumer<'body, 'tcx>
-    for StorageConflictVisitor<'body, 'tcx, 's>
-{
-    type FlowState = FlowAtLocation<'tcx, RequiresStorage<'body, 'tcx>>;
+impl dataflow::ResultsVisitor<'mir, 'tcx> for StorageConflictVisitor<'mir, 'tcx, '_> {
+    type FlowState = BitSet<Local>;
 
-    fn body(&self) -> &'body Body<'tcx> {
-        self.body
-    }
-
-    fn visit_block_entry(&mut self, block: BasicBlock, flow_state: &Self::FlowState) {
-        // statement_index is only used for logging, so this is fine.
-        self.apply_state(flow_state, Location { block, statement_index: 0 });
-    }
-
-    fn visit_statement_entry(
+    fn visit_statement(
         &mut self,
+        state: &Self::FlowState,
+        _statement: &'mir Statement<'tcx>,
         loc: Location,
-        _stmt: &Statement<'tcx>,
-        flow_state: &Self::FlowState,
     ) {
-        self.apply_state(flow_state, loc);
+        self.apply_state(state, loc);
     }
 
-    fn visit_terminator_entry(
+    fn visit_terminator(
         &mut self,
+        state: &Self::FlowState,
+        _terminator: &'mir Terminator<'tcx>,
         loc: Location,
-        _term: &Terminator<'tcx>,
-        flow_state: &Self::FlowState,
     ) {
-        self.apply_state(flow_state, loc);
+        self.apply_state(state, loc);
     }
 }
 
 impl<'body, 'tcx, 's> StorageConflictVisitor<'body, 'tcx, 's> {
-    fn apply_state(
-        &mut self,
-        flow_state: &FlowAtLocation<'tcx, RequiresStorage<'body, 'tcx>>,
-        loc: Location,
-    ) {
+    fn apply_state(&mut self, flow_state: &BitSet<Local>, loc: Location) {
         // Ignore unreachable blocks.
         match self.body.basic_blocks()[loc.block].terminator().kind {
             TerminatorKind::Unreachable => return,
             _ => (),
         };
 
-        let mut eligible_storage_live = flow_state.as_dense().clone();
+        let mut eligible_storage_live = flow_state.clone();
         eligible_storage_live.intersect(&self.stored_locals);
 
         for local in eligible_storage_live.iter() {
@@ -851,7 +835,6 @@ fn elaborate_generator_drops<'tcx>(
     // generator's resume function.
 
     let param_env = tcx.param_env(def_id);
-    let gen = self_arg();
 
     let mut elaborator = DropShimElaborator { body, patch: MirPatch::new(body), tcx, param_env };
 
@@ -859,7 +842,7 @@ fn elaborate_generator_drops<'tcx>(
         let (target, unwind, source_info) = match block_data.terminator() {
             Terminator { source_info, kind: TerminatorKind::Drop { location, target, unwind } } => {
                 if let Some(local) = location.as_local() {
-                    if local == gen {
+                    if local == SELF_ARG {
                         (target, unwind, source_info)
                     } else {
                         continue;
@@ -878,7 +861,7 @@ fn elaborate_generator_drops<'tcx>(
         elaborate_drop(
             &mut elaborator,
             *source_info,
-            &Place::from(gen),
+            &Place::from(SELF_ARG),
             (),
             *target,
             unwind,
@@ -932,7 +915,7 @@ fn create_generator_drop_shim<'tcx>(
     make_generator_state_argument_indirect(tcx, def_id, &mut body);
 
     // Change the generator argument from &mut to *mut
-    body.local_decls[self_arg()] = LocalDecl {
+    body.local_decls[SELF_ARG] = LocalDecl {
         mutability: Mutability::Mut,
         ty: tcx.mk_ptr(ty::TypeAndMut { ty: gen_ty, mutbl: hir::Mutability::Mut }),
         user_ty: UserTypeProjections::none(),
@@ -947,7 +930,7 @@ fn create_generator_drop_shim<'tcx>(
             0,
             Statement {
                 source_info,
-                kind: StatementKind::Retag(RetagKind::Raw, box Place::from(self_arg())),
+                kind: StatementKind::Retag(RetagKind::Raw, box Place::from(SELF_ARG)),
             },
         )
     }
@@ -958,7 +941,7 @@ fn create_generator_drop_shim<'tcx>(
     // unrelated code from the resume part of the function
     simplify::remove_dead_blocks(&mut body);
 
-    dump_mir(tcx, None, "generator_drop", &0, source, &mut body, |_, _| Ok(()));
+    dump_mir(tcx, None, "generator_drop", &0, source, &body, |_, _| Ok(()));
 
     body
 }
@@ -1005,32 +988,127 @@ fn insert_panic_block<'tcx>(
     assert_block
 }
 
+fn can_return<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> bool {
+    // Returning from a function with an uninhabited return type is undefined behavior.
+    if body.return_ty().conservative_is_privately_uninhabited(tcx) {
+        return false;
+    }
+
+    // If there's a return terminator the function may return.
+    for block in body.basic_blocks() {
+        if let TerminatorKind::Return = block.terminator().kind {
+            return true;
+        }
+    }
+
+    // Otherwise the function can't return.
+    false
+}
+
+fn can_unwind<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> bool {
+    // Nothing can unwind when landing pads are off.
+    if tcx.sess.no_landing_pads() {
+        return false;
+    }
+
+    // Unwinds can only start at certain terminators.
+    for block in body.basic_blocks() {
+        match block.terminator().kind {
+            // These never unwind.
+            TerminatorKind::Goto { .. }
+            | TerminatorKind::SwitchInt { .. }
+            | TerminatorKind::Abort
+            | TerminatorKind::Return
+            | TerminatorKind::Unreachable
+            | TerminatorKind::GeneratorDrop
+            | TerminatorKind::FalseEdges { .. }
+            | TerminatorKind::FalseUnwind { .. } => {}
+
+            // Resume will *continue* unwinding, but if there's no other unwinding terminator it
+            // will never be reached.
+            TerminatorKind::Resume => {}
+
+            TerminatorKind::Yield { .. } => {
+                unreachable!("`can_unwind` called before generator transform")
+            }
+
+            // These may unwind.
+            TerminatorKind::Drop { .. }
+            | TerminatorKind::DropAndReplace { .. }
+            | TerminatorKind::Call { .. }
+            | TerminatorKind::Assert { .. } => return true,
+        }
+    }
+
+    // If we didn't find an unwinding terminator, the function cannot unwind.
+    false
+}
+
 fn create_generator_resume_function<'tcx>(
     tcx: TyCtxt<'tcx>,
     transform: TransformVisitor<'tcx>,
     def_id: DefId,
     source: MirSource<'tcx>,
     body: &mut BodyAndCache<'tcx>,
+    can_return: bool,
 ) {
+    let can_unwind = can_unwind(tcx, body);
+
     // Poison the generator when it unwinds
-    for block in body.basic_blocks_mut() {
-        let source_info = block.terminator().source_info;
-        if let &TerminatorKind::Resume = &block.terminator().kind {
-            block.statements.push(transform.set_discr(VariantIdx::new(POISONED), source_info));
+    if can_unwind {
+        let poison_block = BasicBlock::new(body.basic_blocks().len());
+        let source_info = source_info(body);
+        body.basic_blocks_mut().push(BasicBlockData {
+            statements: vec![transform.set_discr(VariantIdx::new(POISONED), source_info)],
+            terminator: Some(Terminator { source_info, kind: TerminatorKind::Resume }),
+            is_cleanup: true,
+        });
+
+        for (idx, block) in body.basic_blocks_mut().iter_enumerated_mut() {
+            let source_info = block.terminator().source_info;
+
+            if let TerminatorKind::Resume = block.terminator().kind {
+                // An existing `Resume` terminator is redirected to jump to our dedicated
+                // "poisoning block" above.
+                if idx != poison_block {
+                    *block.terminator_mut() = Terminator {
+                        source_info,
+                        kind: TerminatorKind::Goto { target: poison_block },
+                    };
+                }
+            } else if !block.is_cleanup {
+                // Any terminators that *can* unwind but don't have an unwind target set are also
+                // pointed at our poisoning block (unless they're part of the cleanup path).
+                if let Some(unwind @ None) = block.terminator_mut().unwind_mut() {
+                    *unwind = Some(poison_block);
+                }
+            }
         }
     }
 
     let mut cases = create_cases(body, &transform, Operation::Resume);
 
-    use rustc::mir::interpret::PanicInfo::{ResumedAfterPanic, ResumedAfterReturn};
+    use rustc::mir::AssertKind::{ResumedAfterPanic, ResumedAfterReturn};
 
     // Jump to the entry point on the unresumed
     cases.insert(0, (UNRESUMED, BasicBlock::new(0)));
 
     // Panic when resumed on the returned or poisoned state
     let generator_kind = body.generator_kind.unwrap();
-    cases.insert(1, (RETURNED, insert_panic_block(tcx, body, ResumedAfterReturn(generator_kind))));
-    cases.insert(2, (POISONED, insert_panic_block(tcx, body, ResumedAfterPanic(generator_kind))));
+
+    if can_unwind {
+        cases.insert(
+            1,
+            (POISONED, insert_panic_block(tcx, body, ResumedAfterPanic(generator_kind))),
+        );
+    }
+
+    if can_return {
+        cases.insert(
+            1,
+            (RETURNED, insert_panic_block(tcx, body, ResumedAfterReturn(generator_kind))),
+        );
+    }
 
     insert_switch(body, cases, &transform, TerminatorKind::Unreachable);
 
@@ -1056,7 +1134,7 @@ fn insert_clean_drop(body: &mut BodyAndCache<'_>) -> BasicBlock {
     // Create a block to destroy an unresumed generators. This can only destroy upvars.
     let drop_clean = BasicBlock::new(body.basic_blocks().len());
     let term = TerminatorKind::Drop {
-        location: Place::from(self_arg()),
+        location: Place::from(SELF_ARG),
         target: return_block,
         unwind: None,
     };
@@ -1214,6 +1292,8 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         let (remap, layout, storage_liveness) =
             compute_layout(tcx, source, &upvars, interior, movable, body);
 
+        let can_return = can_return(tcx, body);
+
         // Run the transformation which converts Places from Local to generator struct
         // accesses for locals in `remap`.
         // It also rewrites `return x` and `yield y` as writing a new generator state and returning
@@ -1257,6 +1337,6 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         body.generator_drop = Some(box drop_shim);
 
         // Create the Generator::resume function
-        create_generator_resume_function(tcx, transform, def_id, source, body);
+        create_generator_resume_function(tcx, transform, def_id, source, body, can_return);
     }
 }

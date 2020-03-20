@@ -76,13 +76,13 @@ use TokenTreeOrTokenTreeSlice::*;
 
 use crate::mbe::{self, TokenTree};
 
+use rustc_ast::ast::Name;
+use rustc_ast::ptr::P;
+use rustc_ast::token::{self, DocComment, Nonterminal, Token};
 use rustc_ast_pretty::pprust;
 use rustc_parse::parser::{FollowedByType, Parser, PathStyle};
 use rustc_session::parse::ParseSess;
-use rustc_span::symbol::{kw, sym, Symbol};
-use syntax::ast::{Ident, Name};
-use syntax::ptr::P;
-use syntax::token::{self, DocComment, Nonterminal, Token};
+use rustc_span::symbol::{kw, sym, Ident, MacroRulesNormalizedIdent, Symbol};
 
 use rustc_errors::{FatalError, PResult};
 use rustc_span::Span;
@@ -273,9 +273,10 @@ crate enum ParseResult<T> {
     Error(rustc_span::Span, String),
 }
 
-/// A `ParseResult` where the `Success` variant contains a mapping of `Ident`s to `NamedMatch`es.
-/// This represents the mapping of metavars to the token trees they bind to.
-crate type NamedParseResult = ParseResult<FxHashMap<Ident, NamedMatch>>;
+/// A `ParseResult` where the `Success` variant contains a mapping of
+/// `MacroRulesNormalizedIdent`s to `NamedMatch`es. This represents the mapping
+/// of metavars to the token trees they bind to.
+crate type NamedParseResult = ParseResult<FxHashMap<MacroRulesNormalizedIdent, NamedMatch>>;
 
 /// Count how many metavars are named in the given matcher `ms`.
 pub(super) fn count_names(ms: &[TokenTree]) -> usize {
@@ -368,7 +369,7 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
         sess: &ParseSess,
         m: &TokenTree,
         res: &mut I,
-        ret_val: &mut FxHashMap<Ident, NamedMatch>,
+        ret_val: &mut FxHashMap<MacroRulesNormalizedIdent, NamedMatch>,
     ) -> Result<(), (rustc_span::Span, String)> {
         match *m {
             TokenTree::Sequence(_, ref seq) => {
@@ -386,7 +387,9 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
                     return Err((span, "missing fragment specifier".to_string()));
                 }
             }
-            TokenTree::MetaVarDecl(sp, bind_name, _) => match ret_val.entry(bind_name) {
+            TokenTree::MetaVarDecl(sp, bind_name, _) => match ret_val
+                .entry(MacroRulesNormalizedIdent::new(bind_name))
+            {
                 Vacant(spot) => {
                     spot.insert(res.next().unwrap());
                 }
@@ -750,11 +753,8 @@ pub(super) fn parse_tt(parser: &mut Cow<'_, Parser<'_>>, ms: &[TokenTree]) -> Na
 
 /// The token is an identifier, but not `_`.
 /// We prohibit passing `_` to macros expecting `ident` for now.
-fn get_macro_name(token: &Token) -> Option<(Name, bool)> {
-    match token.kind {
-        token::Ident(name, is_raw) if name != kw::Underscore => Some((name, is_raw)),
-        _ => None,
-    }
+fn get_macro_ident(token: &Token) -> Option<(Ident, bool)> {
+    token.ident().filter(|(ident, _)| ident.name != kw::Underscore)
 }
 
 /// Checks whether a non-terminal may begin with a particular token.
@@ -777,7 +777,7 @@ fn may_begin_with(token: &Token, name: Name) -> bool {
             && !token.is_keyword(kw::Let)
         }
         sym::ty => token.can_begin_type(),
-        sym::ident => get_macro_name(token).is_some(),
+        sym::ident => get_macro_ident(token).is_some(),
         sym::literal => token.can_begin_literal_or_bool(),
         sym::vis => match token.kind {
             // The follow-set of :vis + "priv" keyword + interpolated
@@ -856,8 +856,6 @@ fn parse_nt(p: &mut Parser<'_>, sp: Span, name: Symbol) -> Nonterminal {
     if name == sym::tt {
         return token::NtTT(p.parse_token_tree());
     }
-    // check at the beginning and the parser checks after each bump
-    p.process_potential_macro_variable();
     match parse_nt_inner(p, sp, name) {
         Ok(nt) => nt,
         Err(mut err) => {
@@ -884,10 +882,9 @@ fn parse_nt_inner<'a>(p: &mut Parser<'a>, sp: Span, name: Symbol) -> PResult<'a,
         sym::ty => token::NtTy(p.parse_ty()?),
         // this could be handled like a token, since it is one
         sym::ident => {
-            if let Some((name, is_raw)) = get_macro_name(&p.token) {
-                let span = p.token.span;
+            if let Some((ident, is_raw)) = get_macro_ident(&p.token) {
                 p.bump();
-                token::NtIdent(Ident::new(name, span), is_raw)
+                token::NtIdent(ident, is_raw)
             } else {
                 let token_str = pprust::token_to_string(&p.token);
                 let msg = &format!("expected ident, found {}", &token_str);

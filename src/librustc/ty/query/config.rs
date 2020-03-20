@@ -1,15 +1,14 @@
 use crate::dep_graph::SerializedDepNodeIndex;
 use crate::dep_graph::{DepKind, DepNode};
+use crate::ty::query::caches::QueryCache;
 use crate::ty::query::plumbing::CycleError;
-use crate::ty::query::queries;
-use crate::ty::query::{Query, QueryCache};
+use crate::ty::query::{Query, QueryState};
 use crate::ty::TyCtxt;
 use rustc_data_structures::profiling::ProfileCategory;
-use rustc_hir::def_id::{CrateNum, DefId};
+use rustc_hir::def_id::DefId;
 
 use crate::ich::StableHashingContext;
 use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::sharded::Sharded;
 use std::borrow::Cow;
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -30,10 +29,12 @@ pub(crate) trait QueryAccessors<'tcx>: QueryConfig<'tcx> {
     const ANON: bool;
     const EVAL_ALWAYS: bool;
 
+    type Cache: QueryCache<Self::Key, Self::Value>;
+
     fn query(key: Self::Key) -> Query<'tcx>;
 
     // Don't use this method to access query results, instead use the methods on TyCtxt
-    fn query_cache<'a>(tcx: TyCtxt<'tcx>) -> &'a Sharded<QueryCache<'tcx, Self>>;
+    fn query_state<'a>(tcx: TyCtxt<'tcx>) -> &'a QueryState<'tcx, Self>;
 
     fn to_dep_node(tcx: TyCtxt<'tcx>, key: &Self::Key) -> DepNode;
 
@@ -61,7 +62,10 @@ pub(crate) trait QueryDescription<'tcx>: QueryAccessors<'tcx> {
     }
 }
 
-impl<'tcx, M: QueryAccessors<'tcx, Key = DefId>> QueryDescription<'tcx> for M {
+impl<'tcx, M: QueryAccessors<'tcx, Key = DefId>> QueryDescription<'tcx> for M
+where
+    <M as QueryAccessors<'tcx>>::Cache: QueryCache<DefId, <M as QueryConfig<'tcx>>::Value>,
+{
     default fn describe(tcx: TyCtxt<'_>, def_id: DefId) -> Cow<'static, str> {
         if !tcx.sess.verbose() {
             format!("processing `{}`", tcx.def_path_str(def_id)).into()
@@ -80,11 +84,5 @@ impl<'tcx, M: QueryAccessors<'tcx, Key = DefId>> QueryDescription<'tcx> for M {
         _: SerializedDepNodeIndex,
     ) -> Option<Self::Value> {
         bug!("QueryDescription::load_from_disk() called for an unsupported query.")
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::analysis<'tcx> {
-    fn describe(_tcx: TyCtxt<'_>, _: CrateNum) -> Cow<'static, str> {
-        "running analysis passes on this crate".into()
     }
 }

@@ -1,3 +1,7 @@
+use rustc_ast::ast::{self, AssocTyConstraint, AssocTyConstraintKind, NodeId};
+use rustc_ast::ast::{GenericParam, GenericParamKind, PatKind, RangeEnd, VariantData};
+use rustc_ast::attr;
+use rustc_ast::visit::{self, AssocCtxt, FnCtxt, FnKind, Visitor};
 use rustc_errors::{struct_span_err, Handler};
 use rustc_feature::{AttributeGate, BUILTIN_ATTRIBUTE_MAP};
 use rustc_feature::{Features, GateIssue, UnstableFeatures};
@@ -5,10 +9,6 @@ use rustc_session::parse::{feature_err, feature_err_issue, ParseSess};
 use rustc_span::source_map::Spanned;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
-use syntax::ast::{self, AssocTyConstraint, AssocTyConstraintKind, NodeId};
-use syntax::ast::{GenericParam, GenericParamKind, PatKind, RangeEnd, VariantData};
-use syntax::attr;
-use syntax::visit::{self, AssocCtxt, FnCtxt, FnKind, Visitor};
 
 use log::debug;
 
@@ -245,7 +245,6 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                     include => external_doc
                     cfg => doc_cfg
                     masked => doc_masked
-                    spotlight => doc_spotlight
                     alias => doc_alias
                     keyword => doc_keyword
                 );
@@ -338,18 +337,18 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 }
             }
 
-            ast::ItemKind::Impl { polarity, defaultness, .. } => {
-                if polarity == ast::ImplPolarity::Negative {
+            ast::ItemKind::Impl { polarity, defaultness, ref of_trait, .. } => {
+                if let ast::ImplPolarity::Negative(span) = polarity {
                     gate_feature_post!(
                         &self,
                         optin_builtin_traits,
-                        i.span,
+                        span.to(of_trait.as_ref().map(|t| t.path.span).unwrap_or(span)),
                         "negative trait bounds are not yet fully implemented; \
-                                        use marker types for now"
+                         use marker types for now"
                     );
                 }
 
-                if let ast::Defaultness::Default = defaultness {
+                if let ast::Defaultness::Default(_) = defaultness {
                     gate_feature_post!(&self, specialization, i.span, "specialization is unstable");
                 }
             }
@@ -367,12 +366,12 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 gate_feature_post!(&self, trait_alias, i.span, "trait aliases are experimental");
             }
 
-            ast::ItemKind::MacroDef(ast::MacroDef { legacy: false, .. }) => {
+            ast::ItemKind::MacroDef(ast::MacroDef { macro_rules: false, .. }) => {
                 let msg = "`macro` is experimental";
                 gate_feature_post!(&self, decl_macro, i.span, msg);
             }
 
-            ast::ItemKind::TyAlias(ref ty, ..) => self.check_impl_trait(&ty),
+            ast::ItemKind::TyAlias(_, _, _, Some(ref ty)) => self.check_impl_trait(&ty),
 
             _ => {}
         }
@@ -397,10 +396,10 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                     );
                 }
             }
-            ast::ForeignItemKind::Ty => {
+            ast::ForeignItemKind::TyAlias(..) => {
                 gate_feature_post!(&self, extern_types, i.span, "extern types are experimental");
             }
-            ast::ForeignItemKind::Macro(..) => {}
+            ast::ForeignItemKind::MacCall(..) => {}
         }
 
         visit::walk_foreign_item(self, i)
@@ -419,8 +418,8 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
         visit::walk_ty(self, ty)
     }
 
-    fn visit_fn_ret_ty(&mut self, ret_ty: &'a ast::FunctionRetTy) {
-        if let ast::FunctionRetTy::Ty(ref output_ty) = *ret_ty {
+    fn visit_fn_ret_ty(&mut self, ret_ty: &'a ast::FnRetTy) {
+        if let ast::FnRetTy::Ty(ref output_ty) = *ret_ty {
             if let ast::TyKind::Never = output_ty.kind {
                 // Do nothing.
             } else {
@@ -543,17 +542,14 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
     }
 
     fn visit_assoc_item(&mut self, i: &'a ast::AssocItem, ctxt: AssocCtxt) {
-        if i.defaultness == ast::Defaultness::Default {
-            gate_feature_post!(&self, specialization, i.span, "specialization is unstable");
-        }
-
-        match i.kind {
-            ast::AssocItemKind::Fn(ref sig, _) => {
+        let is_fn = match i.kind {
+            ast::AssocItemKind::Fn(_, ref sig, _, _) => {
                 if let (ast::Const::Yes(_), AssocCtxt::Trait) = (sig.header.constness, ctxt) {
                     gate_feature_post!(&self, const_fn, i.span, "const fn is unstable");
                 }
+                true
             }
-            ast::AssocItemKind::TyAlias(_, ref ty) => {
+            ast::AssocItemKind::TyAlias(_, ref generics, _, ref ty) => {
                 if let (Some(_), AssocCtxt::Trait) = (ty, ctxt) {
                     gate_feature_post!(
                         &self,
@@ -565,9 +561,20 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 if let Some(ty) = ty {
                     self.check_impl_trait(ty);
                 }
-                self.check_gat(&i.generics, i.span);
+                self.check_gat(generics, i.span);
+                false
             }
-            _ => {}
+            _ => false,
+        };
+        if let ast::Defaultness::Default(_) = i.kind.defaultness() {
+            // Limit `min_specialization` to only specializing functions.
+            gate_feature_fn!(
+                &self,
+                |x: &Features| x.specialization || (is_fn && x.min_specialization),
+                i.span,
+                sym::specialization,
+                "specialization is unstable"
+            );
         }
         visit::walk_assoc_item(self, i, ctxt)
     }

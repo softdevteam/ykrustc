@@ -9,7 +9,6 @@ use log::{debug, info};
 use rustc::bug;
 use rustc::dep_graph::WorkProduct;
 use rustc::middle::exported_symbols::SymbolExportLevel;
-use rustc::session::config::{self, Lto};
 use rustc_codegen_ssa::back::lto::{LtoModuleCodegen, SerializedModule, ThinModule, ThinShared};
 use rustc_codegen_ssa::back::symbol_export;
 use rustc_codegen_ssa::back::write::{CodegenContext, FatLTOInput, ModuleConfig};
@@ -19,6 +18,7 @@ use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::{FatalError, Handler};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_session::cgu_reuse_tracker::CguReuse;
+use rustc_session::config::{self, Lto};
 
 use std::ffi::{CStr, CString};
 use std::fs::File;
@@ -237,7 +237,7 @@ fn fat_lto(
     let module: ModuleCodegen<ModuleLlvm> = match costliest_module {
         Some((_cost, i)) => in_memory.remove(i),
         None => {
-            assert!(serialized_modules.len() > 0, "must have at least one serialized module");
+            assert!(!serialized_modules.is_empty(), "must have at least one serialized module");
             let (buffer, name) = serialized_modules.remove(0);
             info!("no in-memory regular modules to choose from, parsing {:?}", name);
             ModuleCodegen {
@@ -504,7 +504,7 @@ fn thin_lto(
             //
             // This strategy means we can always save the computed imports as
             // canon: when we reuse the post-ThinLTO version, condition (3.)
-            // ensures that the curent import set is the same as the previous
+            // ensures that the current import set is the same as the previous
             // one. (And of course, when we don't reuse the post-ThinLTO
             // version, the current import set *is* the correct one, since we
             // are doing the ThinLTO in this current compilation cycle.)
@@ -538,7 +538,7 @@ fn thin_lto(
             }));
         }
 
-        // Save the curent ThinLTO import information for the next compilation
+        // Save the current ThinLTO import information for the next compilation
         // session, overwriting the previous serialized imports (if any).
         if let Some(path) = import_map_path {
             if let Err(err) = curr_import_map.save_to_file(&path) {
@@ -593,7 +593,7 @@ pub(crate) fn run_pass_manager(
             } else {
                 opt_level
             };
-            write::optimize_with_new_llvm_pass_manager(module, config, opt_level, opt_stage);
+            write::optimize_with_new_llvm_pass_manager(cgcx, module, config, opt_level, opt_stage);
             debug!("lto done");
             return;
         }
@@ -917,7 +917,7 @@ impl ThinLTOImports {
             if line.is_empty() {
                 let importing_module = current_module.take().expect("Importing module not set");
                 imports.insert(importing_module, mem::replace(&mut current_imports, vec![]));
-            } else if line.starts_with(" ") {
+            } else if line.starts_with(' ') {
                 // Space marks an imported module
                 assert_ne!(current_module, None);
                 current_imports.push(line.trim().to_string());

@@ -6,23 +6,22 @@ use crate::rmeta::{CrateDep, CrateMetadata, CrateNumMap, CrateRoot, MetadataBlob
 use rustc::hir::map::Definitions;
 use rustc::middle::cstore::DepKind;
 use rustc::middle::cstore::{CrateSource, ExternCrate, ExternCrateSource, MetadataLoaderDyn};
-use rustc::session::config;
-use rustc::session::search_paths::PathKind;
-use rustc::session::{CrateDisambiguator, Session};
 use rustc::ty::TyCtxt;
+use rustc_ast::expand::allocator::{global_allocator_spans, AllocatorKind};
+use rustc_ast::{ast, attr};
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::struct_span_err;
 use rustc_expand::base::SyntaxExtension;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_index::vec::IndexVec;
+use rustc_session::config;
+use rustc_session::search_paths::PathKind;
+use rustc_session::{CrateDisambiguator, Session};
 use rustc_span::edition::Edition;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 use rustc_target::spec::{PanicStrategy, TargetTriple};
-use syntax::ast;
-use syntax::attr;
-use syntax::expand::allocator::{global_allocator_spans, AllocatorKind};
 
 use log::{debug, info, log_enabled};
 use proc_macro::bridge::client::ProcMacro;
@@ -76,6 +75,21 @@ impl<'a> LoadError<'a> {
     }
 }
 
+/// A reference to `CrateMetadata` that can also give access to whole crate store when necessary.
+#[derive(Clone, Copy)]
+crate struct CrateMetadataRef<'a> {
+    pub cdata: &'a CrateMetadata,
+    pub cstore: &'a CStore,
+}
+
+impl std::ops::Deref for CrateMetadataRef<'_> {
+    type Target = CrateMetadata;
+
+    fn deref(&self) -> &Self::Target {
+        self.cdata
+    }
+}
+
 fn dump_crates(cstore: &CStore) {
     info!("resolved crates:");
     cstore.iter_crate_data(|cnum, data| {
@@ -100,10 +114,11 @@ impl CStore {
         CrateNum::new(self.metas.len() - 1)
     }
 
-    crate fn get_crate_data(&self, cnum: CrateNum) -> &CrateMetadata {
-        self.metas[cnum]
+    crate fn get_crate_data(&self, cnum: CrateNum) -> CrateMetadataRef<'_> {
+        let cdata = self.metas[cnum]
             .as_ref()
-            .unwrap_or_else(|| panic!("Failed to get crate data for {:?}", cnum))
+            .unwrap_or_else(|| panic!("Failed to get crate data for {:?}", cnum));
+        CrateMetadataRef { cdata, cstore: self }
     }
 
     fn set_crate_data(&mut self, cnum: CrateNum, data: CrateMetadata) {
@@ -217,7 +232,7 @@ impl<'a> CrateLoader<'a> {
             // We're also sure to compare *paths*, not actual byte slices. The
             // `source` stores paths which are normalized which may be different
             // from the strings on the command line.
-            let source = self.cstore.get_crate_data(cnum).source();
+            let source = self.cstore.get_crate_data(cnum).cdata.source();
             if let Some(entry) = self.sess.opts.externs.get(&name.as_str()) {
                 // Only use `--extern crate_name=path` here, not `--extern crate_name`.
                 if let Some(mut files) = entry.files() {
@@ -463,7 +478,7 @@ impl<'a> CrateLoader<'a> {
             self.load(&mut locator)
                 .map(|r| (r, None))
                 .or_else(|| {
-                    dep_kind = DepKind::UnexportedMacrosOnly;
+                    dep_kind = DepKind::MacrosOnly;
                     self.load_proc_macro(&mut locator, path_kind)
                 })
                 .ok_or_else(move || LoadError::LocatorError(locator))?
@@ -473,7 +488,7 @@ impl<'a> CrateLoader<'a> {
             (LoadResult::Previous(cnum), None) => {
                 let data = self.cstore.get_crate_data(cnum);
                 if data.is_proc_macro_crate() {
-                    dep_kind = DepKind::UnexportedMacrosOnly;
+                    dep_kind = DepKind::MacrosOnly;
                 }
                 data.update_dep_kind(|data_dep_kind| cmp::max(data_dep_kind, dep_kind));
                 Ok(cnum)
@@ -547,9 +562,6 @@ impl<'a> CrateLoader<'a> {
                     "resolving dep crate {} hash: `{}` extra filename: `{}`",
                     dep.name, dep.hash, dep.extra_filename
                 );
-                if dep.kind == DepKind::UnexportedMacrosOnly {
-                    return krate;
-                }
                 let dep_kind = match dep_kind {
                     DepKind::MacrosOnly => DepKind::MacrosOnly,
                     _ => dep.kind,
@@ -680,10 +692,7 @@ impl<'a> CrateLoader<'a> {
 
             // Sanity check the loaded crate to ensure it is indeed a profiler runtime
             if !data.is_profiler_runtime() {
-                self.sess.err(&format!(
-                    "the crate `profiler_builtins` is not \
-                                        a profiler runtime"
-                ));
+                self.sess.err("the crate `profiler_builtins` is not a profiler runtime");
             }
         }
     }
@@ -853,7 +862,7 @@ impl<'a> CrateLoader<'a> {
                     None => item.ident.name,
                 };
                 let dep_kind = if attr::contains_name(&item.attrs, sym::no_link) {
-                    DepKind::UnexportedMacrosOnly
+                    DepKind::MacrosOnly
                 } else {
                     DepKind::Explicit
                 };
@@ -861,11 +870,11 @@ impl<'a> CrateLoader<'a> {
                 let cnum = self.resolve_crate(name, item.span, dep_kind, None);
 
                 let def_id = definitions.opt_local_def_id(item.id).unwrap();
-                let path_len = definitions.def_path(def_id.index).data.len();
+                let path_len = definitions.def_path(def_id).data.len();
                 self.update_extern_crate(
                     cnum,
                     ExternCrate {
-                        src: ExternCrateSource::Extern(def_id),
+                        src: ExternCrateSource::Extern(def_id.to_def_id()),
                         span: item.span,
                         path_len,
                         dependency_of: LOCAL_CRATE,

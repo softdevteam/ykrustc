@@ -3,8 +3,8 @@
 
 pub use self::StabilityLevel::*;
 
-use crate::session::{DiagnosticMessageId, Session};
 use crate::ty::{self, TyCtxt};
+use rustc_ast::ast::CRATE_NODE_ID;
 use rustc_attr::{self as attr, ConstStability, Deprecation, RustcDeprecation, Stability};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::{Applicability, DiagnosticBuilder};
@@ -16,9 +16,9 @@ use rustc_hir::{self, HirId};
 use rustc_session::lint::builtin::{DEPRECATED, DEPRECATED_IN_FUTURE, SOFT_UNSTABLE};
 use rustc_session::lint::{BuiltinLintDiagnostics, Lint, LintBuffer};
 use rustc_session::parse::feature_err_issue;
+use rustc_session::{DiagnosticMessageId, Session};
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::{MultiSpan, Span};
-use syntax::ast::CRATE_NODE_ID;
 
 use std::num::NonZeroU32;
 
@@ -106,11 +106,11 @@ pub fn report_unstable(
     };
 
     let msp: MultiSpan = span.into();
-    let cm = &sess.parse_sess.source_map();
+    let sm = &sess.parse_sess.source_map();
     let span_key = msp.primary_span().and_then(|sp: Span| {
         if !sp.is_dummy() {
-            let file = cm.lookup_char_pos(sp.lo()).file;
-            if file.name.is_macros() { None } else { Some(span) }
+            let file = sm.lookup_char_pos(sp.lo()).file;
+            if file.is_imported() { None } else { Some(span) }
         } else {
             None
         }
@@ -250,7 +250,7 @@ pub enum EvalResult {
 fn skip_stability_check_due_to_privacy(tcx: TyCtxt<'_>, mut def_id: DefId) -> bool {
     // Check if `def_id` is a trait method.
     match tcx.def_kind(def_id) {
-        Some(DefKind::Method) | Some(DefKind::AssocTy) | Some(DefKind::AssocConst) => {
+        Some(DefKind::AssocFn) | Some(DefKind::AssocTy) | Some(DefKind::AssocConst) => {
             if let ty::TraitContainer(trait_def_id) = tcx.associated_item(def_id).container {
                 // Trait methods do not declare visibility (even
                 // for visibility info in cstore). Use containing

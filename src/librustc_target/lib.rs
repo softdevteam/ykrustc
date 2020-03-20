@@ -9,7 +9,13 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(bool_to_option)]
+#![feature(const_if_match)]
+#![feature(const_fn)]
+#![feature(const_panic)]
 #![feature(nll)]
+#![feature(never_type)]
+#![feature(associated_type_bounds)]
+#![feature(exhaustive_patterns)]
 
 #[macro_use]
 extern crate log;

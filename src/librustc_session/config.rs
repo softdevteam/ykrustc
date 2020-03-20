@@ -434,6 +434,7 @@ impl ExternEntry {
 pub enum PrintRequest {
     FileNames,
     Sysroot,
+    TargetLibdir,
     CrateName,
     Cfg,
     TargetList,
@@ -966,7 +967,7 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
             "",
             "print",
             "Compiler information to print on stdout",
-            "[crate-name|file-names|sysroot|cfg|target-list|\
+            "[crate-name|file-names|sysroot|target-libdir|cfg|target-list|\
              target-cpus|target-features|relocation-models|\
              code-models|tls-models|target-spec-json|native-static-libs]",
         ),
@@ -1060,18 +1061,25 @@ pub fn get_cmd_lint_options(
     matches: &getopts::Matches,
     error_format: ErrorOutputType,
 ) -> (Vec<(String, lint::Level)>, bool, Option<lint::Level>) {
-    let mut lint_opts = vec![];
+    let mut lint_opts_with_position = vec![];
     let mut describe_lints = false;
 
     for &level in &[lint::Allow, lint::Warn, lint::Deny, lint::Forbid] {
-        for lint_name in matches.opt_strs(level.as_str()) {
+        for (arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
             if lint_name == "help" {
                 describe_lints = true;
             } else {
-                lint_opts.push((lint_name.replace("-", "_"), level));
+                lint_opts_with_position.push((arg_pos, lint_name.replace("-", "_"), level));
             }
         }
     }
+
+    lint_opts_with_position.sort_by_key(|x| x.0);
+    let lint_opts = lint_opts_with_position
+        .iter()
+        .cloned()
+        .map(|(_, lint_name, level)| (lint_name, level))
+        .collect();
 
     let lint_cap = matches.opt_str("cap-lints").map(|cap| {
         lint::Level::from_str(&cap)
@@ -1176,7 +1184,7 @@ pub fn parse_error_format(
         // Conservatively require that the `--json` argument is coupled with
         // `--error-format=json`. This means that `--json` is specified we
         // should actually be emitting JSON blobs.
-        _ if matches.opt_strs("json").len() > 0 => {
+        _ if !matches.opt_strs("json").is_empty() => {
             early_error(
                 ErrorOutputType::default(),
                 "using `--json` requires also using `--error-format=json`",
@@ -1391,6 +1399,7 @@ fn collect_print_requests(
         "crate-name" => PrintRequest::CrateName,
         "file-names" => PrintRequest::FileNames,
         "sysroot" => PrintRequest::Sysroot,
+        "target-libdir" => PrintRequest::TargetLibdir,
         "cfg" => PrintRequest::Cfg,
         "target-list" => PrintRequest::TargetList,
         "target-cpus" => PrintRequest::TargetCPUs,
@@ -1549,10 +1558,8 @@ fn parse_libs(
             {
                 early_error(
                     error_format,
-                    &format!(
-                        "the library kind 'static-nobundle' is only \
-                         accepted on the nightly compiler"
-                    ),
+                    "the library kind 'static-nobundle' is only \
+                     accepted on the nightly compiler",
                 );
             }
             let mut name_parts = name.splitn(2, ':');

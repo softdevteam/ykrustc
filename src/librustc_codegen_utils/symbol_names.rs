@@ -89,12 +89,12 @@
 
 use rustc::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use rustc::mir::mono::{InstantiationMode, MonoItem};
-use rustc::session::config::SymbolManglingVersion;
 use rustc::ty::query::Providers;
 use rustc::ty::subst::SubstsRef;
 use rustc::ty::{self, Instance, TyCtxt};
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_hir::Node;
+use rustc_session::config::SymbolManglingVersion;
 
 use rustc_span::symbol::Symbol;
 
@@ -185,7 +185,7 @@ fn compute_symbol_name(
     //
     // * On the wasm32 targets there is a bug (or feature) in LLD [1] where the
     //   same-named symbol when imported from different wasm modules will get
-    //   hooked up incorectly. As a result foreign symbols, on the wasm target,
+    //   hooked up incorrectly. As a result foreign symbols, on the wasm target,
     //   with a wasm import module, get mangled. Additionally our codegen will
     //   deduplicate symbols based purely on the symbol name, but for wasm this
     //   isn't quite right because the same-named symbol on wasm can come from

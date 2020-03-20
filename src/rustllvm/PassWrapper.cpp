@@ -640,6 +640,62 @@ LLVMRustWriteOutputFile(LLVMTargetMachineRef Target, LLVMPassManagerRef PMR,
   return LLVMRustResult::Success;
 }
 
+extern "C" typedef void (*LLVMRustSelfProfileBeforePassCallback)(void*, // LlvmSelfProfiler
+                                                      const char*,      // pass name
+                                                      const char*);     // IR name
+extern "C" typedef void (*LLVMRustSelfProfileAfterPassCallback)(void*); // LlvmSelfProfiler
+
+#if LLVM_VERSION_GE(9, 0)
+
+std::string LLVMRustwrappedIrGetName(const llvm::Any &WrappedIr) {
+  if (any_isa<const Module *>(WrappedIr))
+    return any_cast<const Module *>(WrappedIr)->getName().str();
+  if (any_isa<const Function *>(WrappedIr))
+    return any_cast<const Function *>(WrappedIr)->getName().str();
+  if (any_isa<const Loop *>(WrappedIr))
+    return any_cast<const Loop *>(WrappedIr)->getName().str();
+  if (any_isa<const LazyCallGraph::SCC *>(WrappedIr))
+    return any_cast<const LazyCallGraph::SCC *>(WrappedIr)->getName();
+  return "<UNKNOWN>";
+}
+
+
+void LLVMSelfProfileInitializeCallbacks(
+    PassInstrumentationCallbacks& PIC, void* LlvmSelfProfiler,
+    LLVMRustSelfProfileBeforePassCallback BeforePassCallback,
+    LLVMRustSelfProfileAfterPassCallback AfterPassCallback) {
+  PIC.registerBeforePassCallback([LlvmSelfProfiler, BeforePassCallback](
+                                     StringRef Pass, llvm::Any Ir) {
+    std::string PassName = Pass.str();
+    std::string IrName = LLVMRustwrappedIrGetName(Ir);
+    BeforePassCallback(LlvmSelfProfiler, PassName.c_str(), IrName.c_str());
+    return true;
+  });
+
+  PIC.registerAfterPassCallback(
+      [LlvmSelfProfiler, AfterPassCallback](StringRef Pass, llvm::Any Ir) {
+        AfterPassCallback(LlvmSelfProfiler);
+      });
+
+  PIC.registerAfterPassInvalidatedCallback(
+      [LlvmSelfProfiler, AfterPassCallback](StringRef Pass) {
+        AfterPassCallback(LlvmSelfProfiler);
+      });
+
+  PIC.registerBeforeAnalysisCallback([LlvmSelfProfiler, BeforePassCallback](
+                                         StringRef Pass, llvm::Any Ir) {
+    std::string PassName = Pass.str();
+    std::string IrName = LLVMRustwrappedIrGetName(Ir);
+    BeforePassCallback(LlvmSelfProfiler, PassName.c_str(), IrName.c_str());
+  });
+
+  PIC.registerAfterAnalysisCallback(
+      [LlvmSelfProfiler, AfterPassCallback](StringRef Pass, llvm::Any Ir) {
+        AfterPassCallback(LlvmSelfProfiler);
+      });
+}
+#endif
+
 enum class LLVMRustOptStage {
   PreLinkNoLTO,
   PreLinkThinLTO,
@@ -666,7 +722,10 @@ LLVMRustOptimizeWithNewPassManager(
     bool MergeFunctions, bool UnrollLoops, bool SLPVectorize, bool LoopVectorize,
     bool DisableSimplifyLibCalls,
     LLVMRustSanitizerOptions *SanitizerOptions,
-    const char *PGOGenPath, const char *PGOUsePath) {
+    const char *PGOGenPath, const char *PGOUsePath,
+    void* LlvmSelfProfiler,
+    LLVMRustSelfProfileBeforePassCallback BeforePassCallback,
+    LLVMRustSelfProfileAfterPassCallback AfterPassCallback) {
 #if LLVM_VERSION_GE(9, 0)
   Module *TheModule = unwrap(ModuleRef);
   TargetMachine *TM = unwrap(TMRef);
@@ -684,6 +743,10 @@ LLVMRustOptimizeWithNewPassManager(
   PassInstrumentationCallbacks PIC;
   StandardInstrumentations SI;
   SI.registerCallbacks(PIC);
+
+  if (LlvmSelfProfiler){
+    LLVMSelfProfileInitializeCallbacks(PIC,LlvmSelfProfiler,BeforePassCallback,AfterPassCallback);
+  }
 
   Optional<PGOOptions> PGOOpt;
   if (PGOGenPath) {
@@ -761,14 +824,14 @@ LLVMRustOptimizeWithNewPassManager(
     }
 
     if (SanitizerOptions->SanitizeAddress) {
-      // FIXME: Rust does not expose the UseAfterScope option.
       PipelineStartEPCallbacks.push_back([&](ModulePassManager &MPM) {
         MPM.addPass(RequireAnalysisPass<ASanGlobalsMetadataAnalysis, Module>());
       });
       OptimizerLastEPCallbacks.push_back(
         [SanitizerOptions](FunctionPassManager &FPM, PassBuilder::OptimizationLevel Level) {
           FPM.addPass(AddressSanitizerPass(
-              /*CompileKernel=*/false, SanitizerOptions->SanitizeRecover));
+              /*CompileKernel=*/false, SanitizerOptions->SanitizeRecover,
+              /*UseAfterScope=*/true));
         }
       );
       PipelineStartEPCallbacks.push_back(
@@ -805,8 +868,10 @@ LLVMRustOptimizeWithNewPassManager(
     } else {
       for (const auto &C : PipelineStartEPCallbacks)
         PB.registerPipelineStartEPCallback(C);
-      for (const auto &C : OptimizerLastEPCallbacks)
-        PB.registerOptimizerLastEPCallback(C);
+      if (OptStage != LLVMRustOptStage::PreLinkThinLTO) {
+        for (const auto &C : OptimizerLastEPCallbacks)
+          PB.registerOptimizerLastEPCallback(C);
+      }
 
       switch (OptStage) {
       case LLVMRustOptStage::PreLinkNoLTO:
@@ -814,6 +879,12 @@ LLVMRustOptimizeWithNewPassManager(
         break;
       case LLVMRustOptStage::PreLinkThinLTO:
         MPM = PB.buildThinLTOPreLinkDefaultPipeline(OptLevel, DebugPassManager);
+        if (!OptimizerLastEPCallbacks.empty()) {
+          FunctionPassManager FPM(DebugPassManager);
+          for (const auto &C : OptimizerLastEPCallbacks)
+            C(FPM, OptLevel);
+          MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));
+        }
         break;
       case LLVMRustOptStage::PreLinkFatLTO:
         MPM = PB.buildLTOPreLinkDefaultPipeline(OptLevel, DebugPassManager);

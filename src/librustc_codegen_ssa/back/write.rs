@@ -14,11 +14,8 @@ use jobserver::{Acquired, Client};
 use rustc::dep_graph::{WorkProduct, WorkProductFileKind, WorkProductId};
 use rustc::middle::cstore::EncodedMetadata;
 use rustc::middle::exported_symbols::SymbolExportLevel;
-use rustc::session::config::{
-    self, Lto, OutputFilenames, OutputType, Passes, Sanitizer, SwitchWithOptPath,
-};
-use rustc::session::Session;
 use rustc::ty::TyCtxt;
+use rustc_ast::attr;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::profiling::SelfProfilerRef;
 use rustc_data_structures::profiling::TimingGuard;
@@ -33,11 +30,14 @@ use rustc_incremental::{
     copy_cgu_workproducts_to_incr_comp_cache_dir, in_incr_comp_dir, in_incr_comp_dir_sess,
 };
 use rustc_session::cgu_reuse_tracker::CguReuseTracker;
+use rustc_session::config::{
+    self, Lto, OutputFilenames, OutputType, Passes, Sanitizer, SwitchWithOptPath,
+};
+use rustc_session::Session;
 use rustc_span::hygiene::ExpnId;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_target::spec::MergeFunctions;
-use syntax::attr;
 
 use std::any::Any;
 use std::fs;
@@ -344,9 +344,9 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
 
     let crate_name = tcx.crate_name(LOCAL_CRATE);
     let crate_hash = tcx.crate_hash(LOCAL_CRATE);
-    let no_builtins = attr::contains_name(&tcx.hir().krate().attrs, sym::no_builtins);
+    let no_builtins = attr::contains_name(&tcx.hir().krate().item.attrs, sym::no_builtins);
     let subsystem =
-        attr::first_attr_value_str_by_name(&tcx.hir().krate().attrs, sym::windows_subsystem);
+        attr::first_attr_value_str_by_name(&tcx.hir().krate().item.attrs, sym::windows_subsystem);
     let windows_subsystem = subsystem.map(|subsystem| {
         if subsystem != sym::windows && subsystem != sym::console {
             tcx.sess.fatal(&format!(
@@ -751,7 +751,7 @@ fn execute_work_item<B: ExtraBackendMethods>(
     }
 }
 
-// Actual LTO type we end up chosing based on multiple factors.
+// Actual LTO type we end up choosing based on multiple factors.
 enum ComputedLtoType {
     No,
     Thin,
@@ -1262,11 +1262,11 @@ fn start_executing_work<B: ExtraBackendMethods>(
         while !codegen_done
             || running > 0
             || (!codegen_aborted
-                && (work_items.len() > 0
-                    || needs_fat_lto.len() > 0
-                    || needs_thin_lto.len() > 0
-                    || lto_import_only_modules.len() > 0
-                    || main_thread_worker_state != MainThreadWorkerState::Idle))
+                && !(work_items.is_empty()
+                    && needs_fat_lto.is_empty()
+                    && needs_thin_lto.is_empty()
+                    && lto_import_only_modules.is_empty()
+                    && main_thread_worker_state == MainThreadWorkerState::Idle))
         {
             // While there are still CGUs to be codegened, the coordinator has
             // to decide how to utilize the compiler processes implicit Token:
@@ -1275,7 +1275,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
                 if main_thread_worker_state == MainThreadWorkerState::Idle {
                     if !queue_full_enough(work_items.len(), running, max_workers) {
                         // The queue is not full enough, codegen more items:
-                        if let Err(_) = codegen_worker_send.send(Message::CodegenItem) {
+                        if codegen_worker_send.send(Message::CodegenItem).is_err() {
                             panic!("Could not send Message::CodegenItem to main thread")
                         }
                         main_thread_worker_state = MainThreadWorkerState::Codegenning;
@@ -1307,7 +1307,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
                 // Perform the serial work here of figuring out what we're
                 // going to LTO and then push a bunch of work items onto our
                 // queue to do LTO
-                if work_items.len() == 0
+                if work_items.is_empty()
                     && running == 0
                     && main_thread_worker_state == MainThreadWorkerState::Idle
                 {
@@ -1372,7 +1372,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
 
             // Spin up what work we can, only doing this while we've got available
             // parallelism slots and work left to spawn.
-            while !codegen_aborted && work_items.len() > 0 && running < tokens.len() {
+            while !codegen_aborted && !work_items.is_empty() && running < tokens.len() {
                 let (item, _) = work_items.pop().unwrap();
 
                 maybe_start_llvm_timer(prof, cgcx.config(item.module_kind()), &mut llvm_start_time);

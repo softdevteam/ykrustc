@@ -31,8 +31,6 @@ use rustc::middle::cstore::{self, LinkagePreference};
 use rustc::middle::lang_items;
 use rustc::middle::lang_items::StartFnLangItem;
 use rustc::mir::mono::{CodegenUnit, CodegenUnitNameBuilder, MonoItem};
-use rustc::session::config::{self, EntryFnType, Lto, OutputType};
-use rustc::session::Session;
 use rustc::ty::layout::{self, Align, HasTyCtxt, LayoutOf, TyLayout, VariantIdx};
 use rustc::ty::layout::{FAT_PTR_ADDR, FAT_PTR_EXTRA};
 use rustc::ty::query::Providers;
@@ -46,6 +44,8 @@ use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_index::vec::Idx;
 use rustc_session::cgu_reuse_tracker::CguReuse;
+use rustc_session::config::{self, EntryFnType, Lto, OutputType};
+use rustc_session::Session;
 use rustc_span::Span;
 
 use std::cmp;
@@ -437,10 +437,10 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         // listing.
         let main_ret_ty = cx.tcx().erase_regions(&main_ret_ty.no_bound_vars().unwrap());
 
-        if cx.get_defined_value("main").is_some() {
+        if cx.get_declared_value("main").is_some() {
             // FIXME: We should be smart and show a better diagnostic here.
             cx.sess()
-                .struct_span_err(sp, "entry symbol `main` defined multiple times")
+                .struct_span_err(sp, "entry symbol `main` declared multiple times")
                 .help("did you use `#[no_mangle]` on `fn main`? Use `#[start]` instead")
                 .emit();
             cx.sess().abort_if_errors();

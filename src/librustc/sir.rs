@@ -6,6 +6,7 @@
 use crate::ty::{Instance, TyCtxt};
 use rustc::ty::Ty;
 use rustc::{mir, ty};
+use rustc_ast::ast;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_session::config::OutputType;
 use rustc_span::sym;
@@ -13,7 +14,6 @@ use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::default::Default;
 use std::io;
-use syntax::ast;
 use ykpack;
 
 const BUILD_SCRIPT_CRATE: &str = "build_script_build";

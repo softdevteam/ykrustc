@@ -3,7 +3,6 @@ use rustc::mir::{
     FakeReadCause, Local, LocalDecl, LocalInfo, LocalKind, Location, Operand, Place, PlaceRef,
     ProjectionElem, Rvalue, Statement, StatementKind, TerminatorKind, VarBindingForm,
 };
-use rustc::traits::error_reporting::suggest_constraining_type_param;
 use rustc::ty::{self, Ty};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{Applicability, DiagnosticBuilder};
@@ -13,6 +12,7 @@ use rustc_hir::{AsyncGeneratorKind, GeneratorKind};
 use rustc_index::vec::Idx;
 use rustc_span::source_map::DesugaringKind;
 use rustc_span::Span;
+use rustc_trait_selection::traits::error_reporting::suggest_constraining_type_param;
 
 use crate::dataflow::drop_flag_effects;
 use crate::dataflow::indexes::{MoveOutIndex, MovePathIndex};
@@ -51,7 +51,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         &mut self,
         location: Location,
         desired_action: InitializationRequiringAction,
-        (moved_place, used_place, span): (PlaceRef<'cx, 'tcx>, PlaceRef<'cx, 'tcx>, Span),
+        (moved_place, used_place, span): (PlaceRef<'tcx>, PlaceRef<'tcx>, Span),
         mpi: MovePathIndex,
     ) {
         debug!(
@@ -647,7 +647,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 // borrowed place and look for a access to a different field of the same union.
                 let Place { local, projection } = second_borrowed_place;
 
-                let mut cursor = projection.as_ref();
+                let mut cursor = &projection[..];
                 while let [proj_base @ .., elem] = cursor {
                     cursor = proj_base;
 
@@ -1231,7 +1231,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 GeneratorKind::Async(async_kind) => match async_kind {
                     AsyncGeneratorKind::Block => "async block",
                     AsyncGeneratorKind::Closure => "async closure",
-                    _ => bug!("async block/closure expected, but async funtion found."),
+                    _ => bug!("async block/closure expected, but async function found."),
                 },
                 GeneratorKind::Gen => "generator",
             },
@@ -1257,7 +1257,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             }
             _ => bug!(
                 "report_escaping_closure_capture called with unexpected constraint \
-                       category: `{:?}`",
+                 category: `{:?}`",
                 category
             ),
         };
@@ -1275,17 +1275,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     ) -> DiagnosticBuilder<'cx> {
         let tcx = self.infcx.tcx;
 
-        let escapes_from = if tcx.is_closure(self.mir_def_id) {
-            let tables = tcx.typeck_tables_of(self.mir_def_id);
-            let mir_hir_id = tcx.hir().def_index_to_hir_id(self.mir_def_id.index);
-            match tables.node_type(mir_hir_id).kind {
-                ty::Closure(..) => "closure",
-                ty::Generator(..) => "generator",
-                _ => bug!("Closure body doesn't have a closure or generator type"),
-            }
-        } else {
-            "function"
-        };
+        let (_, escapes_from) = tcx.article_and_description(self.mir_def_id);
 
         let mut err =
             borrowck_errors::borrowed_data_escapes_closure(tcx, escape_span, escapes_from);
@@ -1350,7 +1340,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 // there.
                 let mut mpis = vec![mpi];
                 let move_paths = &self.move_data.move_paths;
-                mpis.extend(move_paths[mpi].parents(move_paths));
+                mpis.extend(move_paths[mpi].parents(move_paths).map(|(mpi, _)| mpi));
 
                 for moi in &self.move_data.loc_map[location] {
                     debug!("report_use_of_moved_or_uninitialized: moi={:?}", moi);
@@ -1531,7 +1521,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         err.buffer(&mut self.errors_buffer);
     }
 
-    fn classify_drop_access_kind(&self, place: PlaceRef<'cx, 'tcx>) -> StorageDeadOrDrop<'tcx> {
+    fn classify_drop_access_kind(&self, place: PlaceRef<'tcx>) -> StorageDeadOrDrop<'tcx> {
         let tcx = self.infcx.tcx;
         match place.projection {
             [] => StorageDeadOrDrop::LocalStorageDead,
@@ -1885,7 +1875,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 // as the HIR doesn't have full types for closure arguments.
                 let return_ty = *sig.output().skip_binder();
                 let mut return_span = fn_decl.output.span();
-                if let hir::FunctionRetTy::Return(ty) = &fn_decl.output {
+                if let hir::FnRetTy::Return(ty) = &fn_decl.output {
                     if let hir::TyKind::Rptr(lifetime, _) = ty.kind {
                         return_span = lifetime.span;
                     }

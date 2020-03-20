@@ -5,6 +5,9 @@ use rustc::lint::LintDiagnosticBuilder;
 use rustc::lint::{struct_lint_level, LintLevelMap, LintLevelSets, LintSet, LintSource};
 use rustc::ty::query::Providers;
 use rustc::ty::TyCtxt;
+use rustc_ast::ast;
+use rustc_ast::attr;
+use rustc_ast::unwrap_or;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{struct_span_err, Applicability};
@@ -16,9 +19,6 @@ use rustc_session::parse::feature_err;
 use rustc_session::Session;
 use rustc_span::source_map::MultiSpan;
 use rustc_span::symbol::{sym, Symbol};
-use syntax::ast;
-use syntax::attr;
-use syntax::unwrap_or;
 
 use std::cmp;
 
@@ -29,7 +29,7 @@ fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> &LintLevelMap {
     let mut builder = LintLevelMapBuilder { levels, tcx, store };
     let krate = tcx.hir().krate();
 
-    let push = builder.levels.push(&krate.attrs, &store);
+    let push = builder.levels.push(&krate.item.attrs, &store);
     builder.levels.register_id(hir::CRATE_HIR_ID);
     for macro_def in krate.exported_macros {
         builder.levels.register_id(macro_def.hir_id);
@@ -375,12 +375,12 @@ impl<'s> LintLevelsBuilder<'s> {
         }
 
         let prev = self.cur;
-        if specs.len() > 0 {
+        if !specs.is_empty() {
             self.cur = self.sets.list.len() as u32;
-            self.sets.list.push(LintSet::Node { specs: specs, parent: prev });
+            self.sets.list.push(LintSet::Node { specs, parent: prev });
         }
 
-        BuilderPush { prev: prev, changed: prev != self.cur }
+        BuilderPush { prev, changed: prev != self.cur }
     }
 
     /// Called after `push` when the scope of a set of attributes are exited.
@@ -438,8 +438,8 @@ impl LintLevelMapBuilder<'_, '_> {
 impl<'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'_, 'tcx> {
     type Map = Map<'tcx>;
 
-    fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, Self::Map> {
-        intravisit::NestedVisitorMap::All(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
+        intravisit::NestedVisitorMap::All(self.tcx.hir())
     }
 
     fn visit_param(&mut self, param: &'tcx hir::Param<'tcx>) {

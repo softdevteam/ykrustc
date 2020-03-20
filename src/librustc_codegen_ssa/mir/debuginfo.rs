@@ -1,10 +1,10 @@
 use crate::traits::*;
 use rustc::mir;
-use rustc::session::config::DebugInfo;
 use rustc::ty;
 use rustc::ty::layout::{LayoutOf, Size};
 use rustc_hir::def_id::CrateNum;
 use rustc_index::vec::IndexVec;
+use rustc_session::config::DebugInfo;
 
 use rustc_span::symbol::{kw, Symbol};
 use rustc_span::{BytePos, Span};
@@ -48,7 +48,7 @@ pub struct DebugScope<D> {
 
 impl<D> DebugScope<D> {
     pub fn is_valid(&self) -> bool {
-        !self.scope_metadata.is_none()
+        self.scope_metadata.is_some()
     }
 }
 
@@ -304,7 +304,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     ) -> Option<IndexVec<mir::Local, Vec<PerLocalVarDebugInfo<'tcx, Bx::DIVariable>>>> {
         let full_debug_info = self.cx.sess().opts.debuginfo == DebugInfo::Full;
 
-        if !(full_debug_info || !self.cx.sess().fewer_names()) {
+        if !full_debug_info && self.cx.sess().fewer_names() {
             return None;
         }
 

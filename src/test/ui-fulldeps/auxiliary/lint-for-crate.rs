@@ -10,12 +10,12 @@ extern crate rustc_lint;
 #[macro_use]
 extern crate rustc_session;
 extern crate rustc_span;
-extern crate syntax;
+extern crate rustc_ast;
 
 use rustc_driver::plugin::Registry;
 use rustc_lint::{LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc_span::symbol::Symbol;
-use syntax::attr;
+use rustc_ast::attr;
 
 declare_lint! {
     CRATE_NOT_OKAY,
@@ -27,10 +27,10 @@ declare_lint_pass!(Pass => [CRATE_NOT_OKAY]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
     fn check_crate(&mut self, cx: &LateContext, krate: &rustc_hir::Crate) {
-        if !attr::contains_name(&krate.attrs, Symbol::intern("crate_okay")) {
+        if !attr::contains_name(&krate.item.attrs, Symbol::intern("crate_okay")) {
             cx.lint(CRATE_NOT_OKAY, |lint| {
                 lint.build("crate is not marked with #![crate_okay]")
-                    .set_span(krate.span)
+                    .set_span(krate.item.span)
                     .emit()
             });
         }

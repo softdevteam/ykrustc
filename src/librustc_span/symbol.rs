@@ -97,6 +97,7 @@ symbols! {
         Auto:               "auto",
         Catch:              "catch",
         Default:            "default",
+        MacroRules:         "macro_rules",
         Raw:                "raw",
         Union:              "union",
     }
@@ -119,6 +120,7 @@ symbols! {
         abi_unadjusted,
         abi_vectorcall,
         abi_x86_interrupt,
+        abort,
         aborts,
         address,
         add_with_overflow,
@@ -180,6 +182,7 @@ symbols! {
         caller_location,
         cdylib,
         cfg,
+        cfg_accessible,
         cfg_attr,
         cfg_attr_multi,
         cfg_doctest,
@@ -207,6 +210,7 @@ symbols! {
         console,
         const_compare_raw_pointers,
         const_constructor,
+        const_eval_limit,
         const_extern_fn,
         const_fn,
         const_fn_union,
@@ -263,12 +267,12 @@ symbols! {
         derive,
         diagnostic,
         direct,
+        discriminant_value,
         doc,
         doc_alias,
         doc_cfg,
         doc_keyword,
         doc_masked,
-        doc_spotlight,
         doctest,
         document_private_items,
         dotdoteq_in_patterns,
@@ -286,7 +290,6 @@ symbols! {
         dylib,
         dyn_trait,
         eh_personality,
-        eh_unwind_resume,
         enable,
         Encodable,
         env,
@@ -429,7 +432,6 @@ symbols! {
         macro_lifetime_matcher,
         macro_literal_matcher,
         macro_reexport,
-        macro_rules,
         macros_in_extern,
         macro_use,
         macro_vis_matcher,
@@ -452,6 +454,7 @@ symbols! {
         min_align_of,
         min_const_fn,
         min_const_unsafe_fn,
+        min_specialization,
         mips_target_feature,
         mmx_target_feature,
         module,
@@ -656,6 +659,8 @@ symbols! {
         rustc_proc_macro_decls,
         rustc_promotable,
         rustc_regions,
+        rustc_unsafe_specialization_marker,
+        rustc_specialization_trait,
         rustc_stable,
         rustc_std_internal_symbol,
         rustc_symbol_name,
@@ -666,7 +671,6 @@ symbols! {
         rustc_variance,
         rustfmt,
         rust_eh_personality,
-        rust_eh_unwind_resume,
         rust_oom,
         rvalue_static_promotion,
         sanitize,
@@ -691,7 +695,6 @@ symbols! {
         Some,
         specialization,
         speed,
-        spotlight,
         sse4a_target_feature,
         stable,
         staged_api,
@@ -857,12 +860,12 @@ impl Ident {
     }
 
     /// "Normalize" ident for use in comparisons using "item hygiene".
-    /// Identifiers with same string value become same if they came from the same "modern" macro
+    /// Identifiers with same string value become same if they came from the same macro 2.0 macro
     /// (e.g., `macro` item, but not `macro_rules` item) and stay different if they came from
-    /// different "modern" macros.
+    /// different macro 2.0 macros.
     /// Technically, this operation strips all non-opaque marks from ident's syntactic context.
-    pub fn modern(self) -> Ident {
-        Ident::new(self.name, self.span.modern())
+    pub fn normalize_to_macros_2_0(self) -> Ident {
+        Ident::new(self.name, self.span.normalize_to_macros_2_0())
     }
 
     /// "Normalize" ident for use in comparisons using "local variable hygiene".
@@ -870,8 +873,8 @@ impl Ident {
     /// macro (e.g., `macro` or `macro_rules!` items) and stay different if they came from different
     /// non-transparent macros.
     /// Technically, this operation strips all transparent marks from ident's syntactic context.
-    pub fn modern_and_legacy(self) -> Ident {
-        Ident::new(self.name, self.span.modern_and_legacy())
+    pub fn normalize_to_macro_rules(self) -> Ident {
+        Ident::new(self.name, self.span.normalize_to_macro_rules())
     }
 
     /// Convert the name to a `SymbolStr`. This is a slowish operation because
@@ -896,19 +899,17 @@ impl Hash for Ident {
 
 impl fmt::Debug for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_raw_guess() {
-            write!(f, "r#")?;
-        }
-        write!(f, "{}{:?}", self.name, self.span.ctxt())
+        fmt::Display::fmt(self, f)?;
+        fmt::Debug::fmt(&self.span.ctxt(), f)
     }
 }
 
+/// This implementation is supposed to be used in error messages, so it's expected to be identical
+/// to printing the original identifier token written in source code (`token_to_string`),
+/// except that AST identifiers don't keep the rawness flag, so we have to guess it.
 impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_raw_guess() {
-            write!(f, "r#")?;
-        }
-        fmt::Display::fmt(&self.name, f)
+        fmt::Display::fmt(&IdentPrinter::new(self.name, self.is_raw_guess(), None), f)
     }
 }
 
@@ -932,6 +933,84 @@ impl UseSpecializedDecodable for Ident {
     }
 }
 
+/// This is the most general way to print identifiers.
+/// AST pretty-printer is used as a fallback for turning AST structures into token streams for
+/// proc macros. Additionally, proc macros may stringify their input and expect it survive the
+/// stringification (especially true for proc macro derives written between Rust 1.15 and 1.30).
+/// So we need to somehow pretty-print `$crate` in a way preserving at least some of its
+/// hygiene data, most importantly name of the crate it refers to.
+/// As a result we print `$crate` as `crate` if it refers to the local crate
+/// and as `::other_crate_name` if it refers to some other crate.
+/// Note, that this is only done if the ident token is printed from inside of AST pretty-pringing,
+/// but not otherwise. Pretty-printing is the only way for proc macros to discover token contents,
+/// so we should not perform this lossy conversion if the top level call to the pretty-printer was
+/// done for a token stream or a single token.
+pub struct IdentPrinter {
+    symbol: Symbol,
+    is_raw: bool,
+    /// Span used for retrieving the crate name to which `$crate` refers to,
+    /// if this field is `None` then the `$crate` conversion doesn't happen.
+    convert_dollar_crate: Option<Span>,
+}
+
+impl IdentPrinter {
+    /// The most general `IdentPrinter` constructor. Do not use this.
+    pub fn new(symbol: Symbol, is_raw: bool, convert_dollar_crate: Option<Span>) -> IdentPrinter {
+        IdentPrinter { symbol, is_raw, convert_dollar_crate }
+    }
+
+    /// This implementation is supposed to be used when printing identifiers
+    /// as a part of pretty-printing for larger AST pieces.
+    /// Do not use this either.
+    pub fn for_ast_ident(ident: Ident, is_raw: bool) -> IdentPrinter {
+        IdentPrinter::new(ident.name, is_raw, Some(ident.span))
+    }
+}
+
+impl fmt::Display for IdentPrinter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_raw {
+            f.write_str("r#")?;
+        } else {
+            if self.symbol == kw::DollarCrate {
+                if let Some(span) = self.convert_dollar_crate {
+                    let converted = span.ctxt().dollar_crate_name();
+                    if !converted.is_path_segment_keyword() {
+                        f.write_str("::")?;
+                    }
+                    return fmt::Display::fmt(&converted, f);
+                }
+            }
+        }
+        fmt::Display::fmt(&self.symbol, f)
+    }
+}
+
+/// An newtype around `Ident` that calls [Ident::normalize_to_macro_rules] on
+/// construction.
+// FIXME(matthewj, petrochenkov) Use this more often, add a similar
+// `ModernIdent` struct and use that as well.
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub struct MacroRulesNormalizedIdent(Ident);
+
+impl MacroRulesNormalizedIdent {
+    pub fn new(ident: Ident) -> Self {
+        Self(ident.normalize_to_macro_rules())
+    }
+}
+
+impl fmt::Debug for MacroRulesNormalizedIdent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for MacroRulesNormalizedIdent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
 /// An interned string.
 ///
 /// Internally, a `Symbol` is implemented as an index, and all operations
@@ -950,7 +1029,7 @@ rustc_index::newtype_index! {
 
 impl Symbol {
     const fn new(n: u32) -> Self {
-        Symbol(SymbolIndex::from_u32_const(n))
+        Symbol(SymbolIndex::from_u32(n))
     }
 
     /// Maps a string to its interned representation.
@@ -975,6 +1054,14 @@ impl Symbol {
     pub fn as_u32(self) -> u32 {
         self.0.as_u32()
     }
+
+    /// This method is supposed to be used in error messages, so it's expected to be
+    /// identical to printing the original identifier token written in source code
+    /// (`token_to_string`, `Ident::to_string`), except that symbols don't keep the rawness flag
+    /// or edition, so we have to guess the rawness using the global edition.
+    pub fn to_ident_string(self) -> String {
+        Ident::with_dummy_span(self).to_string()
+    }
 }
 
 impl fmt::Debug for Symbol {
@@ -996,6 +1083,7 @@ impl Encodable for Symbol {
 }
 
 impl Decodable for Symbol {
+    #[inline]
     fn decode<D: Decoder>(d: &mut D) -> Result<Symbol, D::Error> {
         Ok(Symbol::intern(&d.read_str()?))
     }
@@ -1034,6 +1122,7 @@ impl Interner {
         }
     }
 
+    #[inline]
     pub fn intern(&mut self, string: &str) -> Symbol {
         if let Some(&name) = self.names.get(string) {
             return name;
@@ -1073,6 +1162,9 @@ pub mod sym {
     use std::convert::TryInto;
 
     symbols!();
+
+    // Used from a macro in `librustc_feature/accepted.rs`
+    pub use super::kw::MacroRules as macro_rules;
 
     // Get the symbol for an integer. The first few non-negative integers each
     // have a static symbol and therefore are fast.

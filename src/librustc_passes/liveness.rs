@@ -97,9 +97,9 @@ use self::LiveNodeKind::*;
 use self::VarKind::*;
 
 use rustc::hir::map::Map;
-use rustc::lint;
 use rustc::ty::query::Providers;
 use rustc::ty::{self, TyCtxt};
+use rustc_ast::ast;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
@@ -107,9 +107,9 @@ use rustc_hir::def::*;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, FnKind, NestedVisitorMap, Visitor};
 use rustc_hir::{Expr, HirId, HirIdMap, HirIdSet, Node};
+use rustc_session::lint;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
-use syntax::ast;
 
 use std::collections::VecDeque;
 use std::io;
@@ -144,11 +144,11 @@ enum LiveNodeKind {
 }
 
 fn live_node_kind_to_string(lnk: LiveNodeKind, tcx: TyCtxt<'_>) -> String {
-    let cm = tcx.sess.source_map();
+    let sm = tcx.sess.source_map();
     match lnk {
-        UpvarNode(s) => format!("Upvar node [{}]", cm.span_to_string(s)),
-        ExprNode(s) => format!("Expr node [{}]", cm.span_to_string(s)),
-        VarDefNode(s) => format!("Var def node [{}]", cm.span_to_string(s)),
+        UpvarNode(s) => format!("Upvar node [{}]", sm.span_to_string(s)),
+        ExprNode(s) => format!("Expr node [{}]", sm.span_to_string(s)),
+        VarDefNode(s) => format!("Var def node [{}]", sm.span_to_string(s)),
         ExitNode => "Exit node".to_owned(),
     }
 }
@@ -156,8 +156,8 @@ fn live_node_kind_to_string(lnk: LiveNodeKind, tcx: TyCtxt<'_>) -> String {
 impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
     type Map = Map<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::OnlyBodies(self.tcx.hir())
     }
 
     fn visit_fn(
@@ -398,7 +398,7 @@ fn visit_fn<'tcx>(
     intravisit::walk_fn(&mut fn_maps, fk, decl, body_id, sp, id);
 
     // compute liveness
-    let mut lsets = Liveness::new(&mut fn_maps, body_id);
+    let mut lsets = Liveness::new(&mut fn_maps, def_id);
     let entry_ln = lsets.compute(&body.value);
 
     // check for various error conditions
@@ -658,6 +658,7 @@ const ACC_USE: u32 = 4;
 struct Liveness<'a, 'tcx> {
     ir: &'a mut IrMaps<'tcx>,
     tables: &'a ty::TypeckTables<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
     s: Specials,
     successors: Vec<LiveNode>,
     rwu_table: RWUTable,
@@ -670,7 +671,7 @@ struct Liveness<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Liveness<'a, 'tcx> {
-    fn new(ir: &'a mut IrMaps<'tcx>, body: hir::BodyId) -> Liveness<'a, 'tcx> {
+    fn new(ir: &'a mut IrMaps<'tcx>, def_id: DefId) -> Liveness<'a, 'tcx> {
         // Special nodes and variables:
         // - exit_ln represents the end of the fn, either by return or panic
         // - implicit_ret_var is a pseudo-variable that represents
@@ -681,7 +682,8 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             clean_exit_var: ir.add_variable(CleanExit),
         };
 
-        let tables = ir.tcx.body_tables(body);
+        let tables = ir.tcx.typeck_tables_of(def_id);
+        let param_env = ir.tcx.param_env(def_id);
 
         let num_live_nodes = ir.num_live_nodes;
         let num_vars = ir.num_vars;
@@ -689,6 +691,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
         Liveness {
             ir,
             tables,
+            param_env,
             s: specials,
             successors: vec![invalid_node(); num_live_nodes],
             rwu_table: RWUTable::new(num_live_nodes * num_vars),
@@ -1125,8 +1128,12 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             }
 
             hir::ExprKind::Call(ref f, ref args) => {
-                let m = self.ir.tcx.hir().get_module_parent(expr.hir_id);
-                let succ = if self.ir.tcx.is_ty_uninhabited_from(m, self.tables.expr_ty(expr)) {
+                let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
+                let succ = if self.ir.tcx.is_ty_uninhabited_from(
+                    m,
+                    self.tables.expr_ty(expr),
+                    self.param_env,
+                ) {
                     self.s.exit_ln
                 } else {
                     succ
@@ -1136,8 +1143,12 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             }
 
             hir::ExprKind::MethodCall(.., ref args) => {
-                let m = self.ir.tcx.hir().get_module_parent(expr.hir_id);
-                let succ = if self.ir.tcx.is_ty_uninhabited_from(m, self.tables.expr_ty(expr)) {
+                let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
+                let succ = if self.ir.tcx.is_ty_uninhabited_from(
+                    m,
+                    self.tables.expr_ty(expr),
+                    self.param_env,
+                ) {
                     self.s.exit_ln
                 } else {
                     succ
@@ -1359,9 +1370,9 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
 // Checking for error conditions
 
 impl<'a, 'tcx> Visitor<'tcx> for Liveness<'a, 'tcx> {
-    type Map = Map<'tcx>;
+    type Map = intravisit::ErasedMap<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 

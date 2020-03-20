@@ -12,6 +12,7 @@ use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::{GeneratorKind, HirIdMap, Node};
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_infer::infer::TyCtxtInferExt;
 use rustc_span::symbol::kw;
 use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
@@ -38,12 +39,12 @@ fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> BodyAndCache<'_> {
             ..
         })
         | Node::ImplItem(hir::ImplItem {
-            kind: hir::ImplItemKind::Method(hir::FnSig { decl, .. }, body_id),
+            kind: hir::ImplItemKind::Fn(hir::FnSig { decl, .. }, body_id),
             ..
         })
         | Node::TraitItem(hir::TraitItem {
             kind:
-                hir::TraitItemKind::Method(hir::FnSig { decl, .. }, hir::TraitMethod::Provided(body_id)),
+                hir::TraitItemKind::Fn(hir::FnSig { decl, .. }, hir::TraitFn::Provided(body_id)),
             ..
         }) => (*body_id, decl.output.span()),
         Node::Item(hir::Item { kind: hir::ItemKind::Static(ty, _, body_id), .. })
@@ -417,7 +418,7 @@ struct GuardFrameLocal {
 
 impl GuardFrameLocal {
     fn new(id: hir::HirId, _binding_mode: BindingMode) -> Self {
-        GuardFrameLocal { id: id }
+        GuardFrameLocal { id }
     }
 }
 
@@ -670,14 +671,51 @@ fn construct_const<'a, 'tcx>(
     builder.finish()
 }
 
+/// Construct MIR for a item that has had errors in type checking.
+///
+/// This is required because we may still want to run MIR passes on an item
+/// with type errors, but normal MIR construction can't handle that in general.
 fn construct_error<'a, 'tcx>(hir: Cx<'a, 'tcx>, body_id: hir::BodyId) -> Body<'tcx> {
-    let owner_id = hir.tcx().hir().body_owner(body_id);
-    let span = hir.tcx().hir().span(owner_id);
-    let ty = hir.tcx().types.err;
-    let mut builder = Builder::new(hir, span, 0, Safety::Safe, ty, span, None);
+    let tcx = hir.tcx();
+    let owner_id = tcx.hir().body_owner(body_id);
+    let span = tcx.hir().span(owner_id);
+    let ty = tcx.types.err;
+    let num_params = match hir.body_owner_kind {
+        hir::BodyOwnerKind::Fn => tcx.hir().fn_decl_by_hir_id(owner_id).unwrap().inputs.len(),
+        hir::BodyOwnerKind::Closure => {
+            if tcx.hir().body(body_id).generator_kind().is_some() {
+                // Generators have an implicit `self` parameter *and* a possibly
+                // implicit resume parameter.
+                2
+            } else {
+                // The implicit self parameter adds another local in MIR.
+                1 + tcx.hir().fn_decl_by_hir_id(owner_id).unwrap().inputs.len()
+            }
+        }
+        hir::BodyOwnerKind::Const => 0,
+        hir::BodyOwnerKind::Static(_) => 0,
+    };
+    let mut builder = Builder::new(hir, span, num_params, Safety::Safe, ty, span, None);
     let source_info = builder.source_info(span);
+    // Some MIR passes will expect the number of parameters to match the
+    // function declaration.
+    for _ in 0..num_params {
+        builder.local_decls.push(LocalDecl {
+            mutability: Mutability::Mut,
+            ty,
+            user_ty: UserTypeProjections::none(),
+            source_info,
+            internal: false,
+            local_info: LocalInfo::Other,
+            is_block_tail: None,
+        });
+    }
     builder.cfg.terminate(START_BLOCK, source_info, TerminatorKind::Unreachable);
-    builder.finish()
+    let mut body = builder.finish();
+    if tcx.hir().body(body_id).generator_kind.is_some() {
+        body.yield_ty = Some(ty);
+    }
+    body
 }
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
@@ -844,7 +882,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                             span: tcx_hir.span(var_id),
                         },
                         place: Place {
-                            local: closure_env_arg.into(),
+                            local: closure_env_arg,
                             projection: tcx.intern_place_elems(&projs),
                         },
                     });
@@ -889,7 +927,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         self.local_decls[local].local_info = if let Some(kind) = self_binding {
                             LocalInfo::User(ClearCrossCrate::Set(BindingForm::ImplicitSelf(*kind)))
                         } else {
-                            let binding_mode = ty::BindingMode::BindByValue(mutability.into());
+                            let binding_mode = ty::BindingMode::BindByValue(mutability);
                             LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(
                                 VarBindingForm {
                                     binding_mode,
