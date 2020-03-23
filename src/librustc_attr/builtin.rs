@@ -2,6 +2,7 @@
 
 use super::{find_by_name, mark_used};
 
+use rustc_ast::ast::{self, Attribute, MetaItem, MetaItemKind, NestedMetaItem};
 use rustc_ast_pretty::pprust;
 use rustc_errors::{struct_span_err, Applicability, Handler};
 use rustc_feature::{find_gated_cfg, is_builtin_attr_name, Features, GatedCfg};
@@ -10,7 +11,6 @@ use rustc_session::parse::{feature_err, ParseSess};
 use rustc_span::hygiene::Transparency;
 use rustc_span::{symbol::sym, symbol::Symbol, Span};
 use std::num::NonZeroU32;
-use syntax::ast::{self, Attribute, MetaItem, MetaItemKind, NestedMetaItem};
 
 pub fn is_builtin_attr(attr: &Attribute) -> bool {
     attr.is_doc_comment() || attr.ident().filter(|ident| is_builtin_attr_name(ident.name)).is_some()
@@ -53,7 +53,7 @@ fn handle_errors(sess: &ParseSess, span: Span, error: AttrError) {
                     err.span_suggestion(
                         span,
                         "consider removing the prefix",
-                        format!("{}", &lint_str[1..]),
+                        lint_str[1..].to_string(),
                         Applicability::MaybeIncorrect,
                     );
                 }
@@ -1024,7 +1024,7 @@ pub enum TransparencyError {
 
 pub fn find_transparency(
     attrs: &[Attribute],
-    is_legacy: bool,
+    macro_rules: bool,
 ) -> (Transparency, Option<TransparencyError>) {
     let mut transparency = None;
     let mut error = None;
@@ -1049,7 +1049,7 @@ pub fn find_transparency(
             }
         }
     }
-    let fallback = if is_legacy { Transparency::SemiTransparent } else { Transparency::Opaque };
+    let fallback = if macro_rules { Transparency::SemiTransparent } else { Transparency::Opaque };
     (transparency.map_or(fallback, |t| t.0), error)
 }
 

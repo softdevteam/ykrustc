@@ -1,8 +1,11 @@
 use crate::HashStableContext;
+use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::AtomicRef;
 use rustc_index::vec::Idx;
+use rustc_macros::HashStable_Generic;
 use rustc_serialize::{Decoder, Encoder};
+use std::borrow::Borrow;
 use std::fmt;
 use std::{u32, u64};
 
@@ -22,7 +25,7 @@ pub enum CrateNum {
 
 /// Item definitions in the currently-compiled crate would have the `CrateNum`
 /// `LOCAL_CRATE` in their `DefId`.
-pub const LOCAL_CRATE: CrateNum = CrateNum::Index(CrateId::from_u32_const(0));
+pub const LOCAL_CRATE: CrateNum = CrateNum::Index(CrateId::from_u32(0));
 
 impl Idx for CrateNum {
     #[inline]
@@ -102,6 +105,28 @@ impl ::std::fmt::Debug for CrateNum {
     }
 }
 
+#[derive(
+    Copy,
+    Clone,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Debug,
+    RustcEncodable,
+    RustcDecodable,
+    HashStable_Generic
+)]
+pub struct DefPathHash(pub Fingerprint);
+
+impl Borrow<Fingerprint> for DefPathHash {
+    #[inline]
+    fn borrow(&self) -> &Fingerprint {
+        &self.0
+    }
+}
+
 rustc_index::newtype_index! {
     /// A DefIndex is an index into the hir-map for a crate, identifying a
     /// particular definition. It should really be considered an interned
@@ -130,7 +155,7 @@ impl DefId {
     /// Makes a local `DefId` from the given `DefIndex`.
     #[inline]
     pub fn local(index: DefIndex) -> DefId {
-        DefId { krate: LOCAL_CRATE, index: index }
+        DefId { krate: LOCAL_CRATE, index }
     }
 
     #[inline]
@@ -139,8 +164,13 @@ impl DefId {
     }
 
     #[inline]
-    pub fn to_local(self) -> LocalDefId {
-        LocalDefId::from_def_id(self)
+    pub fn as_local(self) -> Option<LocalDefId> {
+        if self.is_local() { Some(LocalDefId { local_def_index: self.index }) } else { None }
+    }
+
+    #[inline]
+    pub fn expect_local(self) -> LocalDefId {
+        self.as_local().unwrap_or_else(|| panic!("DefId::expect_local: `{:?}` isn't local", self))
     }
 
     pub fn is_top_level_module(self) -> bool {
@@ -185,19 +215,26 @@ rustc_data_structures::define_id_collections!(DefIdMap, DefIdSet, DefId);
 /// few cases where we know that only DefIds from the local crate are expected
 /// and a DefId from a different crate would signify a bug somewhere. This
 /// is when LocalDefId comes in handy.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LocalDefId(DefIndex);
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LocalDefId {
+    pub local_def_index: DefIndex,
+}
+
+impl Idx for LocalDefId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        LocalDefId { local_def_index: Idx::new(idx) }
+    }
+    #[inline]
+    fn index(self) -> usize {
+        self.local_def_index.index()
+    }
+}
 
 impl LocalDefId {
     #[inline]
-    pub fn from_def_id(def_id: DefId) -> LocalDefId {
-        assert!(def_id.is_local());
-        LocalDefId(def_id.index)
-    }
-
-    #[inline]
     pub fn to_def_id(self) -> DefId {
-        DefId { krate: LOCAL_CRATE, index: self.0 }
+        DefId { krate: LOCAL_CRATE, index: self.local_def_index }
     }
 }
 

@@ -4,8 +4,8 @@ use super::_match::{expand_pattern, is_useful, MatchCheckCtxt, Matrix, PatStack}
 
 use super::{PatCtxt, PatKind, PatternError};
 
-use rustc::hir::map::Map;
 use rustc::ty::{self, Ty, TyCtxt};
+use rustc_ast::ast::Mutability;
 use rustc_errors::{error_code, struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def::*;
@@ -17,7 +17,6 @@ use rustc_session::lint::builtin::{IRREFUTABLE_LET_PATTERNS, UNREACHABLE_PATTERN
 use rustc_session::parse::feature_err;
 use rustc_session::Session;
 use rustc_span::{sym, Span};
-use syntax::ast::Mutability;
 
 use std::slice;
 
@@ -43,9 +42,9 @@ struct MatchVisitor<'a, 'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for MatchVisitor<'_, 'tcx> {
-    type Map = Map<'tcx>;
+    type Map = intravisit::ErasedMap<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 
@@ -86,6 +85,9 @@ impl PatCtxt<'_, '_> {
                 }
                 PatternError::AssocConstInPattern(span) => {
                     self.span_e0158(span, "associated consts cannot be referenced in patterns")
+                }
+                PatternError::ConstParamInPattern(span) => {
+                    self.span_e0158(span, "const parameters cannot be referenced in patterns")
                 }
                 PatternError::FloatBug => {
                     // FIXME(#31407) this is only necessary because float parsing is buggy
@@ -142,8 +144,8 @@ impl<'tcx> MatchVisitor<'_, 'tcx> {
     }
 
     fn check_in_cx(&self, hir_id: HirId, f: impl FnOnce(MatchCheckCtxt<'_, 'tcx>)) {
-        let module = self.tcx.hir().get_module_parent(hir_id);
-        MatchCheckCtxt::create_and_enter(self.tcx, self.param_env, module, |cx| f(cx));
+        let module = self.tcx.parent_module(hir_id);
+        MatchCheckCtxt::create_and_enter(self.tcx, self.param_env, module.to_def_id(), |cx| f(cx));
     }
 
     fn check_match(
@@ -659,7 +661,7 @@ fn check_borrow_conflicts_in_at_patterns(cx: &MatchVisitor<'_, '_>, pat: &Pat<'_
             });
             if !conflicts_ref.is_empty() {
                 let occurs_because = format!(
-                    "move occurs because `{}` has type `{}` which does implement the `Copy` trait",
+                    "move occurs because `{}` has type `{}` which does not implement the `Copy` trait",
                     name,
                     tables.node_type(pat.hir_id),
                 );
@@ -750,9 +752,9 @@ fn check_legality_of_bindings_in_at_patterns(cx: &MatchVisitor<'_, '_>, pat: &Pa
     }
 
     impl<'v> Visitor<'v> for AtBindingPatternVisitor<'_, '_, '_> {
-        type Map = Map<'v>;
+        type Map = intravisit::ErasedMap<'v>;
 
-        fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+        fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
             NestedVisitorMap::None
         }
 

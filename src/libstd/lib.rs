@@ -233,14 +233,14 @@
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
-#![feature(atomic_mut_ptr)]
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
 #![feature(asm)]
-#![feature(assoc_int_consts)]
 #![feature(associated_type_bounds)]
+#![feature(atomic_mut_ptr)]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
+#![cfg_attr(not(bootstrap), feature(cfg_accessible))]
 #![feature(cfg_target_has_atomic)]
 #![feature(cfg_target_thread_local)]
 #![feature(char_error_internals)]
@@ -256,7 +256,6 @@
 #![feature(doc_cfg)]
 #![feature(doc_keyword)]
 #![feature(doc_masked)]
-#![feature(doc_spotlight)]
 #![feature(dropck_eyepatch)]
 #![feature(duration_constants)]
 #![feature(exact_size_is_empty)]
@@ -294,7 +293,8 @@
 #![feature(shrink_to)]
 #![feature(slice_concat_ext)]
 #![feature(slice_internals)]
-#![feature(specialization)]
+#![cfg_attr(bootstrap, feature(specialization))]
+#![cfg_attr(not(bootstrap), feature(min_specialization))]
 #![feature(staged_api)]
 #![feature(std_internals)]
 #![feature(stdsimd)]
@@ -310,6 +310,7 @@
 #![feature(untagged_unions)]
 #![feature(unwind_attributes)]
 #![feature(yk_swt)]
+#![feature(vec_into_raw_parts)]
 // NB: the above list is sorted to minimize merge conflicts.
 #![default_lib_allocator]
 
@@ -550,6 +551,9 @@ pub use core::{
     stringify,
     trace_macros,
 };
+
+#[stable(feature = "core_primitive", since = "1.43.0")]
+pub use core::primitive;
 
 // Include a number of private modules that exist solely to provide
 // the rustdoc documentation for primitive types. Using `include!`

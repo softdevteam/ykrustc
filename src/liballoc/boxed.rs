@@ -200,7 +200,7 @@ impl<T> Box<T> {
             let ptr = if layout.size() == 0 {
                 NonNull::dangling()
             } else {
-                Global.alloc(layout).unwrap_or_else(|_| alloc::handle_alloc_error(layout)).cast()
+                Global.alloc(layout).unwrap_or_else(|_| alloc::handle_alloc_error(layout)).0.cast()
             };
             Box::from_raw(ptr.as_ptr())
         }
@@ -270,7 +270,7 @@ impl<T> Box<[T]> {
             let ptr = if layout.size() == 0 {
                 NonNull::dangling()
             } else {
-                Global.alloc(layout).unwrap_or_else(|_| alloc::handle_alloc_error(layout)).cast()
+                Global.alloc(layout).unwrap_or_else(|_| alloc::handle_alloc_error(layout)).0.cast()
             };
             Box::from_raw(slice::from_raw_parts_mut(ptr.as_ptr(), len))
         }
@@ -825,7 +825,7 @@ impl From<Box<str>> for Box<[u8]> {
     }
 }
 
-#[unstable(feature = "boxed_slice_try_from", issue = "none")]
+#[stable(feature = "boxed_slice_try_from", since = "1.43.0")]
 impl<T, const N: usize> TryFrom<Box<[T]>> for Box<[T; N]>
 where
     [T; N]: LengthAtMost32,
@@ -1105,29 +1105,6 @@ impl<T: ?Sized> AsMut<T> for Box<T> {
 #[stable(feature = "pin", since = "1.33.0")]
 impl<T: ?Sized> Unpin for Box<T> {}
 
-#[cfg(bootstrap)]
-#[unstable(feature = "generator_trait", issue = "43122")]
-impl<G: ?Sized + Generator + Unpin> Generator for Box<G> {
-    type Yield = G::Yield;
-    type Return = G::Return;
-
-    fn resume(mut self: Pin<&mut Self>) -> GeneratorState<Self::Yield, Self::Return> {
-        G::resume(Pin::new(&mut *self))
-    }
-}
-
-#[cfg(bootstrap)]
-#[unstable(feature = "generator_trait", issue = "43122")]
-impl<G: ?Sized + Generator> Generator for Pin<Box<G>> {
-    type Yield = G::Yield;
-    type Return = G::Return;
-
-    fn resume(mut self: Pin<&mut Self>) -> GeneratorState<Self::Yield, Self::Return> {
-        G::resume((*self).as_mut())
-    }
-}
-
-#[cfg(not(bootstrap))]
 #[unstable(feature = "generator_trait", issue = "43122")]
 impl<G: ?Sized + Generator<R> + Unpin, R> Generator<R> for Box<G> {
     type Yield = G::Yield;
@@ -1138,7 +1115,6 @@ impl<G: ?Sized + Generator<R> + Unpin, R> Generator<R> for Box<G> {
     }
 }
 
-#[cfg(not(bootstrap))]
 #[unstable(feature = "generator_trait", issue = "43122")]
 impl<G: ?Sized + Generator<R>, R> Generator<R> for Pin<Box<G>> {
     type Yield = G::Yield;

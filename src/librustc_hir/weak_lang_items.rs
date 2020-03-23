@@ -3,9 +3,9 @@
 use crate::def_id::DefId;
 use crate::{lang_items, LangItem, LanguageItems};
 
+use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_span::symbol::{sym, Symbol};
-use syntax::ast;
 
 use lazy_static::lazy_static;
 
@@ -43,6 +43,5 @@ impl LanguageItems {
 weak_lang_items! {
     panic_impl,         PanicImplLangItem,          rust_begin_unwind;
     eh_personality,     EhPersonalityLangItem,      rust_eh_personality;
-    eh_unwind_resume,   EhUnwindResumeLangItem,     rust_eh_unwind_resume;
     oom,                OomLangItem,                rust_oom;
 }

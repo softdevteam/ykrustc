@@ -935,8 +935,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "tell the linker to strip debuginfo when building without debuginfo enabled."),
     share_generics: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "make the current crate share its generic instantiations"),
-    chalk: bool = (false, parse_bool, [TRACKED],
-        "enable the experimental Chalk-based trait solving engine"),
     no_parallel_llvm: bool = (false, parse_bool, [UNTRACKED],
         "don't run LLVM in parallel (while keeping codegen-units and ThinLTO)"),
     no_leak_check: bool = (false, parse_bool, [UNTRACKED],
@@ -953,7 +951,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "specifies which kinds of events get recorded by the self profiler;
         for example: `-Z self-profile-events=default,query-keys`
         all options: none, all, default, generic-activity, query-provider, query-cache-hit
-                     query-blocked, incr-cache-load, query-keys"),
+                     query-blocked, incr-cache-load, query-keys, function-args, args, llvm"),
     emit_stack_sizes: bool = (false, parse_bool, [UNTRACKED],
         "emits a section containing stack size metadata"),
     plt: Option<bool> = (None, parse_opt_bool, [TRACKED],

@@ -1,10 +1,17 @@
 use crate::expand::{self, AstFragment, Invocation};
+use crate::module::DirectoryOwnership;
 
+use rustc_ast::ast::{self, Attribute, Name, NodeId, PatKind};
+use rustc_ast::mut_visit::{self, MutVisitor};
+use rustc_ast::ptr::P;
+use rustc_ast::token;
+use rustc_ast::tokenstream::{self, TokenStream, TokenTree};
+use rustc_ast::visit::{AssocCtxt, Visitor};
 use rustc_attr::{self as attr, Deprecation, HasAttrs, Stability};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::{self, Lrc};
 use rustc_errors::{DiagnosticBuilder, DiagnosticId};
-use rustc_parse::{self, parser, DirectoryOwnership, MACRO_ARGUMENTS};
+use rustc_parse::{self, parser, MACRO_ARGUMENTS};
 use rustc_session::parse::ParseSess;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{AstPass, ExpnData, ExpnId, ExpnKind};
@@ -12,12 +19,6 @@ use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{FileName, MultiSpan, Span, DUMMY_SP};
 use smallvec::{smallvec, SmallVec};
-use syntax::ast::{self, Attribute, Name, NodeId, PatKind};
-use syntax::mut_visit::{self, MutVisitor};
-use syntax::ptr::P;
-use syntax::token;
-use syntax::tokenstream::{self, TokenStream};
-use syntax::visit::{AssocCtxt, Visitor};
 
 use std::default::Default;
 use std::iter;
@@ -116,6 +117,31 @@ impl Annotatable {
             Annotatable::StructField(sf) => visitor.visit_struct_field(sf),
             Annotatable::Variant(v) => visitor.visit_variant(v),
         }
+    }
+
+    crate fn into_tokens(self) -> TokenStream {
+        // `Annotatable` can be converted into tokens directly, but we
+        // are packing it into a nonterminal as a piece of AST to make
+        // the produced token stream look nicer in pretty-printed form.
+        let nt = match self {
+            Annotatable::Item(item) => token::NtItem(item),
+            Annotatable::TraitItem(item) | Annotatable::ImplItem(item) => {
+                token::NtItem(P(item.and_then(ast::AssocItem::into_item)))
+            }
+            Annotatable::ForeignItem(item) => {
+                token::NtItem(P(item.and_then(ast::ForeignItem::into_item)))
+            }
+            Annotatable::Stmt(stmt) => token::NtStmt(stmt.into_inner()),
+            Annotatable::Expr(expr) => token::NtExpr(expr),
+            Annotatable::Arm(..)
+            | Annotatable::Field(..)
+            | Annotatable::FieldPat(..)
+            | Annotatable::GenericParam(..)
+            | Annotatable::Param(..)
+            | Annotatable::StructField(..)
+            | Annotatable::Variant(..) => panic!("unexpected annotatable"),
+        };
+        TokenTree::token(token::Interpolated(Lrc::new(nt)), DUMMY_SP).into()
     }
 
     pub fn expect_item(self) -> P<ast::Item> {
@@ -233,8 +259,17 @@ impl Annotatable {
     }
 }
 
-// `meta_item` is the annotation, and `item` is the item being modified.
-// FIXME Decorators should follow the same pattern too.
+/// Result of an expansion that may need to be retried.
+/// Consider using this for non-`MultiItemModifier` expanders as well.
+pub enum ExpandResult<T, U> {
+    /// Expansion produced a result (possibly dummy).
+    Ready(T),
+    /// Expansion could not produce a result and needs to be retried.
+    /// The string is an explanation that will be printed if we are stuck in an infinite retry loop.
+    Retry(U, String),
+}
+
+// `meta_item` is the attribute, and `item` is the item being modified.
 pub trait MultiItemModifier {
     fn expand(
         &self,
@@ -242,13 +277,12 @@ pub trait MultiItemModifier {
         span: Span,
         meta_item: &ast::MetaItem,
         item: Annotatable,
-    ) -> Vec<Annotatable>;
+    ) -> ExpandResult<Vec<Annotatable>, Annotatable>;
 }
 
-impl<F, T> MultiItemModifier for F
+impl<F> MultiItemModifier for F
 where
-    F: Fn(&mut ExtCtxt<'_>, Span, &ast::MetaItem, Annotatable) -> T,
-    T: Into<Vec<Annotatable>>,
+    F: Fn(&mut ExtCtxt<'_>, Span, &ast::MetaItem, Annotatable) -> Vec<Annotatable>,
 {
     fn expand(
         &self,
@@ -256,14 +290,8 @@ where
         span: Span,
         meta_item: &ast::MetaItem,
         item: Annotatable,
-    ) -> Vec<Annotatable> {
-        (*self)(ecx, span, meta_item, item).into()
-    }
-}
-
-impl Into<Vec<Annotatable>> for Annotatable {
-    fn into(self) -> Vec<Annotatable> {
-        vec![self]
+    ) -> ExpandResult<Vec<Annotatable>, Annotatable> {
+        ExpandResult::Ready(self(ecx, span, meta_item, item))
     }
 }
 
@@ -347,7 +375,7 @@ where
                 mut_visit::noop_visit_tt(tt, self)
             }
 
-            fn visit_mac(&mut self, mac: &mut ast::Mac) {
+            fn visit_mac(&mut self, mac: &mut ast::MacCall) {
                 mut_visit::noop_visit_mac(mac, self)
             }
         }
@@ -870,6 +898,7 @@ pub trait Resolver {
 
     fn has_derive_copy(&self, expn_id: ExpnId) -> bool;
     fn add_derive_copy(&mut self, expn_id: ExpnId);
+    fn cfg_accessible(&mut self, expn_id: ExpnId, path: &ast::Path) -> Result<bool, Indeterminate>;
 }
 
 #[derive(Clone)]
@@ -897,6 +926,8 @@ pub struct ExtCtxt<'a> {
     pub resolver: &'a mut dyn Resolver,
     pub current_expansion: ExpansionData,
     pub expansions: FxHashMap<Span, Vec<String>>,
+    /// Called directly after having parsed an external `mod foo;` in expansion.
+    pub(super) extern_mod_loaded: Option<&'a dyn Fn(&ast::Crate)>,
 }
 
 impl<'a> ExtCtxt<'a> {
@@ -904,12 +935,14 @@ impl<'a> ExtCtxt<'a> {
         parse_sess: &'a ParseSess,
         ecfg: expand::ExpansionConfig<'a>,
         resolver: &'a mut dyn Resolver,
+        extern_mod_loaded: Option<&'a dyn Fn(&ast::Crate)>,
     ) -> ExtCtxt<'a> {
         ExtCtxt {
             parse_sess,
             ecfg,
-            root_path: PathBuf::new(),
             resolver,
+            extern_mod_loaded,
+            root_path: PathBuf::new(),
             current_expansion: ExpansionData {
                 id: ExpnId::root(),
                 depth: 0,

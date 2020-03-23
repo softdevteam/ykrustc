@@ -2,10 +2,11 @@
 
 use crate::arena::Arena;
 use crate::dep_graph::DepGraph;
-use crate::dep_graph::{self, DepConstructor, DepNode};
+use crate::dep_graph::{self, DepConstructor};
 use crate::hir::exports::Export;
 use crate::hir::map as hir_map;
-use crate::hir::map::DefPathHash;
+use crate::hir::map::definitions::Definitions;
+use crate::hir::map::{DefPathData, DefPathHash};
 use crate::ich::{NodeIdHashingMode, StableHashingContext};
 use crate::infer::canonical::{Canonical, CanonicalVarInfo, CanonicalVarInfos};
 use crate::lint::{struct_lint_level, LintSource};
@@ -23,7 +24,6 @@ use crate::mir::{
 use crate::sir::Sir;
 use crate::traits;
 use crate::traits::{Clause, Clauses, Goal, GoalKind, Goals};
-use crate::ty::free_region_map::FreeRegionMap;
 use crate::ty::layout::{LayoutDetails, TargetDataLayout, VariantIdx};
 use crate::ty::query;
 use crate::ty::steal::Steal;
@@ -43,6 +43,9 @@ use crate::ty::{InferConst, ParamConst};
 use crate::ty::{List, TyKind, TyS};
 use crate::util::common::ErrorReported;
 use rustc::lint::LintDiagnosticBuilder;
+use rustc_ast::ast;
+use rustc_ast::expand::allocator::AllocatorKind;
+use rustc_ast::node_id::NodeMap;
 use rustc_attr as attr;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::profiling::SelfProfilerRef;
@@ -53,7 +56,7 @@ use rustc_data_structures::stable_hasher::{
 use rustc_data_structures::sync::{self, Lock, Lrc, WorkerLocal};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, DefIdSet, DefIndex, LOCAL_CRATE};
+use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, DefIdSet, LocalDefId, LOCAL_CRATE};
 use rustc_hir::{HirId, Node, TraitCandidate};
 use rustc_hir::{ItemKind, ItemLocalId, ItemLocalMap, ItemLocalSet};
 use rustc_index::vec::{Idx, IndexVec};
@@ -66,9 +69,6 @@ use rustc_span::source_map::MultiSpan;
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::Span;
 use rustc_target::spec::abi;
-use syntax::ast;
-use syntax::expand::allocator::AllocatorKind;
-use syntax::node_id::NodeMap;
 
 use smallvec::SmallVec;
 use std::any::Any;
@@ -206,13 +206,13 @@ fn validate_hir_id_for_typeck_tables(
     mut_access: bool,
 ) {
     if let Some(local_id_root) = local_id_root {
-        if hir_id.owner != local_id_root.index {
+        if hir_id.owner.to_def_id() != local_id_root {
             ty::tls::with(|tcx| {
                 bug!(
                     "node {} with HirId::owner {:?} cannot be placed in \
-                        TypeckTables with local_id_root {:?}",
+                     TypeckTables with local_id_root {:?}",
                     tcx.hir().node_to_string(hir_id),
-                    DefId::local(hir_id.owner),
+                    hir_id.owner,
                     local_id_root
                 )
             });
@@ -416,11 +416,6 @@ pub struct TypeckTables<'tcx> {
     /// this field will be set to `true`.
     pub tainted_by_errors: bool,
 
-    /// Stores the free-region relationships that were deduced from
-    /// its where-clauses and parameter types. These are then
-    /// read-again by borrowck.
-    pub free_region_map: FreeRegionMap<'tcx>,
-
     /// All the opaque types that are restricted to concrete types
     /// by this function.
     pub concrete_opaque_types: FxHashMap<DefId, ResolvedOpaqueTy<'tcx>>,
@@ -456,7 +451,6 @@ impl<'tcx> TypeckTables<'tcx> {
             coercion_casts: Default::default(),
             used_trait_imports: Lrc::new(Default::default()),
             tainted_by_errors: false,
-            free_region_map: Default::default(),
             concrete_opaque_types: Default::default(),
             upvar_list: Default::default(),
             generator_interior_types: Default::default(),
@@ -612,7 +606,7 @@ impl<'tcx> TypeckTables<'tcx> {
         }
 
         match self.type_dependent_defs().get(expr.hir_id) {
-            Some(Ok((DefKind::Method, _))) => true,
+            Some(Ok((DefKind::AssocFn, _))) => true,
             _ => false,
         }
     }
@@ -719,7 +713,6 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckTables<'tcx> {
 
             ref used_trait_imports,
             tainted_by_errors,
-            ref free_region_map,
             ref concrete_opaque_types,
             ref upvar_list,
             ref generator_interior_types,
@@ -740,10 +733,12 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckTables<'tcx> {
 
                 let local_id_root = local_id_root.expect("trying to hash invalid TypeckTables");
 
-                let var_owner_def_id =
-                    DefId { krate: local_id_root.krate, index: var_path.hir_id.owner };
+                let var_owner_def_id = DefId {
+                    krate: local_id_root.krate,
+                    index: var_path.hir_id.owner.local_def_index,
+                };
                 let closure_def_id =
-                    DefId { krate: local_id_root.krate, index: closure_expr_id.to_def_id().index };
+                    DefId { krate: local_id_root.krate, index: closure_expr_id.local_def_index };
                 (
                     hcx.def_path_hash(var_owner_def_id),
                     var_path.hir_id.local_id,
@@ -757,7 +752,6 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckTables<'tcx> {
             coercion_casts.hash_stable(hcx, hasher);
             used_trait_imports.hash_stable(hcx, hasher);
             tainted_by_errors.hash_stable(hcx, hasher);
-            free_region_map.hash_stable(hcx, hasher);
             concrete_opaque_types.hash_stable(hcx, hasher);
             upvar_list.hash_stable(hcx, hasher);
             generator_interior_types.hash_stable(hcx, hasher);
@@ -917,9 +911,9 @@ pub struct FreeRegionInfo {
 /// The central data structure of the compiler. It stores references
 /// to the various **arenas** and also houses the results of the
 /// various **compiler queries** that have been performed. See the
-/// [rustc guide] for more details.
+/// [rustc dev guide] for more details.
 ///
-/// [rustc guide]: https://rust-lang.github.io/rustc-guide/ty.html
+/// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/ty.html
 #[derive(Copy, Clone)]
 #[rustc_diagnostic_item = "TyCtxt"]
 pub struct TyCtxt<'tcx> {
@@ -939,7 +933,7 @@ pub struct GlobalCtxt<'tcx> {
 
     interners: CtxtInterners<'tcx>,
 
-    cstore: Box<CrateStoreDyn>,
+    pub(crate) cstore: Box<CrateStoreDyn>,
 
     pub sess: &'tcx Session,
 
@@ -967,13 +961,13 @@ pub struct GlobalCtxt<'tcx> {
 
     /// Map indicating what traits are in scope for places where this
     /// is relevant; generated by resolve.
-    trait_map: FxHashMap<DefIndex, FxHashMap<ItemLocalId, StableVec<TraitCandidate>>>,
+    trait_map: FxHashMap<LocalDefId, FxHashMap<ItemLocalId, StableVec<TraitCandidate>>>,
 
     /// Export map produced by name resolution.
     export_map: FxHashMap<DefId, Vec<Export<hir::HirId>>>,
 
-    /// This should usually be accessed with the `tcx.hir()` method.
-    pub(crate) hir_map: hir_map::Map<'tcx>,
+    pub(crate) untracked_crate: &'tcx hir::Crate<'tcx>,
+    pub(crate) definitions: &'tcx Definitions,
 
     /// A map from `DefPathHash` -> `DefId`. Includes `DefId`s from the local crate
     /// as well as all upstream crates. Only populated in incremental mode.
@@ -1120,7 +1114,9 @@ impl<'tcx> TyCtxt<'tcx> {
         extern_providers: ty::query::Providers<'tcx>,
         arena: &'tcx WorkerLocal<Arena<'tcx>>,
         resolutions: ty::ResolverOutputs,
-        hir: hir_map::Map<'tcx>,
+        krate: &'tcx hir::Crate<'tcx>,
+        definitions: &'tcx Definitions,
+        dep_graph: DepGraph,
         on_disk_query_result_cache: query::OnDiskCache<'tcx>,
         crate_name: &str,
         output_filenames: &OutputFilenames,
@@ -1132,7 +1128,6 @@ impl<'tcx> TyCtxt<'tcx> {
         let common_types = CommonTypes::new(&interners);
         let common_lifetimes = CommonLifetimes::new(&interners);
         let common_consts = CommonConsts::new(&interners, &common_types);
-        let dep_graph = hir.dep_graph.clone();
         let cstore = resolutions.cstore;
         let crates = cstore.crates_untracked();
         let max_cnum = crates.iter().map(|c| c.as_usize()).max().unwrap_or(0);
@@ -1143,7 +1138,7 @@ impl<'tcx> TyCtxt<'tcx> {
             let def_path_tables = crates
                 .iter()
                 .map(|&cnum| (cnum, cstore.def_path_table(cnum)))
-                .chain(iter::once((LOCAL_CRATE, hir.definitions().def_path_table())));
+                .chain(iter::once((LOCAL_CRATE, definitions.def_path_table())));
 
             // Precompute the capacity of the hashmap so we don't have to
             // re-allocate when populating it.
@@ -1163,8 +1158,12 @@ impl<'tcx> TyCtxt<'tcx> {
 
         let mut trait_map: FxHashMap<_, FxHashMap<_, _>> = FxHashMap::default();
         for (k, v) in resolutions.trait_map {
-            let hir_id = hir.node_to_hir_id(k);
+            let hir_id = definitions.node_to_hir_id(k);
             let map = trait_map.entry(hir_id.owner).or_default();
+            let v = v
+                .into_iter()
+                .map(|tc| tc.map_import_ids(|id| definitions.node_to_hir_id(id)))
+                .collect();
             map.insert(hir_id.local_id, StableVec::new(v));
         }
 
@@ -1185,28 +1184,31 @@ impl<'tcx> TyCtxt<'tcx> {
                 .export_map
                 .into_iter()
                 .map(|(k, v)| {
-                    let exports: Vec<_> =
-                        v.into_iter().map(|e| e.map_id(|id| hir.node_to_hir_id(id))).collect();
+                    let exports: Vec<_> = v
+                        .into_iter()
+                        .map(|e| e.map_id(|id| definitions.node_to_hir_id(id)))
+                        .collect();
                     (k, exports)
                 })
                 .collect(),
             maybe_unused_trait_imports: resolutions
                 .maybe_unused_trait_imports
                 .into_iter()
-                .map(|id| hir.local_def_id_from_node_id(id))
+                .map(|id| definitions.local_def_id(id))
                 .collect(),
             maybe_unused_extern_crates: resolutions
                 .maybe_unused_extern_crates
                 .into_iter()
-                .map(|(id, sp)| (hir.local_def_id_from_node_id(id), sp))
+                .map(|(id, sp)| (definitions.local_def_id(id), sp))
                 .collect(),
             glob_map: resolutions
                 .glob_map
                 .into_iter()
-                .map(|(id, names)| (hir.local_def_id_from_node_id(id), names))
+                .map(|(id, names)| (definitions.local_def_id(id), names))
                 .collect(),
             extern_prelude: resolutions.extern_prelude,
-            hir_map: hir,
+            untracked_crate: krate,
+            definitions,
             def_path_hash_to_def_id,
             queries: query::Queries::new(providers, extern_providers, on_disk_query_result_cache),
             rcache: Default::default(),
@@ -1266,7 +1268,7 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn def_key(self, id: DefId) -> hir_map::DefKey {
-        if id.is_local() { self.hir().def_key(id) } else { self.cstore.def_key(id) }
+        if let Some(id) = id.as_local() { self.hir().def_key(id) } else { self.cstore.def_key(id) }
     }
 
     /// Converts a `DefId` into its fully expanded `DefPath` (every
@@ -1275,7 +1277,11 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Note that if `id` is not local to this crate, the result will
     ///  be a non-local `DefPath`.
     pub fn def_path(self, id: DefId) -> hir_map::DefPath {
-        if id.is_local() { self.hir().def_path(id) } else { self.cstore.def_path(id) }
+        if let Some(id) = id.as_local() {
+            self.hir().def_path(id)
+        } else {
+            self.cstore.def_path(id)
+        }
     }
 
     /// Returns whether or not the crate with CrateNum 'cnum'
@@ -1286,8 +1292,8 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[inline]
     pub fn def_path_hash(self, def_id: DefId) -> hir_map::DefPathHash {
-        if def_id.is_local() {
-            self.hir().definitions().def_path_hash(def_id.index)
+        if let Some(def_id) = def_id.as_local() {
+            self.definitions.def_path_hash(def_id)
         } else {
             self.cstore.def_path_hash(def_id)
         }
@@ -1334,9 +1340,9 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[inline(always)]
     pub fn create_stable_hashing_context(self) -> StableHashingContext<'tcx> {
-        let krate = self.gcx.hir_map.untracked_krate();
+        let krate = self.gcx.untracked_crate;
 
-        StableHashingContext::new(self.sess, krate, self.hir().definitions(), &*self.cstore)
+        StableHashingContext::new(self.sess, krate, self.definitions, &*self.cstore)
     }
 
     // This method makes sure that we have a DepNode and a Fingerprint for
@@ -1348,7 +1354,7 @@ impl<'tcx> TyCtxt<'tcx> {
         // We cannot use the query versions of crates() and crate_hash(), since
         // those would need the DepNodes that we are allocating here.
         for cnum in self.cstore.crates_untracked() {
-            let dep_node = DepNode::new(self, DepConstructor::CrateMetadata(cnum));
+            let dep_node = DepConstructor::CrateMetadata(self, cnum);
             let crate_hash = self.cstore.crate_hash_untracked(cnum);
             self.dep_graph.with_task(
                 dep_node,
@@ -1513,6 +1519,25 @@ impl<'tcx> TyCtxt<'tcx> {
                 .subst(*self, self.mk_substs([self.lifetimes.re_static.into()].iter())),
         )
     }
+
+    /// Returns a displayable description and article for the given `def_id` (e.g. `("a", "struct")`).
+    pub fn article_and_description(&self, def_id: DefId) -> (&'static str, &'static str) {
+        self.def_kind(def_id)
+            .map(|def_kind| (def_kind.article(), def_kind.descr(def_id)))
+            .unwrap_or_else(|| match self.def_key(def_id).disambiguated_data.data {
+                DefPathData::ClosureExpr => match self.generator_kind(def_id) {
+                    None => ("a", "closure"),
+                    Some(rustc_hir::GeneratorKind::Async(..)) => ("an", "async closure"),
+                    Some(rustc_hir::GeneratorKind::Gen) => ("a", "generator"),
+                },
+                DefPathData::LifetimeNs(..) => ("a", "lifetime"),
+                DefPathData::Impl => ("an", "implementation"),
+                DefPathData::TypeNs(..) | DefPathData::ValueNs(..) | DefPathData::MacroNs(..) => {
+                    unreachable!()
+                }
+                _ => bug!("article_and_description called on def_id {:?}", def_id),
+            })
+    }
 }
 
 impl<'tcx> GlobalCtxt<'tcx> {
@@ -1527,7 +1552,7 @@ impl<'tcx> GlobalCtxt<'tcx> {
         ty::tls::with_related_context(tcx, |icx| {
             let new_icx = ty::tls::ImplicitCtxt {
                 tcx,
-                query: icx.query.clone(),
+                query: icx.query,
                 diagnostics: icx.diagnostics,
                 layout_depth: icx.layout_depth,
                 task_deps: icx.task_deps,
@@ -1613,7 +1638,7 @@ pub mod tls {
 
     use crate::dep_graph::TaskDeps;
     use crate::ty::query;
-    use rustc_data_structures::sync::{self, Lock, Lrc};
+    use rustc_data_structures::sync::{self, Lock};
     use rustc_data_structures::thin_vec::ThinVec;
     use rustc_data_structures::OnDrop;
     use rustc_errors::Diagnostic;
@@ -1638,7 +1663,7 @@ pub mod tls {
 
         /// The current query job, if any. This is updated by `JobOwner::start` in
         /// `ty::query::plumbing` when executing a query.
-        pub query: Option<Lrc<query::QueryJob<'tcx>>>,
+        pub query: Option<query::QueryJobId>,
 
         /// Where to store diagnostics for the current query job, if any.
         /// This is updated by `JobOwner::start` in `ty::query::plumbing` when executing a query.
@@ -1689,6 +1714,7 @@ pub mod tls {
 
     /// Gets the pointer to the current `ImplicitCtxt`.
     #[cfg(not(parallel_compiler))]
+    #[inline]
     fn get_tlv() -> usize {
         TLV.with(|tlv| tlv.get())
     }
@@ -1702,7 +1728,7 @@ pub mod tls {
         set_tlv(context as *const _ as usize, || f(&context))
     }
 
-    /// Enters `GlobalCtxt` by setting up libsyntax callbacks and
+    /// Enters `GlobalCtxt` by setting up librustc_ast callbacks and
     /// creating a initial `TyCtxt` and `ImplicitCtxt`.
     /// This happens once per rustc session and `TyCtxt`s only exists
     /// inside the `f` function.
@@ -2238,22 +2264,22 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[inline]
     pub fn mk_mut_ref(self, r: Region<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        self.mk_ref(r, TypeAndMut { ty: ty, mutbl: hir::Mutability::Mut })
+        self.mk_ref(r, TypeAndMut { ty, mutbl: hir::Mutability::Mut })
     }
 
     #[inline]
     pub fn mk_imm_ref(self, r: Region<'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-        self.mk_ref(r, TypeAndMut { ty: ty, mutbl: hir::Mutability::Not })
+        self.mk_ref(r, TypeAndMut { ty, mutbl: hir::Mutability::Not })
     }
 
     #[inline]
     pub fn mk_mut_ptr(self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        self.mk_ptr(TypeAndMut { ty: ty, mutbl: hir::Mutability::Mut })
+        self.mk_ptr(TypeAndMut { ty, mutbl: hir::Mutability::Mut })
     }
 
     #[inline]
     pub fn mk_imm_ptr(self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        self.mk_ptr(TypeAndMut { ty: ty, mutbl: hir::Mutability::Not })
+        self.mk_ptr(TypeAndMut { ty, mutbl: hir::Mutability::Not })
     }
 
     #[inline]
@@ -2273,13 +2299,13 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[inline]
     pub fn intern_tup(self, ts: &[Ty<'tcx>]) -> Ty<'tcx> {
-        let kinds: Vec<_> = ts.into_iter().map(|&t| GenericArg::from(t)).collect();
+        let kinds: Vec<_> = ts.iter().map(|&t| GenericArg::from(t)).collect();
         self.mk_ty(Tuple(self.intern_substs(&kinds)))
     }
 
     pub fn mk_tup<I: InternAs<[Ty<'tcx>], Ty<'tcx>>>(self, iter: I) -> I::Output {
         iter.intern_with(|ts| {
-            let kinds: Vec<_> = ts.into_iter().map(|&t| GenericArg::from(t)).collect();
+            let kinds: Vec<_> = ts.iter().map(|&t| GenericArg::from(t)).collect();
             self.mk_ty(Tuple(self.intern_substs(&kinds)))
         })
     }
@@ -2375,7 +2401,7 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[inline]
     pub fn mk_ty_param(self, index: u32, name: Symbol) -> Ty<'tcx> {
-        self.mk_ty(Param(ParamTy { index, name: name }))
+        self.mk_ty(Param(ParamTy { index, name }))
     }
 
     #[inline]
@@ -2455,7 +2481,7 @@ impl<'tcx> TyCtxt<'tcx> {
         // FIXME consider asking the input slice to be sorted to avoid
         // re-interning permutations, in which case that would be asserted
         // here.
-        if preds.len() == 0 {
+        if preds.is_empty() {
             // The macro-generated method below asserts we don't intern an empty slice.
             List::empty()
         } else {
@@ -2464,31 +2490,31 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn intern_type_list(self, ts: &[Ty<'tcx>]) -> &'tcx List<Ty<'tcx>> {
-        if ts.len() == 0 { List::empty() } else { self._intern_type_list(ts) }
+        if ts.is_empty() { List::empty() } else { self._intern_type_list(ts) }
     }
 
     pub fn intern_substs(self, ts: &[GenericArg<'tcx>]) -> &'tcx List<GenericArg<'tcx>> {
-        if ts.len() == 0 { List::empty() } else { self._intern_substs(ts) }
+        if ts.is_empty() { List::empty() } else { self._intern_substs(ts) }
     }
 
     pub fn intern_projs(self, ps: &[ProjectionKind]) -> &'tcx List<ProjectionKind> {
-        if ps.len() == 0 { List::empty() } else { self._intern_projs(ps) }
+        if ps.is_empty() { List::empty() } else { self._intern_projs(ps) }
     }
 
     pub fn intern_place_elems(self, ts: &[PlaceElem<'tcx>]) -> &'tcx List<PlaceElem<'tcx>> {
-        if ts.len() == 0 { List::empty() } else { self._intern_place_elems(ts) }
+        if ts.is_empty() { List::empty() } else { self._intern_place_elems(ts) }
     }
 
     pub fn intern_canonical_var_infos(self, ts: &[CanonicalVarInfo]) -> CanonicalVarInfos<'tcx> {
-        if ts.len() == 0 { List::empty() } else { self._intern_canonical_var_infos(ts) }
+        if ts.is_empty() { List::empty() } else { self._intern_canonical_var_infos(ts) }
     }
 
     pub fn intern_clauses(self, ts: &[Clause<'tcx>]) -> Clauses<'tcx> {
-        if ts.len() == 0 { List::empty() } else { self._intern_clauses(ts) }
+        if ts.is_empty() { List::empty() } else { self._intern_clauses(ts) }
     }
 
     pub fn intern_goals(self, ts: &[Goal<'tcx>]) -> Goals<'tcx> {
-        if ts.len() == 0 { List::empty() } else { self._intern_goals(ts) }
+        if ts.is_empty() { List::empty() } else { self._intern_goals(ts) }
     }
 
     pub fn mk_fn_sig<I>(
@@ -2732,18 +2758,15 @@ pub fn provide(providers: &mut ty::query::Providers<'_>) {
     };
 
     providers.lookup_stability = |tcx, id| {
-        assert_eq!(id.krate, LOCAL_CRATE);
-        let id = tcx.hir().definitions().def_index_to_hir_id(id.index);
+        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
         tcx.stability().local_stability(id)
     };
     providers.lookup_const_stability = |tcx, id| {
-        assert_eq!(id.krate, LOCAL_CRATE);
-        let id = tcx.hir().definitions().def_index_to_hir_id(id.index);
+        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
         tcx.stability().local_const_stability(id)
     };
     providers.lookup_deprecation_entry = |tcx, id| {
-        assert_eq!(id.krate, LOCAL_CRATE);
-        let id = tcx.hir().definitions().def_index_to_hir_id(id.index);
+        let id = tcx.hir().local_def_id_to_hir_id(id.expect_local());
         tcx.stability().local_deprecation_entry(id)
     };
     providers.extern_mod_stmt_cnum = |tcx, id| {

@@ -1,8 +1,5 @@
 //! This query borrow-checks the MIR to (further) ensure it is not broken.
 
-use rustc::infer::InferCtxt;
-use rustc::lint::builtin::MUTABLE_BORROW_RESERVATION_CONFLICT;
-use rustc::lint::builtin::UNUSED_MUT;
 use rustc::mir::{
     read_only, traversal, Body, BodyAndCache, ClearCrossCrate, Local, Location, Mutability,
     Operand, Place, PlaceElem, PlaceRef, ReadOnlyBodyAndCache,
@@ -12,7 +9,7 @@ use rustc::mir::{Field, ProjectionElem, Promoted, Rvalue, Statement, StatementKi
 use rustc::mir::{Terminator, TerminatorKind};
 use rustc::ty::query::Providers;
 use rustc::ty::{self, RegionVid, TyCtxt};
-
+use rustc_ast::ast::Name;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::graph::dominators::Dominators;
 use rustc_errors::{Applicability, Diagnostic, DiagnosticBuilder};
@@ -20,6 +17,9 @@ use rustc_hir as hir;
 use rustc_hir::{def_id::DefId, HirId, Node};
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::IndexVec;
+use rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
+use rustc_session::lint::builtin::{MUTABLE_BORROW_RESERVATION_CONFLICT, UNUSED_MUT};
+use rustc_span::{Span, DUMMY_SP};
 
 use either::Either;
 use smallvec::SmallVec;
@@ -27,9 +27,6 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::mem;
 use std::rc::Rc;
-
-use rustc_span::{Span, DUMMY_SP};
-use syntax::ast::Name;
 
 use crate::dataflow;
 use crate::dataflow::generic::{Analysis, BorrowckFlowState as Flows, BorrowckResults};
@@ -86,11 +83,13 @@ crate struct Upvar {
     mutability: Mutability,
 }
 
+const DEREF_PROJECTION: &[PlaceElem<'_>; 1] = &[ProjectionElem::Deref];
+
 pub fn provide(providers: &mut Providers<'_>) {
     *providers = Providers { mir_borrowck, ..*providers };
 }
 
-fn mir_borrowck(tcx: TyCtxt<'_>, def_id: DefId) -> BorrowCheckResult<'_> {
+fn mir_borrowck(tcx: TyCtxt<'_>, def_id: DefId) -> &BorrowCheckResult<'_> {
     let (input_body, promoted) = tcx.mir_validated(def_id);
     debug!("run query mir_borrowck: {}", tcx.def_path_str(def_id));
 
@@ -101,7 +100,7 @@ fn mir_borrowck(tcx: TyCtxt<'_>, def_id: DefId) -> BorrowCheckResult<'_> {
     });
     debug!("mir_borrowck done");
 
-    opt_closure_req
+    tcx.arena.alloc(opt_closure_req)
 }
 
 fn do_mir_borrowck<'a, 'tcx>(
@@ -136,6 +135,9 @@ fn do_mir_borrowck<'a, 'tcx>(
 
     // Gather the upvars of a closure, if any.
     let tables = tcx.typeck_tables_of(def_id);
+    if tables.tainted_by_errors {
+        infcx.set_tainted_by_errors();
+    }
     let upvars: Vec<_> = tables
         .upvar_list
         .get(&def_id)
@@ -195,27 +197,40 @@ fn do_mir_borrowck<'a, 'tcx>(
         Rc::new(BorrowSet::build(tcx, body, locals_are_invalidated_at_exit, &mdpe.move_data));
 
     // Compute non-lexical lifetimes.
-    let nll::NllOutput { regioncx, polonius_output, opt_closure_req, nll_errors } =
-        nll::compute_regions(
-            infcx,
-            def_id,
-            free_regions,
-            body,
-            &promoted,
-            location_table,
-            param_env,
-            &mut flow_inits,
-            &mdpe.move_data,
-            &borrow_set,
-        );
+    let nll::NllOutput {
+        regioncx,
+        opaque_type_values,
+        polonius_output,
+        opt_closure_req,
+        nll_errors,
+    } = nll::compute_regions(
+        infcx,
+        def_id,
+        free_regions,
+        body,
+        &promoted,
+        location_table,
+        param_env,
+        &mut flow_inits,
+        &mdpe.move_data,
+        &borrow_set,
+    );
 
     // Dump MIR results into a file, if that is enabled. This let us
     // write unit-tests, as well as helping with debugging.
     nll::dump_mir_results(infcx, MirSource::item(def_id), &body, &regioncx, &opt_closure_req);
 
-    // We also have a `#[rustc_nll]` annotation that causes us to dump
+    // We also have a `#[rustc_regions]` annotation that causes us to dump
     // information.
-    nll::dump_annotation(infcx, &body, def_id, &regioncx, &opt_closure_req, &mut errors_buffer);
+    nll::dump_annotation(
+        infcx,
+        &body,
+        def_id,
+        &regioncx,
+        &opt_closure_req,
+        &opaque_type_values,
+        &mut errors_buffer,
+    );
 
     // The various `flow_*` structures can be large. We drop `flow_inits` here
     // so it doesn't overlap with the others below. This reduces peak memory
@@ -349,7 +364,7 @@ fn do_mir_borrowck<'a, 'tcx>(
         // Skip over locals that begin with an underscore or have no name
         match mbcx.local_names[local] {
             Some(name) => {
-                if name.as_str().starts_with("_") {
+                if name.as_str().starts_with('_') {
                     continue;
                 }
             }
@@ -389,6 +404,7 @@ fn do_mir_borrowck<'a, 'tcx>(
     }
 
     let result = BorrowCheckResult {
+        concrete_opaque_types: opaque_type_values,
         closure_requirements: opt_closure_req,
         used_mut_upvars: mbcx.used_mut_upvars,
     };
@@ -435,7 +451,7 @@ crate struct MirBorrowckCtxt<'cx, 'tcx> {
     /// for the activation of the borrow.
     reservation_warnings:
         FxHashMap<BorrowIndex, (Place<'tcx>, Span, Location, BorrowKind, BorrowData<'tcx>)>,
-    /// This field keeps track of move errors that are to be reported for given move indicies.
+    /// This field keeps track of move errors that are to be reported for given move indices.
     ///
     /// There are situations where many errors can be reported for a single move out (see #53807)
     /// and we want only the best of those errors.
@@ -449,10 +465,10 @@ crate struct MirBorrowckCtxt<'cx, 'tcx> {
     /// `BTreeMap` is used to preserve the order of insertions when iterating. This is necessary
     /// when errors in the map are being re-added to the error buffer so that errors with the
     /// same primary span come out in a consistent order.
-    move_error_reported: BTreeMap<Vec<MoveOutIndex>, (PlaceRef<'cx, 'tcx>, DiagnosticBuilder<'cx>)>,
+    move_error_reported: BTreeMap<Vec<MoveOutIndex>, (PlaceRef<'tcx>, DiagnosticBuilder<'cx>)>,
     /// This field keeps track of errors reported in the checking of uninitialized variables,
     /// so that we don't report seemingly duplicate errors.
-    uninitialized_error_reported: FxHashSet<PlaceRef<'cx, 'tcx>>,
+    uninitialized_error_reported: FxHashSet<PlaceRef<'tcx>>,
     /// Errors to be reported buffer
     errors_buffer: Vec<Diagnostic>,
     /// This field keeps track of all the local variables that are declared mut and are mutated.
@@ -654,8 +670,8 @@ impl<'cx, 'tcx> dataflow::generic::ResultsVisitor<'cx, 'tcx> for MirBorrowckCtxt
             }
             TerminatorKind::Assert { ref cond, expected: _, ref msg, target: _, cleanup: _ } => {
                 self.consume_operand(loc, (cond, span), flow_state);
-                use rustc::mir::interpret::PanicInfo;
-                if let PanicInfo::BoundsCheck { ref len, ref index } = *msg {
+                use rustc::mir::AssertKind;
+                if let AssertKind::BoundsCheck { ref len, ref index } = *msg {
                     self.consume_operand(loc, (len, span), flow_state);
                     self.consume_operand(loc, (index, span), flow_state);
                 }
@@ -824,9 +840,9 @@ enum InitializationRequiringAction {
     PartialAssignment,
 }
 
-struct RootPlace<'d, 'tcx> {
+struct RootPlace<'tcx> {
     place_local: Local,
-    place_projection: &'d [PlaceElem<'tcx>],
+    place_projection: &'tcx [PlaceElem<'tcx>],
     is_local_mutation_allowed: LocalMutationIsAllowed,
 }
 
@@ -1396,7 +1412,6 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     ) {
         debug!("check_for_invalidation_at_exit({:?})", borrow);
         let place = &borrow.borrowed_place;
-        let deref = [ProjectionElem::Deref];
         let mut root_place = PlaceRef { local: place.local, projection: &[] };
 
         // FIXME(nll-rfc#40): do more precise destructor tracking here. For now
@@ -1410,7 +1425,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 // Thread-locals might be dropped after the function exits
                 // We have to dereference the outer reference because
                 // borrows don't conflict behind shared references.
-                root_place.projection = &deref;
+                root_place.projection = DEREF_PROJECTION;
                 (true, true)
             } else {
                 (false, self.locals_are_invalidated_at_exit)
@@ -1509,7 +1524,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         &mut self,
         location: Location,
         desired_action: InitializationRequiringAction,
-        place_span: (PlaceRef<'cx, 'tcx>, Span),
+        place_span: (PlaceRef<'tcx>, Span),
         flow_state: &Flows<'cx, 'tcx>,
     ) {
         let maybe_uninits = &flow_state.uninits;
@@ -1575,16 +1590,16 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         &mut self,
         location: Location,
         desired_action: InitializationRequiringAction,
-        place_span: (PlaceRef<'cx, 'tcx>, Span),
+        place_span: (PlaceRef<'tcx>, Span),
         maybe_uninits: &BitSet<MovePathIndex>,
         from: u32,
         to: u32,
     ) {
         if let Some(mpi) = self.move_path_for_place(place_span.0) {
             let move_paths = &self.move_data.move_paths;
-            let mut child = move_paths[mpi].first_child;
-            while let Some(child_mpi) = child {
-                let child_move_path = &move_paths[child_mpi];
+
+            let root_path = &move_paths[mpi];
+            for (child_mpi, child_move_path) in root_path.children(move_paths) {
                 let last_proj = child_move_path.place.projection.last().unwrap();
                 if let ProjectionElem::ConstantIndex { offset, from_end, .. } = last_proj {
                     debug_assert!(!from_end, "Array constant indexing shouldn't be `from_end`.");
@@ -1606,7 +1621,6 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         }
                     }
                 }
-                child = child_move_path.next_sibling;
             }
         }
     }
@@ -1615,7 +1629,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         &mut self,
         location: Location,
         desired_action: InitializationRequiringAction,
-        place_span: (PlaceRef<'cx, 'tcx>, Span),
+        place_span: (PlaceRef<'tcx>, Span),
         flow_state: &Flows<'cx, 'tcx>,
     ) {
         let maybe_uninits = &flow_state.uninits;
@@ -1693,10 +1707,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     /// An Err result includes a tag indicated why the search failed.
     /// Currently this can only occur if the place is built off of a
     /// static variable, as we do not track those in the MoveData.
-    fn move_path_closest_to(
-        &mut self,
-        place: PlaceRef<'_, 'tcx>,
-    ) -> (PlaceRef<'cx, 'tcx>, MovePathIndex) {
+    fn move_path_closest_to(&mut self, place: PlaceRef<'tcx>) -> (PlaceRef<'tcx>, MovePathIndex) {
         match self.move_data.rev_lookup.find(place) {
             LookupResult::Parent(Some(mpi)) | LookupResult::Exact(mpi) => {
                 (self.move_data.move_paths[mpi].place.as_ref(), mpi)
@@ -1705,7 +1716,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         }
     }
 
-    fn move_path_for_place(&mut self, place: PlaceRef<'_, 'tcx>) -> Option<MovePathIndex> {
+    fn move_path_for_place(&mut self, place: PlaceRef<'tcx>) -> Option<MovePathIndex> {
         // If returns None, then there is no move path corresponding
         // to a direct owner of `place` (which means there is nothing
         // that borrowck tracks for its analysis).
@@ -1800,7 +1811,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         fn check_parent_of_field<'cx, 'tcx>(
             this: &mut MirBorrowckCtxt<'cx, 'tcx>,
             location: Location,
-            base: PlaceRef<'cx, 'tcx>,
+            base: PlaceRef<'tcx>,
             span: Span,
             flow_state: &Flows<'cx, 'tcx>,
         ) {
@@ -2013,7 +2024,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     }
 
     /// Adds the place into the used mutable variables set
-    fn add_used_mut<'d>(&mut self, root_place: RootPlace<'d, 'tcx>, flow_state: &Flows<'cx, 'tcx>) {
+    fn add_used_mut(&mut self, root_place: RootPlace<'tcx>, flow_state: &Flows<'cx, 'tcx>) {
         match root_place {
             RootPlace { place_local: local, place_projection: [], is_local_mutation_allowed } => {
                 // If the local may have been initialized, and it is now currently being
@@ -2047,11 +2058,11 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
 
     /// Whether this value can be written or borrowed mutably.
     /// Returns the root place if the place passed in is a projection.
-    fn is_mutable<'d>(
+    fn is_mutable(
         &self,
-        place: PlaceRef<'d, 'tcx>,
+        place: PlaceRef<'tcx>,
         is_local_mutation_allowed: LocalMutationIsAllowed,
-    ) -> Result<RootPlace<'d, 'tcx>, PlaceRef<'d, 'tcx>> {
+    ) -> Result<RootPlace<'tcx>, PlaceRef<'tcx>> {
         match place {
             PlaceRef { local, projection: [] } => {
                 let local = &self.body.local_decls[local];
@@ -2202,7 +2213,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     /// then returns the index of the field being projected. Note that this closure will always
     /// be `self` in the current MIR, because that is the only time we directly access the fields
     /// of a closure type.
-    pub fn is_upvar_field_projection(&self, place_ref: PlaceRef<'cx, 'tcx>) -> Option<Field> {
+    pub fn is_upvar_field_projection(&self, place_ref: PlaceRef<'tcx>) -> Option<Field> {
         let mut place_projection = place_ref.projection;
         let mut by_ref = false;
 

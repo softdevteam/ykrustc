@@ -7,7 +7,6 @@ use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
 use libc::{c_char, c_uint};
 use log::debug;
-use rustc::session::config::{self, Sanitizer};
 use rustc::ty::layout::{self, Align, Size, TyLayout};
 use rustc::ty::{self, Instance, SymbolName, Ty, TyCtxt};
 use rustc_codegen_ssa::base::to_immediate;
@@ -19,6 +18,7 @@ use rustc_codegen_ssa::MemFlags;
 use rustc_data_structures::const_cstr;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_session::config::{self, Sanitizer};
 use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
@@ -362,8 +362,8 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         rhs: Self::Value,
     ) -> (Self::Value, Self::Value) {
         use rustc::ty::{Int, Uint};
-        use syntax::ast::IntTy::*;
-        use syntax::ast::UintTy::*;
+        use rustc_ast::ast::IntTy::*;
+        use rustc_ast::ast::UintTy::*;
 
         let new_kind = match ty.kind {
             Int(t @ Isize) => Int(t.normalize(self.tcx.sess.target.ptr_width)),
@@ -1075,7 +1075,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                 args.as_ptr() as *const &llvm::Value,
                 args.len() as c_uint,
                 bundle,
-                UNNAMED,
             )
         }
     }

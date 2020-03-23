@@ -11,12 +11,6 @@ use crate::num::NonZeroUsize;
 use crate::ptr::{self, NonNull};
 use crate::usize;
 
-/// Represents the combination of a starting address and
-/// a total capacity of the returned block.
-#[unstable(feature = "allocator_api", issue = "32838")]
-#[derive(Debug)]
-pub struct Excess(pub NonNull<u8>, pub usize);
-
 const fn size_align<T>() -> (usize, usize) {
     (mem::size_of::<T>(), mem::align_of::<T>())
 }
@@ -144,6 +138,18 @@ impl Layout {
         // See rationale in `new` for why this is using an unsafe variant below
         debug_assert!(Layout::from_size_align(size, align).is_ok());
         unsafe { Layout::from_size_align_unchecked(size, align) }
+    }
+
+    /// Creates a `NonNull` that is dangling, but well-aligned for this Layout.
+    ///
+    /// Note that the pointer value may potentially represent a valid pointer,
+    /// which means this must not be used as a "not yet initialized"
+    /// sentinel value. Types that lazily allocate must track initialization by
+    /// some other means.
+    #[unstable(feature = "alloc_layout_extra", issue = "55724")]
+    pub const fn dangling(&self) -> NonNull<u8> {
+        // align is non-zero and a power of two
+        unsafe { NonNull::new_unchecked(self.align() as *mut u8) }
     }
 
     /// Creates a layout describing the record that can hold a value
@@ -593,28 +599,18 @@ pub unsafe trait GlobalAlloc {
 ///
 /// * the starting address for that memory block was previously
 ///   returned by a previous call to an allocation method (`alloc`,
-///   `alloc_zeroed`, `alloc_excess`) or reallocation method
-///   (`realloc`, `realloc_excess`), and
+///   `alloc_zeroed`) or reallocation method (`realloc`), and
 ///
 /// * the memory block has not been subsequently deallocated, where
 ///   blocks are deallocated either by being passed to a deallocation
-///   method (`dealloc`, `dealloc_one`, `dealloc_array`) or by being
-///   passed to a reallocation method (see above) that returns `Ok`.
+///   method (`dealloc`) or by being passed to a reallocation method
+///  (see above) that returns `Ok`.
 ///
-/// A note regarding zero-sized types and zero-sized layouts: many
-/// methods in the `AllocRef` trait state that allocation requests
-/// must be non-zero size, or else undefined behavior can result.
-///
-/// * If an `AllocRef` implementation chooses to return `Ok` in this
-///   case (i.e., the pointer denotes a zero-sized inaccessible block)
-///   then that returned pointer must be considered "currently
-///   allocated". On such an allocator, *all* methods that take
-///   currently-allocated pointers as inputs must accept these
-///   zero-sized pointers, *without* causing undefined behavior.
-///
-/// * In other words, if a zero-sized pointer can flow out of an
-///   allocator, then that allocator must likewise accept that pointer
-///   flowing back into its deallocation and reallocation methods.
+/// Unlike [`GlobalAlloc`], zero-sized allocations are allowed in
+/// `AllocRef`. If an underlying allocator does not support this (like
+/// jemalloc) or return a null pointer (such as `libc::malloc`), this case
+/// must be caught. In this case [`Layout::dangling()`] can be used to
+/// create a dangling, but aligned `NonNull<u8>`.
 ///
 /// Some of the methods require that a layout *fit* a memory block.
 /// What it means for a layout to "fit" a memory block means (or
@@ -625,11 +621,9 @@ pub unsafe trait GlobalAlloc {
 ///
 /// 2. The block's size must fall in the range `[use_min, use_max]`, where:
 ///
-///    * `use_min` is `self.usable_size(layout).0`, and
+///    * `use_min` is `layout.size()`, and
 ///
-///    * `use_max` is the capacity that was (or would have been)
-///      returned when (if) the block was allocated via a call to
-///      `alloc_excess` or `realloc_excess`.
+///    * `use_max` is the capacity that was returned.
 ///
 /// Note that:
 ///
@@ -642,6 +636,12 @@ pub unsafe trait GlobalAlloc {
 ///  * if a layout `k` fits a memory block (denoted by `ptr`)
 ///    currently allocated via an allocator `a`, then it is legal to
 ///    use that layout to deallocate it, i.e., `a.dealloc(ptr, k);`.
+///
+///  * if an allocator does not support overallocating, it is fine to
+///    simply return `layout.size()` as the allocated size.
+///
+/// [`GlobalAlloc`]: self::GlobalAlloc
+/// [`Layout::dangling()`]: self::Layout::dangling
 ///
 /// # Safety
 ///
@@ -663,16 +663,9 @@ pub unsafe trait GlobalAlloc {
 /// the future.
 #[unstable(feature = "allocator_api", issue = "32838")]
 pub unsafe trait AllocRef {
-    // (Note: some existing allocators have unspecified but well-defined
-    // behavior in response to a zero size allocation request ;
-    // e.g., in C, `malloc` of 0 will either return a null pointer or a
-    // unique pointer, but will not have arbitrary undefined
-    // behavior.
-    // However in jemalloc for example,
-    // `mallocx(0)` is documented as undefined behavior.)
-
-    /// Returns a pointer meeting the size and alignment guarantees of
-    /// `layout`.
+    /// On success, returns a pointer meeting the size and alignment
+    /// guarantees of `layout` and the actual size of the allocated block,
+    /// which must be greater than or equal to `layout.size()`.
     ///
     /// If this method returns an `Ok(addr)`, then the `addr` returned
     /// will be non-null address pointing to a block of storage
@@ -682,15 +675,6 @@ pub unsafe trait AllocRef {
     /// initialized. (Extension subtraits might restrict this
     /// behavior, e.g., to ensure initialization to particular sets of
     /// bit patterns.)
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe because undefined behavior can result
-    /// if the caller does not ensure that `layout` has non-zero size.
-    ///
-    /// (Extension subtraits might provide more specific bounds on
-    /// behavior, e.g., guarantee a sentinel address or a null pointer
-    /// in response to a zero-size allocation request.)
     ///
     /// # Errors
     ///
@@ -709,7 +693,7 @@ pub unsafe trait AllocRef {
     /// rather than directly invoking `panic!` or similar.
     ///
     /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr>;
+    fn alloc(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr>;
 
     /// Deallocate the memory referenced by `ptr`.
     ///
@@ -728,48 +712,38 @@ pub unsafe trait AllocRef {
     ///   to allocate that block of memory.
     unsafe fn dealloc(&mut self, ptr: NonNull<u8>, layout: Layout);
 
-    // == ALLOCATOR-SPECIFIC QUANTITIES AND LIMITS ==
-    // usable_size
-
-    /// Returns bounds on the guaranteed usable size of a successful
-    /// allocation created with the specified `layout`.
+    /// Behaves like `alloc`, but also ensures that the contents
+    /// are set to zero before being returned.
     ///
-    /// In particular, if one has a memory block allocated via a given
-    /// allocator `a` and layout `k` where `a.usable_size(k)` returns
-    /// `(l, u)`, then one can pass that block to `a.dealloc()` with a
-    /// layout in the size range [l, u].
+    /// # Errors
     ///
-    /// (All implementors of `usable_size` must ensure that
-    /// `l <= k.size() <= u`)
+    /// Returning `Err` indicates that either memory is exhausted or
+    /// `layout` does not meet allocator's size or alignment
+    /// constraints, just as in `alloc`.
     ///
-    /// Both the lower- and upper-bounds (`l` and `u` respectively)
-    /// are provided, because an allocator based on size classes could
-    /// misbehave if one attempts to deallocate a block without
-    /// providing a correct value for its size (i.e., one within the
-    /// range `[l, u]`).
+    /// Clients wishing to abort computation in response to an
+    /// allocation error are encouraged to call the [`handle_alloc_error`] function,
+    /// rather than directly invoking `panic!` or similar.
     ///
-    /// Clients who wish to make use of excess capacity are encouraged
-    /// to use the `alloc_excess` and `realloc_excess` instead, as
-    /// this method is constrained to report conservative values that
-    /// serve as valid bounds for *all possible* allocation method
-    /// calls.
-    ///
-    /// However, for clients that do not wish to track the capacity
-    /// returned by `alloc_excess` locally, this method is likely to
-    /// produce useful results.
-    #[inline]
-    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
-        (layout.size(), layout.size())
+    /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
+    fn alloc_zeroed(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
+        let size = layout.size();
+        let result = self.alloc(layout);
+        if let Ok((p, _)) = result {
+            unsafe { ptr::write_bytes(p.as_ptr(), 0, size) }
+        }
+        result
     }
 
     // == METHODS FOR MEMORY REUSE ==
-    // realloc. alloc_excess, realloc_excess
+    // realloc, realloc_zeroed, grow_in_place, grow_in_place_zeroed, shrink_in_place
 
     /// Returns a pointer suitable for holding data described by
     /// a new layout with `layout`’s alignment and a size given
-    /// by `new_size`. To
-    /// accomplish this, this may extend or shrink the allocation
-    /// referenced by `ptr` to fit the new layout.
+    /// by `new_size` and the actual size of the allocated block.
+    /// The latter is greater than or equal to `layout.size()`.
+    /// To accomplish this, the allocator may extend or shrink
+    /// the allocation referenced by `ptr` to fit the new layout.
     ///
     /// If this returns `Ok`, then ownership of the memory block
     /// referenced by `ptr` has been transferred to this
@@ -791,8 +765,6 @@ pub unsafe trait AllocRef {
     ///
     /// * `layout` must *fit* the `ptr` (see above). (The `new_size`
     ///   argument need not fit it.)
-    ///
-    /// * `new_size` must be greater than zero.
     ///
     /// * `new_size`, when rounded up to the nearest multiple of `layout.align()`,
     ///   must not overflow (i.e., the rounded value must be less than `usize::MAX`).
@@ -824,23 +796,25 @@ pub unsafe trait AllocRef {
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<NonNull<u8>, AllocErr> {
+    ) -> Result<(NonNull<u8>, usize), AllocErr> {
         let old_size = layout.size();
 
-        if new_size >= old_size {
-            if let Ok(()) = self.grow_in_place(ptr, layout, new_size) {
-                return Ok(ptr);
+        if new_size > old_size {
+            if let Ok(size) = self.grow_in_place(ptr, layout, new_size) {
+                return Ok((ptr, size));
             }
         } else if new_size < old_size {
-            if let Ok(()) = self.shrink_in_place(ptr, layout, new_size) {
-                return Ok(ptr);
+            if let Ok(size) = self.shrink_in_place(ptr, layout, new_size) {
+                return Ok((ptr, size));
             }
+        } else {
+            return Ok((ptr, new_size));
         }
 
         // otherwise, fall back on alloc + copy + dealloc.
         let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
         let result = self.alloc(new_layout);
-        if let Ok(new_ptr) = result {
+        if let Ok((new_ptr, _)) = result {
             ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), cmp::min(old_size, new_size));
             self.dealloc(ptr, layout);
         }
@@ -877,164 +851,29 @@ pub unsafe trait AllocRef {
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<NonNull<u8>, AllocErr> {
+    ) -> Result<(NonNull<u8>, usize), AllocErr> {
         let old_size = layout.size();
 
-        if new_size >= old_size {
-            if let Ok(()) = self.grow_in_place_zeroed(ptr, layout, new_size) {
-                return Ok(ptr);
+        if new_size > old_size {
+            if let Ok(size) = self.grow_in_place_zeroed(ptr, layout, new_size) {
+                return Ok((ptr, size));
             }
         } else if new_size < old_size {
-            if let Ok(()) = self.shrink_in_place(ptr, layout, new_size) {
-                return Ok(ptr);
+            if let Ok(size) = self.shrink_in_place(ptr, layout, new_size) {
+                return Ok((ptr, size));
             }
+        } else {
+            return Ok((ptr, new_size));
         }
 
         // otherwise, fall back on alloc + copy + dealloc.
         let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
         let result = self.alloc_zeroed(new_layout);
-        if let Ok(new_ptr) = result {
+        if let Ok((new_ptr, _)) = result {
             ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), cmp::min(old_size, new_size));
             self.dealloc(ptr, layout);
         }
         result
-    }
-
-    /// Behaves like `alloc`, but also ensures that the contents
-    /// are set to zero before being returned.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe for the same reasons that `alloc` is.
-    ///
-    /// # Errors
-    ///
-    /// Returning `Err` indicates that either memory is exhausted or
-    /// `layout` does not meet allocator's size or alignment
-    /// constraints, just as in `alloc`.
-    ///
-    /// Clients wishing to abort computation in response to an
-    /// allocation error are encouraged to call the [`handle_alloc_error`] function,
-    /// rather than directly invoking `panic!` or similar.
-    ///
-    /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
-    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
-        let size = layout.size();
-        let p = self.alloc(layout);
-        if let Ok(p) = p {
-            ptr::write_bytes(p.as_ptr(), 0, size);
-        }
-        p
-    }
-
-    /// Behaves like `alloc`, but also returns the whole size of
-    /// the returned block. For some `layout` inputs, like arrays, this
-    /// may include extra storage usable for additional data.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe for the same reasons that `alloc` is.
-    ///
-    /// # Errors
-    ///
-    /// Returning `Err` indicates that either memory is exhausted or
-    /// `layout` does not meet allocator's size or alignment
-    /// constraints, just as in `alloc`.
-    ///
-    /// Clients wishing to abort computation in response to an
-    /// allocation error are encouraged to call the [`handle_alloc_error`] function,
-    /// rather than directly invoking `panic!` or similar.
-    ///
-    /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
-    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
-        let usable_size = self.usable_size(&layout);
-        self.alloc(layout).map(|p| Excess(p, usable_size.1))
-    }
-
-    /// Behaves like `alloc`, but also returns the whole size of
-    /// the returned block. For some `layout` inputs, like arrays, this
-    /// may include extra storage usable for additional data.
-    /// Also it ensures that the contents are set to zero before being returned.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe for the same reasons that `alloc` is.
-    ///
-    /// # Errors
-    ///
-    /// Returning `Err` indicates that either memory is exhausted or
-    /// `layout` does not meet allocator's size or alignment
-    /// constraints, just as in `alloc`.
-    ///
-    /// Clients wishing to abort computation in response to an
-    /// allocation error are encouraged to call the [`handle_alloc_error`] function,
-    /// rather than directly invoking `panic!` or similar.
-    ///
-    /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
-    unsafe fn alloc_excess_zeroed(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
-        let usable_size = self.usable_size(&layout);
-        self.alloc_zeroed(layout).map(|p| Excess(p, usable_size.1))
-    }
-
-    /// Behaves like `realloc`, but also returns the whole size of
-    /// the returned block. For some `layout` inputs, like arrays, this
-    /// may include extra storage usable for additional data.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe for the same reasons that `realloc` is.
-    ///
-    /// # Errors
-    ///
-    /// Returning `Err` indicates that either memory is exhausted or
-    /// `layout` does not meet allocator's size or alignment
-    /// constraints, just as in `realloc`.
-    ///
-    /// Clients wishing to abort computation in response to a
-    /// reallocation error are encouraged to call the [`handle_alloc_error`] function,
-    /// rather than directly invoking `panic!` or similar.
-    ///
-    /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
-    unsafe fn realloc_excess(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<Excess, AllocErr> {
-        let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
-        let usable_size = self.usable_size(&new_layout);
-        self.realloc(ptr, layout, new_size).map(|p| Excess(p, usable_size.1))
-    }
-
-    /// Behaves like `realloc`, but also returns the whole size of
-    /// the returned block. For some `layout` inputs, like arrays, this
-    /// may include extra storage usable for additional data.
-    /// Also it ensures that the contents are set to zero before being returned.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe for the same reasons that `realloc` is.
-    ///
-    /// # Errors
-    ///
-    /// Returning `Err` indicates that either memory is exhausted or
-    /// `layout` does not meet allocator's size or alignment
-    /// constraints, just as in `realloc`.
-    ///
-    /// Clients wishing to abort computation in response to a
-    /// reallocation error are encouraged to call the [`handle_alloc_error`] function,
-    /// rather than directly invoking `panic!` or similar.
-    ///
-    /// [`handle_alloc_error`]: ../../alloc/alloc/fn.handle_alloc_error.html
-    unsafe fn realloc_excess_zeroed(
-        &mut self,
-        ptr: NonNull<u8>,
-        layout: Layout,
-        new_size: usize,
-    ) -> Result<Excess, AllocErr> {
-        let new_layout = Layout::from_size_align_unchecked(new_size, layout.align());
-        let usable_size = self.usable_size(&new_layout);
-        self.realloc_zeroed(ptr, layout, new_size).map(|p| Excess(p, usable_size.1))
     }
 
     /// Attempts to extend the allocation referenced by `ptr` to fit `new_size`.
@@ -1042,9 +881,10 @@ pub unsafe trait AllocRef {
     /// If this returns `Ok`, then the allocator has asserted that the
     /// memory block referenced by `ptr` now fits `new_size`, and thus can
     /// be used to carry data of a layout of that size and same alignment as
-    /// `layout`. (The allocator is allowed to
-    /// expend effort to accomplish this, such as extending the memory block to
-    /// include successor blocks, or virtual memory tricks.)
+    /// `layout`. The returned value is the new size of the allocated block.
+    /// (The allocator is allowed to expend effort to accomplish this, such
+    /// as extending the memory block to include successor blocks, or virtual
+    /// memory tricks.)
     ///
     /// Regardless of what this method returns, ownership of the
     /// memory block referenced by `ptr` has not been transferred, and
@@ -1072,18 +912,17 @@ pub unsafe trait AllocRef {
     /// function; clients are expected either to be able to recover from
     /// `grow_in_place` failures without aborting, or to fall back on
     /// another reallocation method before resorting to an abort.
+    #[inline]
     unsafe fn grow_in_place(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(), CannotReallocInPlace> {
-        let _ = ptr; // this default implementation doesn't care about the actual address.
-        debug_assert!(new_size >= layout.size());
-        let (_l, u) = self.usable_size(&layout);
-        // _l <= layout.size()                       [guaranteed by usable_size()]
-        //       layout.size() <= new_layout.size()  [required by this method]
-        if new_size <= u { Ok(()) } else { Err(CannotReallocInPlace) }
+    ) -> Result<usize, CannotReallocInPlace> {
+        let _ = ptr;
+        let _ = layout;
+        let _ = new_size;
+        Err(CannotReallocInPlace)
     }
 
     /// Behaves like `grow_in_place`, but also ensures that the new
@@ -1108,10 +947,10 @@ pub unsafe trait AllocRef {
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(), CannotReallocInPlace> {
-        self.grow_in_place(ptr, layout, new_size)?;
+    ) -> Result<usize, CannotReallocInPlace> {
+        let size = self.grow_in_place(ptr, layout, new_size)?;
         ptr.as_ptr().add(layout.size()).write_bytes(0, new_size - layout.size());
-        Ok(())
+        Ok(size)
     }
 
     /// Attempts to shrink the allocation referenced by `ptr` to fit `new_size`.
@@ -1119,7 +958,8 @@ pub unsafe trait AllocRef {
     /// If this returns `Ok`, then the allocator has asserted that the
     /// memory block referenced by `ptr` now fits `new_size`, and
     /// thus can only be used to carry data of that smaller
-    /// layout. (The allocator is allowed to take advantage of this,
+    /// layout. The returned value is the new size the allocated block.
+    /// (The allocator is allowed to take advantage of this,
     /// carving off portions of the block for reuse elsewhere.) The
     /// truncated contents of the block within the smaller layout are
     /// unaltered, and ownership of block has not been transferred.
@@ -1140,8 +980,7 @@ pub unsafe trait AllocRef {
     /// * `layout` must *fit* the `ptr` (see above); note the
     ///   `new_size` argument need not fit it,
     ///
-    /// * `new_size` must not be greater than `layout.size()`
-    ///   (and must be greater than zero),
+    /// * `new_size` must not be greater than `layout.size()`,
     ///
     /// # Errors
     ///
@@ -1153,17 +992,16 @@ pub unsafe trait AllocRef {
     /// function; clients are expected either to be able to recover from
     /// `shrink_in_place` failures without aborting, or to fall back
     /// on another reallocation method before resorting to an abort.
+    #[inline]
     unsafe fn shrink_in_place(
         &mut self,
         ptr: NonNull<u8>,
         layout: Layout,
         new_size: usize,
-    ) -> Result<(), CannotReallocInPlace> {
-        let _ = ptr; // this default implementation doesn't care about the actual address.
-        debug_assert!(new_size <= layout.size());
-        let (l, _u) = self.usable_size(&layout);
-        //                      layout.size() <= _u  [guaranteed by usable_size()]
-        // new_layout.size() <= layout.size()        [required by this method]
-        if l <= new_size { Ok(()) } else { Err(CannotReallocInPlace) }
+    ) -> Result<usize, CannotReallocInPlace> {
+        let _ = ptr;
+        let _ = layout;
+        let _ = new_size;
+        Err(CannotReallocInPlace)
     }
 }

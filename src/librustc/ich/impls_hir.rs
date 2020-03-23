@@ -105,6 +105,20 @@ impl<'ctx> rustc_hir::HashStableContext for StableHashingContext<'ctx> {
             }
         }
     }
+
+    fn hash_hir_item_like<F: FnOnce(&mut Self)>(&mut self, f: F) {
+        let prev_hash_node_ids = self.node_id_hashing_mode;
+        self.node_id_hashing_mode = NodeIdHashingMode::Ignore;
+
+        f(self);
+
+        self.node_id_hashing_mode = prev_hash_node_ids;
+    }
+
+    #[inline]
+    fn local_def_path_hash(&self, def_id: LocalDefId) -> DefPathHash {
+        self.local_def_path_hash(def_id)
+    }
 }
 
 impl<'a> ToStableHashKey<StableHashingContext<'a>> for DefId {
@@ -158,59 +172,6 @@ impl<'a> ToStableHashKey<StableHashingContext<'a>> for hir::ItemLocalId {
     }
 }
 
-impl<'a> HashStable<StableHashingContext<'a>> for hir::TraitItem<'_> {
-    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let hir::TraitItem { hir_id: _, ident, ref attrs, ref generics, ref kind, span } = *self;
-
-        hcx.hash_hir_item_like(|hcx| {
-            ident.name.hash_stable(hcx, hasher);
-            attrs.hash_stable(hcx, hasher);
-            generics.hash_stable(hcx, hasher);
-            kind.hash_stable(hcx, hasher);
-            span.hash_stable(hcx, hasher);
-        });
-    }
-}
-
-impl<'a> HashStable<StableHashingContext<'a>> for hir::ImplItem<'_> {
-    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let hir::ImplItem {
-            hir_id: _,
-            ident,
-            ref vis,
-            defaultness,
-            ref attrs,
-            ref generics,
-            ref kind,
-            span,
-        } = *self;
-
-        hcx.hash_hir_item_like(|hcx| {
-            ident.name.hash_stable(hcx, hasher);
-            vis.hash_stable(hcx, hasher);
-            defaultness.hash_stable(hcx, hasher);
-            attrs.hash_stable(hcx, hasher);
-            generics.hash_stable(hcx, hasher);
-            kind.hash_stable(hcx, hasher);
-            span.hash_stable(hcx, hasher);
-        });
-    }
-}
-
-impl<'a> HashStable<StableHashingContext<'a>> for hir::Item<'_> {
-    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let hir::Item { ident, ref attrs, hir_id: _, ref kind, ref vis, span } = *self;
-
-        hcx.hash_hir_item_like(|hcx| {
-            ident.name.hash_stable(hcx, hasher);
-            attrs.hash_stable(hcx, hasher);
-            kind.hash_stable(hcx, hasher);
-            vis.hash_stable(hcx, hasher);
-            span.hash_stable(hcx, hasher);
-        });
-    }
-}
-
 impl<'a> HashStable<StableHashingContext<'a>> for hir::Body<'_> {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         let hir::Body { params, value, generator_kind } = self;
@@ -236,21 +197,6 @@ impl<'a> ToStableHashKey<StableHashingContext<'a>> for hir::BodyId {
     }
 }
 
-impl<'a> HashStable<StableHashingContext<'a>> for hir::def_id::DefIndex {
-    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        hcx.local_def_path_hash(*self).hash_stable(hcx, hasher);
-    }
-}
-
-impl<'a> ToStableHashKey<StableHashingContext<'a>> for hir::def_id::DefIndex {
-    type KeyType = DefPathHash;
-
-    #[inline]
-    fn to_stable_hash_key(&self, hcx: &StableHashingContext<'a>) -> DefPathHash {
-        hcx.local_def_path_hash(*self)
-    }
-}
-
 impl<'a> HashStable<StableHashingContext<'a>> for hir::TraitCandidate {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
@@ -270,7 +216,6 @@ impl<'a> ToStableHashKey<StableHashingContext<'a>> for hir::TraitCandidate {
 
         let import_keys = import_ids
             .iter()
-            .map(|node_id| hcx.node_to_hir_id(*node_id))
             .map(|hir_id| (hcx.local_def_path_hash(hir_id.owner), hir_id.local_id))
             .collect();
         (hcx.def_path_hash(*def_id), import_keys)

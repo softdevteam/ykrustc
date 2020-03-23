@@ -5,6 +5,7 @@ use rustc::mir::interpret::{sign_extend, truncate};
 use rustc::ty::layout::{self, IntegerExt, LayoutOf, SizeSkeleton, VariantIdx};
 use rustc::ty::subst::SubstsRef;
 use rustc::ty::{self, AdtKind, ParamEnv, Ty, TyCtxt};
+use rustc_ast::ast;
 use rustc_attr as attr;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
@@ -16,7 +17,6 @@ use rustc_span::source_map;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
-use syntax::ast;
 
 use log::debug;
 use std::cmp;
@@ -83,9 +83,9 @@ fn lint_overflowing_range_endpoint<'a, 'tcx>(
                     // We need to preserve the literal's suffix,
                     // as it may determine typing information.
                     let suffix = match lit.node {
-                        LitKind::Int(_, LitIntType::Signed(s)) => format!("{}", s.name_str()),
-                        LitKind::Int(_, LitIntType::Unsigned(s)) => format!("{}", s.name_str()),
-                        LitKind::Int(_, LitIntType::Unsuffixed) => "".to_owned(),
+                        LitKind::Int(_, LitIntType::Signed(s)) => s.name_str().to_string(),
+                        LitKind::Int(_, LitIntType::Unsigned(s)) => s.name_str().to_string(),
+                        LitKind::Int(_, LitIntType::Unsuffixed) => "".to_string(),
                         _ => bug!(),
                     };
                     let suggestion = format!("{}..={}{}", start, lit_val - 1, suffix);
@@ -165,7 +165,7 @@ fn report_bin_hex_error(
         let mut err = lint.build(&format!("literal out of range for {}", t));
         err.note(&format!(
             "the literal `{}` (decimal `{}`) does not fit into \
-                    an `{}` and will become `{}{}`",
+             the type `{}` and will become `{}{}`",
             repr_str, val, t, actually, t
         ));
         if let Some(sugg_ty) = get_type_suggestion(&cx.tables.node_type(expr.hir_id), val, negative)
@@ -194,8 +194,8 @@ fn report_bin_hex_error(
 //
 // No suggestion for: `isize`, `usize`.
 fn get_type_suggestion(t: Ty<'_>, val: u128, negative: bool) -> Option<&'static str> {
-    use syntax::ast::IntTy::*;
-    use syntax::ast::UintTy::*;
+    use rustc_ast::ast::IntTy::*;
+    use rustc_ast::ast::UintTy::*;
     macro_rules! find_fit {
         ($ty:expr, $val:expr, $negative:expr,
          $($type:ident => [$($utypes:expr),*] => [$($itypes:expr),*]),+) => {
@@ -242,7 +242,7 @@ fn lint_int_literal<'a, 'tcx>(
     v: u128,
 ) {
     let int_type = t.normalize(cx.sess().target.ptr_width);
-    let (_, max) = int_ty_range(int_type);
+    let (min, max) = int_ty_range(int_type);
     let max = max as u128;
     let negative = type_limits.negated_expr_id == e.hir_id;
 
@@ -267,7 +267,19 @@ fn lint_int_literal<'a, 'tcx>(
         }
 
         cx.struct_span_lint(OVERFLOWING_LITERALS, e.span, |lint| {
-            lint.build(&format!("literal out of range for `{}`", t.name_str())).emit()
+            lint.build(&format!("literal out of range for `{}`", t.name_str()))
+                .note(&format!(
+                    "the literal `{}` does not fit into the type `{}` whose range is `{}..={}`",
+                    cx.sess()
+                        .source_map()
+                        .span_to_snippet(lit.span)
+                        .ok()
+                        .expect("must get snippet from literal"),
+                    t.name_str(),
+                    min,
+                    max,
+                ))
+                .emit();
         });
     }
 }
@@ -320,7 +332,19 @@ fn lint_uint_literal<'a, 'tcx>(
             return;
         }
         cx.struct_span_lint(OVERFLOWING_LITERALS, e.span, |lint| {
-            lint.build(&format!("literal out of range for `{}`", t.name_str())).emit()
+            lint.build(&format!("literal out of range for `{}`", t.name_str()))
+                .note(&format!(
+                    "the literal `{}` does not fit into the type `{}` whose range is `{}..={}`",
+                    cx.sess()
+                        .source_map()
+                        .span_to_snippet(lit.span)
+                        .ok()
+                        .expect("must get snippet from literal"),
+                    t.name_str(),
+                    min,
+                    max,
+                ))
+                .emit()
         });
     }
 }
@@ -352,7 +376,17 @@ fn lint_literal<'a, 'tcx>(
             };
             if is_infinite == Ok(true) {
                 cx.struct_span_lint(OVERFLOWING_LITERALS, e.span, |lint| {
-                    lint.build(&format!("literal out of range for `{}`", t.name_str())).emit()
+                    lint.build(&format!("literal out of range for `{}`", t.name_str()))
+                        .note(&format!(
+                            "the literal `{}` does not fit into the type `{}` and will be converted to `std::{}::INFINITY`",
+                            cx.sess()
+                                .source_map()
+                                .span_to_snippet(lit.span)
+                                .expect("must get snippet from literal"),
+                            t.name_str(),
+                            t.name_str(),
+                        ))
+                        .emit();
                 });
             }
         }
@@ -953,7 +987,7 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
             self.check_type_for_ffi_and_report_errors(input_hir.span, input_ty, false);
         }
 
-        if let hir::FunctionRetTy::Return(ref ret_hir) = decl.output {
+        if let hir::FnRetTy::Return(ref ret_hir) = decl.output {
             let ret_ty = sig.output();
             if !ret_ty.is_unit() {
                 self.check_type_for_ffi_and_report_errors(ret_hir.span, ret_ty, false);
@@ -998,10 +1032,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for VariantSizeDifferences {
             let ty = cx.tcx.erase_regions(&t);
             let layout = match cx.layout_of(ty) {
                 Ok(layout) => layout,
-                Err(ty::layout::LayoutError::Unknown(_)) => return,
-                Err(err @ ty::layout::LayoutError::SizeOverflow(_)) => {
-                    bug!("failed to get layout for `{}`: {}", t, err);
-                }
+                Err(ty::layout::LayoutError::Unknown(_))
+                | Err(ty::layout::LayoutError::SizeOverflow(_)) => return,
             };
             let (variants, tag) = match layout.variants {
                 layout::Variants::Multiple {

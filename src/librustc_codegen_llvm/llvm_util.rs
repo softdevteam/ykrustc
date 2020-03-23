@@ -2,10 +2,10 @@ use crate::back::write::create_informational_target_machine;
 use crate::llvm;
 use libc::c_int;
 use rustc::bug;
-use rustc::session::config::PrintRequest;
-use rustc::session::Session;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_feature::UnstableFeatures;
+use rustc_session::config::PrintRequest;
+use rustc_session::Session;
 use rustc_span::symbol::sym;
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::{MergeFunctions, PanicStrategy};
@@ -61,7 +61,7 @@ unsafe fn configure_llvm(sess: &Session) {
     let sess_args = cg_opts.chain(tg_opts);
 
     let user_specified_args: FxHashSet<_> =
-        sess_args.clone().map(|s| llvm_arg_to_arg_name(s)).filter(|s| s.len() > 0).collect();
+        sess_args.clone().map(|s| llvm_arg_to_arg_name(s)).filter(|s| !s.is_empty()).collect();
 
     {
         // This adds the given argument to LLVM. Unless `force` is true

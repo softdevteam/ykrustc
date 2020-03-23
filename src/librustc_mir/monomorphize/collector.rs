@@ -183,7 +183,6 @@ use rustc::mir::interpret::{ErrorHandled, GlobalAlloc, Scalar};
 use rustc::mir::mono::{InstantiationMode, MonoItem};
 use rustc::mir::visit::Visitor as MirVisitor;
 use rustc::mir::{self, Local, Location};
-use rustc::session::config::EntryFnType;
 use rustc::ty::adjustment::{CustomCoerceUnsized, PointerCast};
 use rustc::ty::print::obsolete::DefPathBasedNames;
 use rustc::ty::subst::{InternalSubsts, SubstsRef};
@@ -194,6 +193,7 @@ use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, DefIdMap, LOCAL_CRATE};
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_index::bit_set::GrowableBitSet;
+use rustc_session::config::EntryFnType;
 use smallvec::SmallVec;
 use std::iter;
 
@@ -357,7 +357,7 @@ fn collect_items_rec<'tcx>(
             recursion_depth_reset = None;
 
             if let Ok(val) = tcx.const_eval_poly(def_id) {
-                collect_const(tcx, val, InternalSubsts::empty(), &mut neighbors);
+                collect_const_value(tcx, val, &mut neighbors);
             }
         }
         MonoItem::Fn(instance) => {
@@ -401,10 +401,8 @@ fn record_accesses<'tcx>(
     // We collect this into a `SmallVec` to avoid calling `is_inlining_candidate` in the lock.
     // FIXME: Call `is_inlining_candidate` when pushing to `neighbors` in `collect_items_rec`
     // instead to avoid creating this `SmallVec`.
-    let accesses: SmallVec<[_; 128]> = callees
-        .into_iter()
-        .map(|mono_item| (*mono_item, is_inlining_candidate(mono_item)))
-        .collect();
+    let accesses: SmallVec<[_; 128]> =
+        callees.iter().map(|mono_item| (*mono_item, is_inlining_candidate(mono_item))).collect();
 
     inlining_map.lock_mut().record_accesses(caller, &accesses);
 }
@@ -826,11 +824,8 @@ fn find_vtable_types_for_unsizing<'tcx>(
         (&ty::Adt(source_adt_def, source_substs), &ty::Adt(target_adt_def, target_substs)) => {
             assert_eq!(source_adt_def, target_adt_def);
 
-            let kind = monomorphize::custom_coerce_unsize_info(tcx, source_ty, target_ty);
-
-            let coerce_index = match kind {
-                CustomCoerceUnsized::Struct(i) => i,
-            };
+            let CustomCoerceUnsized::Struct(coerce_index) =
+                monomorphize::custom_coerce_unsize_info(tcx, source_ty, target_ty);
 
             let source_fields = &source_adt_def.non_enum_variant().fields;
             let target_fields = &target_adt_def.non_enum_variant().fields;
@@ -971,7 +966,7 @@ impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
                 let def_id = self.tcx.hir().local_def_id(item.hir_id);
 
                 if let Ok(val) = self.tcx.const_eval_poly(def_id) {
-                    collect_const(self.tcx, val, InternalSubsts::empty(), &mut self.output);
+                    collect_const_value(self.tcx, val, &mut self.output);
                 }
             }
             hir::ItemKind::Fn(..) => {
@@ -988,7 +983,7 @@ impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
 
     fn visit_impl_item(&mut self, ii: &'v hir::ImplItem<'v>) {
         match ii.kind {
-            hir::ImplItemKind::Method(hir::FnSig { .. }, _) => {
+            hir::ImplItemKind::Fn(hir::FnSig { .. }, _) => {
                 let def_id = self.tcx.hir().local_def_id(ii.hir_id);
                 self.push_if_root(def_id);
             }
@@ -1093,9 +1088,9 @@ fn create_mono_items_for_default_impls<'tcx>(
                 let param_env = ty::ParamEnv::reveal_all();
                 let trait_ref = tcx.normalize_erasing_regions(param_env, trait_ref);
                 let overridden_methods: FxHashSet<_> =
-                    items.iter().map(|iiref| iiref.ident.modern()).collect();
+                    items.iter().map(|iiref| iiref.ident.normalize_to_macros_2_0()).collect();
                 for method in tcx.provided_trait_methods(trait_ref.def_id) {
-                    if overridden_methods.contains(&method.ident.modern()) {
+                    if overridden_methods.contains(&method.ident.normalize_to_macros_2_0()) {
                         continue;
                     }
 
@@ -1185,22 +1180,30 @@ fn collect_const<'tcx>(
         tcx.subst_and_normalize_erasing_regions(param_substs, param_env, &constant);
 
     match substituted_constant.val {
-        ty::ConstKind::Value(ConstValue::Scalar(Scalar::Ptr(ptr))) => {
-            collect_miri(tcx, ptr.alloc_id, output)
-        }
-        ty::ConstKind::Value(ConstValue::Slice { data: alloc, start: _, end: _ })
-        | ty::ConstKind::Value(ConstValue::ByRef { alloc, .. }) => {
-            for &((), id) in alloc.relocations().values() {
-                collect_miri(tcx, id, output);
-            }
-        }
+        ty::ConstKind::Value(val) => collect_const_value(tcx, val, output),
         ty::ConstKind::Unevaluated(def_id, substs, promoted) => {
             match tcx.const_eval_resolve(param_env, def_id, substs, promoted, None) {
-                Ok(val) => collect_const(tcx, val, param_substs, output),
+                Ok(val) => collect_const_value(tcx, val, output),
                 Err(ErrorHandled::Reported) => {}
                 Err(ErrorHandled::TooGeneric) => {
                     span_bug!(tcx.def_span(def_id), "collection encountered polymorphic constant",)
                 }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_const_value<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    value: ConstValue<'tcx>,
+    output: &mut Vec<MonoItem<'tcx>>,
+) {
+    match value {
+        ConstValue::Scalar(Scalar::Ptr(ptr)) => collect_miri(tcx, ptr.alloc_id, output),
+        ConstValue::Slice { data: alloc, start: _, end: _ } | ConstValue::ByRef { alloc, .. } => {
+            for &((), id) in alloc.relocations().values() {
+                collect_miri(tcx, id, output);
             }
         }
         _ => {}

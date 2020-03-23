@@ -5,7 +5,7 @@
 //! There are various `Emitter` implementations that generate different output formats such as
 //! JSON and human readable output.
 //!
-//! The output types are defined in `librustc::session::config::ErrorOutputType`.
+//! The output types are defined in `rustc_session::config::ErrorOutputType`.
 
 use Destination::*;
 
@@ -231,7 +231,7 @@ pub trait Emitter {
                ].contains(&sugg.style)
             {
                 let substitution = &sugg.substitutions[0].parts[0].snippet.trim();
-                let msg = if substitution.len() == 0 || sugg.style.hide_inline() {
+                let msg = if substitution.is_empty() || sugg.style.hide_inline() {
                     // This substitution is only removal OR we explicitly don't want to show the
                     // code inline (`hide_inline`). Therefore, we don't show the substitution.
                     format!("help: {}", sugg.msg)
@@ -414,22 +414,24 @@ pub trait Emitter {
     }
 
     // This does a small "fix" for multispans by looking to see if it can find any that
-    // point directly at <*macros>. Since these are often difficult to read, this
-    // will change the span to point at the use site.
+    // point directly at external macros. Since these are often difficult to read,
+    // this will change the span to point at the use site.
     fn fix_multispans_in_extern_macros(
         &self,
         source_map: &Option<Lrc<SourceMap>>,
         span: &mut MultiSpan,
         children: &mut Vec<SubDiagnostic>,
     ) {
-        for span in iter::once(span).chain(children.iter_mut().map(|child| &mut child.span)) {
+        debug!("fix_multispans_in_extern_macros: before: span={:?} children={:?}", span, children);
+        for span in iter::once(&mut *span).chain(children.iter_mut().map(|child| &mut child.span)) {
             self.fix_multispan_in_extern_macros(source_map, span);
         }
+        debug!("fix_multispans_in_extern_macros: after: span={:?} children={:?}", span, children);
     }
 
-    // This "fixes" MultiSpans that contain Spans that are pointing to locations inside of
-    // <*macros>. Since these locations are often difficult to read, we move these Spans from
-    // <*macros> to their corresponding use site.
+    // This "fixes" MultiSpans that contain `Span`s pointing to locations inside of external macros.
+    // Since these locations are often difficult to read,
+    // we move these spans from the external macros to their corresponding use site.
     fn fix_multispan_in_extern_macros(
         &self,
         source_map: &Option<Lrc<SourceMap>>,
@@ -440,14 +442,14 @@ pub trait Emitter {
             None => return,
         };
 
-        // First, find all the spans in <*macros> and point instead at their use site
+        // First, find all the spans in external macros and point instead at their use site.
         let replacements: Vec<(Span, Span)> = span
             .primary_spans()
             .iter()
             .copied()
             .chain(span.span_labels().iter().map(|sp_label| sp_label.span))
             .filter_map(|sp| {
-                if !sp.is_dummy() && sm.span_to_filename(sp).is_macros() {
+                if !sp.is_dummy() && sm.is_imported(sp) {
                     let maybe_callsite = sp.source_callsite();
                     if sp != maybe_callsite {
                         return Some((sp, maybe_callsite));
@@ -457,7 +459,7 @@ pub trait Emitter {
             })
             .collect();
 
-        // After we have them, make sure we replace these 'bad' def sites with their use sites
+        // After we have them, make sure we replace these 'bad' def sites with their use sites.
         for (from, to) in replacements {
             span.replace(from, to);
         }
@@ -472,6 +474,7 @@ impl Emitter for EmitterWriter {
     fn emit_diagnostic(&mut self, diag: &Diagnostic) {
         let mut children = diag.children.clone();
         let (mut primary_span, suggestions) = self.primary_span_formatted(&diag);
+        debug!("emit_diagnostic: suggestions={:?}", suggestions);
 
         self.fix_multispans_in_extern_macros_and_render_macro_backtrace(
             &self.sm,
@@ -1533,6 +1536,7 @@ impl EmitterWriter {
 
         // Render the replacements for each suggestion
         let suggestions = suggestion.splice_lines(&**sm);
+        debug!("emit_suggestion_default: suggestions={:?}", suggestions);
 
         if suggestions.is_empty() {
             // Suggestions coming from macros can have malformed spans. This is a heavy handed
@@ -1574,9 +1578,9 @@ impl EmitterWriter {
 
             let line_start = sm.lookup_char_pos(parts[0].span.lo()).line;
             draw_col_separator_no_space(&mut buffer, 1, max_line_num_len + 1);
-            let mut line_pos = 0;
             let mut lines = complete.lines();
-            for line in lines.by_ref().take(MAX_SUGGESTION_HIGHLIGHT_LINES) {
+            for (line_pos, line) in lines.by_ref().take(MAX_SUGGESTION_HIGHLIGHT_LINES).enumerate()
+            {
                 // Print the span column to avoid confusion
                 buffer.puts(
                     row_num,
@@ -1587,7 +1591,6 @@ impl EmitterWriter {
                 // print the suggestion
                 draw_col_separator(&mut buffer, row_num, max_line_num_len + 1);
                 buffer.append(row_num, line, Style::NoStyle);
-                line_pos += 1;
                 row_num += 1;
             }
 

@@ -8,7 +8,6 @@
 use crate::llvm::{self, BasicBlock};
 use crate::value::Value;
 use crate::{common, ModuleLlvm};
-use rustc::session::config::OutputType;
 use rustc::ty::TyCtxt;
 use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
 use rustc_data_structures::fx::FxHashMap;
@@ -18,6 +17,7 @@ use rustc_index::{
     newtype_index,
     vec::{Idx, IndexVec},
 };
+use rustc_session::config::OutputType;
 use std::default::Default;
 use std::ffi::CString;
 use ykpack;

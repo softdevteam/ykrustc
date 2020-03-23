@@ -22,7 +22,7 @@ pub fn change_closure_body() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody")]
+#[rustc_clean(cfg="cfail2", except="hir_owner_items")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_closure_body() {
     let _ = || 3u32;
@@ -38,7 +38,7 @@ pub fn add_parameter() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody, mir_built, optimized_mir, typeck_tables_of")]
+#[rustc_clean(cfg="cfail2", except="hir_owner_items, mir_built, optimized_mir, typeck_tables_of")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_parameter() {
     let x = 0u32;
@@ -54,7 +54,7 @@ pub fn change_parameter_pattern() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody, mir_built, typeck_tables_of")]
+#[rustc_clean(cfg="cfail2", except="hir_owner_items, mir_built, typeck_tables_of")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_parameter_pattern() {
     let _ = |(x,): (u32,)| x;
@@ -69,7 +69,7 @@ pub fn add_move() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody")]
+#[rustc_clean(cfg="cfail2", except="hir_owner_items")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_move() {
     let _ = move || 1;
@@ -85,8 +85,8 @@ pub fn add_type_ascription_to_parameter() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody, mir_built, typeck_tables_of")]
-#[rustc_clean(cfg="cfail3")]
+#[rustc_clean(cfg = "cfail2", except = "hir_owner_items, typeck_tables_of")]
+#[rustc_clean(cfg = "cfail3")]
 pub fn add_type_ascription_to_parameter() {
     let closure = |x: u32| x + 1u32;
     let _: u32 = closure(1);
@@ -102,7 +102,7 @@ pub fn change_parameter_type() {
 }
 
 #[cfg(not(cfail1))]
-#[rustc_clean(cfg="cfail2", except="HirBody, mir_built, optimized_mir, typeck_tables_of")]
+#[rustc_clean(cfg="cfail2", except="hir_owner_items, mir_built, optimized_mir, typeck_tables_of")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_parameter_type() {
     let closure = |x: u16| (x as u64) + 1;

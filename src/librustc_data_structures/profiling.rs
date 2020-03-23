@@ -81,6 +81,7 @@
 //!
 //! [mm]: https://github.com/rust-lang/measureme/
 
+use crate::cold_path;
 use crate::fx::FxHashMap;
 
 use std::borrow::Borrow;
@@ -127,6 +128,7 @@ bitflags::bitflags! {
 
         const QUERY_KEYS         = 1 << 5;
         const FUNCTION_ARGS      = 1 << 6;
+        const LLVM               = 1 << 7;
 
         const DEFAULT = Self::GENERIC_ACTIVITIES.bits |
                         Self::QUERY_PROVIDERS.bits |
@@ -150,6 +152,7 @@ const EVENT_FILTERS_BY_NAME: &[(&str, EventFilter)] = &[
     ("query-keys", EventFilter::QUERY_KEYS),
     ("function-args", EventFilter::FUNCTION_ARGS),
     ("args", EventFilter::ARGS),
+    ("llvm", EventFilter::LLVM),
 ];
 
 /// Something that uniquely identifies a query invocation.
@@ -364,6 +367,15 @@ impl SelfProfilerRef {
     pub fn enabled(&self) -> bool {
         self.profiler.is_some()
     }
+
+    #[inline]
+    pub fn llvm_recording_enabled(&self) -> bool {
+        self.event_filter_mask.contains(EventFilter::LLVM)
+    }
+    #[inline]
+    pub fn get_self_profiler(&self) -> Option<Arc<SelfProfiler>> {
+        self.profiler.clone()
+    }
 }
 
 pub struct SelfProfiler {
@@ -413,7 +425,7 @@ impl SelfProfiler {
             }
 
             // Warn about any unknown event names
-            if unknown_events.len() > 0 {
+            if !unknown_events.is_empty() {
                 unknown_events.sort();
                 unknown_events.dedup();
 
@@ -520,9 +532,11 @@ impl<'a> TimingGuard<'a> {
     #[inline]
     pub fn finish_with_query_invocation_id(self, query_invocation_id: QueryInvocationId) {
         if let Some(guard) = self.0 {
-            let event_id = StringId::new_virtual(query_invocation_id.0);
-            let event_id = EventId::from_virtual(event_id);
-            guard.finish_with_override_event_id(event_id);
+            cold_path(|| {
+                let event_id = StringId::new_virtual(query_invocation_id.0);
+                let event_id = EventId::from_virtual(event_id);
+                guard.finish_with_override_event_id(event_id);
+            });
         }
     }
 

@@ -5,19 +5,15 @@ use crate::util;
 use log::{info, log_enabled, warn};
 use rustc::arena::Arena;
 use rustc::dep_graph::DepGraph;
-use rustc::hir::map;
-use rustc::lint;
+use rustc::hir::map::Definitions;
 use rustc::middle;
 use rustc::middle::cstore::{CrateStore, MetadataLoader, MetadataLoaderDyn};
-use rustc::session::config::{self, CrateType, Input, OutputFilenames, OutputType};
-use rustc::session::config::{PpMode, PpSourceMode};
-use rustc::session::search_paths::PathKind;
-use rustc::session::Session;
 use rustc::sir::Sir;
-use rustc::traits;
 use rustc::ty::steal::Steal;
 use rustc::ty::{self, GlobalCtxt, ResolverOutputs, TyCtxt};
 use rustc::util::common::ErrorReported;
+use rustc_ast::mut_visit::MutVisitor;
+use rustc_ast::{self, ast, visit};
 use rustc_codegen_ssa::back::link::emit_metadata;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 use rustc_codegen_utils::link::filename_for_metadata;
@@ -34,11 +30,15 @@ use rustc_parse::{parse_crate_from_file, parse_crate_from_source_str};
 use rustc_passes::{self, hir_stats, layout_test};
 use rustc_plugin_impl as plugin;
 use rustc_resolve::{Resolver, ResolverArenas};
+use rustc_session::config::{self, CrateType, Input, OutputFilenames, OutputType};
+use rustc_session::config::{PpMode, PpSourceMode};
+use rustc_session::lint;
+use rustc_session::search_paths::PathKind;
+use rustc_session::Session;
 use rustc_span::symbol::Symbol;
 use rustc_span::FileName;
+use rustc_trait_selection::traits;
 use rustc_typeck as typeck;
-use syntax::mut_visit::MutVisitor;
-use syntax::{self, ast, visit};
 
 use rustc_serialize::json;
 use tempfile::Builder as TempFileBuilder;
@@ -190,7 +190,7 @@ pub fn register_plugins<'a>(
     }
 
     sess.time("recursion_limit", || {
-        middle::recursion_limit::update_limits(sess, &krate);
+        middle::limits::update_limits(sess, &krate);
     });
 
     let mut lint_store = rustc_lint::new_lint_store(
@@ -211,14 +211,7 @@ pub fn register_plugins<'a>(
     Ok((krate, Lrc::new(lint_store)))
 }
 
-fn configure_and_expand_inner<'a>(
-    sess: &'a Session,
-    lint_store: &'a LintStore,
-    mut krate: ast::Crate,
-    crate_name: &str,
-    resolver_arenas: &'a ResolverArenas<'a>,
-    metadata_loader: &'a MetadataLoaderDyn,
-) -> Result<(ast::Crate, Resolver<'a>)> {
+fn pre_expansion_lint(sess: &Session, lint_store: &LintStore, krate: &ast::Crate) {
     sess.time("pre_AST_expansion_lint_checks", || {
         rustc_lint::check_ast_crate(
             sess,
@@ -229,6 +222,17 @@ fn configure_and_expand_inner<'a>(
             rustc_lint::BuiltinCombinedPreExpansionLintPass::new(),
         );
     });
+}
+
+fn configure_and_expand_inner<'a>(
+    sess: &'a Session,
+    lint_store: &'a LintStore,
+    mut krate: ast::Crate,
+    crate_name: &str,
+    resolver_arenas: &'a ResolverArenas<'a>,
+    metadata_loader: &'a MetadataLoaderDyn,
+) -> Result<(ast::Crate, Resolver<'a>)> {
+    pre_expansion_lint(sess, lint_store, &krate);
 
     let mut resolver = Resolver::new(sess, &krate, crate_name, metadata_loader, &resolver_arenas);
     rustc_builtin_macros::register_builtin_macros(&mut resolver, sess.edition());
@@ -292,7 +296,8 @@ fn configure_and_expand_inner<'a>(
             ..rustc_expand::expand::ExpansionConfig::default(crate_name.to_string())
         };
 
-        let mut ecx = ExtCtxt::new(&sess.parse_sess, cfg, &mut resolver);
+        let extern_mod_loaded = |k: &ast::Crate| pre_expansion_lint(sess, lint_store, k);
+        let mut ecx = ExtCtxt::new(&sess.parse_sess, cfg, &mut resolver, Some(&extern_mod_loaded));
 
         // Expand macros now!
         let krate = sess.time("expand_crate", || ecx.monotonic_expander().expand_crate(krate));
@@ -697,8 +702,8 @@ impl<'tcx> QueryContext<'tcx> {
         ty::tls::enter_global(self.0, |tcx| f(tcx))
     }
 
-    pub fn print_stats(&self) {
-        self.0.queries.print_stats()
+    pub fn print_stats(&mut self) {
+        self.enter(|tcx| ty::query::print_stats(tcx))
     }
 }
 
@@ -714,10 +719,7 @@ pub fn create_global_ctxt<'tcx>(
     arena: &'tcx WorkerLocal<Arena<'tcx>>,
 ) -> QueryContext<'tcx> {
     let sess = &compiler.session();
-    let defs = mem::take(&mut resolver_outputs.definitions);
-
-    // Construct the HIR map.
-    let hir_map = map::map_crate(sess, &*resolver_outputs.cstore, krate, dep_graph, defs);
+    let defs: &'tcx Definitions = arena.alloc(mem::take(&mut resolver_outputs.definitions));
 
     let query_result_on_disk_cache = rustc_incremental::load_query_result_cache(sess);
 
@@ -743,7 +745,9 @@ pub fn create_global_ctxt<'tcx>(
                 extern_providers,
                 arena,
                 resolver_outputs,
-                hir_map,
+                krate,
+                defs,
+                dep_graph,
                 query_result_on_disk_cache,
                 &crate_name,
                 &outputs,
@@ -763,6 +767,8 @@ pub fn create_global_ctxt<'tcx>(
 /// miscellaneous analysis passes on the crate.
 fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
     assert_eq!(cnum, LOCAL_CRATE);
+
+    rustc::hir::map::check_crate(tcx);
 
     let sess = tcx.sess;
     let mut entry_point = None;
