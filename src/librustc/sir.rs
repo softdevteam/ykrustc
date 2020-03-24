@@ -199,6 +199,7 @@ impl SirFuncCx {
                         ty.kind
                     ))
                 }),
+            ty::Bool => self.lower_bool(s),
             _ => ykpack::Constant::Unimplemented(format!("unimplemented scalar: {:?}", ty.kind)),
         }
     }
@@ -240,6 +241,13 @@ impl SirFuncCx {
             ykpack::Rvalue::CheckedBinaryOp(sir_op, sir_opnd1, sir_opnd2)
         } else {
             ykpack::Rvalue::BinaryOp(sir_op, sir_opnd1, sir_opnd2)
+        }
+    }
+
+    fn lower_bool(&self, s: mir::interpret::Scalar) -> ykpack::Constant {
+        match s.to_bool() {
+            Ok(val) => ykpack::Constant::Bool(val),
+            Err(e) => panic!("Could not lower scalar (bool) to u8: {}", e),
         }
     }
 }

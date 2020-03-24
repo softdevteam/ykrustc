@@ -3106,9 +3106,9 @@ dependencies = [
 
 [[package]]
 name = "rmp-serde"
-version = "0.14.3"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c1ee98f14fe8b8e9c5ea13d25da7b2a1796169202c57a09d7288de90d56222b"
+checksum = "4a31c0798045f039ace94e0166f76478b3ba83116ec7c9d4bc934c5b13b8df21"
 dependencies = [
  "byteorder",
  "rmp",
@@ -5568,7 +5568,7 @@ checksum = "e66366e18dc58b46801afbf2ca7661a9f59cc8c5962c29892b6039b4f86fa992"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#6568733ec97c28cb555de9588a35b403dc4bad1a"
+source = "git+https://github.com/ptersilie/yk?rev=377bcbe92ee5bebe562d1afa77d63a9f1f17a33a#377bcbe92ee5bebe562d1afa77d63a9f1f17a33a"
 dependencies = [
  "fallible-iterator",
  "rmp-serde",
