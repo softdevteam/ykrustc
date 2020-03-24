@@ -17,6 +17,22 @@ use std::io;
 use ykpack;
 
 const BUILD_SCRIPT_CRATE: &str = "build_script_build";
+const CHECKABLE_BINOPS: [ykpack::BinOp; 5] = [
+    ykpack::BinOp::Add,
+    ykpack::BinOp::Sub,
+    ykpack::BinOp::Mul,
+    ykpack::BinOp::Shl,
+    ykpack::BinOp::Shr,
+];
+
+// Generates a big `match` statement for the binary operation lowerings.
+macro_rules! binop_lowerings {
+    ( $the_op:expr, $($op:ident ),* ) => {
+        match $the_op {
+            $(mir::BinOp::$op => ykpack::BinOp::$op,)*
+        }
+    }
+}
 
 /// A collection of in-memory SIR data structures to be serialised.
 /// Each codegen unit builds one instance of this which is then merged into a "global" instance
@@ -137,6 +153,10 @@ impl SirFuncCx {
     fn lower_rvalue(&self, rvalue: &mir::Rvalue<'_>) -> ykpack::Rvalue {
         match rvalue {
             mir::Rvalue::Use(opnd) => ykpack::Rvalue::Use(self.lower_operand(opnd)),
+            mir::Rvalue::BinaryOp(op, opnd1, opnd2) => self.lower_binop(*op, opnd1, opnd2, false),
+            mir::Rvalue::CheckedBinaryOp(op, opnd1, opnd2) => {
+                self.lower_binop(*op, opnd1, opnd2, true)
+            }
             _ => ykpack::Rvalue::Unimplemented(format!("unimplemented rvalue: {:?}", rvalue)),
         }
     }
@@ -198,6 +218,28 @@ impl SirFuncCx {
                 Err(e) => panic!("Could not lower scalar to u16: {}", e),
             },
             _ => Err(()),
+        }
+    }
+
+    fn lower_binop(
+        &self,
+        op: mir::BinOp,
+        opnd1: &mir::Operand<'_>,
+        opnd2: &mir::Operand<'_>,
+        checked: bool,
+    ) -> ykpack::Rvalue {
+        let sir_op = binop_lowerings!(
+            op, Add, Sub, Mul, Div, Rem, BitXor, BitAnd, BitOr, Shl, Shr, Eq, Lt, Le, Ne, Ge, Gt,
+            Offset
+        );
+        let sir_opnd1 = self.lower_operand(opnd1);
+        let sir_opnd2 = self.lower_operand(opnd2);
+
+        if checked {
+            debug_assert!(CHECKABLE_BINOPS.contains(&sir_op));
+            ykpack::Rvalue::CheckedBinaryOp(sir_op, sir_opnd1, sir_opnd2)
+        } else {
+            ykpack::Rvalue::BinaryOp(sir_op, sir_opnd1, sir_opnd2)
         }
     }
 }
