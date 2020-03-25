@@ -5568,7 +5568,7 @@ checksum = "e66366e18dc58b46801afbf2ca7661a9f59cc8c5962c29892b6039b4f86fa992"
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/ptersilie/yk?rev=377bcbe92ee5bebe562d1afa77d63a9f1f17a33a#377bcbe92ee5bebe562d1afa77d63a9f1f17a33a"
+source = "git+https://github.com/softdevteam/yk#a9943f67746dcedea6f414f9694ba77bd7e6868f"
 dependencies = [
  "fallible-iterator",
  "rmp-serde",
