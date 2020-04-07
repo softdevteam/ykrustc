@@ -1312,11 +1312,17 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
     // Try to strip as much out of the generated object by removing unused
     // sections if possible. See more comments in linker.rs
     //
-    // In the eyes of the compiler, SIR (and Rust metadata) are unreferenced and will be removed it
+    // In the eyes of the compiler, SIR (and Rust metadata) are unreferenced and will be removed if
     // we don't omit section garbage collection.
     if !sess.opts.cg.link_dead_code && sess.opts.cg.tracer == TracerMode::Off {
         let keep_metadata = crate_type == config::CrateType::Dylib;
         cmd.gc_sections(keep_metadata);
+    }
+
+    // When tracing, export all symbols so we can use dlsym(3).
+    // Without this, only symbols in shared objects would be available.
+    if sess.opts.cg.tracer != TracerMode::Off {
+        cmd.export_dynamic();
     }
 
     let used_link_args = &codegen_results.crate_info.link_args;
