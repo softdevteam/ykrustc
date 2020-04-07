@@ -117,6 +117,7 @@ pub trait Linker {
     fn group_start(&mut self);
     fn group_end(&mut self);
     fn linker_plugin_lto(&mut self);
+    fn export_dynamic(&mut self);
     // Should have been finalize(self), but we don't support self-by-value on trait objects (yet?).
     fn finalize(&mut self) -> Command;
 }
@@ -536,6 +537,10 @@ impl<'a> Linker for GccLinker<'a> {
             }
         }
     }
+
+    fn export_dynamic(&mut self) {
+        self.linker_arg("--export-dynamic");
+    }
 }
 
 pub struct MsvcLinker<'a> {
@@ -769,6 +774,10 @@ impl<'a> Linker for MsvcLinker<'a> {
     fn linker_plugin_lto(&mut self) {
         // Do nothing
     }
+
+    fn export_dynamic(&mut self) {
+        todo!("export-dynamic");
+    }
 }
 
 pub struct EmLinker<'a> {
@@ -938,6 +947,10 @@ impl<'a> Linker for EmLinker<'a> {
 
     fn linker_plugin_lto(&mut self) {
         // Do nothing
+    }
+
+    fn export_dynamic(&mut self) {
+        todo!("export-dynamic");
     }
 }
 
@@ -1109,6 +1122,10 @@ impl<'a> Linker for WasmLd<'a> {
     fn linker_plugin_lto(&mut self) {
         // Do nothing for now
     }
+
+    fn export_dynamic(&mut self) {
+        todo!("export-dynamic");
+    }
 }
 
 fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
@@ -1267,4 +1284,8 @@ impl<'a> Linker for PtxLinker<'a> {
     fn group_end(&mut self) {}
 
     fn linker_plugin_lto(&mut self) {}
+
+    fn export_dynamic(&mut self) {
+        todo!("export-dynamic");
+    }
 }
