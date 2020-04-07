@@ -124,8 +124,11 @@ impl SirFuncCx {
                 let assign = self.lower_assign_stmt(place, rvalue);
                 self.push_stmt(bb, assign);
             }
-            mir::StatementKind::StorageLive(..) | mir::StatementKind::StorageDead(..) => {
-                // Ignore. Tracer doesn't need to know about these.
+            mir::StatementKind::StorageLive(l) => {
+                self.push_stmt(bb, ykpack::Statement::StorageLive(self.lower_local(l)))
+            }
+            mir::StatementKind::StorageDead(l) => {
+                self.push_stmt(bb, ykpack::Statement::StorageDead(self.lower_local(l)))
             }
             _ => self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt))),
         }
