@@ -3,7 +3,7 @@
 
 fn foo<const N: usize>() {
     let _ = [0u64; N + 1];
-    //~^ ERROR array lengths can't depend on generic parameters
+    //~^ ERROR constant expression depends on a generic parameter
 }
 
 fn main() {}

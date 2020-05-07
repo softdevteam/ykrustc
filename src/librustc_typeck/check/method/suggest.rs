@@ -2,10 +2,6 @@
 //! found or is otherwise invalid.
 
 use crate::check::FnCtxt;
-use crate::middle::lang_items::FnOnceTraitLangItem;
-use rustc::hir::map as hir_map;
-use rustc::ty::print::with_crate_prefix;
-use rustc::ty::{self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness};
 use rustc_ast::ast;
 use rustc_ast::util::lev_distance;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -14,8 +10,14 @@ use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Namespace, Res};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::intravisit;
+use rustc_hir::lang_items::FnOnceTraitLangItem;
 use rustc_hir::{ExprKind, Node, QPath};
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use rustc_middle::hir::map as hir_map;
+use rustc_middle::ty::print::with_crate_prefix;
+use rustc_middle::ty::{
+    self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness,
+};
 use rustc_span::symbol::kw;
 use rustc_span::{source_map, FileName, Span};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
@@ -115,7 +117,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             .span_if_local(item.def_id)
                             .or_else(|| self.tcx.hir().span_if_local(impl_did));
 
-                        let impl_ty = self.impl_self_ty(span, impl_did).ty;
+                        let impl_ty = self.tcx.at(span).type_of(impl_did);
 
                         let insertion = match self.tcx.impl_trait_ref(impl_did) {
                             None => String::new(),
@@ -147,7 +149,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         if let Some(note_span) = note_span {
                             // We have a span pointing to the method. Show note with snippet.
                             err.span_note(
-                                self.tcx.sess.source_map().def_span(note_span),
+                                self.tcx.sess.source_map().guess_head_span(note_span),
                                 &note_str,
                             );
                         } else {
@@ -160,7 +162,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 ty::AssocKind::Const
                                 | ty::AssocKind::Type
                                 | ty::AssocKind::OpaqueTy => rcvr_ty,
-                                ty::AssocKind::Method => self
+                                ty::AssocKind::Fn => self
                                     .tcx
                                     .fn_sig(item.def_id)
                                     .inputs()
@@ -177,6 +179,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 path,
                                 ty,
                                 item.kind,
+                                item.def_id,
                                 sugg_span,
                                 idx,
                                 self.tcx.sess.source_map(),
@@ -189,8 +192,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 Some(item) => item,
                                 None => continue,
                             };
-                        let item_span =
-                            self.tcx.sess.source_map().def_span(self.tcx.def_span(item.def_id));
+                        let item_span = self
+                            .tcx
+                            .sess
+                            .source_map()
+                            .guess_head_span(self.tcx.def_span(item.def_id));
                         let idx = if sources.len() > 1 {
                             let msg = &format!(
                                 "candidate #{} is defined in the trait `{}`",
@@ -215,6 +221,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             path,
                             rcvr_ty,
                             item.kind,
+                            item.def_id,
                             sugg_span,
                             idx,
                             self.tcx.sess.source_map(),
@@ -266,11 +273,35 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let mut candidates = all_traits(self.tcx).into_iter().filter_map(|info| {
                         self.associated_item(info.def_id, item_name, Namespace::ValueNS)
                     });
-                    if let (true, false, SelfSource::MethodCall(expr), Some(_)) = (
+                    // There are methods that are defined on the primitive types and won't be
+                    // found when exploring `all_traits`, but we also need them to be acurate on
+                    // our suggestions (#47759).
+                    let fund_assoc = |opt_def_id: Option<DefId>| {
+                        opt_def_id
+                            .and_then(|id| self.associated_item(id, item_name, Namespace::ValueNS))
+                            .is_some()
+                    };
+                    let lang_items = tcx.lang_items();
+                    let found_candidate = candidates.next().is_some()
+                        || fund_assoc(lang_items.i8_impl())
+                        || fund_assoc(lang_items.i16_impl())
+                        || fund_assoc(lang_items.i32_impl())
+                        || fund_assoc(lang_items.i64_impl())
+                        || fund_assoc(lang_items.i128_impl())
+                        || fund_assoc(lang_items.u8_impl())
+                        || fund_assoc(lang_items.u16_impl())
+                        || fund_assoc(lang_items.u32_impl())
+                        || fund_assoc(lang_items.u64_impl())
+                        || fund_assoc(lang_items.u128_impl())
+                        || fund_assoc(lang_items.f32_impl())
+                        || fund_assoc(lang_items.f32_runtime_impl())
+                        || fund_assoc(lang_items.f64_impl())
+                        || fund_assoc(lang_items.f64_runtime_impl());
+                    if let (true, false, SelfSource::MethodCall(expr), true) = (
                         actual.is_numeric(),
                         actual.has_concrete_skeleton(),
                         source,
-                        candidates.next(),
+                        found_candidate,
                     ) {
                         let mut err = struct_span_err!(
                             tcx.sess,
@@ -397,7 +428,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 if let Some(def) = actual.ty_adt_def() {
                     if let Some(full_sp) = tcx.hir().span_if_local(def.did) {
-                        let def_sp = tcx.sess.source_map().def_span(full_sp);
+                        let def_sp = tcx.sess.source_map().guess_head_span(full_sp);
                         err.span_label(
                             def_sp,
                             format!(
@@ -508,7 +539,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         // When the "method" is resolved through dereferencing, we really want the
                         // original type that has the associated function for accurate suggestions.
                         // (#61411)
-                        let ty = self.impl_self_ty(span, *impl_did).ty;
+                        let ty = tcx.at(span).type_of(*impl_did);
                         match (&ty.peel_refs().kind, &actual.peel_refs().kind) {
                             (ty::Adt(def, _), ty::Adt(def_actual, _)) if def == def_actual => {
                                 // Use `actual` as it will have more `substs` filled in.
@@ -537,8 +568,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 let mut restrict_type_params = false;
                 if !unsatisfied_predicates.is_empty() {
-                    let def_span =
-                        |def_id| self.tcx.sess.source_map().def_span(self.tcx.def_span(def_id));
+                    let def_span = |def_id| {
+                        self.tcx.sess.source_map().guess_head_span(self.tcx.def_span(def_id))
+                    };
                     let mut type_params = FxHashMap::default();
                     let mut bound_spans = vec![];
                     let mut collect_type_param_suggestions =
@@ -547,31 +579,24 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 (&self_ty.kind, parent_pred)
                             {
                                 if let ty::Adt(def, _) = p.skip_binder().trait_ref.self_ty().kind {
-                                    let node = self
-                                        .tcx
-                                        .hir()
-                                        .as_local_hir_id(def.did)
-                                        .map(|id| self.tcx.hir().get(id));
-                                    match node {
-                                        Some(hir::Node::Item(hir::Item { kind, .. })) => {
-                                            if let Some(g) = kind.generics() {
-                                                let key = match &g.where_clause.predicates[..] {
-                                                    [.., pred] => {
-                                                        (pred.span().shrink_to_hi(), false)
-                                                    }
-                                                    [] => (
-                                                        g.where_clause
-                                                            .span_for_predicates_or_empty_place(),
-                                                        true,
-                                                    ),
-                                                };
-                                                type_params
-                                                    .entry(key)
-                                                    .or_insert_with(FxHashSet::default)
-                                                    .insert(obligation.to_owned());
-                                            }
+                                    let node = def.did.as_local().map(|def_id| {
+                                        self.tcx.hir().get(self.tcx.hir().as_local_hir_id(def_id))
+                                    });
+                                    if let Some(hir::Node::Item(hir::Item { kind, .. })) = node {
+                                        if let Some(g) = kind.generics() {
+                                            let key = match &g.where_clause.predicates[..] {
+                                                [.., pred] => (pred.span().shrink_to_hi(), false),
+                                                [] => (
+                                                    g.where_clause
+                                                        .span_for_predicates_or_empty_place(),
+                                                    true,
+                                                ),
+                                            };
+                                            type_params
+                                                .entry(key)
+                                                .or_insert_with(FxHashSet::default)
+                                                .insert(obligation.to_owned());
                                         }
-                                        _ => {}
                                     }
                                 }
                             }
@@ -739,7 +764,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         err.span_label(span, msg);
                     }
                 } else if let Some(lev_candidate) = lev_candidate {
-                    let def_kind = lev_candidate.def_kind();
+                    let def_kind = lev_candidate.kind.as_def_kind();
                     err.span_suggestion(
                         span,
                         &format!(
@@ -758,25 +783,27 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             MethodError::Ambiguity(sources) => {
                 let mut err = struct_span_err!(
                     self.sess(),
-                    span,
+                    item_name.span,
                     E0034,
                     "multiple applicable items in scope"
                 );
-                err.span_label(span, format!("multiple `{}` found", item_name));
+                err.span_label(item_name.span, format!("multiple `{}` found", item_name));
 
                 report_candidates(span, &mut err, sources, sugg_span);
                 err.emit();
             }
 
             MethodError::PrivateMatch(kind, def_id, out_of_scope_traits) => {
+                let kind = kind.descr(def_id);
                 let mut err = struct_span_err!(
                     self.tcx.sess,
-                    span,
+                    item_name.span,
                     E0624,
                     "{} `{}` is private",
-                    kind.descr(def_id),
+                    kind,
                     item_name
                 );
+                err.span_label(item_name.span, &format!("private {}", kind));
                 self.suggest_valid_traits(&mut err, out_of_scope_traits);
                 err.emit();
             }
@@ -828,7 +855,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         candidates: Vec<DefId>,
     ) {
         let module_did = self.tcx.parent_module(self.body_id);
-        let module_id = self.tcx.hir().as_local_hir_id(module_did.to_def_id()).unwrap();
+        let module_id = self.tcx.hir().as_local_hir_id(module_did);
         let krate = self.tcx.hir().krate();
         let (span, found_use) = UsePlacementFinder::check(self.tcx, krate, module_id);
         if let Some(span) = span {
@@ -920,18 +947,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // this isn't perfect (that is, there are cases when
                 // implementing a trait would be legal but is rejected
                 // here).
-                !unsatisfied_predicates.iter().any(|(p, _)| match p {
+                unsatisfied_predicates.iter().all(|(p, _)| match p {
                     // Hide traits if they are present in predicates as they can be fixed without
                     // having to implement them.
-                    ty::Predicate::Trait(t, _) => t.def_id() != info.def_id,
-                    ty::Predicate::Projection(p) => p.item_def_id() != info.def_id,
-                    _ => true,
+                    ty::Predicate::Trait(t, _) => t.def_id() == info.def_id,
+                    ty::Predicate::Projection(p) => p.item_def_id() == info.def_id,
+                    _ => false,
                 }) && (type_is_local || info.def_id.is_local())
                     && self
                         .associated_item(info.def_id, item_name, Namespace::ValueNS)
                         .filter(|item| {
-                            if let ty::AssocKind::Method = item.kind {
-                                let id = self.tcx.hir().as_local_hir_id(item.def_id);
+                            if let ty::AssocKind::Fn = item.kind {
+                                let id = item
+                                    .def_id
+                                    .as_local()
+                                    .map(|def_id| self.tcx.hir().as_local_hir_id(def_id));
                                 if let Some(hir::Node::TraitItem(hir::TraitItem {
                                     kind: hir::TraitItemKind::Fn(fn_sig, method),
                                     ..
@@ -942,23 +972,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                             ident.name == kw::SelfLower
                                         }
                                         hir::TraitFn::Provided(body_id) => {
-                                            match &self.tcx.hir().body(*body_id).params[..] {
-                                                [hir::Param {
-                                                    pat:
-                                                        hir::Pat {
-                                                            kind:
-                                                                hir::PatKind::Binding(
-                                                                    _,
-                                                                    _,
-                                                                    ident,
-                                                                    ..,
-                                                                ),
-                                                            ..
-                                                        },
-                                                    ..
-                                                }, ..] => ident.name == kw::SelfLower,
-                                                _ => false,
-                                            }
+                                            self.tcx.hir().body(*body_id).params.first().map_or(
+                                                false,
+                                                |param| {
+                                                    matches!(
+                                                        param.pat.kind,
+                                                        hir::PatKind::Binding(_, _, ident, _)
+                                                            if ident.name == kw::SelfLower
+                                                    )
+                                                },
+                                            )
                                         }
                                         _ => false,
                                     };
@@ -1018,12 +1041,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Obtain the span for `param` and use it for a structured suggestion.
             let mut suggested = false;
             if let (Some(ref param), Some(ref table)) = (param_type, self.in_progress_tables) {
-                let table = table.borrow();
-                if let Some(did) = table.local_id_root {
-                    let generics = self.tcx.generics_of(did);
+                let table_owner = table.borrow().hir_owner;
+                if let Some(table_owner) = table_owner {
+                    let generics = self.tcx.generics_of(table_owner.to_def_id());
                     let type_param = generics.type_param(param, self.tcx);
                     let hir = &self.tcx.hir();
-                    if let Some(id) = hir.as_local_hir_id(type_param.def_id) {
+                    if let Some(def_id) = type_param.def_id.as_local() {
+                        let id = hir.as_local_hir_id(def_id);
                         // Get the `hir::Param` to verify whether it already has any bounds.
                         // We do this to avoid suggesting code that ends up as `T: FooBar`,
                         // instead we suggest `T: Foo + Bar` in that case.
@@ -1055,7 +1079,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 let trait_def_ids: FxHashSet<DefId> = param
                                     .bounds
                                     .iter()
-                                    .filter_map(|bound| bound.trait_def_id())
+                                    .filter_map(|bound| Some(bound.trait_ref()?.trait_def_id()?))
                                     .collect();
                                 if !candidates.iter().any(|t| trait_def_ids.contains(&t.def_id)) {
                                     err.span_suggestions(
@@ -1115,7 +1139,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 if let [trait_info] = &candidates[..] {
                     if let Some(span) = self.tcx.hir().span_if_local(trait_info.def_id) {
                         err.span_note(
-                            self.tcx.sess.source_map().def_span(span),
+                            self.tcx.sess.source_map().guess_head_span(span),
                             &format!(
                                 "`{}` defines an item `{}`, perhaps you need to {} it",
                                 self.tcx.def_path_str(trait_info.def_id),
@@ -1229,7 +1253,7 @@ fn compute_all_traits(tcx: TyCtxt<'_>) -> Vec<DefId> {
             match i.kind {
                 hir::ItemKind::Trait(..) | hir::ItemKind::TraitAlias(..) => {
                     let def_id = self.map.local_def_id(i.hir_id);
-                    self.traits.push(def_id);
+                    self.traits.push(def_id.to_def_id());
                 }
                 _ => (),
             }
@@ -1252,7 +1276,7 @@ fn compute_all_traits(tcx: TyCtxt<'_>) -> Vec<DefId> {
         res: Res,
     ) {
         match res {
-            Res::Def(DefKind::Trait, def_id) | Res::Def(DefKind::TraitAlias, def_id) => {
+            Res::Def(DefKind::Trait | DefKind::TraitAlias, def_id) => {
                 traits.push(def_id);
             }
             Res::Def(DefKind::Mod, def_id) => {
@@ -1360,12 +1384,13 @@ fn print_disambiguation_help(
     trait_name: String,
     rcvr_ty: Ty<'_>,
     kind: ty::AssocKind,
+    def_id: DefId,
     span: Span,
     candidate: Option<usize>,
     source_map: &source_map::SourceMap,
 ) {
     let mut applicability = Applicability::MachineApplicable;
-    let sugg_args = if let (ty::AssocKind::Method, Some(args)) = (kind, args) {
+    let sugg_args = if let (ty::AssocKind::Fn, Some(args)) = (kind, args) {
         format!(
             "({}{})",
             if rcvr_ty.is_region_ptr() {
@@ -1389,7 +1414,7 @@ fn print_disambiguation_help(
         span,
         &format!(
             "disambiguate the {} for {}",
-            kind.suggestion_descr(),
+            kind.as_def_kind().descr(def_id),
             if let Some(candidate) = candidate {
                 format!("candidate #{}", candidate)
             } else {

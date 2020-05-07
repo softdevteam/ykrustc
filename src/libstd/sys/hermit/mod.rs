@@ -21,6 +21,7 @@ pub mod args;
 pub mod cmath;
 pub mod condvar;
 pub mod env;
+pub mod ext;
 pub mod fast_thread_local;
 pub mod fd;
 pub mod fs;
@@ -93,9 +94,7 @@ pub unsafe extern "C" fn __rust_abort() {
 
 #[cfg(not(test))]
 pub fn init() {
-    unsafe {
-        let _ = net::init();
-    }
+    let _ = net::init();
 }
 
 #[cfg(not(test))]
@@ -105,6 +104,7 @@ pub unsafe extern "C" fn runtime_entry(
     argv: *const *const c_char,
     env: *const *const c_char,
 ) -> ! {
+    use crate::sys::hermit::fast_thread_local::run_dtors;
     extern "C" {
         fn main(argc: isize, argv: *const *const c_char) -> i32;
     }
@@ -114,6 +114,7 @@ pub unsafe extern "C" fn runtime_entry(
 
     let result = main(argc as isize, argv);
 
+    run_dtors();
     abi::exit(result);
 }
 

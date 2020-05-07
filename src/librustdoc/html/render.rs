@@ -42,15 +42,15 @@ use std::rc::Rc;
 use std::str;
 use std::sync::Arc;
 
-use rustc::middle::privacy::AccessLevels;
-use rustc::middle::stability;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::flock;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_feature::UnstableFeatures;
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_hir::Mutability;
+use rustc_middle::middle::privacy::AccessLevels;
+use rustc_middle::middle::stability;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::FileName;
@@ -782,7 +782,38 @@ themePicker.onblur = handleThemeButtonsBlur;
                         .split('"')
                         .next()
                         .map(|s| s.to_owned())
-                        .unwrap_or_else(|| String::new()),
+                        .unwrap_or_else(String::new),
+                );
+            }
+        }
+        Ok((ret, krates))
+    }
+
+    fn collect_json(path: &Path, krate: &str) -> io::Result<(Vec<String>, Vec<String>)> {
+        let mut ret = Vec::new();
+        let mut krates = Vec::new();
+
+        if path.exists() {
+            for line in BufReader::new(File::open(path)?).lines() {
+                let line = line?;
+                if !line.starts_with("\"") {
+                    continue;
+                }
+                if line.starts_with(&format!("\"{}\"", krate)) {
+                    continue;
+                }
+                if line.ends_with(",\\") {
+                    ret.push(line[..line.len() - 2].to_string());
+                } else {
+                    // Ends with "\\" (it's the case for the last added crate line)
+                    ret.push(line[..line.len() - 1].to_string());
+                }
+                krates.push(
+                    line.split('"')
+                        .filter(|s| !s.is_empty())
+                        .next()
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(String::new),
                 );
             }
         }
@@ -909,18 +940,18 @@ themePicker.onblur = handleThemeButtonsBlur;
 
     // Update the search index
     let dst = cx.dst.join(&format!("search-index{}.js", cx.shared.resource_suffix));
-    let (mut all_indexes, mut krates) = try_err!(collect(&dst, &krate.name, "searchIndex"), &dst);
+    let (mut all_indexes, mut krates) = try_err!(collect_json(&dst, &krate.name), &dst);
     all_indexes.push(search_index);
 
     // Sort the indexes by crate so the file will be generated identically even
     // with rustdoc running in parallel.
     all_indexes.sort();
     {
-        let mut v = String::from("var searchIndex={};\n");
-        v.push_str(&all_indexes.join("\n"));
+        let mut v = String::from("var searchIndex = JSON.parse('{\\\n");
+        v.push_str(&all_indexes.join(",\\\n"));
         // "addSearchOptions" has to be called first so the crate filtering can be set before the
         // search might start (if it's set into the URL for example).
-        v.push_str("\naddSearchOptions(searchIndex);initSearch(searchIndex);");
+        v.push_str("\\\n}');\naddSearchOptions(searchIndex);initSearch(searchIndex);");
         cx.shared.fs.write(&dst, &v)?;
     }
     if options.enable_index_page {
@@ -1623,14 +1654,14 @@ impl Context {
             _ => return None,
         };
 
-        let (krate, path) = if item.def_id.is_local() {
+        let (krate, path) = if item.source.cnum == LOCAL_CRATE {
             if let Some(path) = self.shared.local_sources.get(file) {
                 (&self.shared.layout.krate, path)
             } else {
                 return None;
             }
         } else {
-            let (krate, src_root) = match *self.cache.extern_locations.get(&item.def_id.krate)? {
+            let (krate, src_root) = match *self.cache.extern_locations.get(&item.source.cnum)? {
                 (ref name, ref src, Local) => (name, src),
                 (ref name, ref src, Remote(ref s)) => {
                     root = s.to_string();
@@ -2158,7 +2189,7 @@ fn item_module(w: &mut Buffer, cx: &Context, item: &clean::Item, items: &[clean:
                     docs = MarkdownSummaryLine(doc_value, &myitem.links()).to_string(),
                     class = myitem.type_(),
                     add = add,
-                    stab = stab.unwrap_or_else(|| String::new()),
+                    stab = stab.unwrap_or_else(String::new),
                     unsafety_flag = unsafety_flag,
                     href = item_path(myitem.type_(), myitem.name.as_ref().unwrap()),
                     title = [full_path(cx, myitem), myitem.type_().to_string()]
@@ -3382,8 +3413,8 @@ fn render_assoc_items(
                 write!(
                     w,
                     "\
-                    <h2 id='methods' class='small-section-header'>\
-                      Methods<a href='#methods' class='anchor'></a>\
+                    <h2 id='implementations' class='small-section-header'>\
+                      Implementations<a href='#implementations' class='anchor'></a>\
                     </h2>\
                 "
                 );
@@ -3444,10 +3475,10 @@ fn render_assoc_items(
             write!(
                 w,
                 "\
-                <h2 id='implementations' class='small-section-header'>\
-                  Trait Implementations<a href='#implementations' class='anchor'></a>\
+                <h2 id='trait-implementations' class='small-section-header'>\
+                  Trait Implementations<a href='#trait-implementations' class='anchor'></a>\
                 </h2>\
-                <div id='implementations-list'>{}</div>",
+                <div id='trait-implementations-list'>{}</div>",
                 impls
             );
         }
@@ -3496,14 +3527,13 @@ fn render_deref_methods(
         .inner_impl()
         .items
         .iter()
-        .filter_map(|item| match item.inner {
+        .find_map(|item| match item.inner {
             clean::TypedefItem(ref t, true) => Some(match *t {
                 clean::Typedef { item_type: Some(ref type_), .. } => (type_, &t.type_),
                 _ => (&t.type_, &t.type_),
             }),
             _ => None,
         })
-        .next()
         .expect("Expected associated type binding");
     let what =
         AssocItemRender::DerefFor { trait_: deref_type, type_: real_target, deref_mut_: deref_mut };
@@ -4067,8 +4097,8 @@ fn sidebar_assoc_items(it: &clean::Item) -> String {
             ret.sort();
             if !ret.is_empty() {
                 out.push_str(&format!(
-                    "<a class=\"sidebar-title\" href=\"#methods\">Methods\
-                                       </a><div class=\"sidebar-links\">{}</div>",
+                    "<a class=\"sidebar-title\" href=\"#implementations\">Methods</a>\
+                     <div class=\"sidebar-links\">{}</div>",
                     ret.join("")
                 ));
             }
@@ -4080,18 +4110,14 @@ fn sidebar_assoc_items(it: &clean::Item) -> String {
                 .filter(|i| i.inner_impl().trait_.is_some())
                 .find(|i| i.inner_impl().trait_.def_id() == c.deref_trait_did)
             {
-                if let Some((target, real_target)) = impl_
-                    .inner_impl()
-                    .items
-                    .iter()
-                    .filter_map(|item| match item.inner {
+                if let Some((target, real_target)) =
+                    impl_.inner_impl().items.iter().find_map(|item| match item.inner {
                         clean::TypedefItem(ref t, true) => Some(match *t {
                             clean::Typedef { item_type: Some(ref type_), .. } => (type_, &t.type_),
                             _ => (&t.type_, &t.type_),
                         }),
                         _ => None,
                     })
-                    .next()
                 {
                     let inner_impl = target
                         .def_id()
@@ -4165,8 +4191,8 @@ fn sidebar_assoc_items(it: &clean::Item) -> String {
 
             if !concrete_format.is_empty() {
                 out.push_str(
-                    "<a class=\"sidebar-title\" href=\"#implementations\">\
-                              Trait Implementations</a>",
+                    "<a class=\"sidebar-title\" href=\"#trait-implementations\">\
+                        Trait Implementations</a>",
                 );
                 out.push_str(&format!("<div class=\"sidebar-links\">{}</div>", concrete_format));
             }
@@ -4174,7 +4200,7 @@ fn sidebar_assoc_items(it: &clean::Item) -> String {
             if !synthetic_format.is_empty() {
                 out.push_str(
                     "<a class=\"sidebar-title\" href=\"#synthetic-implementations\">\
-                              Auto Trait Implementations</a>",
+                        Auto Trait Implementations</a>",
                 );
                 out.push_str(&format!("<div class=\"sidebar-links\">{}</div>", synthetic_format));
             }
@@ -4182,7 +4208,7 @@ fn sidebar_assoc_items(it: &clean::Item) -> String {
             if !blanket_format.is_empty() {
                 out.push_str(
                     "<a class=\"sidebar-title\" href=\"#blanket-implementations\">\
-                              Blanket Implementations</a>",
+                        Blanket Implementations</a>",
                 );
                 out.push_str(&format!("<div class=\"sidebar-links\">{}</div>", blanket_format));
             }
@@ -4593,12 +4619,9 @@ fn collect_paths_for_type(first_ty: clean::Type) -> Vec<String> {
                 let get_extern = || cache.external_paths.get(&did).map(|s| s.0.clone());
                 let fqp = cache.exact_paths.get(&did).cloned().or_else(get_extern);
 
-                match fqp {
-                    Some(path) => {
-                        out.push(path.join("::"));
-                    }
-                    _ => {}
-                };
+                if let Some(path) = fqp {
+                    out.push(path.join("::"));
+                }
             }
             clean::Type::Tuple(tys) => {
                 work.extend(tys.into_iter());

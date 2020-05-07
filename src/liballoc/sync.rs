@@ -23,9 +23,8 @@ use core::ptr::{self, NonNull};
 use core::slice::{self, from_raw_parts_mut};
 use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
-use core::{isize, usize};
 
-use crate::alloc::{box_free, handle_alloc_error, AllocRef, Global, Layout};
+use crate::alloc::{box_free, handle_alloc_error, AllocInit, AllocRef, Global, Layout};
 use crate::boxed::Box;
 use crate::rc::is_dangling;
 use crate::string::String;
@@ -39,6 +38,23 @@ mod tests;
 /// Going above this limit will abort your program (although not
 /// necessarily) at _exactly_ `MAX_REFCOUNT + 1` references.
 const MAX_REFCOUNT: usize = (isize::MAX) as usize;
+
+#[cfg(not(sanitize = "thread"))]
+macro_rules! acquire {
+    ($x:expr) => {
+        atomic::fence(Acquire)
+    };
+}
+
+// ThreadSanitizer does not support memory fences. To avoid false positive
+// reports in Arc / Weak implementation use atomic loads for synchronization
+// instead.
+#[cfg(sanitize = "thread")]
+macro_rules! acquire {
+    ($x:expr) => {
+        $x.load(Acquire)
+    };
+}
 
 /// A thread-safe reference-counting pointer. 'Arc' stands for 'Atomically
 /// Reference Counted'.
@@ -191,7 +207,7 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 /// counting in general.
 ///
 /// [rc_examples]: ../../std/rc/index.html#examples
-#[cfg_attr(not(test), lang = "arc")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "Arc")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Arc<T: ?Sized> {
     ptr: NonNull<ArcInner<T>>,
@@ -270,6 +286,10 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Weak<T> {
     }
 }
 
+// This is repr(C) to future-proof against possible field-reordering, which
+// would interfere with otherwise safe [into|from]_raw() of transmutable
+// inner types.
+#[repr(C)]
 struct ArcInner<T: ?Sized> {
     strong: atomic::AtomicUsize,
 
@@ -304,7 +324,7 @@ impl<T> Arc<T> {
             weak: atomic::AtomicUsize::new(1),
             data,
         };
-        Self::from_inner(Box::into_raw_non_null(x))
+        Self::from_inner(Box::leak(x).into())
     }
 
     /// Constructs a new `Arc` with uninitialized contents.
@@ -402,7 +422,7 @@ impl<T> Arc<T> {
             return Err(this);
         }
 
-        atomic::fence(Acquire);
+        acquire!(this.inner().strong);
 
         unsafe {
             let elem = ptr::read(&this.ptr.as_ref().data);
@@ -545,9 +565,33 @@ impl<T: ?Sized> Arc<T> {
     /// ```
     #[stable(feature = "rc_raw", since = "1.17.0")]
     pub fn into_raw(this: Self) -> *const T {
+        let ptr = Self::as_ptr(&this);
+        mem::forget(this);
+        ptr
+    }
+
+    /// Provides a raw pointer to the data.
+    ///
+    /// The counts are not affected in way and the `Arc` is not consumed. The pointer is valid for
+    /// as long as there are strong counts in the `Arc`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(weak_into_raw)]
+    ///
+    /// use std::sync::Arc;
+    ///
+    /// let x = Arc::new("hello".to_owned());
+    /// let y = Arc::clone(&x);
+    /// let x_ptr = Arc::as_ptr(&x);
+    /// assert_eq!(x_ptr, Arc::as_ptr(&y));
+    /// assert_eq!(unsafe { &*x_ptr }, "hello");
+    /// ```
+    #[unstable(feature = "weak_into_raw", issue = "60728")]
+    pub fn as_ptr(this: &Self) -> *const T {
         let ptr: *mut ArcInner<T> = NonNull::as_ptr(this.ptr);
         let fake_ptr = ptr as *mut T;
-        mem::forget(this);
 
         // SAFETY: This cannot go through Deref::deref.
         // Instead, we manually offset the pointer rather than manifesting a reference.
@@ -560,15 +604,24 @@ impl<T: ?Sized> Arc<T> {
         }
     }
 
-    /// Constructs an `Arc` from a raw pointer.
+    /// Constructs an `Arc<T>` from a raw pointer.
     ///
-    /// The raw pointer must have been previously returned by a call to a
-    /// [`Arc::into_raw`][into_raw].
+    /// The raw pointer must have been previously returned by a call to
+    /// [`Arc<U>::into_raw`][into_raw] where `U` must have the same size and
+    /// alignment as `T`. This is trivially true if `U` is `T`.
+    /// Note that if `U` is not `T` but has the same size and alignment, this is
+    /// basically like transmuting references of different types. See
+    /// [`mem::transmute`][transmute] for more information on what
+    /// restrictions apply in this case.
     ///
-    /// This function is unsafe because improper use may lead to memory problems. For example, a
-    /// double-free may occur if the function is called twice on the same raw pointer.
+    /// The user of `from_raw` has to make sure a specific value of `T` is only
+    /// dropped once.
+    ///
+    /// This function is unsafe because improper use may lead to memory unsafety,
+    /// even if the returned `Arc<T>` is never accessed.
     ///
     /// [into_raw]: struct.Arc.html#method.into_raw
+    /// [transmute]: ../../std/mem/fn.transmute.html
     ///
     /// # Examples
     ///
@@ -605,6 +658,7 @@ impl<T: ?Sized> Arc<T> {
     ///
     /// ```
     /// #![feature(rc_into_raw_non_null)]
+    /// #![allow(deprecated)]
     ///
     /// use std::sync::Arc;
     ///
@@ -614,6 +668,7 @@ impl<T: ?Sized> Arc<T> {
     /// assert_eq!(deref, "hello");
     /// ```
     #[unstable(feature = "rc_into_raw_non_null", issue = "47336")]
+    #[rustc_deprecated(since = "1.44.0", reason = "use `Arc::into_raw` instead")]
     #[inline]
     pub fn into_raw_non_null(this: Self) -> NonNull<T> {
         // safe because Arc guarantees its pointer is non-null
@@ -739,7 +794,7 @@ impl<T: ?Sized> Arc<T> {
         ptr::drop_in_place(&mut self.ptr.as_mut().data);
 
         if self.inner().weak.fetch_sub(1, Release) == 1 {
-            atomic::fence(Acquire);
+            acquire!(self.inner().weak);
             Global.dealloc(self.ptr.cast(), Layout::for_value(self.ptr.as_ref()))
         }
     }
@@ -784,10 +839,12 @@ impl<T: ?Sized> Arc<T> {
         // reference (see #54908).
         let layout = Layout::new::<ArcInner<()>>().extend(value_layout).unwrap().0.pad_to_align();
 
-        let (mem, _) = Global.alloc(layout).unwrap_or_else(|_| handle_alloc_error(layout));
+        let mem = Global
+            .alloc(layout, AllocInit::Uninitialized)
+            .unwrap_or_else(|_| handle_alloc_error(layout));
 
         // Initialize the ArcInner
-        let inner = mem_to_arcinner(mem.as_ptr());
+        let inner = mem_to_arcinner(mem.ptr.as_ptr());
         debug_assert_eq!(Layout::for_value(&*inner), layout);
 
         ptr::write(&mut (*inner).strong, atomic::AtomicUsize::new(1));
@@ -846,7 +903,7 @@ unsafe fn set_data_ptr<T: ?Sized, U>(mut ptr: *mut T, data: *mut U) -> *mut T {
 }
 
 impl<T> Arc<[T]> {
-    /// Copy elements from slice into newly allocated Arc<[T]>
+    /// Copy elements from slice into newly allocated Arc<\[T\]>
     ///
     /// Unsafe because the caller must either take ownership or bind `T: Copy`.
     unsafe fn copy_from_slice(v: &[T]) -> Arc<[T]> {
@@ -1243,7 +1300,7 @@ unsafe impl<#[may_dangle] T: ?Sized> Drop for Arc<T> {
         //
         // [1]: (www.boost.org/doc/libs/1_55_0/doc/html/atomic/usage_examples.html)
         // [2]: (https://github.com/rust-lang/rust/pull/41714)
-        atomic::fence(Acquire);
+        acquire!(self.inner().strong);
 
         unsafe {
             self.drop_slow();
@@ -1308,8 +1365,8 @@ impl<T> Weak<T> {
 
     /// Returns a raw pointer to the object `T` pointed to by this `Weak<T>`.
     ///
-    /// The pointer is valid only if there are some strong references. The pointer may be dangling
-    /// or even [`null`] otherwise.
+    /// The pointer is valid only if there are some strong references. The pointer may be dangling,
+    /// unaligned or even [`null`] otherwise.
     ///
     /// # Examples
     ///
@@ -1322,31 +1379,22 @@ impl<T> Weak<T> {
     /// let strong = Arc::new("hello".to_owned());
     /// let weak = Arc::downgrade(&strong);
     /// // Both point to the same object
-    /// assert!(ptr::eq(&*strong, weak.as_raw()));
+    /// assert!(ptr::eq(&*strong, weak.as_ptr()));
     /// // The strong here keeps it alive, so we can still access the object.
-    /// assert_eq!("hello", unsafe { &*weak.as_raw() });
+    /// assert_eq!("hello", unsafe { &*weak.as_ptr() });
     ///
     /// drop(strong);
-    /// // But not any more. We can do weak.as_raw(), but accessing the pointer would lead to
+    /// // But not any more. We can do weak.as_ptr(), but accessing the pointer would lead to
     /// // undefined behaviour.
-    /// // assert_eq!("hello", unsafe { &*weak.as_raw() });
+    /// // assert_eq!("hello", unsafe { &*weak.as_ptr() });
     /// ```
     ///
     /// [`null`]: ../../std/ptr/fn.null.html
     #[unstable(feature = "weak_into_raw", issue = "60728")]
-    pub fn as_raw(&self) -> *const T {
-        match self.inner() {
-            None => ptr::null(),
-            Some(inner) => {
-                let offset = data_offset_sized::<T>();
-                let ptr = inner as *const ArcInner<T>;
-                // Note: while the pointer we create may already point to dropped value, the
-                // allocation still lives (it must hold the weak point as long as we are alive).
-                // Therefore, the offset is OK to do, it won't get out of the allocation.
-                let ptr = unsafe { (ptr as *const u8).offset(offset) };
-                ptr as *const T
-            }
-        }
+    pub fn as_ptr(&self) -> *const T {
+        let offset = data_offset_sized::<T>();
+        let ptr = self.ptr.cast::<u8>().as_ptr().wrapping_offset(offset);
+        ptr as *const T
     }
 
     /// Consumes the `Weak<T>` and turns it into a raw pointer.
@@ -1355,7 +1403,7 @@ impl<T> Weak<T> {
     /// can be turned back into the `Weak<T>` with [`from_raw`].
     ///
     /// The same restrictions of accessing the target of the pointer as with
-    /// [`as_raw`] apply.
+    /// [`as_ptr`] apply.
     ///
     /// # Examples
     ///
@@ -1376,10 +1424,10 @@ impl<T> Weak<T> {
     /// ```
     ///
     /// [`from_raw`]: struct.Weak.html#method.from_raw
-    /// [`as_raw`]: struct.Weak.html#method.as_raw
+    /// [`as_ptr`]: struct.Weak.html#method.as_ptr
     #[unstable(feature = "weak_into_raw", issue = "60728")]
     pub fn into_raw(self) -> *const T {
-        let result = self.as_raw();
+        let result = self.as_ptr();
         mem::forget(self);
         result
     }
@@ -1395,9 +1443,8 @@ impl<T> Weak<T> {
     ///
     /// # Safety
     ///
-    /// The pointer must have originated from the [`into_raw`] (or [`as_raw'], provided there was
-    /// a corresponding [`forget`] on the `Weak<T>`) and must still own its potential weak reference
-    /// count.
+    /// The pointer must have originated from the [`into_raw`] and must still own its potential
+    /// weak reference count.
     ///
     /// It is allowed for the strong count to be 0 at the time of calling this, but the weak count
     /// must be non-zero or the pointer must have originated from a dangling `Weak<T>` (one created
@@ -1426,7 +1473,6 @@ impl<T> Weak<T> {
     /// assert!(unsafe { Weak::from_raw(raw_2) }.upgrade().is_none());
     /// ```
     ///
-    /// [`as_raw`]: struct.Weak.html#method.as_raw
     /// [`new`]: struct.Weak.html#method.new
     /// [`into_raw`]: struct.Weak.html#method.into_raw
     /// [`upgrade`]: struct.Weak.html#method.upgrade
@@ -1701,7 +1747,7 @@ impl<T: ?Sized> Drop for Weak<T> {
         let inner = if let Some(inner) = self.inner() { inner } else { return };
 
         if inner.weak.fetch_sub(1, Release) == 1 {
-            atomic::fence(Acquire);
+            acquire!(inner.weak);
             unsafe { Global.dealloc(self.ptr.cast(), Layout::for_value(self.ptr.as_ref())) }
         }
     }

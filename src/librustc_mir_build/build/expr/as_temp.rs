@@ -3,10 +3,10 @@
 use crate::build::scope::DropKind;
 use crate::build::{BlockAnd, BlockAndExtension, Builder};
 use crate::hair::*;
-use rustc::middle::region;
-use rustc::mir::*;
+use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir as hir;
-use rustc_span::symbol::sym;
+use rustc_middle::middle::region;
+use rustc_middle::mir::*;
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Compile `expr` into a fresh temporary. This is used when building
@@ -22,7 +22,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         M: Mirror<'tcx, Output = Expr<'tcx>>,
     {
         let expr = self.hir.mirror(expr);
-        self.expr_as_temp(block, temp_lifetime, expr, mutability)
+        //
+        // this is the only place in mir building that we need to truly need to worry about
+        // infinite recursion. Everything else does recurse, too, but it always gets broken up
+        // at some point by inserting an intermediate temporary
+        ensure_sufficient_stack(|| self.expr_as_temp(block, temp_lifetime, expr, mutability))
     }
 
     fn expr_as_temp(
@@ -60,23 +64,20 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 local_decl = local_decl.block_tail(tail_info);
             }
             if let ExprKind::StaticRef { def_id, .. } = expr.kind {
-                let is_thread_local = this.hir.tcx().has_attr(def_id, sym::thread_local);
+                let is_thread_local = this.hir.tcx().is_thread_local_static(def_id);
                 local_decl.internal = true;
                 local_decl.local_info = LocalInfo::StaticRef { def_id, is_thread_local };
             }
             this.local_decls.push(local_decl)
         };
-        let temp_place = &Place::from(temp);
+        let temp_place = Place::from(temp);
 
         match expr.kind {
             // Don't bother with StorageLive and Dead for these temporaries,
             // they are never assigned.
             ExprKind::Break { .. } | ExprKind::Continue { .. } | ExprKind::Return { .. } => (),
             ExprKind::Block { body: hir::Block { expr: None, targeted_by_break: false, .. } }
-                if expr_ty.is_never() =>
-            {
-                ()
-            }
+                if expr_ty.is_never() => {}
             _ => {
                 this.cfg
                     .push(block, Statement { source_info, kind: StatementKind::StorageLive(temp) });

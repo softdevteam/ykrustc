@@ -14,6 +14,7 @@
 #![feature(crate_visibility_modifier)]
 #![feature(label_break_value)]
 #![feature(nll)]
+#![feature(or_patterns)]
 #![feature(try_trait)]
 #![feature(unicode_internals)]
 #![recursion_limit = "256"]
@@ -33,13 +34,13 @@ pub mod util {
     pub mod comments;
     pub mod lev_distance;
     pub mod literal;
-    pub mod map_in_place;
     pub mod parser;
 }
 
 pub mod ast;
 pub mod attr;
 pub use attr::{with_default_globals, with_globals, GLOBALS};
+pub mod crate_disambiguator;
 pub mod entry;
 pub mod expand;
 pub mod mut_visit;
@@ -53,7 +54,7 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 
 /// Requirements for a `StableHashingContext` to be used in this crate.
 /// This is a hack to allow using the `HashStable_Generic` derive macro
-/// instead of implementing everything in librustc.
+/// instead of implementing everything in librustc_middle.
 pub trait HashStableContext: rustc_span::HashStableContext {
     fn hash_attr(&mut self, _: &ast::Attribute, hasher: &mut StableHasher);
 }

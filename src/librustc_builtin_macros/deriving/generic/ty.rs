@@ -76,8 +76,8 @@ impl<'a> Path<'a> {
             self.params.iter().map(|t| t.to_ty(cx, span, self_ty, self_generics)).collect();
         let params = lt
             .into_iter()
-            .map(|lt| GenericArg::Lifetime(lt))
-            .chain(tys.into_iter().map(|ty| GenericArg::Type(ty)))
+            .map(GenericArg::Lifetime)
+            .chain(tys.into_iter().map(GenericArg::Type))
             .collect();
 
         match self.kind {
@@ -98,7 +98,7 @@ pub enum Ty<'a> {
     Self_,
     /// &/Box/ Ty
     Ptr(Box<Ty<'a>>, PtrTy),
-    /// mod::mod::Type<[lifetime], [Params...]>, including a plain type
+    /// `mod::mod::Type<[lifetime], [Params...]>`, including a plain type
     /// parameter, and things like `i32`
     Literal(Path<'a>),
     /// includes unit

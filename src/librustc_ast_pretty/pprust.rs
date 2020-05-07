@@ -637,9 +637,8 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
         match tt {
             TokenTree::Token(ref token) => {
                 self.word(token_to_string_ext(&token, convert_dollar_crate));
-                match token.kind {
-                    token::DocComment(..) => self.hardbreak(),
-                    _ => {}
+                if let token::DocComment(..) = token.kind {
+                    self.hardbreak()
                 }
             }
             TokenTree::Delimited(dspan, delim, tts) => {
@@ -796,31 +795,10 @@ impl<'a> PrintState<'a> for State<'a> {
         match *args {
             ast::GenericArgs::AngleBracketed(ref data) => {
                 self.s.word("<");
-
-                self.commasep(Inconsistent, &data.args, |s, generic_arg| {
-                    s.print_generic_arg(generic_arg)
+                self.commasep(Inconsistent, &data.args, |s, arg| match arg {
+                    ast::AngleBracketedArg::Arg(a) => s.print_generic_arg(a),
+                    ast::AngleBracketedArg::Constraint(c) => s.print_assoc_constraint(c),
                 });
-
-                let mut comma = !data.args.is_empty();
-
-                for constraint in data.constraints.iter() {
-                    if comma {
-                        self.word_space(",")
-                    }
-                    self.print_ident(constraint.ident);
-                    self.s.space();
-                    match constraint.kind {
-                        ast::AssocTyConstraintKind::Equality { ref ty } => {
-                            self.word_space("=");
-                            self.print_type(ty);
-                        }
-                        ast::AssocTyConstraintKind::Bound { ref bounds } => {
-                            self.print_type_bounds(":", &*bounds);
-                        }
-                    }
-                    comma = true;
-                }
-
                 self.s.word(">")
             }
 
@@ -891,7 +869,21 @@ impl<'a> State<'a> {
         }
     }
 
-    crate fn print_generic_arg(&mut self, generic_arg: &GenericArg) {
+    pub fn print_assoc_constraint(&mut self, constraint: &ast::AssocTyConstraint) {
+        self.print_ident(constraint.ident);
+        self.s.space();
+        match &constraint.kind {
+            ast::AssocTyConstraintKind::Equality { ty } => {
+                self.word_space("=");
+                self.print_type(ty);
+            }
+            ast::AssocTyConstraintKind::Bound { bounds } => {
+                self.print_type_bounds(":", &*bounds);
+            }
+        }
+    }
+
+    pub fn print_generic_arg(&mut self, generic_arg: &GenericArg) {
         match generic_arg {
             GenericArg::Lifetime(lt) => self.print_lifetime(*lt),
             GenericArg::Type(ty) => self.print_type(ty),
@@ -1397,13 +1389,10 @@ impl<'a> State<'a> {
         self.print_visibility(&v.vis);
         let generics = ast::Generics::default();
         self.print_struct(&v.data, &generics, v.ident, v.span, false);
-        match v.disr_expr {
-            Some(ref d) => {
-                self.s.space();
-                self.word_space("=");
-                self.print_expr(&d.value)
-            }
-            _ => {}
+        if let Some(ref d) = v.disr_expr {
+            self.s.space();
+            self.word_space("=");
+            self.print_expr(&d.value)
         }
     }
 
@@ -1746,8 +1735,9 @@ impl<'a> State<'a> {
             // These cases need parens: `x as i32 < y` has the parser thinking that `i32 < y` is
             // the beginning of a path type. It starts trying to parse `x as (i32 < y ...` instead
             // of `(x as i32) < ...`. We need to convince it _not_ to do that.
-            (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Lt)
-            | (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Shl) => parser::PREC_FORCE_PAREN,
+            (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Lt | ast::BinOpKind::Shl) => {
+                parser::PREC_FORCE_PAREN
+            }
             // We are given `(let _ = a) OP b`.
             //
             // - When `OP <= LAnd` we should print `let _ = a OP b` to avoid redundant parens
@@ -2024,8 +2014,8 @@ impl<'a> State<'a> {
                     self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
                 }
             }
-            ast::ExprKind::InlineAsm(ref a) => {
-                self.s.word("asm!");
+            ast::ExprKind::LlvmInlineAsm(ref a) => {
+                self.s.word("llvm_asm!");
                 self.popen();
                 self.print_string(&a.asm.as_str(), a.asm_str_style);
                 self.word_space(":");
@@ -2066,7 +2056,7 @@ impl<'a> State<'a> {
                 if a.alignstack {
                     options.push("alignstack");
                 }
-                if a.dialect == ast::AsmDialect::Intel {
+                if a.dialect == ast::LlvmAsmDialect::Intel {
                     options.push("intel");
                 }
 
@@ -2089,12 +2079,10 @@ impl<'a> State<'a> {
             }
             ast::ExprKind::Yield(ref e) => {
                 self.s.word("yield");
-                match *e {
-                    Some(ref expr) => {
-                        self.s.space();
-                        self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
-                    }
-                    _ => (),
+
+                if let Some(ref expr) = *e {
+                    self.s.space();
+                    self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
                 }
             }
             ast::ExprKind::Try(ref e) => {
@@ -2146,9 +2134,8 @@ impl<'a> State<'a> {
         self.s.word("::");
         let item_segment = path.segments.last().unwrap();
         self.print_ident(item_segment.ident);
-        match item_segment.args {
-            Some(ref args) => self.print_generic_args(args, colons_before_params),
-            None => {}
+        if let Some(ref args) = item_segment.args {
+            self.print_generic_args(args, colons_before_params)
         }
     }
 

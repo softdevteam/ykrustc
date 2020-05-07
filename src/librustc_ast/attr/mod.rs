@@ -366,14 +366,14 @@ pub fn mk_nested_word_item(ident: Ident) -> NestedMetaItem {
 }
 
 crate fn mk_attr_id() -> AttrId {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
 
-    static NEXT_ATTR_ID: AtomicUsize = AtomicUsize::new(0);
+    static NEXT_ATTR_ID: AtomicU32 = AtomicU32::new(0);
 
     let id = NEXT_ATTR_ID.fetch_add(1, Ordering::SeqCst);
-    assert!(id != ::std::usize::MAX);
-    AttrId(id)
+    assert!(id != u32::MAX);
+    AttrId::from_u32(id)
 }
 
 pub fn mk_attr(style: AttrStyle, path: Path, args: MacArgs, span: Span) -> Attribute {
@@ -442,8 +442,10 @@ impl MetaItem {
     {
         // FIXME: Share code with `parse_path`.
         let path = match tokens.next().map(TokenTree::uninterpolate) {
-            Some(TokenTree::Token(Token { kind: kind @ token::Ident(..), span }))
-            | Some(TokenTree::Token(Token { kind: kind @ token::ModSep, span })) => 'arm: {
+            Some(TokenTree::Token(Token {
+                kind: kind @ (token::Ident(..) | token::ModSep),
+                span,
+            })) => 'arm: {
                 let mut segments = if let token::Ident(name, _) = kind {
                     if let Some(TokenTree::Token(Token { kind: token::ModSep, .. })) = tokens.peek()
                     {

@@ -96,26 +96,26 @@
 use self::LiveNodeKind::*;
 use self::VarKind::*;
 
-use rustc::hir::map::Map;
-use rustc::ty::query::Providers;
-use rustc::ty::{self, TyCtxt};
 use rustc_ast::ast;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def::*;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_hir::intravisit::{self, FnKind, NestedVisitorMap, Visitor};
 use rustc_hir::{Expr, HirId, HirIdMap, HirIdSet, Node};
+use rustc_middle::hir::map::Map;
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::{self, TyCtxt};
 use rustc_session::lint;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
 use std::io::prelude::*;
 use std::rc::Rc;
-use std::{fmt, u32};
 
 #[derive(Copy, Clone, PartialEq)]
 struct Variable(u32);
@@ -361,7 +361,7 @@ fn visit_fn<'tcx>(
 
     // swap in a new set of IR maps for this function body:
     let def_id = ir.tcx.hir().local_def_id(id);
-    let mut fn_maps = IrMaps::new(ir.tcx, def_id);
+    let mut fn_maps = IrMaps::new(ir.tcx, def_id.to_def_id());
 
     // Don't run unused pass for #[derive()]
     if let FnKind::Method(..) = fk {
@@ -496,7 +496,7 @@ fn visit_expr<'tcx>(ir: &mut IrMaps<'tcx>, expr: &'tcx Expr<'tcx>) {
             }
             ir.set_captures(expr.hir_id, call_caps);
             let old_body_owner = ir.body_owner;
-            ir.body_owner = closure_def_id;
+            ir.body_owner = closure_def_id.to_def_id();
             intravisit::walk_expr(ir, expr);
             ir.body_owner = old_body_owner;
         }
@@ -532,7 +532,7 @@ fn visit_expr<'tcx>(ir: &mut IrMaps<'tcx>, expr: &'tcx Expr<'tcx>) {
         | hir::ExprKind::AssignOp(..)
         | hir::ExprKind::Struct(..)
         | hir::ExprKind::Repeat(..)
-        | hir::ExprKind::InlineAsm(..)
+        | hir::ExprKind::LlvmInlineAsm(..)
         | hir::ExprKind::Box(..)
         | hir::ExprKind::Yield(..)
         | hir::ExprKind::Type(..)
@@ -671,7 +671,7 @@ struct Liveness<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Liveness<'a, 'tcx> {
-    fn new(ir: &'a mut IrMaps<'tcx>, def_id: DefId) -> Liveness<'a, 'tcx> {
+    fn new(ir: &'a mut IrMaps<'tcx>, def_id: LocalDefId) -> Liveness<'a, 'tcx> {
         // Special nodes and variables:
         // - exit_ln represents the end of the fn, either by return or panic
         // - implicit_ret_var is a pseudo-variable that represents
@@ -864,7 +864,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             first_merge,
             any_changed
         );
-        return any_changed;
+        any_changed
     }
 
     // Indicates that a local variable was *defined*; we know that no
@@ -903,10 +903,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
     }
 
     fn compute(&mut self, body: &hir::Expr<'_>) -> LiveNode {
-        debug!(
-            "compute: using id for body, {}",
-            self.ir.tcx.hir().hir_to_pretty_string(body.hir_id)
-        );
+        debug!("compute: using id for body, {:?}", body);
 
         // the fallthrough exit is only for those cases where we do not
         // explicitly return:
@@ -979,7 +976,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
     }
 
     fn propagate_through_expr(&mut self, expr: &Expr<'_>, succ: LiveNode) -> LiveNode {
-        debug!("propagate_through_expr: {}", self.ir.tcx.hir().hir_to_pretty_string(expr.hir_id));
+        debug!("propagate_through_expr: {:?}", expr);
 
         match expr.kind {
             // Interesting cases with control flow or which gen/kill
@@ -990,10 +987,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             hir::ExprKind::Field(ref e, _) => self.propagate_through_expr(&e, succ),
 
             hir::ExprKind::Closure(..) => {
-                debug!(
-                    "{} is an ExprKind::Closure",
-                    self.ir.tcx.hir().hir_to_pretty_string(expr.hir_id)
-                );
+                debug!("{:?} is an ExprKind::Closure", expr);
 
                 // the construction of a closure itself is not important,
                 // but we have to consider the closed over variables.
@@ -1183,7 +1177,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             | hir::ExprKind::Yield(ref e, _)
             | hir::ExprKind::Repeat(ref e, _) => self.propagate_through_expr(&e, succ),
 
-            hir::ExprKind::InlineAsm(ref asm) => {
+            hir::ExprKind::LlvmInlineAsm(ref asm) => {
                 let ia = &asm.inner;
                 let outputs = asm.outputs_exprs;
                 let inputs = asm.inputs_exprs;
@@ -1344,11 +1338,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
         let mut first_merge = true;
         let ln = self.live_node(expr.hir_id, expr.span);
         self.init_empty(ln, succ);
-        debug!(
-            "propagate_through_loop: using id for loop body {} {}",
-            expr.hir_id,
-            self.ir.tcx.hir().hir_to_pretty_string(body.hir_id)
-        );
+        debug!("propagate_through_loop: using id for loop body {} {:?}", expr.hir_id, body);
 
         self.break_ln.insert(expr.hir_id, succ);
 
@@ -1408,7 +1398,7 @@ fn check_expr<'tcx>(this: &mut Liveness<'_, 'tcx>, expr: &'tcx Expr<'tcx>) {
             }
         }
 
-        hir::ExprKind::InlineAsm(ref asm) => {
+        hir::ExprKind::LlvmInlineAsm(ref asm) => {
             for input in asm.inputs_exprs {
                 this.visit_expr(input);
             }
@@ -1502,28 +1492,33 @@ impl<'tcx> Liveness<'_, 'tcx> {
     ) {
         // In an or-pattern, only consider the variable; any later patterns must have the same
         // bindings, and we also consider the first pattern to be the "authoritative" set of ids.
-        // However, we should take the spans of variables with the same name from the later
+        // However, we should take the ids and spans of variables with the same name from the later
         // patterns so the suggestions to prefix with underscores will apply to those too.
-        let mut vars: FxIndexMap<String, (LiveNode, Variable, HirId, Vec<Span>)> = <_>::default();
+        let mut vars: FxIndexMap<String, (LiveNode, Variable, Vec<(HirId, Span)>)> = <_>::default();
 
         pat.each_binding(|_, hir_id, pat_sp, ident| {
             let ln = entry_ln.unwrap_or_else(|| self.live_node(hir_id, pat_sp));
             let var = self.variable(hir_id, ident.span);
+            let id_and_sp = (hir_id, pat_sp);
             vars.entry(self.ir.variable_name(var))
-                .and_modify(|(.., spans)| spans.push(ident.span))
-                .or_insert_with(|| (ln, var, hir_id, vec![ident.span]));
+                .and_modify(|(.., hir_ids_and_spans)| hir_ids_and_spans.push(id_and_sp))
+                .or_insert_with(|| (ln, var, vec![id_and_sp]));
         });
 
-        for (_, (ln, var, id, spans)) in vars {
+        for (_, (ln, var, hir_ids_and_spans)) in vars {
             if self.used_on_entry(ln, var) {
+                let id = hir_ids_and_spans[0].0;
+                let spans = hir_ids_and_spans.into_iter().map(|(_, sp)| sp).collect();
                 on_used_on_entry(spans, id, ln, var);
             } else {
-                self.report_unused(spans, id, ln, var);
+                self.report_unused(hir_ids_and_spans, ln, var);
             }
         }
     }
 
-    fn report_unused(&self, spans: Vec<Span>, hir_id: HirId, ln: LiveNode, var: Variable) {
+    fn report_unused(&self, hir_ids_and_spans: Vec<(HirId, Span)>, ln: LiveNode, var: Variable) {
+        let first_hir_id = hir_ids_and_spans[0].0;
+
         if let Some(name) = self.should_warn(var).filter(|name| name != "self") {
             // annoying: for parameters in funcs like `fn(x: i32)
             // {ret}`, there is only one node, so asking about
@@ -1534,8 +1529,8 @@ impl<'tcx> Liveness<'_, 'tcx> {
             if is_assigned {
                 self.ir.tcx.struct_span_lint_hir(
                     lint::builtin::UNUSED_VARIABLES,
-                    hir_id,
-                    spans,
+                    first_hir_id,
+                    hir_ids_and_spans.into_iter().map(|(_, sp)| sp).collect::<Vec<_>>(),
                     |lint| {
                         lint.build(&format!("variable `{}` is assigned to, but never used", name))
                             .note(&format!("consider using `_{}` instead", name))
@@ -1545,31 +1540,49 @@ impl<'tcx> Liveness<'_, 'tcx> {
             } else {
                 self.ir.tcx.struct_span_lint_hir(
                     lint::builtin::UNUSED_VARIABLES,
-                    hir_id,
-                    spans.clone(),
+                    first_hir_id,
+                    hir_ids_and_spans.iter().map(|(_, sp)| *sp).collect::<Vec<_>>(),
                     |lint| {
                         let mut err = lint.build(&format!("unused variable: `{}`", name));
-                        if self.ir.variable_is_shorthand(var) {
-                            if let Node::Binding(pat) = self.ir.tcx.hir().get(hir_id) {
-                                // Handle `ref` and `ref mut`.
-                                let spans = spans
-                                    .iter()
-                                    .map(|_span| (pat.span, format!("{}: _", name)))
-                                    .collect();
 
-                                err.multipart_suggestion(
-                                    "try ignoring the field",
-                                    spans,
-                                    Applicability::MachineApplicable,
-                                );
-                            }
+                        let (shorthands, non_shorthands): (Vec<_>, Vec<_>) =
+                            hir_ids_and_spans.into_iter().partition(|(hir_id, span)| {
+                                let var = self.variable(*hir_id, *span);
+                                self.ir.variable_is_shorthand(var)
+                            });
+
+                        let mut shorthands = shorthands
+                            .into_iter()
+                            .map(|(_, span)| (span, format!("{}: _", name)))
+                            .collect::<Vec<_>>();
+
+                        // If we have both shorthand and non-shorthand, prefer the "try ignoring
+                        // the field" message, and suggest `_` for the non-shorthands. If we only
+                        // have non-shorthand, then prefix with an underscore instead.
+                        if !shorthands.is_empty() {
+                            shorthands.extend(
+                                non_shorthands
+                                    .into_iter()
+                                    .map(|(_, span)| (span, "_".to_string()))
+                                    .collect::<Vec<_>>(),
+                            );
+
+                            err.multipart_suggestion(
+                                "try ignoring the field",
+                                shorthands,
+                                Applicability::MachineApplicable,
+                            );
                         } else {
                             err.multipart_suggestion(
-                                "consider prefixing with an underscore",
-                                spans.iter().map(|span| (*span, format!("_{}", name))).collect(),
+                                "if this is intentional, prefix it with an underscore",
+                                non_shorthands
+                                    .into_iter()
+                                    .map(|(_, span)| (span, format!("_{}", name)))
+                                    .collect::<Vec<_>>(),
                                 Applicability::MachineApplicable,
                             );
                         }
+
                         err.emit()
                     },
                 );

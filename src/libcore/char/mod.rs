@@ -34,11 +34,7 @@ pub use self::convert::ParseCharError;
 pub use self::convert::{from_digit, from_u32};
 #[stable(feature = "decode_utf16", since = "1.9.0")]
 pub use self::decode::{decode_utf16, DecodeUtf16, DecodeUtf16Error};
-
-// unstable re-exports
-#[unstable(feature = "unicode_version", issue = "49726")]
-pub use crate::unicode::version::UnicodeVersion;
-#[unstable(feature = "unicode_version", issue = "49726")]
+#[stable(feature = "unicode_version", since = "1.45.0")]
 pub use crate::unicode::UNICODE_VERSION;
 
 use crate::fmt::{self, Write};

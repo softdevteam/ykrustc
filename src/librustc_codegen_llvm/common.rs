@@ -2,26 +2,24 @@
 
 //! Code that is useful in various codegen modules.
 
-use crate::consts;
+use crate::consts::{self, const_alloc_to_llvm};
+pub use crate::context::CodegenCx;
 use crate::llvm::{self, BasicBlock, Bool, ConstantInt, False, OperandBundleDef, True};
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
-use log::debug;
-use rustc::bug;
-use rustc_codegen_ssa::traits::*;
-
-use crate::consts::const_alloc_to_llvm;
-use rustc::mir::interpret::{Allocation, GlobalAlloc, Scalar};
-use rustc::ty::layout::{self, HasDataLayout, LayoutOf, Size, TyLayout};
-use rustc_codegen_ssa::mir::place::PlaceRef;
-
-use libc::{c_char, c_uint};
 
 use rustc_ast::ast::Mutability;
+use rustc_codegen_ssa::mir::place::PlaceRef;
+use rustc_codegen_ssa::traits::*;
+use rustc_middle::bug;
+use rustc_middle::mir::interpret::{Allocation, GlobalAlloc, Scalar};
+use rustc_middle::ty::layout::TyAndLayout;
 use rustc_span::symbol::Symbol;
+use rustc_target::abi::{self, HasDataLayout, LayoutOf, Pointer, Size};
 
-pub use crate::context::CodegenCx;
+use libc::{c_char, c_uint};
+use log::debug;
 
 /*
 * A note on nomenclature of linking: "extern", "foreign", and "upcall".
@@ -96,15 +94,11 @@ impl BackendTypes for CodegenCx<'ll, 'tcx> {
 
 impl CodegenCx<'ll, 'tcx> {
     pub fn const_array(&self, ty: &'ll Type, elts: &[&'ll Value]) -> &'ll Value {
-        unsafe {
-            return llvm::LLVMConstArray(ty, elts.as_ptr(), elts.len() as c_uint);
-        }
+        unsafe { llvm::LLVMConstArray(ty, elts.as_ptr(), elts.len() as c_uint) }
     }
 
     pub fn const_vector(&self, elts: &[&'ll Value]) -> &'ll Value {
-        unsafe {
-            return llvm::LLVMConstVector(elts.as_ptr(), elts.len() as c_uint);
-        }
+        unsafe { llvm::LLVMConstVector(elts.as_ptr(), elts.len() as c_uint) }
     }
 
     pub fn const_bytes(&self, bytes: &[u8]) -> &'ll Value {
@@ -233,12 +227,7 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         })
     }
 
-    fn scalar_to_backend(
-        &self,
-        cv: Scalar,
-        layout: &layout::Scalar,
-        llty: &'ll Type,
-    ) -> &'ll Value {
+    fn scalar_to_backend(&self, cv: Scalar, layout: &abi::Scalar, llty: &'ll Type) -> &'ll Value {
         let bitsize = if layout.is_bool() { 1 } else { layout.value.size(self).bits() };
         match cv {
             Scalar::Raw { size: 0, .. } => {
@@ -248,7 +237,7 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             Scalar::Raw { data, size } => {
                 assert_eq!(size as u64, layout.value.size(self).bytes());
                 let llval = self.const_uint_big(self.type_ix(bitsize), data);
-                if layout.value == layout::Pointer {
+                if layout.value == Pointer {
                     unsafe { llvm::LLVMConstIntToPtr(llval, llty) }
                 } else {
                     self.const_bitcast(llval, llty)
@@ -282,7 +271,7 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                         1,
                     )
                 };
-                if layout.value != layout::Pointer {
+                if layout.value != Pointer {
                     unsafe { llvm::LLVMConstPtrToInt(llval, llty) }
                 } else {
                     self.const_bitcast(llval, llty)
@@ -293,7 +282,7 @@ impl ConstMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
     fn from_const_alloc(
         &self,
-        layout: TyLayout<'tcx>,
+        layout: TyAndLayout<'tcx>,
         alloc: &Allocation,
         offset: Size,
     ) -> PlaceRef<'tcx, &'ll Value> {
@@ -330,7 +319,7 @@ pub fn val_ty(v: &Value) -> &Type {
 pub fn bytes_in_context(llcx: &'ll llvm::Context, bytes: &[u8]) -> &'ll Value {
     unsafe {
         let ptr = bytes.as_ptr() as *const c_char;
-        return llvm::LLVMConstStringInContext(llcx, ptr, bytes.len() as c_uint, True);
+        llvm::LLVMConstStringInContext(llcx, ptr, bytes.len() as c_uint, True)
     }
 }
 

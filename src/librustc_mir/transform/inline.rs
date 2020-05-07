@@ -1,14 +1,14 @@
 //! Inlining pass for MIR functions
 
-use rustc::middle::codegen_fn_attrs::CodegenFnAttrFlags;
-use rustc::mir::visit::*;
-use rustc::mir::*;
-use rustc::ty::subst::{InternalSubsts, Subst, SubstsRef};
-use rustc::ty::{self, Instance, InstanceDef, ParamEnv, Ty, TyCtxt, TypeFoldable};
 use rustc_attr as attr;
 use rustc_hir::def_id::DefId;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
+use rustc_middle::mir::visit::*;
+use rustc_middle::mir::*;
+use rustc_middle::ty::subst::{Subst, SubstsRef};
+use rustc_middle::ty::{self, ConstKind, Instance, InstanceDef, ParamEnv, Ty, TyCtxt};
 use rustc_session::config::Sanitizer;
 use rustc_target::spec::abi::Abi;
 
@@ -22,6 +22,8 @@ const HINT_THRESHOLD: usize = 100;
 
 const INSTR_COST: usize = 5;
 const CALL_PENALTY: usize = 25;
+const LANDINGPAD_PENALTY: usize = 50;
+const RESUME_PENALTY: usize = 45;
 
 const UNKNOWN_SIZE_COST: usize = 10;
 
@@ -36,7 +38,7 @@ struct CallSite<'tcx> {
 }
 
 impl<'tcx> MirPass<'tcx> for Inline {
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut BodyAndCache<'tcx>) {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut Body<'tcx>) {
         if tcx.sess.opts.debugging_opts.mir_opt_level >= 2 {
             Inliner { tcx, source }.run_pass(body);
         }
@@ -49,7 +51,7 @@ struct Inliner<'tcx> {
 }
 
 impl Inliner<'tcx> {
-    fn run_pass(&self, caller_body: &mut BodyAndCache<'tcx>) {
+    fn run_pass(&self, caller_body: &mut Body<'tcx>) {
         // Keep a queue of callsites to try inlining on. We take
         // advantage of the fact that queries detect cycles here to
         // allow us to try and fetch the fully optimized MIR of a
@@ -64,17 +66,10 @@ impl Inliner<'tcx> {
 
         let mut callsites = VecDeque::new();
 
-        let mut param_env = self.tcx.param_env(self.source.def_id());
-
-        let substs = &InternalSubsts::identity_for_item(self.tcx, self.source.def_id());
-
-        // For monomorphic functions, we can use `Reveal::All` to resolve specialized instances.
-        if !substs.needs_subst() {
-            param_env = param_env.with_reveal_all();
-        }
+        let param_env = self.tcx.param_env(self.source.def_id()).with_reveal_all();
 
         // Only do inlining into fn bodies.
-        let id = self.tcx.hir().as_local_hir_id(self.source.def_id()).unwrap();
+        let id = self.tcx.hir().as_local_hir_id(self.source.def_id().expect_local());
         if self.tcx.hir().body_owner_kind(id).is_fn_or_closure() && self.source.promoted.is_none() {
             for (bb, bb_data) in caller_body.basic_blocks().iter_enumerated() {
                 if let Some(callsite) =
@@ -99,17 +94,15 @@ impl Inliner<'tcx> {
                     continue;
                 }
 
-                let self_node_id = self.tcx.hir().as_local_node_id(self.source.def_id()).unwrap();
-                let callee_node_id = self.tcx.hir().as_local_node_id(callsite.callee);
-
-                let callee_body = if let Some(callee_node_id) = callee_node_id {
+                let callee_body = if let Some(callee_def_id) = callsite.callee.as_local() {
+                    let callee_hir_id = self.tcx.hir().as_local_hir_id(callee_def_id);
+                    let self_hir_id =
+                        self.tcx.hir().as_local_hir_id(self.source.def_id().expect_local());
                     // Avoid a cycle here by only using `optimized_mir` only if we have
-                    // a lower node id than the callee. This ensures that the callee will
+                    // a lower `HirId` than the callee. This ensures that the callee will
                     // not inline us. This trick only works without incremental compilation.
                     // So don't do it if that is enabled.
-                    if !self.tcx.dep_graph.is_fully_enabled()
-                        && self_node_id.as_u32() < callee_node_id.as_u32()
-                    {
+                    if !self.tcx.dep_graph.is_fully_enabled() && self_hir_id < callee_hir_id {
                         self.tcx.optimized_mir(callsite.callee)
                     } else {
                         continue;
@@ -129,6 +122,16 @@ impl Inliner<'tcx> {
                 } else {
                     continue;
                 };
+
+                // Copy only unevaluated constants from the callee_body into the caller_body.
+                // Although we are only pushing `ConstKind::Unevaluated` consts to
+                // `required_consts`, here we may not only have `ConstKind::Unevaluated`
+                // because we are calling `subst_and_normalize_erasing_regions`.
+                caller_body.required_consts.extend(
+                    callee_body.required_consts.iter().copied().filter(|&constant| {
+                        matches!(constant.literal.val, ConstKind::Unevaluated(_, _, _))
+                    }),
+                );
 
                 let start = caller_body.basic_blocks().len();
                 debug!("attempting to inline callsite {:?} - body={:?}", callsite, callee_body);
@@ -183,7 +186,8 @@ impl Inliner<'tcx> {
         let terminator = bb_data.terminator();
         if let TerminatorKind::Call { func: ref op, .. } = terminator.kind {
             if let ty::FnDef(callee_def_id, substs) = op.ty(caller_body, self.tcx).kind {
-                let instance = Instance::resolve(self.tcx, param_env, callee_def_id, substs)?;
+                let instance =
+                    Instance::resolve(self.tcx, param_env, callee_def_id, substs).ok().flatten()?;
 
                 if let InstanceDef::Virtual(..) = instance.def {
                     return None;
@@ -325,6 +329,7 @@ impl Inliner<'tcx> {
                     if ty.needs_drop(tcx, param_env) {
                         cost += CALL_PENALTY;
                         if let Some(unwind) = unwind {
+                            cost += LANDINGPAD_PENALTY;
                             work_list.push(unwind);
                         }
                     } else {
@@ -340,7 +345,7 @@ impl Inliner<'tcx> {
                     threshold = 0;
                 }
 
-                TerminatorKind::Call { func: Operand::Constant(ref f), .. } => {
+                TerminatorKind::Call { func: Operand::Constant(ref f), cleanup, .. } => {
                     if let ty::FnDef(def_id, _) = f.literal.ty.kind {
                         // Don't give intrinsics the extra penalty for calls
                         let f = tcx.fn_sig(def_id);
@@ -349,9 +354,21 @@ impl Inliner<'tcx> {
                         } else {
                             cost += CALL_PENALTY;
                         }
+                    } else {
+                        cost += CALL_PENALTY;
+                    }
+                    if cleanup.is_some() {
+                        cost += LANDINGPAD_PENALTY;
                     }
                 }
-                TerminatorKind::Assert { .. } => cost += CALL_PENALTY,
+                TerminatorKind::Assert { cleanup, .. } => {
+                    cost += CALL_PENALTY;
+
+                    if cleanup.is_some() {
+                        cost += LANDINGPAD_PENALTY;
+                    }
+                }
+                TerminatorKind::Resume => cost += RESUME_PENALTY,
                 _ => cost += INSTR_COST,
             }
 
@@ -398,8 +415,8 @@ impl Inliner<'tcx> {
     fn inline_call(
         &self,
         callsite: CallSite<'tcx>,
-        caller_body: &mut BodyAndCache<'tcx>,
-        mut callee_body: BodyAndCache<'tcx>,
+        caller_body: &mut Body<'tcx>,
+        mut callee_body: Body<'tcx>,
     ) -> bool {
         let terminator = caller_body[callsite.bb].terminator.take().unwrap();
         match terminator.kind {
@@ -442,7 +459,7 @@ impl Inliner<'tcx> {
                 // Place could result in two different locations if `f`
                 // writes to `i`. To prevent this we need to create a temporary
                 // borrow of the place and pass the destination as `*temp` instead.
-                fn dest_needs_borrow(place: &Place<'_>) -> bool {
+                fn dest_needs_borrow(place: Place<'_>) -> bool {
                     for elem in place.projection.iter() {
                         match elem {
                             ProjectionElem::Deref | ProjectionElem::Index(_) => return true,
@@ -453,7 +470,7 @@ impl Inliner<'tcx> {
                     false
                 }
 
-                let dest = if dest_needs_borrow(&destination.0) {
+                let dest = if dest_needs_borrow(destination.0) {
                     debug!("creating temp for return destination");
                     let dest = Rvalue::Ref(
                         self.tcx.lifetimes.re_erased,
@@ -461,7 +478,7 @@ impl Inliner<'tcx> {
                         destination.0,
                     );
 
-                    let ty = dest.ty(&**caller_body, self.tcx);
+                    let ty = dest.ty(caller_body, self.tcx);
 
                     let temp = LocalDecl::new_temp(ty, callsite.location.span);
 
@@ -527,7 +544,7 @@ impl Inliner<'tcx> {
         &self,
         args: Vec<Operand<'tcx>>,
         callsite: &CallSite<'tcx>,
-        caller_body: &mut BodyAndCache<'tcx>,
+        caller_body: &mut Body<'tcx>,
     ) -> Vec<Local> {
         let tcx = self.tcx;
 
@@ -561,7 +578,7 @@ impl Inliner<'tcx> {
             assert!(args.next().is_none());
 
             let tuple = Place::from(tuple);
-            let tuple_tys = if let ty::Tuple(s) = tuple.ty(&**caller_body, tcx).ty.kind {
+            let tuple_tys = if let ty::Tuple(s) = tuple.ty(caller_body, tcx).ty.kind {
                 s
             } else {
                 bug!("Closure arguments are not passed as a tuple");
@@ -574,7 +591,7 @@ impl Inliner<'tcx> {
             let tuple_tmp_args = tuple_tys.iter().enumerate().map(|(i, ty)| {
                 // This is e.g., `tuple_tmp.0` in our example above.
                 let tuple_field =
-                    Operand::Move(tcx.mk_place_field(tuple.clone(), Field::new(i), ty.expect_ty()));
+                    Operand::Move(tcx.mk_place_field(tuple, Field::new(i), ty.expect_ty()));
 
                 // Spill to a local to make e.g., `tmp0`.
                 self.create_temp_if_necessary(tuple_field, callsite, caller_body)
@@ -594,7 +611,7 @@ impl Inliner<'tcx> {
         &self,
         arg: Operand<'tcx>,
         callsite: &CallSite<'tcx>,
-        caller_body: &mut BodyAndCache<'tcx>,
+        caller_body: &mut Body<'tcx>,
     ) -> Local {
         // FIXME: Analysis of the usage of the arguments to avoid
         // unnecessary temporaries.
@@ -612,7 +629,7 @@ impl Inliner<'tcx> {
         // Otherwise, create a temporary for the arg
         let arg = Rvalue::Use(arg);
 
-        let ty = arg.ty(&**caller_body, self.tcx);
+        let ty = arg.ty(caller_body, self.tcx);
 
         let arg_tmp = LocalDecl::new_temp(ty, callsite.location.span);
         let arg_tmp = caller_body.local_decls.push(arg_tmp);
@@ -696,18 +713,6 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
         // Handles integrating any locals that occur in the base
         // or projections
         self.super_place(place, context, location)
-    }
-
-    fn process_projection_elem(&mut self, elem: &PlaceElem<'tcx>) -> Option<PlaceElem<'tcx>> {
-        if let PlaceElem::Index(local) = elem {
-            let new_local = self.make_integrate_local(*local);
-
-            if new_local != *local {
-                return Some(PlaceElem::Index(new_local));
-            }
-        }
-
-        None
     }
 
     fn visit_basic_block_data(&mut self, block: BasicBlock, data: &mut BasicBlockData<'tcx>) {

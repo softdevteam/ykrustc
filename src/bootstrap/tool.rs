@@ -12,7 +12,7 @@ use crate::channel;
 use crate::channel::GitInfo;
 use crate::compile;
 use crate::toolstate::ToolState;
-use crate::util::{add_lib_path, exe, CiEnv};
+use crate::util::{add_dylib_path, exe, CiEnv};
 use crate::Compiler;
 use crate::Mode;
 
@@ -378,6 +378,7 @@ bootstrap_tool!(
     RemoteTestClient, "src/tools/remote-test-client", "remote-test-client";
     RustInstaller, "src/tools/rust-installer", "fabricate", is_external_tool = true;
     RustdocTheme, "src/tools/rustdoc-themes", "rustdoc-themes";
+    ExpandYamlAnchors, "src/tools/expand-yaml-anchors", "expand-yaml-anchors";
 );
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -388,7 +389,7 @@ pub struct ErrorIndex {
 impl ErrorIndex {
     pub fn command(builder: &Builder<'_>, compiler: Compiler) -> Command {
         let mut cmd = Command::new(builder.ensure(ErrorIndex { compiler }));
-        add_lib_path(
+        add_dylib_path(
             vec![PathBuf::from(&builder.sysroot_libdir(compiler, compiler.host))],
             &mut cmd,
         );
@@ -606,7 +607,15 @@ macro_rules! tool_extended {
 
             fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
                 let builder = run.builder;
-                run.path($path).default_condition(builder.config.extended)
+                run.path($path).default_condition(
+                    builder.config.extended
+                        && builder.config.tools.as_ref().map_or(true, |tools| {
+                            tools.iter().any(|tool| match tool.as_ref() {
+                                "clippy" => $tool_name == "clippy-driver",
+                                x => $tool_name == x,
+                            })
+                        }),
+                )
             }
 
             fn make_run(run: RunConfig<'_>) {
@@ -643,14 +652,12 @@ tool_extended!((self, builder),
     Miri, miri, "src/tools/miri", "miri", {};
     CargoMiri, miri, "src/tools/miri", "cargo-miri", {};
     Rls, rls, "src/tools/rls", "rls", {
-        let clippy = builder.ensure(Clippy {
+        builder.ensure(Clippy {
             compiler: self.compiler,
             target: self.target,
             extra_features: Vec::new(),
         });
-        if clippy.is_some() {
-            self.extra_features.push("clippy".to_owned());
-        }
+        self.extra_features.push("clippy".to_owned());
     };
     Rustfmt, rustfmt, "src/tools/rustfmt", "rustfmt", {};
 );
@@ -689,7 +696,7 @@ impl<'a> Builder<'a> {
             }
         }
 
-        add_lib_path(lib_paths, &mut cmd);
+        add_dylib_path(lib_paths, &mut cmd);
         cmd
     }
 }

@@ -313,6 +313,9 @@ impl Step for Standalone {
             }
 
             let mut cmd = builder.rustdoc_cmd(compiler);
+            // Needed for --index-page flag
+            cmd.arg("-Z").arg("unstable-options");
+
             cmd.arg("--html-after-content")
                 .arg(&footer)
                 .arg("--html-before-content")
@@ -391,11 +394,11 @@ impl Step for Std {
 
         let run_cargo_rustdoc_for = |package: &str| {
             let mut cargo = builder.cargo(compiler, Mode::Std, target, "rustdoc");
-            compile::std_cargo(builder, target, &mut cargo, &compiler);
+            compile::std_cargo(builder, target, compiler.stage, &mut cargo);
 
             // Keep a whitelist so we do not build internal stdlib crates, these will be
             // build by the rustc step later if enabled.
-            cargo.arg("-Z").arg("unstable-options").arg("-p").arg(package);
+            cargo.arg("-p").arg(package);
             // Create all crate output directories first to make sure rustdoc uses
             // relative links.
             // FIXME: Cargo should probably do this itself.
@@ -406,6 +409,8 @@ impl Step for Std {
                 .arg("rust.css")
                 .arg("--markdown-no-toc")
                 .arg("--generate-redirect-pages")
+                .arg("-Z")
+                .arg("unstable-options")
                 .arg("--resource-suffix")
                 .arg(crate::channel::CFG_RELEASE_NUM)
                 .arg("--index-page")
@@ -473,7 +478,11 @@ impl Step for Rustc {
 
         // Build cargo command.
         let mut cargo = builder.cargo(compiler, Mode::Rustc, target, "doc");
-        cargo.env("RUSTDOCFLAGS", "--document-private-items");
+        cargo.env(
+            "RUSTDOCFLAGS",
+            "--document-private-items \
+            --enable-index-page -Zunstable-options",
+        );
         compile::rustc_cargo(builder, &mut cargo, target);
 
         // Only include compiler crates, no dependencies of those, such as `libc`.

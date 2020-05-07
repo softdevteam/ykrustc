@@ -387,6 +387,18 @@ declare_lint! {
 }
 
 declare_lint! {
+    pub INVALID_CODEBLOCK_ATTRIBUTE,
+    Warn,
+    "codeblock attribute looks a lot like a known one"
+}
+
+declare_lint! {
+    pub MISSING_CRATE_LEVEL_DOCS,
+    Allow,
+    "detects crates with no crate-level documentation"
+}
+
+declare_lint! {
     pub MISSING_DOC_CODE_EXAMPLES,
     Allow,
     "detects publicly-exported items without code samples in their documentation"
@@ -446,7 +458,7 @@ declare_lint! {
     pub INDIRECT_STRUCTURAL_MATCH,
     // defaulting to allow until rust-lang/rust#62614 is fixed.
     Allow,
-    "pattern with const indirectly referencing non-`#[structural_match]` type",
+    "pattern with const indirectly referencing non-structural-match type",
     @future_incompatible = FutureIncompatibleInfo {
         reference: "issue #62411 <https://github.com/rust-lang/rust/issues/62411>",
         edition: None,
@@ -547,6 +559,8 @@ declare_lint_pass! {
         UNSTABLE_NAME_COLLISIONS,
         IRREFUTABLE_LET_PATTERNS,
         INTRA_DOC_LINK_RESOLUTION_FAILURE,
+        INVALID_CODEBLOCK_ATTRIBUTE,
+        MISSING_CRATE_LEVEL_DOCS,
         MISSING_DOC_CODE_EXAMPLES,
         PRIVATE_DOC_TESTS,
         WHERE_CLAUSES_OBJECT_SAFETY,

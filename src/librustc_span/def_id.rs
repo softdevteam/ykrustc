@@ -7,7 +7,6 @@ use rustc_macros::HashStable_Generic;
 use rustc_serialize::{Decoder, Encoder};
 use std::borrow::Borrow;
 use std::fmt;
-use std::{u32, u64};
 
 rustc_index::newtype_index! {
     pub struct CrateId {
@@ -105,19 +104,8 @@ impl ::std::fmt::Debug for CrateNum {
     }
 }
 
-#[derive(
-    Copy,
-    Clone,
-    Hash,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Debug,
-    RustcEncodable,
-    RustcDecodable,
-    HashStable_Generic
-)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug, RustcEncodable, RustcDecodable)]
+#[derive(HashStable_Generic)]
 pub struct DefPathHash(pub Fingerprint);
 
 impl Borrow<Fingerprint> for DefPathHash {
@@ -235,6 +223,11 @@ impl LocalDefId {
     #[inline]
     pub fn to_def_id(self) -> DefId {
         DefId { krate: LOCAL_CRATE, index: self.local_def_index }
+    }
+
+    #[inline]
+    pub fn is_top_level_module(self) -> bool {
+        self.local_def_index == CRATE_DEF_INDEX
     }
 }
 

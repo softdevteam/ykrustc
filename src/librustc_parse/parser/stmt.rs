@@ -163,11 +163,11 @@ impl<'a> Parser<'a> {
                 Ok(ty) => (None, Some(ty)),
                 Err(mut err) => {
                     // Rewind to before attempting to parse the type and continue parsing.
-                    let parser_snapshot_after_type = self.clone();
-                    mem::replace(self, parser_snapshot_before_type);
-
-                    let snippet = self.span_to_snippet(pat.span).unwrap();
-                    err.span_label(pat.span, format!("while parsing the type for `{}`", snippet));
+                    let parser_snapshot_after_type =
+                        mem::replace(self, parser_snapshot_before_type);
+                    if let Ok(snip) = self.span_to_snippet(pat.span) {
+                        err.span_label(pat.span, format!("while parsing the type for `{}`", snip));
+                    }
                     (Some((parser_snapshot_after_type, colon_sp, err)), None)
                 }
             }
@@ -201,7 +201,7 @@ impl<'a> Parser<'a> {
                 // Couldn't parse the type nor the initializer, only raise the type error and
                 // return to the parser state before parsing the type as the initializer.
                 // let x: <parse_error>;
-                mem::replace(self, snapshot);
+                *self = snapshot;
                 return Err(ty_err);
             }
             (Err(err), None) => {
@@ -217,13 +217,7 @@ impl<'a> Parser<'a> {
 
     /// Parses the RHS of a local variable declaration (e.g., '= 14;').
     fn parse_initializer(&mut self, skip_eq: bool) -> PResult<'a, Option<P<Expr>>> {
-        if self.eat(&token::Eq) {
-            Ok(Some(self.parse_expr()?))
-        } else if skip_eq {
-            Ok(Some(self.parse_expr()?))
-        } else {
-            Ok(None)
-        }
+        if self.eat(&token::Eq) || skip_eq { Ok(Some(self.parse_expr()?)) } else { Ok(None) }
     }
 
     /// Parses a block. No inner attributes are allowed.
@@ -278,7 +272,7 @@ impl<'a> Parser<'a> {
             _ => {}
         }
         e.span_label(sp, "expected `{`");
-        return Err(e);
+        Err(e)
     }
 
     /// Parses a block. Inner attributes are allowed.

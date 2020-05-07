@@ -1062,7 +1062,7 @@ impl ThreadId {
 
             // If we somehow use up all our bits, panic so that we're not
             // covering up subtle bugs of IDs being reused.
-            if COUNTER == crate::u64::MAX {
+            if COUNTER == u64::MAX {
                 panic!("failed to generate unique thread ID: bitspace exhausted");
             }
 
@@ -1082,8 +1082,8 @@ impl ThreadId {
     /// it is not guaranteed which values new threads will return, and this may
     /// change across Rust versions.
     #[unstable(feature = "thread_id_value", issue = "67939")]
-    pub fn as_u64(&self) -> u64 {
-        self.0.get()
+    pub fn as_u64(&self) -> NonZeroU64 {
+        self.0
     }
 }
 

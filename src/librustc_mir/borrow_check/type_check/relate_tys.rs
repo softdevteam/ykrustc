@@ -1,10 +1,9 @@
-use rustc::mir::ConstraintCategory;
-use rustc::ty::relate::TypeRelation;
-use rustc::ty::{self, Ty};
 use rustc_infer::infer::nll_relate::{NormalizationStrategy, TypeRelating, TypeRelatingDelegate};
 use rustc_infer::infer::{InferCtxt, NLLRegionVariableOrigin};
+use rustc_middle::mir::ConstraintCategory;
+use rustc_middle::ty::relate::TypeRelation;
+use rustc_middle::ty::{self, Ty};
 use rustc_trait_selection::traits::query::Fallible;
-use rustc_trait_selection::traits::DomainGoal;
 
 use crate::borrow_check::constraints::OutlivesConstraint;
 use crate::borrow_check::type_check::{BorrowCheckContext, Locations};
@@ -98,10 +97,6 @@ impl TypeRelatingDelegate<'tcx> for NllTypeRelatingDelegate<'_, '_, 'tcx> {
                 category: self.category,
             });
         }
-    }
-
-    fn push_domain_goal(&mut self, _: DomainGoal<'tcx>) {
-        bug!("should never be invoked with eager normalization")
     }
 
     fn normalization() -> NormalizationStrategy {

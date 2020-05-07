@@ -1,13 +1,11 @@
 use fmt_macros::{Parser, Piece, Position};
 
-use rustc::ty::{self, GenericParamDefKind, TyCtxt};
-use rustc::util::common::ErrorReported;
-
 use rustc_ast::ast::{MetaItem, NestedMetaItem};
 use rustc_attr as attr;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_errors::struct_span_err;
+use rustc_errors::{struct_span_err, ErrorReported};
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty::{self, GenericParamDefKind, TyCtxt};
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::Span;
 
@@ -83,7 +81,7 @@ impl<'tcx> OnUnimplementedDirective {
                         None,
                     )
                 })?;
-            attr::eval_condition(cond, &tcx.sess.parse_sess, &mut |_| true);
+            attr::eval_condition(cond, &tcx.sess.parse_sess, Some(tcx.features()), &mut |_| true);
             Some(cond.clone())
         };
 
@@ -210,11 +208,16 @@ impl<'tcx> OnUnimplementedDirective {
 
         for command in self.subcommands.iter().chain(Some(self)).rev() {
             if let Some(ref condition) = command.condition {
-                if !attr::eval_condition(condition, &tcx.sess.parse_sess, &mut |c| {
-                    c.ident().map_or(false, |ident| {
-                        options.contains(&(ident.name, c.value_str().map(|s| s.to_string())))
-                    })
-                }) {
+                if !attr::eval_condition(
+                    condition,
+                    &tcx.sess.parse_sess,
+                    Some(tcx.features()),
+                    &mut |c| {
+                        c.ident().map_or(false, |ident| {
+                            options.contains(&(ident.name, c.value_str().map(|s| s.to_string())))
+                        })
+                    },
+                ) {
                     debug!("evaluate: skipping {:?} due to condition", command);
                     continue;
                 }

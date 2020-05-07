@@ -8,6 +8,7 @@ use crate::convert::Infallible;
 use crate::fmt;
 use crate::intrinsics;
 use crate::mem;
+use crate::ops::{BitOr, BitOrAssign};
 use crate::str::FromStr;
 
 // Used because the `?` operator is not allowed in a const context.
@@ -110,6 +111,57 @@ assert_eq!(size_of::<Option<core::num::", stringify!($Ty), ">>(), size_of::<", s
                 }
             }
 
+            #[stable(feature = "nonzero_bitor", since = "1.45.0")]
+            impl BitOr for $Ty {
+                type Output = Self;
+                #[inline]
+                fn bitor(self, rhs: Self) -> Self::Output {
+                    // Safety: since `self` and `rhs` are both nonzero, the
+                    // result of the bitwise-or will be nonzero.
+                    unsafe { $Ty::new_unchecked(self.get() | rhs.get()) }
+                }
+            }
+
+            #[stable(feature = "nonzero_bitor", since = "1.45.0")]
+            impl BitOr<$Int> for $Ty {
+                type Output = Self;
+                #[inline]
+                fn bitor(self, rhs: $Int) -> Self::Output {
+                    // Safety: since `self` is nonzero, the result of the
+                    // bitwise-or will be nonzero regardless of the value of
+                    // `rhs`.
+                    unsafe { $Ty::new_unchecked(self.get() | rhs) }
+                }
+            }
+
+            #[stable(feature = "nonzero_bitor", since = "1.45.0")]
+            impl BitOr<$Ty> for $Int {
+                type Output = $Ty;
+                #[inline]
+                fn bitor(self, rhs: $Ty) -> Self::Output {
+                    // Safety: since `rhs` is nonzero, the result of the
+                    // bitwise-or will be nonzero regardless of the value of
+                    // `self`.
+                    unsafe { $Ty::new_unchecked(self | rhs.get()) }
+                }
+            }
+
+            #[stable(feature = "nonzero_bitor", since = "1.45.0")]
+            impl BitOrAssign for $Ty {
+                #[inline]
+                fn bitor_assign(&mut self, rhs: Self) {
+                    *self = *self | rhs;
+                }
+            }
+
+            #[stable(feature = "nonzero_bitor", since = "1.45.0")]
+            impl BitOrAssign<$Int> for $Ty {
+                #[inline]
+                fn bitor_assign(&mut self, rhs: $Int) {
+                    *self = *self | rhs;
+                }
+            }
+
             impl_nonzero_fmt! {
                 #[$stability] (Debug, Display, Binary, Octal, LowerHex, UpperHex) for $Ty
             }
@@ -174,7 +226,7 @@ NonZeroI8 NonZeroI16 NonZeroI32 NonZeroI64 NonZeroI128 NonZeroIsize }
 /// let zero = Wrapping(0u32);
 /// let one = Wrapping(1u32);
 ///
-/// assert_eq!(std::u32::MAX, (zero - one).0);
+/// assert_eq!(u32::MAX, (zero - one).0);
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, Hash)]
@@ -4376,7 +4428,7 @@ impl u8 {
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
     #[inline]
     pub fn to_ascii_uppercase(&self) -> u8 {
-        // Unset the fith bit if this is a lowercase letter
+        // Unset the fifth bit if this is a lowercase letter
         *self & !((self.is_ascii_lowercase() as u8) << 5)
     }
 
@@ -4399,7 +4451,7 @@ impl u8 {
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
     #[inline]
     pub fn to_ascii_lowercase(&self) -> u8 {
-        // Set the fith bit if this is an uppercase letter
+        // Set the fifth bit if this is an uppercase letter
         *self | ((self.is_ascii_uppercase() as u8) << 5)
     }
 

@@ -7,9 +7,9 @@
 //! `RETURN_PLACE` the MIR arguments) are always fully normalized (and
 //! contain revealed `impl Trait` values).
 
-use rustc::mir::*;
-use rustc::ty::Ty;
 use rustc_infer::infer::LateBoundRegionConversionTime;
+use rustc_middle::mir::*;
+use rustc_middle::ty::Ty;
 
 use rustc_index::vec::Idx;
 use rustc_span::Span;
@@ -36,7 +36,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         if !self.tcx().is_closure(self.mir_def_id) {
             user_provided_sig = None;
         } else {
-            let typeck_tables = self.tcx().typeck_tables_of(self.mir_def_id);
+            let typeck_tables = self.tcx().typeck_tables_of(self.mir_def_id.expect_local());
             user_provided_sig = match typeck_tables.user_provided_sigs.get(&self.mir_def_id) {
                 None => None,
                 Some(user_provided_poly_sig) => {
@@ -64,12 +64,15 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
             }
         };
 
+        debug!(
+            "equate_inputs_and_outputs: normalized_input_tys = {:?}, local_decls = {:?}",
+            normalized_input_tys, body.local_decls
+        );
+
         // Equate expected input tys with those in the MIR.
         for (&normalized_input_ty, argument_index) in normalized_input_tys.iter().zip(0..) {
             // In MIR, argument N is stored in local N+1.
             let local = Local::new(argument_index + 1);
-
-            debug!("equate_inputs_and_outputs: normalized_input_ty = {:?}", normalized_input_ty);
 
             let mir_input_ty = body.local_decls[local].ty;
             let mir_input_span = body.local_decls[local].source_info.span;

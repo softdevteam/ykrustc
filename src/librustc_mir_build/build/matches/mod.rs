@@ -10,16 +10,16 @@ use crate::build::ForGuard::{self, OutsideGuard, RefWithinGuard};
 use crate::build::{BlockAnd, BlockAndExtension, Builder};
 use crate::build::{GuardFrame, GuardFrameLocal, LocalsForNode};
 use crate::hair::{self, *};
-use rustc::middle::region;
-use rustc::mir::*;
-use rustc::ty::layout::VariantIdx;
-use rustc::ty::{self, CanonicalUserTypeAnnotation, Ty};
+use rustc_ast::ast::Name;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::HirId;
 use rustc_index::bit_set::BitSet;
+use rustc_middle::middle::region;
+use rustc_middle::mir::*;
+use rustc_middle::ty::{self, CanonicalUserTypeAnnotation, Ty};
 use rustc_span::Span;
+use rustc_target::abi::VariantIdx;
 use smallvec::{smallvec, SmallVec};
-use rustc_ast::ast::Name;
 
 // helper functions, broken out by category:
 mod simplify;
@@ -83,7 +83,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// * From each otherwise block to the next prebinding block.
     crate fn match_expr(
         &mut self,
-        destination: &Place<'tcx>,
+        destination: Place<'tcx>,
         span: Span,
         mut block: BasicBlock,
         scrutinee: ExprRef<'tcx>,
@@ -218,7 +218,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// `outer_source_info` is the SourceInfo for the whole match.
     fn lower_match_arms(
         &mut self,
-        destination: &Place<'tcx>,
+        destination: Place<'tcx>,
         scrutinee_place: Place<'tcx>,
         scrutinee_span: Span,
         arm_candidates: Vec<(&'_ Arm<'tcx>, Candidate<'_, 'tcx>)>,
@@ -364,7 +364,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             PatKind::Binding { mode: BindingMode::ByValue, var, subpattern: None, .. } => {
                 let place =
                     self.storage_live_binding(block, var, irrefutable_pat.span, OutsideGuard, true);
-                unpack!(block = self.into(&place, block, initializer));
+                unpack!(block = self.into(place, block, initializer));
 
                 // Inject a fake read, see comments on `FakeReadCause::ForLet`.
                 let source_info = self.source_info(irrefutable_pat.span);
@@ -399,7 +399,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             } => {
                 let place =
                     self.storage_live_binding(block, var, irrefutable_pat.span, OutsideGuard, true);
-                unpack!(block = self.into(&place, block, initializer));
+                unpack!(block = self.into(place, block, initializer));
 
                 // Inject a fake read, see comments on `FakeReadCause::ForLet`.
                 let pattern_source_info = self.source_info(irrefutable_pat.span);
@@ -1388,7 +1388,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
 
         // Insert a Shallow borrow of any places that is switched on.
-        fake_borrows.as_mut().map(|fb| fb.insert(match_place));
+        if let Some(fb) = fake_borrows {
+            fb.insert(match_place);
+        }
 
         // perform the test, branching to one of N blocks. For each of
         // those N possible outcomes, create a (initially empty)
@@ -1691,7 +1693,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             let scrutinee_source_info = self.source_info(scrutinee_span);
             for &(place, temp) in fake_borrows {
                 let borrow = Rvalue::Ref(re_erased, BorrowKind::Shallow, place);
-                self.cfg.push_assign(block, scrutinee_source_info, &Place::from(temp), borrow);
+                self.cfg.push_assign(block, scrutinee_source_info, Place::from(temp), borrow);
             }
 
             // the block to branch to if the guard fails; if there is no
@@ -1858,7 +1860,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             match binding.binding_mode {
                 BindingMode::ByValue => {
                     let rvalue = Rvalue::Ref(re_erased, BorrowKind::Shared, binding.source);
-                    self.cfg.push_assign(block, source_info, &ref_for_guard, rvalue);
+                    self.cfg.push_assign(block, source_info, ref_for_guard, rvalue);
                 }
                 BindingMode::ByRef(borrow_kind) => {
                     let value_for_arm = self.storage_live_binding(
@@ -1870,9 +1872,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     );
 
                     let rvalue = Rvalue::Ref(re_erased, borrow_kind, binding.source);
-                    self.cfg.push_assign(block, source_info, &value_for_arm, rvalue);
+                    self.cfg.push_assign(block, source_info, value_for_arm, rvalue);
                     let rvalue = Rvalue::Ref(re_erased, BorrowKind::Shared, value_for_arm);
-                    self.cfg.push_assign(block, source_info, &ref_for_guard, rvalue);
+                    self.cfg.push_assign(block, source_info, ref_for_guard, rvalue);
                 }
             }
         }
@@ -1903,14 +1905,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.schedule_drop_for_binding(binding.var_id, binding.span, OutsideGuard);
             }
             let rvalue = match binding.binding_mode {
-                BindingMode::ByValue => {
-                    Rvalue::Use(self.consume_by_copy_or_move(binding.source.clone()))
-                }
+                BindingMode::ByValue => Rvalue::Use(self.consume_by_copy_or_move(binding.source)),
                 BindingMode::ByRef(borrow_kind) => {
                     Rvalue::Ref(re_erased, borrow_kind, binding.source)
                 }
             };
-            self.cfg.push_assign(block, source_info, &local, rvalue);
+            self.cfg.push_assign(block, source_info, local, rvalue);
         }
     }
 

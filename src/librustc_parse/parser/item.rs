@@ -314,7 +314,7 @@ impl<'a> Parser<'a> {
                 " struct ".into(),
                 Applicability::MaybeIncorrect, // speculative
             );
-            return Err(err);
+            Err(err)
         } else if self.look_ahead(1, |t| *t == token::OpenDelim(token::Paren)) {
             let ident = self.parse_ident().unwrap();
             self.bump(); // `(`
@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
                     );
                 }
             }
-            return Err(err);
+            Err(err)
         } else if self.look_ahead(1, |t| *t == token::Lt) {
             let ident = self.parse_ident().unwrap();
             self.eat_to_tokens(&[&token::Gt]);
@@ -384,7 +384,7 @@ impl<'a> Parser<'a> {
                     Applicability::MachineApplicable,
                 );
             }
-            return Err(err);
+            Err(err)
         } else {
             Ok(())
         }
@@ -458,7 +458,7 @@ impl<'a> Parser<'a> {
         self.expect_keyword(kw::Impl)?;
 
         // First, parse generic parameters if necessary.
-        let mut generics = if self.choose_generics_over_qpath() {
+        let mut generics = if self.choose_generics_over_qpath(0) {
             self.parse_generics()?
         } else {
             let mut generics = Generics::default();
@@ -743,7 +743,7 @@ impl<'a> Parser<'a> {
 
     /// Parses a `UseTree`.
     ///
-    /// ```
+    /// ```text
     /// USE_TREE = [`::`] `*` |
     ///            [`::`] `{` USE_TREE_LIST `}` |
     ///            PATH `::` `*` |
@@ -792,7 +792,7 @@ impl<'a> Parser<'a> {
 
     /// Parses a `UseTreeKind::Nested(list)`.
     ///
-    /// ```
+    /// ```text
     /// USE_TREE_LIST = Ø | (USE_TREE `,`)* USE_TREE [`,`]
     /// ```
     fn parse_use_tree_list(&mut self) -> PResult<'a, Vec<(UseTree, ast::NodeId)>> {
@@ -907,10 +907,12 @@ impl<'a> Parser<'a> {
     }
 
     fn error_bad_item_kind<T>(&self, span: Span, kind: &ItemKind, ctx: &str) -> Option<T> {
-        let span = self.sess.source_map().def_span(span);
-        let msg = format!("{} is not supported in {}", kind.descr(), ctx);
-        self.struct_span_err(span, &msg).emit();
-        return None;
+        let span = self.sess.source_map().guess_head_span(span);
+        let descr = kind.descr();
+        self.struct_span_err(span, &format!("{} is not supported in {}", descr, ctx))
+            .help(&format!("consider moving the {} out to a nearby module scope", descr))
+            .emit();
+        None
     }
 
     fn error_on_foreign_const(&self, span: Span, ident: Ident) {
@@ -1494,7 +1496,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Is the current token the start of an `FnHeader` / not a valid parse?
-    fn check_fn_front_matter(&mut self) -> bool {
+    pub(super) fn check_fn_front_matter(&mut self) -> bool {
         // We use an over-approximation here.
         // `const const`, `fn const` won't parse, but we're not stepping over other syntax either.
         const QUALS: [Symbol; 4] = [kw::Const, kw::Async, kw::Unsafe, kw::Extern];
@@ -1509,7 +1511,7 @@ impl<'a> Parser<'a> {
                 })
             // `extern ABI fn`
             || self.check_keyword(kw::Extern)
-                && self.look_ahead(1, |t| t.can_begin_literal_or_bool())
+                && self.look_ahead(1, |t| t.can_begin_literal_maybe_minus())
                 && self.look_ahead(2, |t| t.is_keyword(kw::Fn))
     }
 
@@ -1521,7 +1523,7 @@ impl<'a> Parser<'a> {
     /// FnQual = "const"? "async"? "unsafe"? Extern? ;
     /// FnFrontMatter = FnQual? "fn" ;
     /// ```
-    fn parse_fn_front_matter(&mut self) -> PResult<'a, FnHeader> {
+    pub(super) fn parse_fn_front_matter(&mut self) -> PResult<'a, FnHeader> {
         let constness = self.parse_constness();
         let asyncness = self.parse_asyncness();
         let unsafety = self.parse_unsafety();
@@ -1648,7 +1650,7 @@ impl<'a> Parser<'a> {
                 // Recover from attempting to parse the argument as a type without pattern.
                 Err(mut err) => {
                     err.cancel();
-                    mem::replace(self, parser_snapshot_before_ty);
+                    *self = parser_snapshot_before_ty;
                     self.recover_arg_parse()?
                 }
             }

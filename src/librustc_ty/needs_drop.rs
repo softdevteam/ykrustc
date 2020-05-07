@@ -1,10 +1,10 @@
 //! Check whether a type has (potentially) non-trivial drop glue.
 
-use rustc::ty::subst::Subst;
-use rustc::ty::util::{needs_drop_components, AlwaysRequiresDrop};
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty::subst::Subst;
+use rustc_middle::ty::util::{needs_drop_components, AlwaysRequiresDrop};
+use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_span::DUMMY_SP;
 
 type NeedsDropResult<T> = Result<T, AlwaysRequiresDrop>;
@@ -93,9 +93,26 @@ where
                 match component.kind {
                     _ if component.is_copy_modulo_regions(tcx, self.param_env, DUMMY_SP) => (),
 
-                    ty::Closure(def_id, substs) => {
-                        for upvar_ty in substs.as_closure().upvar_tys(def_id, tcx) {
+                    ty::Closure(_, substs) => {
+                        for upvar_ty in substs.as_closure().upvar_tys() {
                             queue_type(self, upvar_ty);
+                        }
+                    }
+
+                    ty::Generator(_, substs, _) => {
+                        let substs = substs.as_generator();
+                        for upvar_ty in substs.upvar_tys() {
+                            queue_type(self, upvar_ty);
+                        }
+
+                        let witness = substs.witness();
+                        let interior_tys = match &witness.kind {
+                            ty::GeneratorWitness(tys) => tcx.erase_late_bound_regions(tys),
+                            _ => bug!(),
+                        };
+
+                        for interior_ty in interior_tys {
+                            queue_type(self, interior_ty);
                         }
                     }
 
@@ -132,7 +149,7 @@ where
             }
         }
 
-        return None;
+        None
     }
 }
 

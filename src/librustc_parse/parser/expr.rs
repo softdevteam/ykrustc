@@ -547,8 +547,7 @@ impl<'a> Parser<'a> {
                 // Rewind to before attempting to parse the type with generics, to recover
                 // from situations like `x as usize < y` in which we first tried to parse
                 // `usize < y` as a type with generic arguments.
-                let parser_snapshot_after_type = self.clone();
-                mem::replace(self, parser_snapshot_before_type);
+                let parser_snapshot_after_type = mem::replace(self, parser_snapshot_before_type);
 
                 match self.parse_path(PathStyle::Expr) {
                     Ok(path) => {
@@ -560,7 +559,7 @@ impl<'a> Parser<'a> {
                                 // example because `parse_ty_no_plus` returns `Err` on keywords,
                                 // but `parse_path` returns `Ok` on them due to error recovery.
                                 // Return original error and parser state.
-                                mem::replace(self, parser_snapshot_after_type);
+                                *self = parser_snapshot_after_type;
                                 return Err(type_err);
                             }
                         };
@@ -601,7 +600,7 @@ impl<'a> Parser<'a> {
                     Err(mut path_err) => {
                         // Couldn't parse as a path, return original error and parser state.
                         path_err.cancel();
-                        mem::replace(self, parser_snapshot_after_type);
+                        *self = parser_snapshot_after_type;
                         return Err(type_err);
                     }
                 }
@@ -638,6 +637,7 @@ impl<'a> Parser<'a> {
                     ExprKind::MethodCall(_, _) => "a method call",
                     ExprKind::Call(_, _) => "a function call",
                     ExprKind::Await(_) => "`.await`",
+                    ExprKind::Err => return Ok(with_postfix),
                     _ => unreachable!("parse_dot_or_call_expr_with_ shouldn't produce this"),
                 }
             );
@@ -925,8 +925,17 @@ impl<'a> Parser<'a> {
             self.parse_closure_expr(attrs)
         } else if self.eat_keyword(kw::If) {
             self.parse_if_expr(attrs)
-        } else if self.eat_keyword(kw::For) {
-            self.parse_for_expr(None, self.prev_token.span, attrs)
+        } else if self.check_keyword(kw::For) {
+            if self.choose_generics_over_qpath(1) {
+                // NOTE(Centril, eddyb): DO NOT REMOVE! Beyond providing parser recovery,
+                // this is an insurance policy in case we allow qpaths in (tuple-)struct patterns.
+                // When `for <Foo as Bar>::Proj in $expr $block` is wanted,
+                // you can disambiguate in favor of a pattern with `(...)`.
+                self.recover_quantified_closure_expr(attrs)
+            } else {
+                assert!(self.eat_keyword(kw::For));
+                self.parse_for_expr(None, self.prev_token.span, attrs)
+            }
         } else if self.eat_keyword(kw::While) {
             self.parse_while_expr(None, self.prev_token.span, attrs)
         } else if let Some(label) = self.eat_label() {
@@ -996,7 +1005,7 @@ impl<'a> Parser<'a> {
                 let expr = self.mk_expr(lo.to(self.prev_token.span), ExprKind::Lit(literal), attrs);
                 self.maybe_recover_from_bad_qpath(expr, true)
             }
-            None => return Err(self.expected_expression_found()),
+            None => self.try_macro_suggestion(),
         }
     }
 
@@ -1374,6 +1383,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Matches `'-' lit | lit` (cf. `ast_validation::AstValidator::check_expr_within_pat`).
+    /// Keep this in sync with `Token::can_begin_literal_maybe_minus`.
     pub fn parse_literal_maybe_minus(&mut self) -> PResult<'a, P<Expr>> {
         maybe_whole_expr!(self);
 
@@ -1414,6 +1424,26 @@ impl<'a> Parser<'a> {
         let (inner_attrs, blk) = self.parse_block_common(lo, blk_mode)?;
         attrs.extend(inner_attrs);
         Ok(self.mk_expr(blk.span, ExprKind::Block(blk, opt_label), attrs))
+    }
+
+    /// Recover on an explicitly quantified closure expression, e.g., `for<'a> |x: &'a u8| *x + 1`.
+    fn recover_quantified_closure_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
+        let lo = self.token.span;
+        let _ = self.parse_late_bound_lifetime_defs()?;
+        let span_for = lo.to(self.prev_token.span);
+        let closure = self.parse_closure_expr(attrs)?;
+
+        self.struct_span_err(span_for, "cannot introduce explicit parameters for a closure")
+            .span_label(closure.span, "the parameters are attached to this closure")
+            .span_suggestion(
+                span_for,
+                "remove the parameters",
+                String::new(),
+                Applicability::MachineApplicable,
+            )
+            .emit();
+
+        Ok(self.mk_expr_err(lo.to(closure.span)))
     }
 
     /// Parses a closure expression (e.g., `move |args| expr`).
@@ -1519,6 +1549,11 @@ impl<'a> Parser<'a> {
             let block = self.parse_block().map_err(|mut err| {
                 if not_block {
                     err.span_label(lo, "this `if` expression has a condition, but no block");
+                    if let ExprKind::Binary(_, _, ref right) = cond.kind {
+                        if let ExprKind::Block(_, _) = right.kind {
+                            err.help("maybe you forgot the right operand of the condition?");
+                        }
+                    }
                 }
                 err
             })?;
@@ -1713,7 +1748,7 @@ impl<'a> Parser<'a> {
         }
         let hi = self.token.span;
         self.bump();
-        return Ok(self.mk_expr(lo.to(hi), ExprKind::Match(scrutinee, arms), attrs));
+        Ok(self.mk_expr(lo.to(hi), ExprKind::Match(scrutinee, arms), attrs))
     }
 
     pub(super) fn parse_arm(&mut self) -> PResult<'a, Arm> {
@@ -1815,11 +1850,9 @@ impl<'a> Parser<'a> {
     }
 
     fn is_try_block(&self) -> bool {
-        self.token.is_keyword(kw::Try) &&
-        self.look_ahead(1, |t| *t == token::OpenDelim(token::Brace)) &&
-        self.token.uninterpolated_span().rust_2018() &&
-        // Prevent `while try {} {}`, `if try {} {} else {}`, etc.
-        !self.restrictions.contains(Restrictions::NO_STRUCT_LITERAL)
+        self.token.is_keyword(kw::Try)
+            && self.look_ahead(1, |t| *t == token::OpenDelim(token::Brace))
+            && self.token.uninterpolated_span().rust_2018()
     }
 
     /// Parses an `async move? {...}` expression.

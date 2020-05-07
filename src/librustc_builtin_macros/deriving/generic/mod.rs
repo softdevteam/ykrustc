@@ -184,8 +184,8 @@ use std::vec;
 use rustc_ast::ast::{self, BinOpKind, EnumDef, Expr, Generics, Ident, PatKind};
 use rustc_ast::ast::{GenericArg, GenericParamKind, VariantData};
 use rustc_ast::ptr::P;
-use rustc_ast::util::map_in_place::MapInPlace;
 use rustc_attr as attr;
+use rustc_data_structures::map_in_place::MapInPlace;
 use rustc_expand::base::{Annotatable, ExtCtxt};
 use rustc_session::parse::ParseSess;
 use rustc_span::source_map::respan;
@@ -489,7 +489,6 @@ impl<'a> TraitDef<'a> {
                 // set earlier; see
                 // librustc_expand/expand.rs:MacroExpander::fully_expand_fragment()
                 // librustc_expand/base.rs:Annotatable::derive_allowed()
-                return;
             }
         }
     }
@@ -1057,8 +1056,9 @@ impl<'a> MethodDef<'a> {
                     self_: field,
                     other: other_fields
                         .iter_mut()
-                        .map(|l| match l.next().unwrap() {
-                            (.., ex, _) => ex,
+                        .map(|l| {
+                            let (.., ex, _) = l.next().unwrap();
+                            ex
                         })
                         .collect(),
                     attrs,

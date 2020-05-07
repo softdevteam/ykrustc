@@ -27,7 +27,6 @@ use crate::cmp;
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::fmt;
 use crate::intrinsics::{assume, exact_div, is_aligned_and_not_null, unchecked_sub};
-use crate::isize;
 use crate::iter::*;
 use crate::marker::{self, Copy, Send, Sized, Sync};
 use crate::mem;
@@ -1605,7 +1604,7 @@ impl<T> [T] {
     /// Sorts the slice, but may not preserve the order of equal elements.
     ///
     /// This sort is unstable (i.e., may reorder equal elements), in-place
-    /// (i.e., does not allocate), and `O(n log n)` worst-case.
+    /// (i.e., does not allocate), and `O(n * log(n))` worst-case.
     ///
     /// # Current implementation
     ///
@@ -1641,7 +1640,7 @@ impl<T> [T] {
     /// elements.
     ///
     /// This sort is unstable (i.e., may reorder equal elements), in-place
-    /// (i.e., does not allocate), and `O(n log n)` worst-case.
+    /// (i.e., does not allocate), and `O(n * log(n))` worst-case.
     ///
     /// The comparator function must define a total ordering for the elements in the slice. If
     /// the ordering is not total, the order of the elements is unspecified. An order is a
@@ -1696,7 +1695,7 @@ impl<T> [T] {
     /// elements.
     ///
     /// This sort is unstable (i.e., may reorder equal elements), in-place
-    /// (i.e., does not allocate), and `O(m n log(m n))` worst-case, where the key function is
+    /// (i.e., does not allocate), and `O(m * n * log(n))` worst-case, where the key function is
     /// `O(m)`.
     ///
     /// # Current implementation
@@ -1956,7 +1955,7 @@ impl<T> [T] {
         // over all the elements, swapping as we go so that at the end
         // the elements we wish to keep are in the front, and those we
         // wish to reject are at the back. We can then split the slice.
-        // This operation is still O(n).
+        // This operation is still `O(n)`.
         //
         // Example: We start in this state, where `r` represents "next
         // read" and `w` represents "next_write`.
@@ -2145,6 +2144,31 @@ impl<T> [T] {
         }
     }
 
+    /// Fills `self` with elements by cloning `value`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(slice_fill)]
+    ///
+    /// let mut buf = vec![0; 10];
+    /// buf.fill(1);
+    /// assert_eq!(buf, vec![1; 10]);
+    /// ```
+    #[unstable(feature = "slice_fill", issue = "70758")]
+    pub fn fill(&mut self, value: T)
+    where
+        T: Clone,
+    {
+        if let Some((last, elems)) = self.split_last_mut() {
+            for el in elems {
+                el.clone_from(&value);
+            }
+
+            *last = value
+        }
+    }
+
     /// Copies the elements from `src` into `self`.
     ///
     /// The length of `src` must be the same as `self`.
@@ -2306,6 +2330,7 @@ impl<T> [T] {
     /// assert_eq!(&bytes, b"Hello, Wello!");
     /// ```
     #[stable(feature = "copy_within", since = "1.37.0")]
+    #[track_caller]
     pub fn copy_within<R: ops::RangeBounds<usize>>(&mut self, src: R, dest: usize)
     where
         T: Copy,
@@ -2587,7 +2612,7 @@ impl<T> [T] {
     /// assert!(![1, 3, 2, 4].is_sorted());
     /// assert!([0].is_sorted());
     /// assert!(empty.is_sorted());
-    /// assert!(![0.0, 1.0, std::f32::NAN].is_sorted());
+    /// assert!(![0.0, 1.0, f32::NAN].is_sorted());
     /// ```
     #[inline]
     #[unstable(feature = "is_sorted", reason = "new API", issue = "53485")]
@@ -2721,18 +2746,21 @@ where
 
 #[inline(never)]
 #[cold]
+#[track_caller]
 fn slice_index_len_fail(index: usize, len: usize) -> ! {
     panic!("index {} out of range for slice of length {}", index, len);
 }
 
 #[inline(never)]
 #[cold]
+#[track_caller]
 fn slice_index_order_fail(index: usize, end: usize) -> ! {
     panic!("slice index starts at {} but ends at {}", index, end);
 }
 
 #[inline(never)]
 #[cold]
+#[track_caller]
 fn slice_index_overflow_fail() -> ! {
     panic!("attempted to index slice up to maximum usize");
 }
@@ -2804,11 +2832,13 @@ pub trait SliceIndex<T: ?Sized>: private_slice_index::Sealed {
     /// Returns a shared reference to the output at this location, panicking
     /// if out of bounds.
     #[unstable(feature = "slice_index_methods", issue = "none")]
+    #[track_caller]
     fn index(self, slice: &T) -> &Self::Output;
 
     /// Returns a mutable reference to the output at this location, panicking
     /// if out of bounds.
     #[unstable(feature = "slice_index_methods", issue = "none")]
+    #[track_caller]
     fn index_mut(self, slice: &mut T) -> &mut Self::Output;
 }
 

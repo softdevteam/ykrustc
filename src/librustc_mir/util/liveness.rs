@@ -26,15 +26,15 @@
 
 use crate::transform::MirSource;
 use crate::util::pretty::{dump_enabled, write_basic_block, write_mir_intro};
-use rustc::mir::visit::{
-    MutatingUseContext, NonMutatingUseContext, NonUseContext, PlaceContext, Visitor,
-};
-use rustc::mir::Local;
-use rustc::mir::*;
-use rustc::ty::{self, TyCtxt};
 use rustc_data_structures::work_queue::WorkQueue;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_middle::mir::visit::{
+    MutatingUseContext, NonMutatingUseContext, NonUseContext, PlaceContext, Visitor,
+};
+use rustc_middle::mir::Local;
+use rustc_middle::mir::*;
+use rustc_middle::ty::{self, TyCtxt};
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -56,7 +56,7 @@ pub struct LivenessResult {
 
 /// Computes which local variables are live within the given function
 /// `mir`, including drops.
-pub fn liveness_of_locals(body: ReadOnlyBodyAndCache<'_, '_>) -> LivenessResult {
+pub fn liveness_of_locals(body: &Body<'_>) -> LivenessResult {
     let num_live_vars = body.local_decls.len();
 
     let def_use: IndexVec<_, DefsUses> =
@@ -133,6 +133,7 @@ pub fn categorize(context: PlaceContext) -> Option<DefUse> {
         // the def in call only to the input from the success
         // path and not the unwind path. -nmatsakis
         PlaceContext::MutatingUse(MutatingUseContext::Call) |
+        PlaceContext::MutatingUse(MutatingUseContext::Yield) |
 
         // Storage live and storage dead aren't proper defines, but we can ignore
         // values that come before them.
@@ -232,7 +233,7 @@ impl<'tcx> Visitor<'tcx> for DefsUsesVisitor {
     fn visit_local(&mut self, &local: &Local, context: PlaceContext, _: Location) {
         match categorize(context) {
             Some(DefUse::Def) => self.defs_uses.add_def(local),
-            Some(DefUse::Use) | Some(DefUse::Drop) => self.defs_uses.add_use(local),
+            Some(DefUse::Use | DefUse::Drop) => self.defs_uses.add_use(local),
             _ => (),
         }
     }
@@ -265,7 +266,7 @@ pub fn dump_mir<'tcx>(
     body: &Body<'tcx>,
     result: &LivenessResult,
 ) {
-    if !dump_enabled(tcx, pass_name, source) {
+    if !dump_enabled(tcx, pass_name, source.def_id()) {
         return;
     }
     let node_path = ty::print::with_forced_impl_filename_line(|| {
@@ -285,7 +286,7 @@ fn dump_matched_mir_node<'tcx>(
 ) {
     let mut file_path = PathBuf::new();
     file_path.push(Path::new(&tcx.sess.opts.debugging_opts.dump_mir_dir));
-    let item_id = tcx.hir().as_local_hir_id(source.def_id()).unwrap();
+    let item_id = tcx.hir().as_local_hir_id(source.def_id().expect_local());
     let file_name = format!("rustc.node{}{}-liveness.mir", item_id, pass_name);
     file_path.push(&file_name);
     let _ = fs::File::create(&file_path).and_then(|file| {

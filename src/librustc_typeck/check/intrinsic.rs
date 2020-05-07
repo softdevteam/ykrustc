@@ -3,11 +3,11 @@
 
 use crate::require_same_types;
 
-use rustc::traits::{ObligationCause, ObligationCauseCode};
-use rustc::ty::subst::Subst;
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
+use rustc_middle::traits::{ObligationCause, ObligationCauseCode};
+use rustc_middle::ty::subst::Subst;
+use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::abi::Abi;
 
@@ -137,14 +137,9 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
         let (n_tps, inputs, output) = match &name[..] {
             "breakpoint" => (0, Vec::new(), tcx.mk_unit()),
             "size_of" | "pref_align_of" | "min_align_of" => (1, Vec::new(), tcx.types.usize),
-            "size_of_val" | "min_align_of_val" => (
-                1,
-                vec![tcx.mk_imm_ref(
-                    tcx.mk_region(ty::ReLateBound(ty::INNERMOST, ty::BrAnon(0))),
-                    param(0),
-                )],
-                tcx.types.usize,
-            ),
+            "size_of_val" | "min_align_of_val" => {
+                (1, vec![tcx.mk_imm_ptr(param(0))], tcx.types.usize)
+            }
             "rustc_peek" => (1, vec![param(0)], param(0)),
             "caller_location" => (0, vec![], tcx.caller_location_ty()),
             "assert_inhabited" | "assert_zero_valid" | "assert_uninit_valid" => {
@@ -280,7 +275,7 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
             "fadd_fast" | "fsub_fast" | "fmul_fast" | "fdiv_fast" | "frem_fast" => {
                 (1, vec![param(0), param(0)], param(0))
             }
-            "float_to_int_approx_unchecked" => (2, vec![param(0)], param(1)),
+            "float_to_int_unchecked" => (2, vec![param(0)], param(1)),
 
             "assume" => (0, vec![tcx.types.bool], tcx.mk_unit()),
             "likely" => (0, vec![tcx.types.bool], tcx.types.bool),
