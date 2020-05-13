@@ -179,9 +179,10 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         .collect();
 
     let (landing_pads, funclets) = create_funclets(&mir, &mut bx, &cleanup_kinds, &block_bxs);
+    let num_locals = mir.local_decls.len();
 
     let sir_func_cx = if Sir::is_required(cx.tcx()) {
-        Some(SirFuncCx::new(cx.tcx(), &instance, mir.basic_blocks().len()))
+        Some(SirFuncCx::new(cx.tcx(), &instance, mir.basic_blocks().len(), num_locals))
     } else {
         None
     };
