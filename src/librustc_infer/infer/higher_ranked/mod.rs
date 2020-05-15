@@ -5,8 +5,8 @@ use super::combine::CombineFields;
 use super::{HigherRankedType, InferCtxt, PlaceholderMap};
 
 use crate::infer::CombinedSnapshot;
-use rustc::ty::relate::{Relate, RelateResult, TypeRelation};
-use rustc::ty::{self, Binder, TypeFoldable};
+use rustc_middle::ty::relate::{Relate, RelateResult, TypeRelation};
+use rustc_middle::ty::{self, Binder, TypeFoldable};
 
 impl<'a, 'tcx> CombineFields<'a, 'tcx> {
     pub fn higher_ranked_sub<T>(
@@ -30,7 +30,7 @@ impl<'a, 'tcx> CombineFields<'a, 'tcx> {
 
         let span = self.trace.cause.span;
 
-        return self.infcx.commit_if_ok(|snapshot| {
+        self.infcx.commit_if_ok(|snapshot| {
             // First, we instantiate each bound region in the supertype with a
             // fresh placeholder region.
             let (b_prime, placeholder_map) = self.infcx.replace_bound_vars_with_placeholders(b);
@@ -53,7 +53,7 @@ impl<'a, 'tcx> CombineFields<'a, 'tcx> {
             debug!("higher_ranked_sub: OK result={:?}", result);
 
             Ok(ty::Binder::bind(result))
-        });
+        })
     }
 }
 

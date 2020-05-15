@@ -35,7 +35,6 @@ use super::FnCtxt;
 use crate::expr_use_visitor as euv;
 use crate::mem_categorization as mc;
 use crate::mem_categorization::PlaceBase;
-use rustc::ty::{self, Ty, TyCtxt, UpvarSubsts};
 use rustc_ast::ast;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_hir as hir;
@@ -43,6 +42,7 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_infer::infer::UpvarRegion;
+use rustc_middle::ty::{self, Ty, TyCtxt, UpvarSubsts};
 use rustc_span::Span;
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
@@ -107,7 +107,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         let infer_kind = if let UpvarSubsts::Closure(closure_substs) = substs {
-            self.closure_kind(closure_def_id, closure_substs).is_none().then_some(closure_substs)
+            self.closure_kind(closure_substs).is_none().then_some(closure_substs)
         } else {
             None
         };
@@ -147,7 +147,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
 
         let body_owner_def_id = self.tcx.hir().body_owner_def_id(body.id());
-        assert_eq!(body_owner_def_id, closure_def_id);
+        assert_eq!(body_owner_def_id.to_def_id(), closure_def_id);
         let mut delegate = InferBorrowKind {
             fcx: self,
             closure_def_id,
@@ -168,7 +168,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Unify the (as yet unbound) type variable in the closure
             // substs with the kind we inferred.
             let inferred_kind = delegate.current_closure_kind;
-            let closure_kind_ty = closure_substs.as_closure().kind_ty(closure_def_id, self.tcx);
+            let closure_kind_ty = closure_substs.as_closure().kind_ty();
             self.demand_eqtype(span, inferred_kind.to_ty(self.tcx), closure_kind_ty);
 
             // If we have an origin, store it.
@@ -197,9 +197,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             "analyze_closure: id={:?} substs={:?} final_upvar_tys={:?}",
             closure_hir_id, substs, final_upvar_tys
         );
-        for (upvar_ty, final_upvar_ty) in
-            substs.upvar_tys(closure_def_id, self.tcx).zip(final_upvar_tys)
-        {
+        for (upvar_ty, final_upvar_ty) in substs.upvar_tys().zip(final_upvar_tys) {
             self.demand_suptype(span, upvar_ty, final_upvar_ty);
         }
 
@@ -228,7 +226,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let upvar_ty = self.node_ty(var_hir_id);
                     let upvar_id = ty::UpvarId {
                         var_path: ty::UpvarPath { hir_id: var_hir_id },
-                        closure_expr_id: closure_def_id.expect_local(),
+                        closure_expr_id: closure_def_id,
                     };
                     let capture = self.tables.borrow().upvar_capture(upvar_id);
 
@@ -397,8 +395,7 @@ impl<'a, 'tcx> InferBorrowKind<'a, 'tcx> {
             ty::UpvarCapture::ByRef(mut upvar_borrow) => {
                 match (upvar_borrow.kind, kind) {
                     // Take RHS:
-                    (ty::ImmBorrow, ty::UniqueImmBorrow)
-                    | (ty::ImmBorrow, ty::MutBorrow)
+                    (ty::ImmBorrow, ty::UniqueImmBorrow | ty::MutBorrow)
                     | (ty::UniqueImmBorrow, ty::MutBorrow) => {
                         upvar_borrow.kind = kind;
                         self.adjust_upvar_captures
@@ -406,8 +403,7 @@ impl<'a, 'tcx> InferBorrowKind<'a, 'tcx> {
                     }
                     // Take LHS:
                     (ty::ImmBorrow, ty::ImmBorrow)
-                    | (ty::UniqueImmBorrow, ty::ImmBorrow)
-                    | (ty::UniqueImmBorrow, ty::UniqueImmBorrow)
+                    | (ty::UniqueImmBorrow, ty::ImmBorrow | ty::UniqueImmBorrow)
                     | (ty::MutBorrow, _) => {}
                 }
             }
@@ -442,14 +438,12 @@ impl<'a, 'tcx> InferBorrowKind<'a, 'tcx> {
 
         match (existing_kind, new_kind) {
             (ty::ClosureKind::Fn, ty::ClosureKind::Fn)
-            | (ty::ClosureKind::FnMut, ty::ClosureKind::Fn)
-            | (ty::ClosureKind::FnMut, ty::ClosureKind::FnMut)
+            | (ty::ClosureKind::FnMut, ty::ClosureKind::Fn | ty::ClosureKind::FnMut)
             | (ty::ClosureKind::FnOnce, _) => {
                 // no change needed
             }
 
-            (ty::ClosureKind::Fn, ty::ClosureKind::FnMut)
-            | (ty::ClosureKind::Fn, ty::ClosureKind::FnOnce)
+            (ty::ClosureKind::Fn, ty::ClosureKind::FnMut | ty::ClosureKind::FnOnce)
             | (ty::ClosureKind::FnMut, ty::ClosureKind::FnOnce) => {
                 // new kind is stronger than the old kind
                 self.current_closure_kind = new_kind;

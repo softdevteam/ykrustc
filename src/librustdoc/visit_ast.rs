@@ -1,14 +1,14 @@
 //! The Rust AST Visitor. Extracts useful information and massages it into a form
 //! usable for `clean`.
 
-use rustc::middle::privacy::AccessLevel;
-use rustc::ty::TyCtxt;
 use rustc_ast::ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_hir::Node;
+use rustc_middle::middle::privacy::AccessLevel;
+use rustc_middle::ty::TyCtxt;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{kw, sym};
@@ -164,28 +164,23 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         body: hir::BodyId,
     ) {
         debug!("visiting fn");
-        let macro_kind = item
-            .attrs
-            .iter()
-            .filter_map(|a| {
-                if a.check_name(sym::proc_macro) {
-                    Some(MacroKind::Bang)
-                } else if a.check_name(sym::proc_macro_derive) {
-                    Some(MacroKind::Derive)
-                } else if a.check_name(sym::proc_macro_attribute) {
-                    Some(MacroKind::Attr)
-                } else {
-                    None
-                }
-            })
-            .next();
+        let macro_kind = item.attrs.iter().find_map(|a| {
+            if a.check_name(sym::proc_macro) {
+                Some(MacroKind::Bang)
+            } else if a.check_name(sym::proc_macro_derive) {
+                Some(MacroKind::Derive)
+            } else if a.check_name(sym::proc_macro_attribute) {
+                Some(MacroKind::Attr)
+            } else {
+                None
+            }
+        });
         match macro_kind {
             Some(kind) => {
                 let name = if kind == MacroKind::Derive {
                     item.attrs
                         .lists(sym::proc_macro_derive)
-                        .filter_map(|mi| mi.ident())
-                        .next()
+                        .find_map(|mi| mi.ident())
                         .expect("proc-macro derives require a name")
                         .name
                 } else {
@@ -309,14 +304,15 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             let attrs = clean::inline::load_attrs(self.cx, res_did);
             let self_is_hidden = attrs.lists(sym::doc).has_word(sym::hidden);
             match res {
-                Res::Def(DefKind::Trait, did)
-                | Res::Def(DefKind::Struct, did)
-                | Res::Def(DefKind::Union, did)
-                | Res::Def(DefKind::Enum, did)
-                | Res::Def(DefKind::ForeignTy, did)
-                | Res::Def(DefKind::TyAlias, did)
-                    if !self_is_hidden =>
-                {
+                Res::Def(
+                    DefKind::Trait
+                    | DefKind::Struct
+                    | DefKind::Union
+                    | DefKind::Enum
+                    | DefKind::ForeignTy
+                    | DefKind::TyAlias,
+                    did,
+                ) if !self_is_hidden => {
                     self.cx.renderinfo.get_mut().access_levels.map.insert(did, AccessLevel::Public);
                 }
                 Res::Def(DefKind::Mod, did) => {
@@ -330,8 +326,8 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             return false;
         }
 
-        let res_hir_id = match tcx.hir().as_local_hir_id(res_did) {
-            Some(n) => n,
+        let res_hir_id = match res_did.as_local() {
+            Some(n) => tcx.hir().as_local_hir_id(n),
             None => return false,
         };
 
@@ -390,7 +386,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
         if item.vis.node.is_pub() {
             let def_id = self.cx.tcx.hir().local_def_id(item.hir_id);
-            self.store_path(def_id);
+            self.store_path(def_id.to_def_id());
         }
 
         match item.kind {
@@ -563,6 +559,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                 polarity,
                 defaultness,
                 constness,
+                defaultness_span: _,
                 ref generics,
                 ref of_trait,
                 self_ty,
@@ -627,7 +624,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
         Macro {
             hid: def.hir_id,
-            def_id: self.cx.tcx.hir().local_def_id(def.hir_id),
+            def_id: self.cx.tcx.hir().local_def_id(def.hir_id).to_def_id(),
             attrs: &def.attrs,
             name: renamed.unwrap_or(def.ident.name),
             whence: def.span,

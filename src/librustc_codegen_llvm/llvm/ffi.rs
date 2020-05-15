@@ -73,6 +73,14 @@ pub enum Visibility {
     Protected = 2,
 }
 
+/// LLVMUnnamedAddr
+#[repr(C)]
+pub enum UnnamedAddr {
+    No,
+    Local,
+    Global,
+}
+
 /// LLVMDLLStorageClass
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -381,10 +389,10 @@ pub enum AsmDialect {
 }
 
 impl AsmDialect {
-    pub fn from_generic(asm: rustc_ast::ast::AsmDialect) -> Self {
+    pub fn from_generic(asm: rustc_ast::ast::LlvmAsmDialect) -> Self {
         match asm {
-            rustc_ast::ast::AsmDialect::Att => AsmDialect::Att,
-            rustc_ast::ast::AsmDialect::Intel => AsmDialect::Intel,
+            rustc_ast::ast::LlvmAsmDialect::Att => AsmDialect::Att,
+            rustc_ast::ast::LlvmAsmDialect::Intel => AsmDialect::Intel,
         }
     }
 }
@@ -437,8 +445,7 @@ pub struct SanitizerOptions {
 /// LLVMRelocMode
 #[derive(Copy, Clone, PartialEq)]
 #[repr(C)]
-pub enum RelocMode {
-    Default,
+pub enum RelocModel {
     Static,
     PIC,
     DynamicNoPic,
@@ -536,6 +543,15 @@ pub enum ThreadLocalMode {
     LocalDynamic,
     InitialExec,
     LocalExec,
+}
+
+/// LLVMRustChecksumKind
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub enum ChecksumKind {
+    None,
+    MD5,
+    SHA1,
 }
 
 extern "C" {
@@ -727,11 +743,11 @@ extern "C" {
     pub fn LLVMCloneModule(M: &Module) -> &Module;
 
     /// Data layout. See Module::getDataLayout.
-    pub fn LLVMGetDataLayout(M: &Module) -> *const c_char;
+    pub fn LLVMGetDataLayoutStr(M: &Module) -> *const c_char;
     pub fn LLVMSetDataLayout(M: &Module, Triple: *const c_char);
 
     /// See Module::setModuleInlineAsm.
-    pub fn LLVMSetModuleInlineAsm(M: &Module, Asm: *const c_char);
+    pub fn LLVMSetModuleInlineAsm2(M: &Module, Asm: *const c_char, AsmLen: size_t);
     pub fn LLVMRustAppendModuleInlineAsm(M: &Module, Asm: *const c_char, AsmLen: size_t);
 
     /// See llvm::LLVMTypeKind::getTypeID.
@@ -1635,6 +1651,9 @@ extern "C" {
         FilenameLen: size_t,
         Directory: *const c_char,
         DirectoryLen: size_t,
+        CSKind: ChecksumKind,
+        Checksum: *const c_char,
+        ChecksumLen: size_t,
     ) -> &'a DIFile;
 
     pub fn LLVMRustDIBuilderCreateSubroutineType(
@@ -1856,7 +1875,7 @@ extern "C" {
         UniqueIdLen: size_t,
     ) -> &'a DIDerivedType;
 
-    pub fn LLVMSetUnnamedAddr(GlobalVar: &Value, UnnamedAddr: Bool);
+    pub fn LLVMSetUnnamedAddress(Global: &Value, UnnamedAddr: UnnamedAddr);
 
     pub fn LLVMRustDIBuilderCreateTemplateTypeParameter(
         Builder: &DIBuilder<'a>,
@@ -1938,7 +1957,7 @@ extern "C" {
         Features: *const c_char,
         Abi: *const c_char,
         Model: CodeModel,
-        Reloc: RelocMode,
+        Reloc: RelocModel,
         Level: CodeGenOptLevel,
         UseSoftFP: bool,
         PositionIndependentExecutable: bool,
@@ -2130,6 +2149,11 @@ extern "C" {
         len: usize,
         Identifier: *const c_char,
     ) -> Option<&Module>;
+    pub fn LLVMRustGetBitcodeSliceFromObjectData(
+        Data: *const u8,
+        len: usize,
+        out_len: &mut usize,
+    ) -> *const u8;
     pub fn LLVMRustThinLTOGetDICompileUnit(
         M: &Module,
         CU1: &mut *mut c_void,

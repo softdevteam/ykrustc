@@ -6,6 +6,7 @@
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
 #![feature(nll)]
+#![feature(or_patterns)]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_quote)]
 
@@ -19,7 +20,6 @@ use rustc_expand::proc_macro::BangProcMacro;
 use rustc_span::edition::Edition;
 use rustc_span::symbol::sym;
 
-mod asm;
 mod assert;
 mod cfg;
 mod cfg_accessible;
@@ -32,6 +32,7 @@ mod format;
 mod format_foreign;
 mod global_allocator;
 mod global_asm;
+mod llvm_asm;
 mod log_syntax;
 mod source_util;
 mod test;
@@ -61,7 +62,7 @@ pub fn register_builtin_macros(resolver: &mut dyn Resolver, edition: Edition) {
     }
 
     register_bang! {
-        asm: asm::expand_asm,
+        asm: llvm_asm::expand_llvm_asm,
         assert: assert::expand_assert,
         cfg: cfg::expand_cfg,
         column: source_util::expand_column,
@@ -77,6 +78,7 @@ pub fn register_builtin_macros(resolver: &mut dyn Resolver, edition: Edition) {
         include_str: source_util::expand_include_str,
         include: source_util::expand_include,
         line: source_util::expand_line,
+        llvm_asm: llvm_asm::expand_llvm_asm,
         log_syntax: log_syntax::expand_log_syntax,
         module_path: source_util::expand_mod,
         option_env: env::expand_option_env,

@@ -6,20 +6,20 @@ use crate::infer::region_constraints::MemberConstraint;
 use crate::infer::region_constraints::RegionConstraintData;
 use crate::infer::region_constraints::VarInfos;
 use crate::infer::region_constraints::VerifyBound;
+use crate::infer::RegionRelations;
 use crate::infer::RegionVariableOrigin;
 use crate::infer::RegionckMode;
 use crate::infer::SubregionOrigin;
-use rustc::middle::free_region::RegionRelations;
-use rustc::ty::fold::TypeFoldable;
-use rustc::ty::{self, Ty, TyCtxt};
-use rustc::ty::{ReEarlyBound, ReEmpty, ReErased, ReFree, ReStatic};
-use rustc::ty::{ReLateBound, RePlaceholder, ReScope, ReVar};
-use rustc::ty::{Region, RegionVid};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::graph::implementation::{
     Direction, Graph, NodeIndex, INCOMING, OUTGOING,
 };
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_middle::ty::fold::TypeFoldable;
+use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::{ReEarlyBound, ReEmpty, ReErased, ReFree, ReStatic};
+use rustc_middle::ty::{ReLateBound, RePlaceholder, ReScope, ReVar};
+use rustc_middle::ty::{Region, RegionVid};
 use rustc_span::Span;
 use std::fmt;
 
@@ -452,12 +452,10 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 debug!("Expanding value of {:?} from {:?} to {:?}", b_vid, cur_region, lub);
 
                 *b_data = VarValue::Value(lub);
-                return true;
+                true
             }
 
-            VarValue::ErrorValue => {
-                return false;
-            }
+            VarValue::ErrorValue => false,
         }
     }
 
@@ -495,12 +493,7 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
     /// term "concrete regions").
     fn lub_concrete_regions(&self, a: Region<'tcx>, b: Region<'tcx>) -> Region<'tcx> {
         let r = match (a, b) {
-            (&ty::ReClosureBound(..), _)
-            | (_, &ty::ReClosureBound(..))
-            | (&ReLateBound(..), _)
-            | (_, &ReLateBound(..))
-            | (&ReErased, _)
-            | (_, &ReErased) => {
+            (&ReLateBound(..), _) | (_, &ReLateBound(..)) | (&ReErased, _) | (_, &ReErased) => {
                 bug!("cannot relate region: LUB({:?}, {:?})", a, b);
             }
 
@@ -519,12 +512,8 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 self.tcx().lifetimes.re_static
             }
 
-            (&ReEmpty(_), r @ ReEarlyBound(_))
-            | (r @ ReEarlyBound(_), &ReEmpty(_))
-            | (&ReEmpty(_), r @ ReFree(_))
-            | (r @ ReFree(_), &ReEmpty(_))
-            | (&ReEmpty(_), r @ ReScope(_))
-            | (r @ ReScope(_), &ReEmpty(_)) => {
+            (&ReEmpty(_), r @ (ReEarlyBound(_) | ReFree(_) | ReScope(_)))
+            | (r @ (ReEarlyBound(_) | ReFree(_) | ReScope(_)), &ReEmpty(_)) => {
                 // All empty regions are less than early-bound, free,
                 // and scope regions.
                 r
@@ -549,10 +538,8 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 }
             }
 
-            (&ReEarlyBound(_), &ReScope(s_id))
-            | (&ReScope(s_id), &ReEarlyBound(_))
-            | (&ReFree(_), &ReScope(s_id))
-            | (&ReScope(s_id), &ReFree(_)) => {
+            (&ReEarlyBound(_) | &ReFree(_), &ReScope(s_id))
+            | (&ReScope(s_id), &ReEarlyBound(_) | &ReFree(_)) => {
                 // A "free" region can be interpreted as "some region
                 // at least as big as fr.scope".  So, we can
                 // reasonably compare free regions and scopes:
@@ -591,10 +578,10 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 self.tcx().mk_region(ReScope(lub))
             }
 
-            (&ReEarlyBound(_), &ReEarlyBound(_))
-            | (&ReFree(_), &ReEarlyBound(_))
-            | (&ReEarlyBound(_), &ReFree(_))
-            | (&ReFree(_), &ReFree(_)) => self.region_rels.lub_free_regions(a, b),
+            (&ReEarlyBound(_), &ReEarlyBound(_) | &ReFree(_))
+            | (&ReFree(_), &ReEarlyBound(_) | &ReFree(_)) => {
+                self.region_rels.lub_free_regions(a, b)
+            }
 
             // For these types, we cannot define any additional
             // relationship:
@@ -804,7 +791,7 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
             }
         }
 
-        return graph;
+        graph
     }
 
     fn collect_error_for_expanding_node(

@@ -63,7 +63,7 @@ fn show_substructure(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>
     let span = cx.with_def_site_ctxt(span);
     let name = cx.expr_lit(span, ast::LitKind::Str(ident.name, ast::StrStyle::Cooked));
     let builder = cx.ident_of("debug_trait_builder", span);
-    let builder_expr = cx.expr_ident(span, builder.clone());
+    let builder_expr = cx.expr_ident(span, builder);
 
     let fmt = substr.nonself_args[0].clone();
 
@@ -88,7 +88,7 @@ fn show_substructure(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>
 
                 // Use `let _ = expr;` to avoid triggering the
                 // unused_results lint.
-                stmts.push(stmt_let_undescore(cx, span, expr));
+                stmts.push(stmt_let_underscore(cx, span, expr));
             }
         }
         ast::VariantData::Struct(..) => {
@@ -112,7 +112,7 @@ fn show_substructure(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>
                     Ident::new(sym::field, span),
                     vec![name, field],
                 );
-                stmts.push(stmt_let_undescore(cx, span, expr));
+                stmts.push(stmt_let_underscore(cx, span, expr));
             }
         }
     }
@@ -124,7 +124,7 @@ fn show_substructure(cx: &mut ExtCtxt<'_>, span: Span, substr: &Substructure<'_>
     cx.expr_block(block)
 }
 
-fn stmt_let_undescore(cx: &mut ExtCtxt<'_>, sp: Span, expr: P<ast::Expr>) -> ast::Stmt {
+fn stmt_let_underscore(cx: &mut ExtCtxt<'_>, sp: Span, expr: P<ast::Expr>) -> ast::Stmt {
     let local = P(ast::Local {
         pat: cx.pat_wild(sp),
         ty: None,

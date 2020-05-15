@@ -21,7 +21,7 @@ use crate::flags::Subcommand;
 use crate::native;
 use crate::tool::{self, SourceType, Tool};
 use crate::toolstate::ToolState;
-use crate::util::{self, dylib_path, dylib_path_var};
+use crate::util::{self, add_link_lib_path, dylib_path, dylib_path_var};
 use crate::Crate as CargoCrate;
 use crate::{envify, DocTests, GitRepo, Mode};
 
@@ -528,7 +528,7 @@ impl Step for Clippy {
                 host,
                 "test",
                 "src/tools/clippy",
-                SourceType::Submodule,
+                SourceType::InTree,
                 &[],
             );
 
@@ -548,9 +548,7 @@ impl Step for Clippy {
 
             builder.add_rustc_lib_path(compiler, &mut cargo);
 
-            if try_run(builder, &mut cargo.into()) {
-                builder.save_toolstate("clippy-driver", ToolState::TestPass);
-            }
+            try_run(builder, &mut cargo.into());
         } else {
             eprintln!("failed to test clippy: could not build");
         }
@@ -627,8 +625,14 @@ impl Step for RustdocJSStd {
         if let Some(ref nodejs) = builder.config.nodejs {
             let mut command = Command::new(nodejs);
             command
-                .arg(builder.src.join("src/tools/rustdoc-js-std/tester.js"))
+                .arg(builder.src.join("src/tools/rustdoc-js/tester.js"))
+                .arg("--crate-name")
+                .arg("std")
+                .arg("--resource-suffix")
+                .arg(crate::channel::CFG_RELEASE_NUM)
+                .arg("--doc-folder")
                 .arg(builder.doc_out(self.target))
+                .arg("--test-folder")
                 .arg(builder.src.join("src/test/rustdoc-js-std"));
             builder.ensure(crate::doc::Std { target: self.target, stage: builder.top_stage });
             builder.run(&mut command);
@@ -747,6 +751,35 @@ impl Step for Tidy {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Tidy);
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ExpandYamlAnchors;
+
+impl Step for ExpandYamlAnchors {
+    type Output = ();
+    const ONLY_HOSTS: bool = true;
+
+    /// Ensure the `generate-ci-config` tool was run locally.
+    ///
+    /// The tool in `src/tools` reads the CI definition in `src/ci/builders.yml` and generates the
+    /// appropriate configuration for all our CI providers. This step ensures the tool was called
+    /// by the user before committing CI changes.
+    fn run(self, builder: &Builder<'_>) {
+        builder.info("Ensuring the YAML anchors in the GitHub Actions config were expanded");
+        try_run(
+            builder,
+            &mut builder.tool_cmd(Tool::ExpandYamlAnchors).arg("check").arg(&builder.src),
+        );
+    }
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/expand-yaml-anchors")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        run.builder.ensure(ExpandYamlAnchors);
     }
 }
 
@@ -1143,10 +1176,21 @@ impl Step for Compiletest {
             let llvm_config = builder.ensure(native::Llvm { target: builder.config.build });
             if !builder.config.dry_run {
                 let llvm_version = output(Command::new(&llvm_config).arg("--version"));
+                // Remove trailing newline from llvm-config output.
+                let llvm_version = llvm_version.trim_end();
                 cmd.arg("--llvm-version").arg(llvm_version);
             }
             if !builder.is_rust_llvm(target) {
                 cmd.arg("--system-llvm");
+            }
+
+            // Tests that use compiler libraries may inherit the `-lLLVM` link
+            // requirement, but the `-L` library path is not propagated across
+            // separate compilations. We can add LLVM's library path to the
+            // platform-specific environment variable as a workaround.
+            if !builder.config.dry_run && suite.ends_with("fulldeps") {
+                let llvm_libdir = output(Command::new(&llvm_config).arg("--libdir"));
+                add_link_lib_path(vec![llvm_libdir.trim().into()], &mut cmd);
             }
 
             // Only pass correct values for these flags for the `run-make` suite as it
@@ -1494,7 +1538,7 @@ impl Step for RustcGuide {
     const ONLY_HOSTS: bool = true;
 
     fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.path("src/doc/rustc-guide")
+        run.path("src/doc/rustc-dev-guide")
     }
 
     fn make_run(run: RunConfig<'_>) {
@@ -1502,14 +1546,14 @@ impl Step for RustcGuide {
     }
 
     fn run(self, builder: &Builder<'_>) {
-        let src = builder.src.join("src/doc/rustc-guide");
+        let src = builder.src.join("src/doc/rustc-dev-guide");
         let mut rustbook_cmd = builder.tool_cmd(Tool::Rustbook);
         let toolstate = if try_run(builder, rustbook_cmd.arg("linkcheck").arg(&src)) {
             ToolState::TestPass
         } else {
             ToolState::TestFail
         };
-        builder.save_toolstate("rustc-guide", toolstate);
+        builder.save_toolstate("rustc-dev-guide", toolstate);
     }
 }
 
@@ -1681,7 +1725,7 @@ impl Step for Crate {
         let mut cargo = builder.cargo(compiler, mode, target, test_kind.subcommand());
         match mode {
             Mode::Std => {
-                compile::std_cargo(builder, target, &mut cargo, &compiler);
+                compile::std_cargo(builder, target, compiler.stage, &mut cargo);
             }
             Mode::Rustc => {
                 builder.ensure(compile::Rustc { compiler, target });

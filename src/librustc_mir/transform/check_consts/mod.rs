@@ -4,40 +4,45 @@
 //! has interior mutability or needs to be dropped, as well as the visitor that emits errors when
 //! it finds operations that are invalid in a certain context.
 
-use rustc::mir;
-use rustc::ty::{self, TyCtxt};
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_middle::mir;
+use rustc_middle::ty::{self, TyCtxt};
 
 use std::fmt;
 
 pub use self::qualifs::Qualif;
 
-pub mod ops;
+mod ops;
 pub mod qualifs;
 mod resolver;
 pub mod validation;
 
 /// Information about the item currently being const-checked, as well as a reference to the global
 /// context.
-pub struct Item<'mir, 'tcx> {
-    pub body: mir::ReadOnlyBodyAndCache<'mir, 'tcx>,
+pub struct ConstCx<'mir, 'tcx> {
+    pub body: &'mir mir::Body<'tcx>,
     pub tcx: TyCtxt<'tcx>,
     pub def_id: DefId,
     pub param_env: ty::ParamEnv<'tcx>,
     pub const_kind: Option<ConstKind>,
 }
 
-impl Item<'mir, 'tcx> {
-    pub fn new(
-        tcx: TyCtxt<'tcx>,
-        def_id: DefId,
-        body: mir::ReadOnlyBodyAndCache<'mir, 'tcx>,
-    ) -> Self {
+impl ConstCx<'mir, 'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>, def_id: LocalDefId, body: &'mir mir::Body<'tcx>) -> Self {
         let param_env = tcx.param_env(def_id);
+        Self::new_with_param_env(tcx, def_id, body, param_env)
+    }
+
+    pub fn new_with_param_env(
+        tcx: TyCtxt<'tcx>,
+        def_id: LocalDefId,
+        body: &'mir mir::Body<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+    ) -> Self {
         let const_kind = ConstKind::for_item(tcx, def_id);
 
-        Item { body, tcx, def_id, param_env, const_kind }
+        ConstCx { body, tcx, def_id: def_id.to_def_id(), param_env, const_kind }
     }
 
     /// Returns the kind of const context this `Item` represents (`const`, `static`, etc.).
@@ -64,10 +69,10 @@ pub enum ConstKind {
 impl ConstKind {
     /// Returns the validation mode for the item with the given `DefId`, or `None` if this item
     /// does not require validation (e.g. a non-const `fn`).
-    pub fn for_item(tcx: TyCtxt<'tcx>, def_id: DefId) -> Option<Self> {
+    pub fn for_item(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> Option<Self> {
         use hir::BodyOwnerKind as HirKind;
 
-        let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
+        let hir_id = tcx.hir().as_local_hir_id(def_id);
 
         let mode = match tcx.hir().body_owner_kind(hir_id) {
             HirKind::Closure => return None,

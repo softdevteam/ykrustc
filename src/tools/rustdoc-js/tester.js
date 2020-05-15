@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
 
 function getNextStep(content, pos, stop) {
     while (pos < content.length && content[pos] !== stop &&
@@ -150,7 +149,7 @@ function extractVariable(content, varName) {
                     }
                 } while (pos < content.length &&
                          (content[pos] !== stop || content[pos - 1] === '\\'));
-            } else if (content[pos] === ';') {
+            } else if (content[pos] === ';' || content[pos] === ',') {
                 return content.slice(start, pos + 1);
             }
             pos += 1;
@@ -219,16 +218,13 @@ function lookForEntry(entry, data) {
     return null;
 }
 
-function load_files(out_folder, crate) {
-    var mainJs = readFile(out_folder + "/main.js");
-    var ALIASES = readFile(out_folder + "/aliases.js");
-    var searchIndex = readFile(out_folder + "/search-index.js").split("\n");
+function loadMainJsAndIndex(mainJs, aliases, searchIndex, crate) {
     if (searchIndex[searchIndex.length - 1].length === 0) {
         searchIndex.pop();
     }
     searchIndex.pop();
     searchIndex = loadContent(searchIndex.join("\n") + '\nexports.searchIndex = searchIndex;');
-    finalJS = "";
+    var finalJS = "";
 
     var arraysToLoad = ["itemTypes"];
     var variablesToLoad = ["MAX_LEV_DISTANCE", "MAX_RESULTS", "NO_TYPE_FILTER",
@@ -243,90 +239,170 @@ function load_files(out_folder, crate) {
 
     finalJS += 'window = { "currentCrate": "' + crate + '" };\n';
     finalJS += 'var rootPath = "../";\n';
-    finalJS += ALIASES;
+    finalJS += aliases;
     finalJS += loadThings(arraysToLoad, 'array', extractArrayVariable, mainJs);
     finalJS += loadThings(variablesToLoad, 'variable', extractVariable, mainJs);
     finalJS += loadThings(functionsToLoad, 'function', extractFunction, mainJs);
 
     var loaded = loadContent(finalJS);
-    return [loaded, loaded.buildIndex(searchIndex.searchIndex)];
+    var index = loaded.buildIndex(searchIndex.searchIndex);
+
+    return [loaded, index];
+}
+
+function runChecks(testFile, loaded, index) {
+    var errors = 0;
+    var loadedFile = loadContent(
+        readFile(testFile) + 'exports.QUERY = QUERY;exports.EXPECTED = EXPECTED;');
+
+    const expected = loadedFile.EXPECTED;
+    const query = loadedFile.QUERY;
+    const filter_crate = loadedFile.FILTER_CRATE;
+    const ignore_order = loadedFile.ignore_order;
+    const exact_check = loadedFile.exact_check;
+    const should_fail = loadedFile.should_fail;
+
+    var results = loaded.execSearch(loaded.getQuery(query), index);
+    var error_text = [];
+
+    for (var key in expected) {
+        if (!expected.hasOwnProperty(key)) {
+            continue;
+        }
+        if (!results.hasOwnProperty(key)) {
+            error_text.push('==> Unknown key "' + key + '"');
+            break;
+        }
+        var entry = expected[key];
+        var prev_pos = -1;
+        for (var i = 0; i < entry.length; ++i) {
+            var entry_pos = lookForEntry(entry[i], results[key]);
+            if (entry_pos === null) {
+                error_text.push("==> Result not found in '" + key + "': '" +
+                                JSON.stringify(entry[i]) + "'");
+            } else if (exact_check === true && prev_pos + 1 !== entry_pos) {
+                error_text.push("==> Exact check failed at position " + (prev_pos + 1) + ": " +
+                                "expected '" + JSON.stringify(entry[i]) + "' but found '" +
+                                JSON.stringify(results[key][i]) + "'");
+            } else if (ignore_order === false && entry_pos < prev_pos) {
+                error_text.push("==> '" + JSON.stringify(entry[i]) + "' was supposed to be " +
+                                " before '" + JSON.stringify(results[key][entry_pos]) + "'");
+            } else {
+                prev_pos = entry_pos;
+            }
+        }
+    }
+    if (error_text.length === 0 && should_fail === true) {
+        errors += 1;
+        console.error("FAILED");
+        console.error("==> Test was supposed to fail but all items were found...");
+    } else if (error_text.length !== 0 && should_fail === false) {
+        errors += 1;
+        console.error("FAILED");
+        console.error(error_text.join("\n"));
+    } else {
+        console.log("OK");
+    }
+    return errors;
+}
+
+function load_files(doc_folder, resource_suffix, crate) {
+    var mainJs = readFile(path.join(doc_folder, "main" + resource_suffix + ".js"));
+    var aliases = readFile(path.join(doc_folder, "aliases" + resource_suffix + ".js"));
+    var searchIndex = readFile(
+        path.join(doc_folder, "search-index" + resource_suffix + ".js")).split("\n");
+
+    return loadMainJsAndIndex(mainJs, aliases, searchIndex, crate);
+}
+
+function showHelp() {
+    console.log("rustdoc-js options:");
+    console.log("  --doc-folder [PATH]        : location of the generated doc folder");
+    console.log("  --help                     : show this message then quit");
+    console.log("  --crate-name [STRING]      : crate name to be used");
+    console.log("  --test-file [PATH]         : location of the JS test file");
+    console.log("  --test-folder [PATH]       : location of the JS tests folder");
+    console.log("  --resource-suffix [STRING] : suffix to refer to the correct files");
+}
+
+function parseOptions(args) {
+    var opts = {
+        "crate_name": "",
+        "resource_suffix": "",
+        "doc_folder": "",
+        "test_folder": "",
+        "test_file": "",
+    };
+    var correspondances = {
+        "--resource-suffix": "resource_suffix",
+        "--doc-folder": "doc_folder",
+        "--test-folder": "test_folder",
+        "--test-file": "test_file",
+        "--crate-name": "crate_name",
+    };
+
+    for (var i = 0; i < args.length; ++i) {
+        if (args[i] === "--resource-suffix"
+            || args[i] === "--doc-folder"
+            || args[i] === "--test-folder"
+            || args[i] === "--test-file"
+            || args[i] === "--crate-name") {
+            i += 1;
+            if (i >= args.length) {
+                console.error("Missing argument after `" + args[i - 1] + "` option.");
+                return null;
+            }
+            opts[correspondances[args[i - 1]]] = args[i];
+        } else if (args[i] === "--help") {
+            showHelp();
+            process.exit(0);
+        } else {
+            console.error("Unknown option `" + args[i] + "`.");
+            console.error("Use `--help` to see the list of options");
+            return null;
+        }
+    }
+    if (opts["doc_folder"].length < 1) {
+        console.error("Missing `--doc-folder` option.");
+    } else if (opts["crate_name"].length < 1) {
+        console.error("Missing `--crate-name` option.");
+    } else if (opts["test_folder"].length < 1 && opts["test_file"].length < 1) {
+        console.error("At least one of `--test-folder` or `--test-file` option is required.");
+    } else {
+        return opts;
+    }
+    return null;
+}
+
+function checkFile(test_file, opts, loaded, index) {
+    const test_name = path.basename(test_file, ".js");
+
+    process.stdout.write('Checking "' + test_name + '" ... ');
+    return runChecks(test_file, loaded, index);
 }
 
 function main(argv) {
-    if (argv.length < 4) {
-        console.error("USAGE: node tester.js OUT_FOLDER [TESTS]");
+    var opts = parseOptions(argv.slice(2));
+    if (opts === null) {
         return 1;
     }
-    if (argv[2].substr(-1) !== "/") {
-        argv[2] += "/";
-    }
-    const out_folder = argv[2];
 
+    var [loaded, index] = load_files(
+        opts["doc_folder"],
+        opts["resource_suffix"],
+        opts["crate_name"]);
     var errors = 0;
 
-    for (var j = 3; j < argv.length; ++j) {
-        const test_file = argv[j];
-        const test_name = path.basename(test_file, ".js");
-
-        process.stdout.write('Checking "' + test_name + '" ... ');
-        if (!fs.existsSync(test_file)) {
-            errors += 1;
-            console.error("FAILED");
-            console.error("==> Missing '" + test_name + ".js' file...");
-            continue;
-        }
-
-        const test_out_folder = out_folder + test_name;
-
-        var [loaded, index] = load_files(test_out_folder, test_name);
-        var loadedFile = loadContent(readFile(test_file) +
-                               'exports.QUERY = QUERY;exports.EXPECTED = EXPECTED;');
-        const expected = loadedFile.EXPECTED;
-        const query = loadedFile.QUERY;
-        const filter_crate = loadedFile.FILTER_CRATE;
-        const ignore_order = loadedFile.ignore_order;
-        const exact_check = loadedFile.exact_check;
-        const should_fail = loadedFile.should_fail;
-        var results = loaded.execSearch(loaded.getQuery(query), index);
-        var error_text = [];
-        for (var key in expected) {
-            if (!expected.hasOwnProperty(key)) {
-                continue;
+    if (opts["test_file"].length !== 0) {
+        errors += checkFile(opts["test_file"], opts, loaded, index);
+    }
+    if (opts["test_folder"].length !== 0) {
+        fs.readdirSync(opts["test_folder"]).forEach(function(file) {
+            if (!file.endsWith(".js")) {
+                return;
             }
-            if (!results.hasOwnProperty(key)) {
-                error_text.push('==> Unknown key "' + key + '"');
-                break;
-            }
-            var entry = expected[key];
-            var prev_pos = -1;
-            for (var i = 0; i < entry.length; ++i) {
-                var entry_pos = lookForEntry(entry[i], results[key]);
-                if (entry_pos === null) {
-                    error_text.push("==> Result not found in '" + key + "': '" +
-                                    JSON.stringify(entry[i]) + "'");
-                } else if (exact_check === true && prev_pos + 1 !== entry_pos) {
-                    error_text.push("==> Exact check failed at position " + (prev_pos + 1) + ": " +
-                                    "expected '" + JSON.stringify(entry[i]) + "' but found '" +
-                                    JSON.stringify(results[key][i]) + "'");
-                } else if (ignore_order === false && entry_pos < prev_pos) {
-                    error_text.push("==> '" + JSON.stringify(entry[i]) + "' was supposed to be " +
-                                    " before '" + JSON.stringify(results[key][entry_pos]) + "'");
-                } else {
-                    prev_pos = entry_pos;
-                }
-            }
-        }
-        if (error_text.length === 0 && should_fail === true) {
-            errors += 1;
-            console.error("FAILED");
-            console.error("==> Test was supposed to fail but all items were found...");
-        } else if (error_text.length !== 0 && should_fail === false) {
-            errors += 1;
-            console.error("FAILED");
-            console.error(error_text.join("\n"));
-        } else {
-            console.log("OK");
-        }
+            errors += checkFile(path.join(opts["test_folder"], file), opts, loaded, index);
+        });
     }
     return errors > 0 ? 1 : 0;
 }

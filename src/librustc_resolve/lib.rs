@@ -10,18 +10,13 @@
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(nll)]
+#![feature(or_patterns)]
 #![recursion_limit = "256"]
 
 pub use rustc_hir::def::{Namespace, PerNS};
 
 use Determinacy::*;
 
-use rustc::hir::exports::ExportMap;
-use rustc::hir::map::{DefKey, Definitions};
-use rustc::middle::cstore::{CrateStore, MetadataLoaderDyn};
-use rustc::span_bug;
-use rustc::ty::query::Providers;
-use rustc::ty::{self, DefIdTree, ResolverOutputs};
 use rustc_ast::ast::{self, FloatTy, Ident, IntTy, Name, NodeId, UintTy};
 use rustc_ast::ast::{Crate, CRATE_NODE_ID};
 use rustc_ast::ast::{ItemKind, Path};
@@ -37,10 +32,16 @@ use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_expand::base::SyntaxExtension;
 use rustc_hir::def::Namespace::*;
 use rustc_hir::def::{self, CtorOf, DefKind, NonMacroAttrKind, PartialRes};
-use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, CRATE_DEF_INDEX};
+use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, CRATE_DEF_INDEX};
+use rustc_hir::definitions::{DefKey, Definitions};
 use rustc_hir::PrimTy::{self, Bool, Char, Float, Int, Str, Uint};
 use rustc_hir::{GlobMap, TraitMap};
 use rustc_metadata::creader::{CStore, CrateLoader};
+use rustc_middle::hir::exports::ExportMap;
+use rustc_middle::middle::cstore::{CrateStore, MetadataLoaderDyn};
+use rustc_middle::span_bug;
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::{self, DefIdTree, ResolverOutputs};
 use rustc_session::lint;
 use rustc_session::lint::{BuiltinLintDiagnostics, LintBuffer};
 use rustc_session::Session;
@@ -498,7 +499,9 @@ impl<'a> ModuleData<'a> {
         F: FnMut(&mut R, Ident, Namespace, &'a NameBinding<'a>),
     {
         for (key, name_resolution) in resolver.as_mut().resolutions(self).borrow().iter() {
-            name_resolution.borrow().binding.map(|binding| f(resolver, key.ident, key.ns, binding));
+            if let Some(binding) = name_resolution.borrow().binding {
+                f(resolver, key.ident, key.ns, binding);
+            }
         }
     }
 
@@ -533,7 +536,7 @@ impl<'a> ModuleData<'a> {
 
     fn nearest_item_scope(&'a self) -> Module<'a> {
         match self.kind {
-            ModuleKind::Def(DefKind::Enum, ..) | ModuleKind::Def(DefKind::Trait, ..) => {
+            ModuleKind::Def(DefKind::Enum | DefKind::Trait, ..) => {
                 self.parent.expect("enum or trait module without a parent")
             }
             _ => self,
@@ -704,8 +707,10 @@ impl<'a> NameBinding<'a> {
 
     fn is_variant(&self) -> bool {
         match self.kind {
-            NameBindingKind::Res(Res::Def(DefKind::Variant, _), _)
-            | NameBindingKind::Res(Res::Def(DefKind::Ctor(CtorOf::Variant, ..), _), _) => true,
+            NameBindingKind::Res(
+                Res::Def(DefKind::Variant | DefKind::Ctor(CtorOf::Variant, ..), _),
+                _,
+            ) => true,
             _ => false,
         }
     }
@@ -740,9 +745,7 @@ impl<'a> NameBinding<'a> {
 
     fn is_importable(&self) -> bool {
         match self.res() {
-            Res::Def(DefKind::AssocConst, _)
-            | Res::Def(DefKind::AssocFn, _)
-            | Res::Def(DefKind::AssocTy, _) => false,
+            Res::Def(DefKind::AssocConst | DefKind::AssocFn | DefKind::AssocTy, _) => false,
             _ => true,
         }
     }
@@ -884,7 +887,7 @@ pub struct Resolver<'a> {
     /// some AST passes can generate identifiers that only resolve to local or
     /// language items.
     empty_module: Module<'a>,
-    module_map: FxHashMap<DefId, Module<'a>>,
+    module_map: FxHashMap<LocalDefId, Module<'a>>,
     extern_module_map: FxHashMap<DefId, Module<'a>>,
     binding_parent_modules: FxHashMap<PtrKey<'a, NameBinding<'a>>, Module<'a>>,
     underscore_disambiguator: u32,
@@ -1120,7 +1123,7 @@ impl<'a> Resolver<'a> {
             )
         });
         let mut module_map = FxHashMap::default();
-        module_map.insert(DefId::local(CRATE_DEF_INDEX), graph_root);
+        module_map.insert(LocalDefId { local_def_index: CRATE_DEF_INDEX }, graph_root);
 
         let mut definitions = Definitions::default();
         definitions.create_root_def(crate_name, session.local_crate_disambiguator());
@@ -1538,8 +1541,9 @@ impl<'a> Resolver<'a> {
                     let expn_data = expn_id.expn_data();
                     match expn_data.kind {
                         ExpnKind::Root
-                        | ExpnKind::Macro(MacroKind::Bang, _)
-                        | ExpnKind::Macro(MacroKind::Derive, _) => Scope::DeriveHelpersCompat,
+                        | ExpnKind::Macro(MacroKind::Bang | MacroKind::Derive, _) => {
+                            Scope::DeriveHelpersCompat
+                        }
                         _ => Scope::DeriveHelpers(expn_data.parent),
                     }
                 }
@@ -1871,7 +1875,7 @@ impl<'a> Resolver<'a> {
                 // No adjustments
             }
         }
-        let result = self.resolve_ident_in_module_unadjusted_ext(
+        self.resolve_ident_in_module_unadjusted_ext(
             module,
             ident,
             ns,
@@ -1879,8 +1883,7 @@ impl<'a> Resolver<'a> {
             false,
             record_used,
             path_span,
-        );
-        result
+        )
     }
 
     fn resolve_crate_root(&mut self, ident: Ident) -> Module<'a> {
@@ -2063,52 +2066,64 @@ impl<'a> Resolver<'a> {
                 };
             }
 
-            let binding = if let Some(module) = module {
-                self.resolve_ident_in_module(
-                    module,
-                    ident,
-                    ns,
-                    parent_scope,
-                    record_used,
-                    path_span,
-                )
-            } else if ribs.is_none() || opt_ns.is_none() || opt_ns == Some(MacroNS) {
-                let scopes = ScopeSet::All(ns, opt_ns.is_none());
-                self.early_resolve_ident_in_lexical_scope(
-                    ident,
-                    scopes,
-                    parent_scope,
-                    record_used,
-                    record_used,
-                    path_span,
-                )
-            } else {
-                let record_used_id =
-                    if record_used { crate_lint.node_id().or(Some(CRATE_NODE_ID)) } else { None };
-                match self.resolve_ident_in_lexical_scope(
-                    ident,
-                    ns,
-                    parent_scope,
-                    record_used_id,
-                    path_span,
-                    &ribs.unwrap()[ns],
-                ) {
-                    // we found a locally-imported or available item/module
-                    Some(LexicalScopeBinding::Item(binding)) => Ok(binding),
-                    // we found a local variable or type param
-                    Some(LexicalScopeBinding::Res(res))
-                        if opt_ns == Some(TypeNS) || opt_ns == Some(ValueNS) =>
-                    {
-                        record_segment_res(self, res);
-                        return PathResult::NonModule(PartialRes::with_unresolved_segments(
-                            res,
-                            path.len() - 1,
-                        ));
+            enum FindBindingResult<'a> {
+                Binding(Result<&'a NameBinding<'a>, Determinacy>),
+                PathResult(PathResult<'a>),
+            }
+            let find_binding_in_ns = |this: &mut Self, ns| {
+                let binding = if let Some(module) = module {
+                    this.resolve_ident_in_module(
+                        module,
+                        ident,
+                        ns,
+                        parent_scope,
+                        record_used,
+                        path_span,
+                    )
+                } else if ribs.is_none() || opt_ns.is_none() || opt_ns == Some(MacroNS) {
+                    let scopes = ScopeSet::All(ns, opt_ns.is_none());
+                    this.early_resolve_ident_in_lexical_scope(
+                        ident,
+                        scopes,
+                        parent_scope,
+                        record_used,
+                        record_used,
+                        path_span,
+                    )
+                } else {
+                    let record_used_id = if record_used {
+                        crate_lint.node_id().or(Some(CRATE_NODE_ID))
+                    } else {
+                        None
+                    };
+                    match this.resolve_ident_in_lexical_scope(
+                        ident,
+                        ns,
+                        parent_scope,
+                        record_used_id,
+                        path_span,
+                        &ribs.unwrap()[ns],
+                    ) {
+                        // we found a locally-imported or available item/module
+                        Some(LexicalScopeBinding::Item(binding)) => Ok(binding),
+                        // we found a local variable or type param
+                        Some(LexicalScopeBinding::Res(res))
+                            if opt_ns == Some(TypeNS) || opt_ns == Some(ValueNS) =>
+                        {
+                            record_segment_res(this, res);
+                            return FindBindingResult::PathResult(PathResult::NonModule(
+                                PartialRes::with_unresolved_segments(res, path.len() - 1),
+                            ));
+                        }
+                        _ => Err(Determinacy::determined(record_used)),
                     }
-                    _ => Err(Determinacy::determined(record_used)),
-                }
+                };
+                FindBindingResult::Binding(binding)
             };
-
+            let binding = match find_binding_in_ns(self, ns) {
+                FindBindingResult::PathResult(x) => return x,
+                FindBindingResult::Binding(binding) => binding,
+            };
             match binding {
                 Ok(binding) => {
                     if i == 1 {
@@ -2198,7 +2213,33 @@ impl<'a> Resolver<'a> {
                     } else if i == 0 {
                         (format!("use of undeclared type or module `{}`", ident), None)
                     } else {
-                        (format!("could not find `{}` in `{}`", ident, path[i - 1].ident), None)
+                        let mut msg =
+                            format!("could not find `{}` in `{}`", ident, path[i - 1].ident);
+                        if ns == TypeNS || ns == ValueNS {
+                            let ns_to_try = if ns == TypeNS { ValueNS } else { TypeNS };
+                            if let FindBindingResult::Binding(Ok(binding)) =
+                                find_binding_in_ns(self, ns_to_try)
+                            {
+                                let mut found = |what| {
+                                    msg = format!(
+                                        "expected {}, found {} `{}` in `{}`",
+                                        ns.descr(),
+                                        what,
+                                        ident,
+                                        path[i - 1].ident
+                                    )
+                                };
+                                if binding.module().is_some() {
+                                    found("module")
+                                } else {
+                                    match binding.res() {
+                                        def::Res::<NodeId>::Def(kind, id) => found(kind.descr(id)),
+                                        _ => found(ns_to_try.descr()),
+                                    }
+                                }
+                            };
+                        }
+                        (msg, None)
                     };
                     return PathResult::Failed {
                         span: ident.span,
@@ -2480,8 +2521,7 @@ impl<'a> Resolver<'a> {
             let (span, found_use) = UsePlacementFinder::check(krate, node_id);
             if !candidates.is_empty() {
                 diagnostics::show_candidates(&mut err, span, &candidates, better, found_use);
-            }
-            if let Some((span, msg, sugg, appl)) = suggestion {
+            } else if let Some((span, msg, sugg, appl)) = suggestion {
                 err.span_suggestion(span, msg, sugg, appl);
             }
             err.emit();
@@ -2502,10 +2542,8 @@ impl<'a> Resolver<'a> {
         }
 
         let container = match parent.kind {
-            ModuleKind::Def(DefKind::Mod, _, _) => "module",
-            ModuleKind::Def(DefKind::Trait, _, _) => "trait",
+            ModuleKind::Def(kind, _, _) => kind.descr(parent.def_id().unwrap()),
             ModuleKind::Block(..) => "block",
-            _ => "enum",
         };
 
         let old_noun = match old_binding.is_import() {
@@ -2518,7 +2556,8 @@ impl<'a> Resolver<'a> {
             false => "defined",
         };
 
-        let (name, span) = (ident.name, self.session.source_map().def_span(new_binding.span));
+        let (name, span) =
+            (ident.name, self.session.source_map().guess_head_span(new_binding.span));
 
         if let Some(s) = self.name_already_seen.get(&name) {
             if s == &span {
@@ -2559,7 +2598,7 @@ impl<'a> Resolver<'a> {
 
         err.span_label(span, format!("`{}` re{} here", name, new_participle));
         err.span_label(
-            self.session.source_map().def_span(old_binding.span),
+            self.session.source_map().guess_head_span(old_binding.span),
             format!("previous {} of the {} `{}` here", old_noun, old_kind, name),
         );
 
@@ -2630,7 +2669,7 @@ impl<'a> Resolver<'a> {
     /// This function adds a suggestion to change the binding name of a new import that conflicts
     /// with an existing import.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text,ignore (diagnostic)
     /// help: you can use `as` to change the binding name of the import
     ///    |
     /// LL | use foo::bar as other_bar;
@@ -2807,7 +2846,7 @@ impl<'a> Resolver<'a> {
             ast::Path {
                 span,
                 segments: iter::once(Ident::with_dummy_span(kw::PathRoot))
-                    .chain({ path_str.split("::").skip(1).map(Ident::from_str) })
+                    .chain(path_str.split("::").skip(1).map(Ident::from_str))
                     .map(|i| self.new_ast_path_segment(i))
                     .collect(),
             }

@@ -8,7 +8,6 @@
 use crate::llvm::{self, BasicBlock};
 use crate::value::Value;
 use crate::{common, ModuleLlvm};
-use rustc::ty::TyCtxt;
 use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::small_c_str::SmallCStr;
@@ -17,6 +16,7 @@ use rustc_index::{
     newtype_index,
     vec::{Idx, IndexVec},
 };
+use rustc_middle::ty::TyCtxt;
 use rustc_session::config::OutputType;
 use std::default::Default;
 use std::ffi::CString;
@@ -63,7 +63,6 @@ pub fn write_sir<'tcx>(tcx: TyCtxt<'tcx>, sir_llvm_module: &mut ModuleLlvm) {
         // Following the precedent of write_compressed_metadata(), force empty flags so that
         // the SIR doesn't get loaded into memory.
         let directive = format!(".section {}, \"\", @progbits", &section_name);
-        let directive = CString::new(directive).unwrap();
-        llvm::LLVMSetModuleInlineAsm(sir_llmod, directive.as_ptr())
+        llvm::LLVMSetModuleInlineAsm2(sir_llmod, directive.as_ptr().cast(), directive.len())
     }
 }

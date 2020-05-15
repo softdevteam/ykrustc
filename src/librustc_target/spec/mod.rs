@@ -37,7 +37,6 @@
 use crate::spec::abi::{lookup as lookup_abi, Abi};
 use rustc_serialize::json::{Json, ToJson};
 use std::collections::BTreeMap;
-use std::default::Default;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{fmt, io};
@@ -56,22 +55,24 @@ mod fuchsia_base;
 mod haiku_base;
 mod hermit_base;
 mod hermit_kernel_base;
+mod illumos_base;
 mod l4re_base;
 mod linux_base;
 mod linux_kernel_base;
 mod linux_musl_base;
+mod msvc_base;
 mod netbsd_base;
 mod openbsd_base;
 mod redox_base;
 mod riscv_base;
 mod solaris_base;
 mod thumb_base;
-mod uefi_base;
+mod uefi_msvc_base;
 mod vxworks_base;
 mod wasm32_base;
-mod windows_base;
+mod windows_gnu_base;
 mod windows_msvc_base;
-mod windows_uwp_base;
+mod windows_uwp_gnu_base;
 mod windows_uwp_msvc_base;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -264,6 +265,82 @@ impl ToJson for MergeFunctions {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum RelocModel {
+    Static,
+    Pic,
+    DynamicNoPic,
+    Ropi,
+    Rwpi,
+    RopiRwpi,
+}
+
+impl FromStr for RelocModel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<RelocModel, ()> {
+        Ok(match s {
+            "static" => RelocModel::Static,
+            "pic" => RelocModel::Pic,
+            "dynamic-no-pic" => RelocModel::DynamicNoPic,
+            "ropi" => RelocModel::Ropi,
+            "rwpi" => RelocModel::Rwpi,
+            "ropi-rwpi" => RelocModel::RopiRwpi,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl ToJson for RelocModel {
+    fn to_json(&self) -> Json {
+        match *self {
+            RelocModel::Static => "static",
+            RelocModel::Pic => "pic",
+            RelocModel::DynamicNoPic => "dynamic-no-pic",
+            RelocModel::Ropi => "ropi",
+            RelocModel::Rwpi => "rwpi",
+            RelocModel::RopiRwpi => "ropi-rwpi",
+        }
+        .to_json()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum TlsModel {
+    GeneralDynamic,
+    LocalDynamic,
+    InitialExec,
+    LocalExec,
+}
+
+impl FromStr for TlsModel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<TlsModel, ()> {
+        Ok(match s {
+            // Note the difference "general" vs "global" difference. The model name is "general",
+            // but the user-facing option name is "global" for consistency with other compilers.
+            "global-dynamic" => TlsModel::GeneralDynamic,
+            "local-dynamic" => TlsModel::LocalDynamic,
+            "initial-exec" => TlsModel::InitialExec,
+            "local-exec" => TlsModel::LocalExec,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl ToJson for TlsModel {
+    fn to_json(&self) -> Json {
+        match *self {
+            TlsModel::GeneralDynamic => "global-dynamic",
+            TlsModel::LocalDynamic => "local-dynamic",
+            TlsModel::InitialExec => "initial-exec",
+            TlsModel::LocalExec => "local-exec",
+        }
+        .to_json()
+    }
+}
+
 pub enum LoadTargetError {
     BuiltinTargetNotFound(String),
     Other(String),
@@ -309,23 +386,14 @@ macro_rules! supported_targets {
         }
 
         #[cfg(test)]
-        mod test_json_encode_decode {
-            use rustc_serialize::json::ToJson;
-            use super::Target;
-            $(use super::$module;)+
+        mod tests {
+            mod tests_impl;
 
+            // Cannot put this into a separate file without duplication, make an exception.
             $(
-                #[test] // `#[test]` - this is hard to put into a separate file, make an exception
+                #[test] // `#[test]`
                 fn $module() {
-                    // Grab the TargetResult struct. If we successfully retrieved
-                    // a Target, then the test JSON encoding/decoding can run for this
-                    // Target on this testing platform (i.e., checking the iOS targets
-                    // only on a Mac test platform).
-                    let _ = $module::target().map(|original| {
-                        let as_json = original.to_json();
-                        let parsed = Target::from_json(as_json).unwrap();
-                        assert_eq!(original, parsed);
-                    });
+                    tests_impl::test_target(super::$module::target());
                 }
             )+
         }
@@ -447,6 +515,8 @@ supported_targets! {
     ("x86_64-sun-solaris", "x86_64-pc-solaris", x86_64_sun_solaris),
     ("sparcv9-sun-solaris", sparcv9_sun_solaris),
 
+    ("x86_64-unknown-illumos", x86_64_unknown_illumos),
+
     ("x86_64-pc-windows-gnu", x86_64_pc_windows_gnu),
     ("i686-pc-windows-gnu", i686_pc_windows_gnu),
     ("i686-uwp-windows-gnu", i686_uwp_windows_gnu),
@@ -538,7 +608,8 @@ pub struct Target {
     pub arch: String,
     /// [Data layout](http://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
     pub data_layout: String,
-    /// Linker flavor
+    /// Default linker flavor used if `-C linker-flavor` or `-C linker` are not passed
+    /// on the command line.
     pub linker_flavor: LinkerFlavor,
     /// Optional settings with defaults.
     pub options: TargetOptions,
@@ -566,7 +637,8 @@ pub struct TargetOptions {
     /// Linker to invoke
     pub linker: Option<String>,
 
-    /// LLD flavor
+    /// LLD flavor used if `lld` (or `rust-lld`) is specified as a linker
+    /// without clarifying its flavor in any way.
     pub lld_flavor: LldFlavor,
 
     /// Linker arguments that are passed *before* any user-defined libraries.
@@ -618,13 +690,13 @@ pub struct TargetOptions {
     /// libraries. Defaults to false.
     pub executables: bool,
     /// Relocation model to use in object file. Corresponds to `llc
-    /// -relocation-model=$relocation_model`. Defaults to "pic".
-    pub relocation_model: String,
+    /// -relocation-model=$relocation_model`. Defaults to `Pic`.
+    pub relocation_model: RelocModel,
     /// Code model to use. Corresponds to `llc -code-model=$code_model`.
     pub code_model: Option<String>,
     /// TLS model to use. Options are "global-dynamic" (default), "local-dynamic", "initial-exec"
     /// and "local-exec". This is similar to the -ftls-model option in GCC/Clang.
-    pub tls_model: String,
+    pub tls_model: TlsModel,
     /// Do not emit code that uses the "red zone", if the ABI has one. Defaults to false.
     pub disable_redzone: bool,
     /// Eliminate frame pointers from stack frames if possible. Defaults to true.
@@ -712,11 +784,6 @@ pub struct TargetOptions {
     // will 'just work'.
     pub obj_is_bitcode: bool,
 
-    // LLVM can't produce object files for this target. Instead, we'll make LLVM
-    // emit assembly and then use `gcc` to turn that assembly into an object
-    // file
-    pub no_integrated_as: bool,
-
     /// Don't use this field; instead use the `.min_atomic_width()` method.
     pub min_atomic_width: Option<u64>,
 
@@ -770,9 +837,6 @@ pub struct TargetOptions {
     /// The default visibility for symbols in this target should be "hidden"
     /// rather than "default"
     pub default_hidden_visibility: bool,
-
-    /// Whether or not bitcode is embedded in object files
-    pub embed_bitcode: bool,
 
     /// Whether a .debug_gdb_scripts section will be added to the output object file
     pub emit_debug_gdb_scripts: bool,
@@ -833,9 +897,9 @@ impl Default for TargetOptions {
             dynamic_linking: false,
             only_cdylib: false,
             executables: false,
-            relocation_model: "pic".to_string(),
+            relocation_model: RelocModel::Pic,
             code_model: None,
-            tls_model: "global-dynamic".to_string(),
+            tls_model: TlsModel::GeneralDynamic,
             disable_redzone: false,
             eliminate_frame_pointer: true,
             function_sections: true,
@@ -875,7 +939,6 @@ impl Default for TargetOptions {
             allow_asm: true,
             has_elf_tls: false,
             obj_is_bitcode: false,
-            no_integrated_as: false,
             min_atomic_width: None,
             max_atomic_width: None,
             atomic_cas: true,
@@ -893,7 +956,6 @@ impl Default for TargetOptions {
             no_builtins: false,
             codegen_backend: "llvm".to_string(),
             default_hidden_visibility: false,
-            embed_bitcode: false,
             emit_debug_gdb_scripts: true,
             requires_uwtable: false,
             simd_types_indirect: true,
@@ -993,20 +1055,21 @@ impl Target {
         macro_rules! key {
             ($key_name:ident) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).map(|o| o.as_string()
-                                    .map(|s| base.options.$key_name = s.to_string()));
+                if let Some(s) = obj.find(&name).and_then(Json::as_string) {
+                    base.options.$key_name = s.to_string();
+                }
             } );
             ($key_name:ident, bool) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..])
-                    .map(|o| o.as_boolean()
-                         .map(|s| base.options.$key_name = s));
+                if let Some(s) = obj.find(&name).and_then(Json::as_boolean) {
+                    base.options.$key_name = s;
+                }
             } );
             ($key_name:ident, Option<u64>) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..])
-                    .map(|o| o.as_u64()
-                         .map(|s| base.options.$key_name = Some(s)));
+                if let Some(s) = obj.find(&name).and_then(Json::as_u64) {
+                    base.options.$key_name = Some(s);
+                }
             } );
             ($key_name:ident, MergeFunctions) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
@@ -1017,6 +1080,30 @@ impl Target {
                                                       merge-functions. Use 'disabled', \
                                                       'trampolines', or 'aliases'.",
                                                       s))),
+                    }
+                    Some(Ok(()))
+                })).unwrap_or(Ok(()))
+            } );
+            ($key_name:ident, RelocModel) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                    match s.parse::<RelocModel>() {
+                        Ok(relocation_model) => base.options.$key_name = relocation_model,
+                        _ => return Some(Err(format!("'{}' is not a valid relocation model. \
+                                                      Run `rustc --print relocation-models` to \
+                                                      see the list of supported values.", s))),
+                    }
+                    Some(Ok(()))
+                })).unwrap_or(Ok(()))
+            } );
+            ($key_name:ident, TlsModel) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                    match s.parse::<TlsModel>() {
+                        Ok(tls_model) => base.options.$key_name = tls_model,
+                        _ => return Some(Err(format!("'{}' is not a valid TLS model. \
+                                                      Run `rustc --print tls-models` to \
+                                                      see the list of supported values.", s))),
                     }
                     Some(Ok(()))
                 })).unwrap_or(Ok(()))
@@ -1048,19 +1135,19 @@ impl Target {
             } );
             ($key_name:ident, list) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).map(|o| o.as_array()
-                    .map(|v| base.options.$key_name = v.iter()
-                        .map(|a| a.as_string().unwrap().to_string()).collect()
-                        )
-                    );
+                if let Some(v) = obj.find(&name).and_then(Json::as_array) {
+                    base.options.$key_name = v.iter()
+                        .map(|a| a.as_string().unwrap().to_string())
+                        .collect();
+                }
             } );
             ($key_name:ident, opt_list) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
-                obj.find(&name[..]).map(|o| o.as_array()
-                    .map(|v| base.options.$key_name = Some(v.iter()
-                        .map(|a| a.as_string().unwrap().to_string()).collect())
-                        )
-                    );
+                if let Some(v) = obj.find(&name).and_then(Json::as_array) {
+                    base.options.$key_name = Some(v.iter()
+                        .map(|a| a.as_string().unwrap().to_string())
+                        .collect());
+                }
             } );
             ($key_name:ident, optional) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
@@ -1159,9 +1246,9 @@ impl Target {
         key!(dynamic_linking, bool);
         key!(only_cdylib, bool);
         key!(executables, bool);
-        key!(relocation_model);
+        key!(relocation_model, RelocModel)?;
         key!(code_model, optional);
-        key!(tls_model);
+        key!(tls_model, TlsModel)?;
         key!(disable_redzone, bool);
         key!(eliminate_frame_pointer, bool);
         key!(function_sections, bool);
@@ -1191,7 +1278,6 @@ impl Target {
         key!(main_needs_argc_argv, bool);
         key!(has_elf_tls, bool);
         key!(obj_is_bitcode, bool);
-        key!(no_integrated_as, bool);
         key!(max_atomic_width, Option<u64>);
         key!(min_atomic_width, Option<u64>);
         key!(atomic_cas, bool);
@@ -1208,7 +1294,6 @@ impl Target {
         key!(no_builtins, bool);
         key!(codegen_backend);
         key!(default_hidden_visibility, bool);
-        key!(embed_bitcode, bool);
         key!(emit_debug_gdb_scripts, bool);
         key!(requires_uwtable, bool);
         key!(simd_types_indirect, bool);
@@ -1420,7 +1505,6 @@ impl ToJson for Target {
         target_option_val!(main_needs_argc_argv);
         target_option_val!(has_elf_tls);
         target_option_val!(obj_is_bitcode);
-        target_option_val!(no_integrated_as);
         target_option_val!(min_atomic_width);
         target_option_val!(max_atomic_width);
         target_option_val!(atomic_cas);
@@ -1437,7 +1521,6 @@ impl ToJson for Target {
         target_option_val!(no_builtins);
         target_option_val!(codegen_backend);
         target_option_val!(default_hidden_visibility);
-        target_option_val!(embed_bitcode);
         target_option_val!(emit_debug_gdb_scripts);
         target_option_val!(requires_uwtable);
         target_option_val!(simd_types_indirect);

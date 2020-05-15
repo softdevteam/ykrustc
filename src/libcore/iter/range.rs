@@ -1,7 +1,6 @@
 use crate::convert::TryFrom;
 use crate::mem;
 use crate::ops::{self, Add, Sub, Try};
-use crate::usize;
 
 use super::{FusedIterator, TrustedLen};
 
@@ -71,7 +70,7 @@ macro_rules! step_identical_methods {
         fn sub_one(&self) -> Self {
             Sub::sub(*self, 1)
         }
-    }
+    };
 }
 
 macro_rules! step_impl_unsigned {

@@ -144,6 +144,7 @@ symbols! {
         any,
         arbitrary_enum_discriminant,
         arbitrary_self_types,
+        Arc,
         Arguments,
         ArgumentV1,
         arm_target_feature,
@@ -191,6 +192,7 @@ symbols! {
         cfg_target_has_atomic,
         cfg_target_thread_local,
         cfg_target_vendor,
+        cfg_version,
         char,
         clippy,
         clone,
@@ -253,6 +255,7 @@ symbols! {
         debug_trait,
         declare_lint_pass,
         decl_macro,
+        debug,
         Debug,
         Decodable,
         Default,
@@ -346,6 +349,7 @@ symbols! {
         generators,
         generic_associated_types,
         generic_param_attrs,
+        get_context,
         global_allocator,
         global_asm,
         globs,
@@ -423,6 +427,7 @@ symbols! {
         LintPass,
         lint_reasons,
         literal,
+        llvm_asm,
         local_inner_macros,
         log_syntax,
         loop_break_value,
@@ -472,6 +477,7 @@ symbols! {
         needs_drop,
         needs_panic_runtime,
         negate_unsigned,
+        negative_impls,
         never,
         never_type,
         never_type_fallback,
@@ -546,8 +552,8 @@ symbols! {
         plugin,
         plugin_registrar,
         plugins,
+        poll,
         Poll,
-        poll_with_tls_context,
         powerpc_target_feature,
         precise_pointer_size_matching,
         pref_align_of,
@@ -582,6 +588,7 @@ symbols! {
         raw_dylib,
         raw_identifiers,
         raw_ref_op,
+        Rc,
         Ready,
         reason,
         recursion_limit,
@@ -652,6 +659,7 @@ symbols! {
         rustc_partition_reused,
         rustc_peek,
         rustc_peek_definite_init,
+        rustc_peek_liveness,
         rustc_peek_maybe_init,
         rustc_peek_maybe_uninit,
         rustc_peek_indirectly_mutable,
@@ -719,10 +727,12 @@ symbols! {
         suggestion,
         sync_trait,
         target_feature,
+        target_feature_11,
         target_has_atomic,
         target_has_atomic_load_store,
         target_thread_local,
         task,
+        _task_context,
         tbm_target_feature,
         termination_trait,
         termination_trait_test,
@@ -800,6 +810,7 @@ symbols! {
         var,
         vec,
         Vec,
+        version,
         vis,
         visible_private_types,
         volatile,
@@ -1150,12 +1161,20 @@ impl Interner {
 }
 
 // This module has a very short name because it's used a lot.
+/// This module contains all the defined keyword `Symbol`s.
+///
+/// Given that `kw` is imported, use them like `kw::keyword_name`.
+/// For example `kw::Loop` or `kw::Break`.
 pub mod kw {
     use super::Symbol;
     keywords!();
 }
 
 // This module has a very short name because it's used a lot.
+/// This module contains all the defined non-keyword `Symbol`s.
+///
+/// Given that `sym` is imported, use them like `sym::symbol_name`.
+/// For example `sym::rustfmt` or `sym::u8`.
 #[allow(rustc::default_hash_types)]
 pub mod sym {
     use super::Symbol;

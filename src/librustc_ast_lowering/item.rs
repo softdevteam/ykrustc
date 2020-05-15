@@ -1,8 +1,7 @@
 use super::{AnonymousLifetimeMode, LoweringContext, ParamMode};
 use super::{ImplTraitContext, ImplTraitPosition, ImplTraitTypeIdVisitor};
+use crate::Arena;
 
-use rustc::arena::Arena;
-use rustc::bug;
 use rustc_ast::ast::*;
 use rustc_ast::attr;
 use rustc_ast::node_id::NodeMap;
@@ -166,19 +165,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
             }
             ItemKind::MacroDef(..) => SmallVec::new(),
             ItemKind::Fn(..) | ItemKind::Impl { of_trait: None, .. } => smallvec![i.id],
-            ItemKind::Static(ref ty, ..) => {
+            ItemKind::Static(ref ty, ..) | ItemKind::Const(_, ref ty, ..) => {
                 let mut ids = smallvec![i.id];
                 if self.sess.features_untracked().impl_trait_in_bindings {
-                    let mut visitor = ImplTraitTypeIdVisitor { ids: &mut ids };
-                    visitor.visit_ty(ty);
-                }
-                ids
-            }
-            ItemKind::Const(_, ref ty, ..) => {
-                let mut ids = smallvec![i.id];
-                if self.sess.features_untracked().impl_trait_in_bindings {
-                    let mut visitor = ImplTraitTypeIdVisitor { ids: &mut ids };
-                    visitor.visit_ty(ty);
+                    ImplTraitTypeIdVisitor { ids: &mut ids }.visit_ty(ty);
                 }
                 ids
             }
@@ -269,7 +259,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 hir::ItemKind::Const(ty, body_id)
             }
             ItemKind::Fn(_, FnSig { ref decl, header }, ref generics, ref body) => {
-                let fn_def_id = self.resolver.definitions().local_def_id(id).expect_local();
+                let fn_def_id = self.resolver.definitions().local_def_id(id);
                 self.with_new_scopes(|this| {
                     this.current_item = Some(ident.span);
 
@@ -356,7 +346,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 self_ty: ref ty,
                 items: ref impl_items,
             } => {
-                let def_id = self.resolver.definitions().local_def_id(id).expect_local();
+                let def_id = self.resolver.definitions().local_def_id(id);
 
                 // Lower the "impl header" first. This ordering is important
                 // for in-band lifetimes! Consider `'a` here:
@@ -403,10 +393,15 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         )
                     });
 
+                // `defaultness.has_value()` is never called for an `impl`, always `true` in order
+                // to not cause an assertion failure inside the `lower_defaultness` function.
+                let has_val = true;
+                let (defaultness, defaultness_span) = self.lower_defaultness(defaultness, has_val);
                 hir::ItemKind::Impl {
                     unsafety: self.lower_unsafety(unsafety),
                     polarity,
-                    defaultness: self.lower_defaultness(defaultness, true /* [1] */),
+                    defaultness,
+                    defaultness_span,
                     constness: self.lower_constness(constness),
                     generics,
                     of_trait: trait_ref,
@@ -432,12 +427,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 self.lower_param_bounds(bounds, ImplTraitContext::disallowed()),
             ),
             ItemKind::MacroDef(..) | ItemKind::MacCall(..) => {
-                bug!("`TyMac` should have been expanded by now")
+                panic!("`TyMac` should have been expanded by now")
             }
         }
-
-        // [1] `defaultness.has_value()` is never called for an `impl`, always `true` in order to
-        //     not cause an assertion failure inside the `lower_defaultness` function.
     }
 
     fn lower_const_item(
@@ -653,7 +645,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     }
 
     fn lower_foreign_item(&mut self, i: &ForeignItem) -> hir::ForeignItem<'hir> {
-        let def_id = self.resolver.definitions().local_def_id(i.id).expect_local();
+        let def_id = self.resolver.definitions().local_def_id(i.id);
         hir::ForeignItem {
             hir_id: self.lower_node_id(i.id),
             ident: i.ident,
@@ -754,7 +746,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
     }
 
     fn lower_trait_item(&mut self, i: &AssocItem) -> hir::TraitItem<'hir> {
-        let trait_item_def_id = self.resolver.definitions().local_def_id(i.id).expect_local();
+        let trait_item_def_id = self.resolver.definitions().local_def_id(i.id);
 
         let (generics, kind) = match i.kind {
             AssocItemKind::Const(_, ref ty, ref default) => {
@@ -784,7 +776,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
 
                 (generics, kind)
             }
-            AssocItemKind::MacCall(..) => bug!("macro item shouldn't exist at this point"),
+            AssocItemKind::MacCall(..) => panic!("macro item shouldn't exist at this point"),
         };
 
         hir::TraitItem {
@@ -804,7 +796,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 (hir::AssocItemKind::Type, default.is_some())
             }
             AssocItemKind::Fn(_, sig, _, default) => {
-                (hir::AssocItemKind::Method { has_self: sig.decl.has_self() }, default.is_some())
+                (hir::AssocItemKind::Fn { has_self: sig.decl.has_self() }, default.is_some())
             }
             AssocItemKind::MacCall(..) => unimplemented!(),
         };
@@ -814,12 +806,12 @@ impl<'hir> LoweringContext<'_, 'hir> {
     }
 
     /// Construct `ExprKind::Err` for the given `span`.
-    fn expr_err(&mut self, span: Span) -> hir::Expr<'hir> {
+    crate fn expr_err(&mut self, span: Span) -> hir::Expr<'hir> {
         self.expr(span, hir::ExprKind::Err, AttrVec::new())
     }
 
     fn lower_impl_item(&mut self, i: &AssocItem) -> hir::ImplItem<'hir> {
-        let impl_item_def_id = self.resolver.definitions().local_def_id(i.id).expect_local();
+        let impl_item_def_id = self.resolver.definitions().local_def_id(i.id);
 
         let (generics, kind) = match &i.kind {
             AssocItemKind::Const(_, ty, expr) => {
@@ -865,30 +857,34 @@ impl<'hir> LoweringContext<'_, 'hir> {
                 };
                 (generics, kind)
             }
-            AssocItemKind::MacCall(..) => bug!("`TyMac` should have been expanded by now"),
+            AssocItemKind::MacCall(..) => panic!("`TyMac` should have been expanded by now"),
         };
 
+        // Since `default impl` is not yet implemented, this is always true in impls.
+        let has_value = true;
+        let (defaultness, _) = self.lower_defaultness(i.kind.defaultness(), has_value);
         hir::ImplItem {
             hir_id: self.lower_node_id(i.id),
             ident: i.ident,
             attrs: self.lower_attrs(&i.attrs),
             generics,
             vis: self.lower_visibility(&i.vis, None),
-            defaultness: self.lower_defaultness(i.kind.defaultness(), true /* [1] */),
+            defaultness,
             kind,
             span: i.span,
         }
-
-        // [1] since `default impl` is not yet implemented, this is always true in impls
     }
 
     fn lower_impl_item_ref(&mut self, i: &AssocItem) -> hir::ImplItemRef<'hir> {
+        // Since `default impl` is not yet implemented, this is always true in impls.
+        let has_value = true;
+        let (defaultness, _) = self.lower_defaultness(i.kind.defaultness(), has_value);
         hir::ImplItemRef {
             id: hir::ImplItemId { hir_id: self.lower_node_id(i.id) },
             ident: i.ident,
             span: i.span,
             vis: self.lower_visibility(&i.vis, Some(i.id)),
-            defaultness: self.lower_defaultness(i.kind.defaultness(), true /* [1] */),
+            defaultness,
             kind: match &i.kind {
                 AssocItemKind::Const(..) => hir::AssocItemKind::Const,
                 AssocItemKind::TyAlias(.., ty) => {
@@ -898,13 +894,11 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     }
                 }
                 AssocItemKind::Fn(_, sig, ..) => {
-                    hir::AssocItemKind::Method { has_self: sig.decl.has_self() }
+                    hir::AssocItemKind::Fn { has_self: sig.decl.has_self() }
                 }
                 AssocItemKind::MacCall(..) => unimplemented!(),
             },
         }
-
-        // [1] since `default impl` is not yet implemented, this is always true in impls
     }
 
     /// If an `explicit_owner` is given, this method allocates the `HirId` in
@@ -939,12 +933,16 @@ impl<'hir> LoweringContext<'_, 'hir> {
         respan(v.span, node)
     }
 
-    fn lower_defaultness(&self, d: Defaultness, has_value: bool) -> hir::Defaultness {
+    fn lower_defaultness(
+        &self,
+        d: Defaultness,
+        has_value: bool,
+    ) -> (hir::Defaultness, Option<Span>) {
         match d {
-            Defaultness::Default(_) => hir::Defaultness::Default { has_value },
+            Defaultness::Default(sp) => (hir::Defaultness::Default { has_value }, Some(sp)),
             Defaultness::Final => {
                 assert!(has_value);
-                hir::Defaultness::Final
+                (hir::Defaultness::Final, None)
             }
         }
     }
@@ -960,13 +958,15 @@ impl<'hir> LoweringContext<'_, 'hir> {
         id
     }
 
-    fn lower_body(
+    pub(super) fn lower_body(
         &mut self,
         f: impl FnOnce(&mut Self) -> (&'hir [hir::Param<'hir>], hir::Expr<'hir>),
     ) -> hir::BodyId {
         let prev_gen_kind = self.generator_kind.take();
+        let task_context = self.task_context.take();
         let (parameters, result) = f(self);
         let body_id = self.record_body(parameters, result);
+        self.task_context = task_context;
         self.generator_kind = prev_gen_kind;
         body_id
     }
@@ -1325,17 +1325,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
                                         self.resolver.definitions().as_local_node_id(def_id)
                                     {
                                         for param in &generics.params {
-                                            match param.kind {
-                                                GenericParamKind::Type { .. } => {
-                                                    if node_id == param.id {
-                                                        add_bounds
-                                                            .entry(param.id)
-                                                            .or_default()
-                                                            .push(bound.clone());
-                                                        continue 'next_bound;
-                                                    }
+                                            if let GenericParamKind::Type { .. } = param.kind {
+                                                if node_id == param.id {
+                                                    add_bounds
+                                                        .entry(param.id)
+                                                        .or_default()
+                                                        .push(bound.clone());
+                                                    continue 'next_bound;
                                                 }
-                                                _ => {}
                                             }
                                         }
                                     }

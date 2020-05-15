@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::builder::Cargo;
 use crate::dist;
 use crate::native;
-use crate::util::{exe, is_dylib};
+use crate::util::{exe, is_dylib, symlink_dir};
 use crate::{Compiler, GitRepo, Mode};
 
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
@@ -86,7 +86,7 @@ impl Step for Std {
         target_deps.extend(copy_third_party_objects(builder, &compiler, target).into_iter());
 
         let mut cargo = builder.cargo(compiler, Mode::Std, target, "build");
-        std_cargo(builder, target, &mut cargo, &compiler);
+        std_cargo(builder, target, compiler.stage, &mut cargo);
 
         builder.info(&format!(
             "Building stage{} std artifacts ({} -> {})",
@@ -164,12 +164,7 @@ fn copy_third_party_objects(
 
 /// Configure cargo to compile the standard library, adding appropriate env vars
 /// and such.
-pub fn std_cargo(
-    builder: &Builder<'_>,
-    target: Interned<String>,
-    cargo: &mut Cargo,
-    compiler: &Compiler,
-) {
+pub fn std_cargo(builder: &Builder<'_>, target: Interned<String>, stage: u32, cargo: &mut Cargo) {
     if let Some(target) = env::var_os("MACOSX_STD_DEPLOYMENT_TARGET") {
         cargo.env("MACOSX_DEPLOYMENT_TARGET", target);
     }
@@ -191,6 +186,8 @@ pub fn std_cargo(
     // `compiler-rt` is located.
     let compiler_builtins_root = builder.src.join("src/llvm-project/compiler-rt");
     let compiler_builtins_c_feature = if compiler_builtins_root.exists() {
+        // Note that `libprofiler_builtins/build.rs` also computes this so if
+        // you're changing something here please also change that.
         cargo.env("RUST_COMPILER_RT_ROOT", &compiler_builtins_root);
         " compiler-builtins-c".to_string()
     } else {
@@ -238,7 +235,7 @@ pub fn std_cargo(
         // Why? Because to trace through std and core, we need:
         //  * For the software tracer, code with calls to the trace recorder.
         //  * For the hardware tracer, DILabels to help mapping back to SIR.
-        if compiler.stage != 0 {
+        if stage != 0 {
             match env::var("STD_TRACER_MODE") {
                 Err(_) => panic!("STD_TRACER_MODE must be set"),
                 Ok(val) => {
@@ -246,6 +243,18 @@ pub fn std_cargo(
                 }
             }
         }
+    }
+
+    // By default, rustc uses `-Cembed-bitcode=yes`, and Cargo overrides that
+    // with `-Cembed-bitcode=no` for non-LTO builds. However, libstd must be
+    // built with bitcode so that the produced rlibs can be used for both LTO
+    // builds (which use bitcode) and non-LTO builds (which use object code).
+    // So we override the override here!
+    //
+    // But we don't bother for the stage 0 compiler because it's never used
+    // with LTO.
+    if stage >= 1 {
+        cargo.rustflag("-Cembed-bitcode=yes");
     }
 }
 
@@ -469,44 +478,6 @@ impl Step for Rustc {
             false,
         );
 
-        // We used to build librustc_codegen_llvm as a separate step,
-        // which produced a dylib that the compiler would dlopen() at runtime.
-        // This meant that we only needed to make sure that libLLVM.so was
-        // installed by the time we went to run a tool using it - since
-        // librustc_codegen_llvm was effectively a standalone artifact,
-        // other crates were completely oblivious to its dependency
-        // on `libLLVM.so` during build time.
-        //
-        // However, librustc_codegen_llvm is now built as an ordinary
-        // crate during the same step as the rest of the compiler crates.
-        // This means that any crates depending on it will see the fact
-        // that it uses `libLLVM.so` as a native library, and will
-        // cause us to pass `-llibLLVM.so` to the linker when we link
-        // a binary.
-        //
-        // For `rustc` itself, this works out fine.
-        // During the `Assemble` step, we call `dist::maybe_install_llvm_dylib`
-        // to copy libLLVM.so into the `stage` directory. We then link
-        // the compiler binary, which will find `libLLVM.so` in the correct place.
-        //
-        // However, this is insufficient for tools that are build against stage0
-        // (e.g. stage1 rustdoc). Since `Assemble` for stage0 doesn't actually do anything,
-        // we won't have `libLLVM.so` in the stage0 sysroot. In the past, this wasn't
-        // a problem - we would copy the tool binary into its correct stage directory
-        // (e.g. stage1 for a stage1 rustdoc built against a stage0 compiler).
-        // Since libLLVM.so wasn't resolved until runtime, it was fine for it to
-        // not exist while we were building it.
-        //
-        // To ensure that we can still build stage1 tools against a stage0 compiler,
-        // we explicitly copy libLLVM.so into the stage0 sysroot when building
-        // the stage0 compiler. This ensures that tools built against stage0
-        // will see libLLVM.so at build time, making the linker happy.
-        if compiler.stage == 0 {
-            builder.info(&format!("Installing libLLVM.so to stage 0 ({})", compiler.host));
-            let sysroot = builder.sysroot(compiler);
-            dist::maybe_install_llvm_dylib(builder, compiler.host, &sysroot);
-        }
-
         builder.ensure(RustcLink {
             compiler: builder.compiler(compiler.stage, builder.config.build),
             target_compiler: compiler,
@@ -559,9 +530,13 @@ pub fn rustc_cargo_env(builder: &Builder<'_>, cargo: &mut Cargo, target: Interne
     // librustc_llvm and librustc_codegen_llvm.
     //
     // Note that this is disabled if LLVM itself is disabled or we're in a check
-    // build, where if we're in a check build there's no need to build all of
-    // LLVM and such.
-    if builder.config.llvm_enabled() && builder.kind != Kind::Check {
+    // build. If we are in a check build we still go ahead here presuming we've
+    // detected that LLVM is alreay built and good to go which helps prevent
+    // busting caches (e.g. like #71152).
+    if builder.config.llvm_enabled()
+        && (builder.kind != Kind::Check
+            || crate::native::prebuilt_llvm_config(builder, target).is_ok())
+    {
         if builder.is_rust_llvm(target) {
             cargo.env("LLVM_RUSTLLVM", "1");
         }
@@ -689,6 +664,30 @@ impl Step for Sysroot {
         };
         let _ = fs::remove_dir_all(&sysroot);
         t!(fs::create_dir_all(&sysroot));
+
+        // Symlink the source root into the same location inside the sysroot,
+        // where `rust-src` component would go (`$sysroot/lib/rustlib/src/rust`),
+        // so that any tools relying on `rust-src` also work for local builds,
+        // and also for translating the virtual `/rustc/$hash` back to the real
+        // directory (for running tests with `rust.remap-debuginfo = true`).
+        let sysroot_lib_rustlib_src = sysroot.join("lib/rustlib/src");
+        t!(fs::create_dir_all(&sysroot_lib_rustlib_src));
+        let sysroot_lib_rustlib_src_rust = sysroot_lib_rustlib_src.join("rust");
+        if let Err(e) = symlink_dir(&builder.config, &builder.src, &sysroot_lib_rustlib_src_rust) {
+            eprintln!(
+                "warning: creating symbolic link `{}` to `{}` failed with {}",
+                sysroot_lib_rustlib_src_rust.display(),
+                builder.src.display(),
+                e,
+            );
+            if builder.config.rust_remap_debuginfo {
+                eprintln!(
+                    "warning: some `src/test/ui` tests will fail when lacking `{}`",
+                    sysroot_lib_rustlib_src_rust.display(),
+                );
+            }
+        }
+
         INTERNER.intern_path(sysroot)
     }
 }
@@ -967,7 +966,11 @@ pub fn stream_cargo(
     }
     // Instruct Cargo to give us json messages on stdout, critically leaving
     // stderr as piped so we can get those pretty colors.
-    let mut message_format = String::from("json-render-diagnostics");
+    let mut message_format = if builder.config.json_output {
+        String::from("json")
+    } else {
+        String::from("json-render-diagnostics")
+    };
     if let Some(s) = &builder.config.rustc_error_format {
         message_format.push_str(",json-diagnostic-");
         message_format.push_str(s);
@@ -1025,5 +1028,8 @@ pub enum CargoMessage<'a> {
     },
     BuildScriptExecuted {
         package_id: Cow<'a, str>,
+    },
+    BuildFinished {
+        success: bool,
     },
 }

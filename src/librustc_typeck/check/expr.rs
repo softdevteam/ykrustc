@@ -15,25 +15,26 @@ use crate::check::FnCtxt;
 use crate::check::Needs;
 use crate::check::TupleArgumentsFlag::DontTupleArguments;
 use crate::type_error_struct;
-use crate::util::common::ErrorReported;
 
-use rustc::middle::lang_items;
-use rustc::mir::interpret::ErrorHandled;
-use rustc::ty;
-use rustc::ty::adjustment::{Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
-use rustc::ty::Ty;
-use rustc::ty::TypeFoldable;
-use rustc::ty::{AdtKind, Visibility};
 use rustc_ast::ast;
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_errors::ErrorReported;
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder, DiagnosticId};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::def_id::DefId;
+use rustc_hir::lang_items;
 use rustc_hir::{ExprKind, QPath};
 use rustc_infer::infer;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use rustc_middle::ty;
+use rustc_middle::ty::adjustment::{
+    Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability,
+};
+use rustc_middle::ty::Ty;
+use rustc_middle::ty::TypeFoldable;
+use rustc_middle::ty::{AdtKind, Visibility};
 use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, sym, Symbol};
@@ -85,7 +86,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         if let Some(mut err) = self.demand_suptype_diag(expr.span, expected_ty, ty) {
             let expr = expr.peel_drop_temps();
-            self.suggest_ref_or_into(&mut err, expr, expected_ty, ty);
+            self.suggest_deref_ref_or_into(&mut err, expr, expected_ty, ty);
             extend_err(&mut err);
             // Error possibly reported in `check_assign` so avoid emitting error again.
             err.emit_unless(self.is_assign_to_bool(expr, expected_ty));
@@ -231,7 +232,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 self.check_expr_addr_of(kind, mutbl, oprnd, expected, expr)
             }
             ExprKind::Path(ref qpath) => self.check_expr_path(qpath, expr),
-            ExprKind::InlineAsm(ref asm) => {
+            ExprKind::LlvmInlineAsm(ref asm) => {
                 for expr in asm.outputs_exprs.iter().chain(asm.inputs_exprs.iter()) {
                     self.check_expr(expr);
                 }
@@ -476,7 +477,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 tcx.types.err
             }
             Res::Def(DefKind::Ctor(_, CtorKind::Fictive), _) => {
-                report_unexpected_variant_res(tcx, res, expr.span, qpath);
+                report_unexpected_variant_res(tcx, res, expr.span);
                 tcx.types.err
             }
             _ => self.instantiate_value_path(segs, opt_ty, res, expr.span, expr.hir_id).0,
@@ -697,10 +698,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     self,
                     &cause,
                     &mut |db| {
-                        db.span_label(
-                            fn_decl.output.span(),
-                            format!("expected `{}` because of this return type", fn_decl.output,),
-                        );
+                        let span = fn_decl.output.span();
+                        if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(span) {
+                            db.span_label(
+                                span,
+                                format!("expected `{}` because of this return type", snippet),
+                            );
+                        }
                     },
                     true,
                 );
@@ -898,8 +902,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         error: MethodError<'tcx>,
     ) {
         let rcvr = &args[0];
-        let try_alt_rcvr = |err: &mut DiagnosticBuilder<'_>, rcvr_t, lang_item| {
-            if let Some(new_rcvr_t) = self.tcx.mk_lang_item(rcvr_t, lang_item) {
+        let try_alt_rcvr = |err: &mut DiagnosticBuilder<'_>, new_rcvr_t| {
+            if let Some(new_rcvr_t) = new_rcvr_t {
                 if let Ok(pick) = self.lookup_probe(
                     span,
                     segment.ident,
@@ -927,10 +931,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // Try alternative arbitrary self types that could fulfill this call.
                 // FIXME: probe for all types that *could* be arbitrary self-types, not
                 // just this whitelist.
-                try_alt_rcvr(&mut err, rcvr_t, lang_items::OwnedBoxLangItem);
-                try_alt_rcvr(&mut err, rcvr_t, lang_items::PinTypeLangItem);
-                try_alt_rcvr(&mut err, rcvr_t, lang_items::Arc);
-                try_alt_rcvr(&mut err, rcvr_t, lang_items::Rc);
+                try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, lang_items::OwnedBoxLangItem));
+                try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, lang_items::PinTypeLangItem));
+                try_alt_rcvr(&mut err, self.tcx.mk_diagnostic_item(rcvr_t, sym::Arc));
+                try_alt_rcvr(&mut err, self.tcx.mk_diagnostic_item(rcvr_t, sym::Rc));
             }
             err.emit();
         }
@@ -971,18 +975,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expected: Expectation<'tcx>,
         expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
-        let uty = expected.to_option(self).and_then(|uty| match uty.kind {
-            ty::Array(ty, _) | ty::Slice(ty) => Some(ty),
-            _ => None,
-        });
-
         let element_ty = if !args.is_empty() {
-            let coerce_to = uty.unwrap_or_else(|| {
-                self.next_ty_var(TypeVariableOrigin {
-                    kind: TypeVariableOriginKind::TypeInference,
-                    span: expr.span,
+            let coerce_to = expected
+                .to_option(self)
+                .and_then(|uty| match uty.kind {
+                    ty::Array(ty, _) | ty::Slice(ty) => Some(ty),
+                    _ => None,
                 })
-            });
+                .unwrap_or_else(|| {
+                    self.next_ty_var(TypeVariableOrigin {
+                        kind: TypeVariableOriginKind::TypeInference,
+                        span: expr.span,
+                    })
+                });
             let mut coerce = CoerceMany::with_coercion_sites(coerce_to, args);
             assert_eq!(self.diverges.get(), Diverges::Maybe);
             for e in args {
@@ -1008,13 +1013,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         _expr: &'tcx hir::Expr<'tcx>,
     ) -> Ty<'tcx> {
         let tcx = self.tcx;
-        let count_def_id = tcx.hir().local_def_id(count.hir_id);
-        let count = if self.const_param_def_id(count).is_some() {
-            Ok(self.to_const(count, tcx.type_of(count_def_id)))
-        } else {
-            tcx.const_eval_poly(count_def_id)
-                .map(|val| ty::Const::from_value(tcx, val, tcx.type_of(count_def_id)))
-        };
+        let count = self.to_const(count);
 
         let uty = match expected {
             ExpectHasType(uty) => match uty.kind {
@@ -1042,17 +1041,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         if element_ty.references_error() {
             return tcx.types.err;
         }
-        match count {
-            Ok(count) => tcx.mk_ty(ty::Array(t, count)),
-            Err(ErrorHandled::TooGeneric) => {
-                self.tcx.sess.span_err(
-                    tcx.def_span(count_def_id),
-                    "array lengths can't depend on generic parameters",
-                );
-                tcx.types.err
-            }
-            Err(ErrorHandled::Reported) => tcx.types.err,
-        }
+
+        tcx.mk_ty(ty::Array(t, count))
     }
 
     fn check_expr_tuple(
@@ -1069,16 +1059,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         });
 
-        let elt_ts_iter = elts.iter().enumerate().map(|(i, e)| {
-            let t = match flds {
-                Some(ref fs) if i < fs.len() => {
-                    let ety = fs[i].expect_ty();
-                    self.check_expr_coercable_to_type(&e, ety);
-                    ety
-                }
-                _ => self.check_expr_with_expectation(&e, NoExpectation),
-            };
-            t
+        let elt_ts_iter = elts.iter().enumerate().map(|(i, e)| match flds {
+            Some(ref fs) if i < fs.len() => {
+                let ety = fs[i].expect_ty();
+                self.check_expr_coercable_to_type(&e, ety);
+                ety
+            }
+            _ => self.check_expr_with_expectation(&e, NoExpectation),
         });
         let tuple = self.tcx.mk_tup(elt_ts_iter);
         if tuple.references_error() {
@@ -1577,19 +1564,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         base_did: DefId,
     ) {
         let struct_path = self.tcx().def_path_str(base_did);
-        let kind_name = match self.tcx().def_kind(base_did) {
-            Some(def_kind) => def_kind.descr(base_did),
-            _ => " ",
-        };
+        let kind_name = self.tcx().def_kind(base_did).descr(base_did);
         let mut err = struct_span_err!(
             self.tcx().sess,
-            expr.span,
+            field.span,
             E0616,
             "field `{}` of {} `{}` is private",
             field,
             kind_name,
             struct_path
         );
+        err.span_label(field.span, "private field");
         // Also check if an accessible method exists, which is often what is meant.
         if self.method_exists(field, expr_t, expr.hir_id, false) && !self.expr_in_place(expr.hir_id)
         {
@@ -1614,7 +1599,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             field,
             expr_t
         );
-
+        err.span_label(field.span, "method, not a field");
         if !self.expr_in_place(expr.hir_id) {
             self.suggest_method_call(
                 &mut err,
@@ -1637,8 +1622,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return;
         }
         let param_def_id = generic_param.def_id;
-        let param_hir_id = match self.tcx.hir().as_local_hir_id(param_def_id) {
-            Some(x) => x,
+        let param_hir_id = match param_def_id.as_local() {
+            Some(x) => self.tcx.hir().as_local_hir_id(x),
             None => return,
         };
         let param_span = self.tcx.hir().span(param_hir_id);
@@ -1686,20 +1671,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         if let (Some(len), Ok(user_index)) =
             (len.try_eval_usize(self.tcx, self.param_env), field.as_str().parse::<u64>())
         {
-            let base = self
-                .tcx
-                .sess
-                .source_map()
-                .span_to_snippet(base.span)
-                .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
-            let help = "instead of using tuple indexing, use array indexing";
-            let suggestion = format!("{}[{}]", base, field);
-            let applicability = if len < user_index {
-                Applicability::MachineApplicable
-            } else {
-                Applicability::MaybeIncorrect
-            };
-            err.span_suggestion(expr.span, help, suggestion, applicability);
+            if let Ok(base) = self.tcx.sess.source_map().span_to_snippet(base.span) {
+                let help = "instead of using tuple indexing, use array indexing";
+                let suggestion = format!("{}[{}]", base, field);
+                let applicability = if len < user_index {
+                    Applicability::MachineApplicable
+                } else {
+                    Applicability::MaybeIncorrect
+                };
+                err.span_suggestion(expr.span, help, suggestion, applicability);
+            }
         }
     }
 
@@ -1710,15 +1691,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         base: &hir::Expr<'_>,
         field: ast::Ident,
     ) {
-        let base = self
-            .tcx
-            .sess
-            .source_map()
-            .span_to_snippet(base.span)
-            .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
-        let msg = format!("`{}` is a raw pointer; try dereferencing it", base);
-        let suggestion = format!("(*{}).{}", base, field);
-        err.span_suggestion(expr.span, &msg, suggestion, Applicability::MaybeIncorrect);
+        if let Ok(base) = self.tcx.sess.source_map().span_to_snippet(base.span) {
+            let msg = format!("`{}` is a raw pointer; try dereferencing it", base);
+            let suggestion = format!("(*{}).{}", base, field);
+            err.span_suggestion(expr.span, &msg, suggestion, Applicability::MaybeIncorrect);
+        }
     }
 
     fn no_such_field_err<T: Display>(
@@ -1818,7 +1795,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // we know that the yield type must be `()`; however, the context won't contain this
             // information. Hence, we check the source of the yield expression here and check its
             // value's type against `()` (this check should always hold).
-            None if src == &hir::YieldSource::Await => {
+            None if src.is_await() => {
                 self.check_expr_coercable_to_type(&value, self.tcx.mk_unit());
                 self.tcx.mk_unit()
             }

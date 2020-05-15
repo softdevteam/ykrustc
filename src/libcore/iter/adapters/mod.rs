@@ -2,18 +2,19 @@ use crate::cmp;
 use crate::fmt;
 use crate::intrinsics;
 use crate::ops::{Add, AddAssign, Try};
-use crate::usize;
 
 use super::{from_fn, LoopState};
 use super::{DoubleEndedIterator, ExactSizeIterator, FusedIterator, Iterator, TrustedLen};
 
 mod chain;
 mod flatten;
+mod fuse;
 mod zip;
 
 pub use self::chain::Chain;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::flatten::{FlatMap, Flatten};
+pub use self::fuse::Fuse;
 pub(crate) use self::zip::TrustedRandomAccess;
 pub use self::zip::Zip;
 
@@ -1768,6 +1769,14 @@ where
     }
 }
 
+#[stable(feature = "fused", since = "1.26.0")]
+impl<I, P> FusedIterator for TakeWhile<I, P>
+where
+    I: FusedIterator,
+    P: FnMut(&I::Item) -> bool,
+{
+}
+
 /// An iterator that only accepts elements while `predicate` returns `Some(_)`.
 ///
 /// This `struct` is created by the [`map_while`] method on [`Iterator`]. See its
@@ -1780,20 +1789,19 @@ where
 #[derive(Clone)]
 pub struct MapWhile<I, P> {
     iter: I,
-    finished: bool,
     predicate: P,
 }
 
 impl<I, P> MapWhile<I, P> {
     pub(super) fn new(iter: I, predicate: P) -> MapWhile<I, P> {
-        MapWhile { iter, finished: false, predicate }
+        MapWhile { iter, predicate }
     }
 }
 
 #[unstable(feature = "iter_map_while", reason = "recently added", issue = "68537")]
 impl<I: fmt::Debug, P> fmt::Debug for MapWhile<I, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MapWhile").field("iter", &self.iter).field("flag", &self.finished).finish()
+        f.debug_struct("MapWhile").field("iter", &self.iter).finish()
     }
 }
 
@@ -1806,63 +1814,30 @@ where
 
     #[inline]
     fn next(&mut self) -> Option<B> {
-        if self.finished {
-            None
-        } else {
-            let x = self.iter.next()?;
-            let ret = (self.predicate)(x);
-            self.finished = ret.is_none();
-            ret
-        }
+        let x = self.iter.next()?;
+        (self.predicate)(x)
     }
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.finished {
-            (0, Some(0))
-        } else {
-            let (_, upper) = self.iter.size_hint();
-            (0, upper) // can't know a lower bound, due to the predicate
-        }
+        let (_, upper) = self.iter.size_hint();
+        (0, upper) // can't know a lower bound, due to the predicate
     }
 
     #[inline]
-    fn try_fold<Acc, Fold, R>(&mut self, init: Acc, fold: Fold) -> R
+    fn try_fold<Acc, Fold, R>(&mut self, init: Acc, mut fold: Fold) -> R
     where
         Self: Sized,
         Fold: FnMut(Acc, Self::Item) -> R,
         R: Try<Ok = Acc>,
     {
-        fn check<'a, B, T, Acc, R: Try<Ok = Acc>>(
-            flag: &'a mut bool,
-            p: &'a mut impl FnMut(T) -> Option<B>,
-            mut fold: impl FnMut(Acc, B) -> R + 'a,
-        ) -> impl FnMut(Acc, T) -> LoopState<Acc, R> + 'a {
-            move |acc, x| match p(x) {
-                Some(item) => LoopState::from_try(fold(acc, item)),
-                None => {
-                    *flag = true;
-                    LoopState::Break(Try::from_ok(acc))
-                }
-            }
-        }
-
-        if self.finished {
-            Try::from_ok(init)
-        } else {
-            let flag = &mut self.finished;
-            let p = &mut self.predicate;
-            self.iter.try_fold(init, check(flag, p, fold)).into_try()
-        }
+        let Self { iter, predicate } = self;
+        iter.try_fold(init, |acc, x| match predicate(x) {
+            Some(item) => LoopState::from_try(fold(acc, item)),
+            None => LoopState::Break(Try::from_ok(acc)),
+        })
+        .into_try()
     }
-}
-
-#[stable(feature = "fused", since = "1.26.0")]
-impl<I, P> FusedIterator for TakeWhile<I, P>
-where
-    I: FusedIterator,
-    P: FnMut(&I::Item) -> bool,
-{
 }
 
 /// An iterator that skips over `n` elements of `iter`.
@@ -2261,261 +2236,6 @@ where
         let state = &mut self.state;
         let f = &mut self.f;
         self.iter.try_fold(init, scan(state, f, fold)).into_try()
-    }
-}
-
-/// An iterator that yields `None` forever after the underlying iterator
-/// yields `None` once.
-///
-/// This `struct` is created by the [`fuse`] method on [`Iterator`]. See its
-/// documentation for more.
-///
-/// [`fuse`]: trait.Iterator.html#method.fuse
-/// [`Iterator`]: trait.Iterator.html
-#[derive(Clone, Debug)]
-#[must_use = "iterators are lazy and do nothing unless consumed"]
-#[stable(feature = "rust1", since = "1.0.0")]
-pub struct Fuse<I> {
-    iter: I,
-    done: bool,
-}
-impl<I> Fuse<I> {
-    pub(super) fn new(iter: I) -> Fuse<I> {
-        Fuse { iter, done: false }
-    }
-}
-
-#[stable(feature = "fused", since = "1.26.0")]
-impl<I> FusedIterator for Fuse<I> where I: Iterator {}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<I> Iterator for Fuse<I>
-where
-    I: Iterator,
-{
-    type Item = <I as Iterator>::Item;
-
-    #[inline]
-    default fn next(&mut self) -> Option<<I as Iterator>::Item> {
-        if self.done {
-            None
-        } else {
-            let next = self.iter.next();
-            self.done = next.is_none();
-            next
-        }
-    }
-
-    #[inline]
-    default fn nth(&mut self, n: usize) -> Option<I::Item> {
-        if self.done {
-            None
-        } else {
-            let nth = self.iter.nth(n);
-            self.done = nth.is_none();
-            nth
-        }
-    }
-
-    #[inline]
-    default fn last(self) -> Option<I::Item> {
-        if self.done { None } else { self.iter.last() }
-    }
-
-    #[inline]
-    default fn count(self) -> usize {
-        if self.done { 0 } else { self.iter.count() }
-    }
-
-    #[inline]
-    default fn size_hint(&self) -> (usize, Option<usize>) {
-        if self.done { (0, Some(0)) } else { self.iter.size_hint() }
-    }
-
-    #[inline]
-    default fn try_fold<Acc, Fold, R>(&mut self, init: Acc, fold: Fold) -> R
-    where
-        Self: Sized,
-        Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
-    {
-        if self.done {
-            Try::from_ok(init)
-        } else {
-            let acc = self.iter.try_fold(init, fold)?;
-            self.done = true;
-            Try::from_ok(acc)
-        }
-    }
-
-    #[inline]
-    default fn fold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
-    where
-        Fold: FnMut(Acc, Self::Item) -> Acc,
-    {
-        if self.done { init } else { self.iter.fold(init, fold) }
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<I> DoubleEndedIterator for Fuse<I>
-where
-    I: DoubleEndedIterator,
-{
-    #[inline]
-    default fn next_back(&mut self) -> Option<<I as Iterator>::Item> {
-        if self.done {
-            None
-        } else {
-            let next = self.iter.next_back();
-            self.done = next.is_none();
-            next
-        }
-    }
-
-    #[inline]
-    default fn nth_back(&mut self, n: usize) -> Option<<I as Iterator>::Item> {
-        if self.done {
-            None
-        } else {
-            let nth = self.iter.nth_back(n);
-            self.done = nth.is_none();
-            nth
-        }
-    }
-
-    #[inline]
-    default fn try_rfold<Acc, Fold, R>(&mut self, init: Acc, fold: Fold) -> R
-    where
-        Self: Sized,
-        Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
-    {
-        if self.done {
-            Try::from_ok(init)
-        } else {
-            let acc = self.iter.try_rfold(init, fold)?;
-            self.done = true;
-            Try::from_ok(acc)
-        }
-    }
-
-    #[inline]
-    default fn rfold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
-    where
-        Fold: FnMut(Acc, Self::Item) -> Acc,
-    {
-        if self.done { init } else { self.iter.rfold(init, fold) }
-    }
-}
-
-unsafe impl<I> TrustedRandomAccess for Fuse<I>
-where
-    I: TrustedRandomAccess,
-{
-    unsafe fn get_unchecked(&mut self, i: usize) -> I::Item {
-        self.iter.get_unchecked(i)
-    }
-
-    fn may_have_side_effect() -> bool {
-        I::may_have_side_effect()
-    }
-}
-
-#[stable(feature = "fused", since = "1.26.0")]
-impl<I> Iterator for Fuse<I>
-where
-    I: FusedIterator,
-{
-    #[inline]
-    fn next(&mut self) -> Option<<I as Iterator>::Item> {
-        self.iter.next()
-    }
-
-    #[inline]
-    fn nth(&mut self, n: usize) -> Option<I::Item> {
-        self.iter.nth(n)
-    }
-
-    #[inline]
-    fn last(self) -> Option<I::Item> {
-        self.iter.last()
-    }
-
-    #[inline]
-    fn count(self) -> usize {
-        self.iter.count()
-    }
-
-    #[inline]
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-
-    #[inline]
-    fn try_fold<Acc, Fold, R>(&mut self, init: Acc, fold: Fold) -> R
-    where
-        Self: Sized,
-        Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
-    {
-        self.iter.try_fold(init, fold)
-    }
-
-    #[inline]
-    fn fold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
-    where
-        Fold: FnMut(Acc, Self::Item) -> Acc,
-    {
-        self.iter.fold(init, fold)
-    }
-}
-
-#[stable(feature = "fused", since = "1.26.0")]
-impl<I> DoubleEndedIterator for Fuse<I>
-where
-    I: DoubleEndedIterator + FusedIterator,
-{
-    #[inline]
-    fn next_back(&mut self) -> Option<<I as Iterator>::Item> {
-        self.iter.next_back()
-    }
-
-    #[inline]
-    fn nth_back(&mut self, n: usize) -> Option<<I as Iterator>::Item> {
-        self.iter.nth_back(n)
-    }
-
-    #[inline]
-    fn try_rfold<Acc, Fold, R>(&mut self, init: Acc, fold: Fold) -> R
-    where
-        Self: Sized,
-        Fold: FnMut(Acc, Self::Item) -> R,
-        R: Try<Ok = Acc>,
-    {
-        self.iter.try_rfold(init, fold)
-    }
-
-    #[inline]
-    fn rfold<Acc, Fold>(self, init: Acc, fold: Fold) -> Acc
-    where
-        Fold: FnMut(Acc, Self::Item) -> Acc,
-    {
-        self.iter.rfold(init, fold)
-    }
-}
-
-#[stable(feature = "rust1", since = "1.0.0")]
-impl<I> ExactSizeIterator for Fuse<I>
-where
-    I: ExactSizeIterator,
-{
-    fn len(&self) -> usize {
-        self.iter.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.iter.is_empty()
     }
 }
 

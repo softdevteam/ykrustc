@@ -2,8 +2,6 @@ use std::cmp::Reverse;
 use std::ptr;
 
 use log::debug;
-use rustc::bug;
-use rustc::ty::{self, DefIdTree};
 use rustc_ast::ast::{self, Ident, Path};
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_ast_pretty::pprust;
@@ -13,6 +11,8 @@ use rustc_feature::BUILTIN_ATTRIBUTES;
 use rustc_hir::def::Namespace::{self, *};
 use rustc_hir::def::{self, CtorKind, CtorOf, DefKind, NonMacroAttrKind};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
+use rustc_middle::bug;
+use rustc_middle::ty::{self, DefIdTree};
 use rustc_session::Session;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::SourceMap;
@@ -59,8 +59,7 @@ crate struct ImportSuggestion {
 /// `source_map` functions and this function to something more robust.
 fn reduce_impl_span_to_impl_keyword(sm: &SourceMap, impl_span: Span) -> Span {
     let impl_span = sm.span_until_char(impl_span, '<');
-    let impl_span = sm.span_until_whitespace(impl_span);
-    impl_span
+    sm.span_until_whitespace(impl_span)
 }
 
 impl<'a> Resolver<'a> {
@@ -792,12 +791,12 @@ impl<'a> Resolver<'a> {
                 _ => Some(
                     self.session
                         .source_map()
-                        .def_span(self.cstore().get_span_untracked(def_id, self.session)),
+                        .guess_head_span(self.cstore().get_span_untracked(def_id, self.session)),
                 ),
             });
             if let Some(span) = def_span {
                 err.span_label(
-                    span,
+                    self.session.source_map().guess_head_span(span),
                     &format!(
                         "similarly named {} `{}` defined here",
                         suggestion.res.descr(),
@@ -952,7 +951,7 @@ impl<'a> Resolver<'a> {
         let descr = get_descr(binding);
         let mut err =
             struct_span_err!(self.session, ident.span, E0603, "{} `{}` is private", descr, ident);
-        err.span_label(ident.span, &format!("this {} is private", descr));
+        err.span_label(ident.span, &format!("private {}", descr));
         if let Some(span) = ctor_fields_span {
             err.span_label(span, "a constructor is private if any of the fields is private");
         }
@@ -987,7 +986,7 @@ impl<'a> Resolver<'a> {
                 which = if first { "" } else { " which" },
                 dots = if next_binding.is_some() { "..." } else { "" },
             );
-            let def_span = self.session.source_map().def_span(binding.span);
+            let def_span = self.session.source_map().guess_head_span(binding.span);
             let mut note_span = MultiSpan::from_span(def_span);
             if !first && binding.vis == ty::Visibility::Public {
                 note_span.push_span_label(def_span, "consider importing it directly".into());
@@ -1032,7 +1031,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
 
     /// Suggest a missing `self::` if that resolves to an correct module.
     ///
-    /// ```
+    /// ```text
     ///    |
     /// LL | use foo::Bar;
     ///    |     ^^^ did you mean `self::foo`?
@@ -1052,7 +1051,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
 
     /// Suggests a missing `crate::` if that resolves to an correct module.
     ///
-    /// ```
+    /// ```text
     ///    |
     /// LL | use foo::Bar;
     ///    |     ^^^ did you mean `crate::foo`?
@@ -1084,7 +1083,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
 
     /// Suggests a missing `super::` if that resolves to an correct module.
     ///
-    /// ```
+    /// ```text
     ///    |
     /// LL | use foo::Bar;
     ///    |     ^^^ did you mean `super::foo`?
@@ -1104,7 +1103,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
 
     /// Suggests a missing external crate name if that resolves to an correct module.
     ///
-    /// ```
+    /// ```text
     ///    |
     /// LL | use foobar::Baz;
     ///    |     ^^^^^^ did you mean `baz::foobar`?
@@ -1148,7 +1147,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
     /// Suggests importing a macro from the root of the crate rather than a module within
     /// the crate.
     ///
-    /// ```
+    /// ```text
     /// help: a macro with this name exists at the root of the crate
     ///    |
     /// LL | use issue_59764::makro;

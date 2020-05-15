@@ -8,9 +8,6 @@
 #![feature(nll)]
 #![recursion_limit = "256"]
 
-pub extern crate getopts;
-#[cfg(unix)]
-extern crate libc;
 #[macro_use]
 extern crate log;
 #[macro_use]
@@ -18,31 +15,31 @@ extern crate lazy_static;
 
 pub extern crate rustc_plugin_impl as plugin;
 
-use rustc::middle::cstore::MetadataLoader;
-use rustc::ty::TyCtxt;
-use rustc::util::common::ErrorReported;
-use rustc_codegen_ssa::CodegenResults;
-use rustc_codegen_utils::codegen_backend::CodegenBackend;
+use rustc_ast::ast;
+use rustc_codegen_ssa::{traits::CodegenBackend, CodegenResults};
 use rustc_data_structures::profiling::print_time_passes_entry;
 use rustc_data_structures::sync::SeqCst;
-use rustc_errors::{
-    registry::{InvalidErrorCode, Registry},
-    PResult,
-};
+use rustc_errors::registry::{InvalidErrorCode, Registry};
+use rustc_errors::{ErrorReported, PResult};
 use rustc_feature::{find_gated_cfg, UnstableFeatures};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_interface::util::{collect_crate_types, get_builtin_codegen_backend};
 use rustc_interface::{interface, Queries};
 use rustc_lint::LintStore;
 use rustc_metadata::locator;
+use rustc_middle::middle::cstore::MetadataLoader;
+use rustc_middle::ty::TyCtxt;
 use rustc_save_analysis as save;
 use rustc_save_analysis::DumpHandler;
 use rustc_serialize::json::{self, ToJson};
 use rustc_session::config::nightly_options;
 use rustc_session::config::{ErrorOutputType, Input, OutputType, PrintRequest};
+use rustc_session::getopts;
 use rustc_session::lint::{Lint, LintId};
 use rustc_session::{config, DiagnosticOutput, Session};
 use rustc_session::{early_error, early_warn};
+use rustc_span::source_map::{FileLoader, FileName};
+use rustc_span::symbol::sym;
 
 use std::borrow::Cow;
 use std::cmp::max;
@@ -57,11 +54,6 @@ use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::str;
 use std::time::Instant;
-
-use rustc_ast::ast;
-use rustc_span::source_map::FileLoader;
-use rustc_span::symbol::sym;
-use rustc_span::FileName;
 
 mod args;
 pub mod pretty;
@@ -142,7 +134,6 @@ pub fn diagnostics_registry() -> Registry {
 }
 
 // Parse args and run the compiler. This is the primary entry point for rustc.
-// See comments on CompilerCalls below for details about the callbacks argument.
 // The FileLoader provides a way to load files from sources other than the file system.
 pub fn run_compiler(
     at_args: &[String],
@@ -627,15 +618,15 @@ impl RustcDefaultCalls {
     ) -> Compilation {
         let r = matches.opt_strs("Z");
         if r.iter().any(|s| *s == "ls") {
-            match input {
-                &Input::File(ref ifile) => {
+            match *input {
+                Input::File(ref ifile) => {
                     let path = &(*ifile);
                     let mut v = Vec::new();
                     locator::list_file_metadata(&sess.target.target, path, metadata_loader, &mut v)
                         .unwrap();
                     println!("{}", String::from_utf8(v).unwrap());
                 }
-                &Input::Str { .. } => {
+                Input::Str { .. } => {
                     early_error(ErrorOutputType::default(), "cannot list metadata for stdin");
                 }
             }
@@ -693,16 +684,15 @@ impl RustcDefaultCalls {
                     let t_outputs = rustc_interface::util::build_output_filenames(
                         input, odir, ofile, attrs, sess,
                     );
-                    let id = rustc_codegen_utils::link::find_crate_name(Some(sess), attrs, input);
+                    let id = rustc_session::output::find_crate_name(Some(sess), attrs, input);
                     if *req == PrintRequest::CrateName {
                         println!("{}", id);
                         continue;
                     }
                     let crate_types = collect_crate_types(sess, attrs);
                     for &style in &crate_types {
-                        let fname = rustc_codegen_utils::link::filename_for_input(
-                            sess, style, &id, &t_outputs,
-                        );
+                        let fname =
+                            rustc_session::output::filename_for_input(sess, style, &id, &t_outputs);
                         println!("{}", fname.file_name().unwrap().to_string_lossy());
                     }
                 }
@@ -752,7 +742,7 @@ impl RustcDefaultCalls {
                 PrintRequest::NativeStaticLibs => {}
             }
         }
-        return Compilation::Stop;
+        Compilation::Stop
     }
 }
 
@@ -965,32 +955,17 @@ fn describe_codegen_flags() {
 
 fn print_flag_list<T>(
     cmdline_opt: &str,
-    flag_list: &[(&'static str, T, Option<&'static str>, &'static str)],
+    flag_list: &[(&'static str, T, &'static str, &'static str)],
 ) {
-    let max_len = flag_list
-        .iter()
-        .map(|&(name, _, opt_type_desc, _)| {
-            let extra_len = match opt_type_desc {
-                Some(..) => 4,
-                None => 0,
-            };
-            name.chars().count() + extra_len
-        })
-        .max()
-        .unwrap_or(0);
+    let max_len = flag_list.iter().map(|&(name, _, _, _)| name.chars().count()).max().unwrap_or(0);
 
-    for &(name, _, opt_type_desc, desc) in flag_list {
-        let (width, extra) = match opt_type_desc {
-            Some(..) => (max_len - 4, "=val"),
-            None => (max_len, ""),
-        };
+    for &(name, _, _, desc) in flag_list {
         println!(
-            "    {} {:>width$}{} -- {}",
+            "    {} {:>width$}=val -- {}",
             cmdline_opt,
             name.replace("_", "-"),
-            extra,
             desc,
-            width = width
+            width = max_len
         );
     }
 }

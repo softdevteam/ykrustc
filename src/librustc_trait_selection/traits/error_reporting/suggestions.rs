@@ -3,28 +3,31 @@ use super::{
 };
 
 use crate::infer::InferCtxt;
-use crate::traits::error_reporting::suggest_constraining_type_param;
 
-use rustc::ty::TypeckTables;
-use rustc::ty::{self, AdtKind, DefIdTree, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness};
 use rustc_errors::{error_code, struct_span_err, Applicability, DiagnosticBuilder, Style};
 use rustc_hir as hir;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::Visitor;
-use rustc_hir::Node;
-use rustc_span::symbol::{kw, sym};
+use rustc_hir::{AsyncGeneratorKind, GeneratorKind, Node};
+use rustc_middle::ty::TypeckTables;
+use rustc_middle::ty::{
+    self, suggest_constraining_type_param, AdtKind, DefIdTree, Infer, InferTy, ToPredicate, Ty,
+    TyCtxt, TypeFoldable, WithConstness,
+};
+use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::{MultiSpan, Span, DUMMY_SP};
 use std::fmt;
 
 use super::InferCtxtPrivExt;
 use crate::traits::query::evaluate_obligation::InferCtxtExt as _;
 
-crate trait InferCtxtExt<'tcx> {
+// This trait is public to expose the diagnostics methods to clippy.
+pub trait InferCtxtExt<'tcx> {
     fn suggest_restricting_param_bound(
         &self,
         err: &mut DiagnosticBuilder<'_>,
-        trait_ref: &ty::PolyTraitRef<'_>,
+        trait_ref: ty::PolyTraitRef<'_>,
         body_id: hir::HirId,
     );
 
@@ -81,6 +84,8 @@ crate trait InferCtxtExt<'tcx> {
         trait_ref: &ty::Binder<ty::TraitRef<'tcx>>,
     );
 
+    fn return_type_span(&self, obligation: &PredicateObligation<'tcx>) -> Option<Span>;
+
     fn suggest_impl_trait(
         &self,
         err: &mut DiagnosticBuilder<'tcx>,
@@ -122,15 +127,17 @@ crate trait InferCtxtExt<'tcx> {
         err: &mut DiagnosticBuilder<'_>,
         target_span: Span,
         scope_span: &Option<Span>,
+        await_span: Span,
         expr: Option<hir::HirId>,
         snippet: String,
-        first_generator: DefId,
-        last_generator: Option<DefId>,
+        inner_generator_body: Option<&hir::Body<'_>>,
+        outer_generator: Option<DefId>,
         trait_ref: ty::TraitRef<'_>,
         target_ty: Ty<'tcx>,
         tables: &ty::TypeckTables<'_>,
         obligation: &PredicateObligation<'tcx>,
         next_code: Option<&ObligationCauseCode<'tcx>>,
+        from_awaited_ty: Option<Span>,
     );
 
     fn note_obligation_cause_code<T>(
@@ -145,11 +152,128 @@ crate trait InferCtxtExt<'tcx> {
     fn suggest_new_overflow_limit(&self, err: &mut DiagnosticBuilder<'_>);
 }
 
+fn predicate_constraint(generics: &hir::Generics<'_>, pred: String) -> (Span, String) {
+    (
+        generics.where_clause.span_for_predicates_or_empty_place().shrink_to_hi(),
+        format!(
+            "{} {} ",
+            if !generics.where_clause.predicates.is_empty() { "," } else { " where" },
+            pred,
+        ),
+    )
+}
+
+/// Type parameter needs more bounds. The trivial case is `T` `where T: Bound`, but
+/// it can also be an `impl Trait` param that needs to be decomposed to a type
+/// param for cleaner code.
+fn suggest_restriction(
+    generics: &hir::Generics<'_>,
+    msg: &str,
+    err: &mut DiagnosticBuilder<'_>,
+    fn_sig: Option<&hir::FnSig<'_>>,
+    projection: Option<&ty::ProjectionTy<'_>>,
+    trait_ref: ty::PolyTraitRef<'_>,
+) {
+    let span = generics.where_clause.span_for_predicates_or_empty_place();
+    if span.from_expansion() || span.desugaring_kind().is_some() {
+        return;
+    }
+    // Given `fn foo(t: impl Trait)` where `Trait` requires assoc type `A`...
+    if let Some((bound_str, fn_sig)) =
+        fn_sig.zip(projection).and_then(|(sig, p)| match p.self_ty().kind {
+            // Shenanigans to get the `Trait` from the `impl Trait`.
+            ty::Param(param) => {
+                // `fn foo(t: impl Trait)`
+                //                 ^^^^^ get this string
+                param.name.as_str().strip_prefix("impl").map(|s| (s.trim_start().to_string(), sig))
+            }
+            _ => None,
+        })
+    {
+        // We know we have an `impl Trait` that doesn't satisfy a required projection.
+
+        // Find all of the ocurrences of `impl Trait` for `Trait` in the function arguments'
+        // types. There should be at least one, but there might be *more* than one. In that
+        // case we could just ignore it and try to identify which one needs the restriction,
+        // but instead we choose to suggest replacing all instances of `impl Trait` with `T`
+        // where `T: Trait`.
+        let mut ty_spans = vec![];
+        let impl_trait_str = format!("impl {}", bound_str);
+        for input in fn_sig.decl.inputs {
+            if let hir::TyKind::Path(hir::QPath::Resolved(
+                None,
+                hir::Path { segments: [segment], .. },
+            )) = input.kind
+            {
+                if segment.ident.as_str() == impl_trait_str.as_str() {
+                    // `fn foo(t: impl Trait)`
+                    //            ^^^^^^^^^^ get this to suggest `T` instead
+
+                    // There might be more than one `impl Trait`.
+                    ty_spans.push(input.span);
+                }
+            }
+        }
+
+        let type_param_name = generics.params.next_type_param_name(Some(&bound_str));
+        // The type param `T: Trait` we will suggest to introduce.
+        let type_param = format!("{}: {}", type_param_name, bound_str);
+
+        // FIXME: modify the `trait_ref` instead of string shenanigans.
+        // Turn `<impl Trait as Foo>::Bar: Qux` into `<T as Foo>::Bar: Qux`.
+        let pred = trait_ref.without_const().to_predicate().to_string();
+        let pred = pred.replace(&impl_trait_str, &type_param_name);
+        let mut sugg = vec![
+            match generics
+                .params
+                .iter()
+                .filter(|p| match p.kind {
+                    hir::GenericParamKind::Type {
+                        synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
+                        ..
+                    } => false,
+                    _ => true,
+                })
+                .last()
+            {
+                // `fn foo(t: impl Trait)`
+                //        ^ suggest `<T: Trait>` here
+                None => (generics.span, format!("<{}>", type_param)),
+                // `fn foo<A>(t: impl Trait)`
+                //        ^^^ suggest `<A, T: Trait>` here
+                Some(param) => (
+                    param.bounds_span().unwrap_or(param.span).shrink_to_hi(),
+                    format!(", {}", type_param),
+                ),
+            },
+            // `fn foo(t: impl Trait)`
+            //                       ^ suggest `where <T as Trait>::A: Bound`
+            predicate_constraint(generics, pred),
+        ];
+        sugg.extend(ty_spans.into_iter().map(|s| (s, type_param_name.to_string())));
+
+        // Suggest `fn foo<T: Trait>(t: T) where <T as Trait>::A: Bound`.
+        // FIXME: once `#![feature(associated_type_bounds)]` is stabilized, we should suggest
+        // `fn foo(t: impl Trait<A: Bound>)` instead.
+        err.multipart_suggestion(
+            "introduce a type parameter with a trait bound instead of using `impl Trait`",
+            sugg,
+            Applicability::MaybeIncorrect,
+        );
+    } else {
+        // Trivial case: `T` needs an extra bound: `T: Bound`.
+        let (sp, sugg) =
+            predicate_constraint(generics, trait_ref.without_const().to_predicate().to_string());
+        let appl = Applicability::MachineApplicable;
+        err.span_suggestion(sp, &format!("consider further restricting {}", msg), sugg, appl);
+    }
+}
+
 impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     fn suggest_restricting_param_bound(
         &self,
         mut err: &mut DiagnosticBuilder<'_>,
-        trait_ref: &ty::PolyTraitRef<'_>,
+        trait_ref: ty::PolyTraitRef<'_>,
         body_id: hir::HirId,
     ) {
         let self_ty = trait_ref.self_ty();
@@ -158,27 +282,6 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             ty::Projection(projection) => (false, Some(projection)),
             _ => return,
         };
-
-        let suggest_restriction =
-            |generics: &hir::Generics<'_>, msg, err: &mut DiagnosticBuilder<'_>| {
-                let span = generics.where_clause.span_for_predicates_or_empty_place();
-                if !span.from_expansion() && span.desugaring_kind().is_none() {
-                    err.span_suggestion(
-                        generics.where_clause.span_for_predicates_or_empty_place().shrink_to_hi(),
-                        &format!("consider further restricting {}", msg),
-                        format!(
-                            "{} {} ",
-                            if !generics.where_clause.predicates.is_empty() {
-                                ","
-                            } else {
-                                " where"
-                            },
-                            trait_ref.without_const().to_predicate(),
-                        ),
-                        Applicability::MachineApplicable,
-                    );
-                }
-            };
 
         // FIXME: Add check for trait bound that is already present, particularly `?Sized` so we
         //        don't suggest `T: Sized + ?Sized`.
@@ -191,78 +294,67 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     ..
                 }) if param_ty && self_ty == self.tcx.types.self_param => {
                     // Restricting `Self` for a single method.
-                    suggest_restriction(&generics, "`Self`", err);
+                    suggest_restriction(&generics, "`Self`", err, None, projection, trait_ref);
                     return;
                 }
 
-                hir::Node::Item(hir::Item { kind: hir::ItemKind::Fn(_, generics, _), .. })
-                | hir::Node::TraitItem(hir::TraitItem {
+                hir::Node::TraitItem(hir::TraitItem {
                     generics,
-                    kind: hir::TraitItemKind::Fn(..),
+                    kind: hir::TraitItemKind::Fn(fn_sig, ..),
                     ..
                 })
                 | hir::Node::ImplItem(hir::ImplItem {
                     generics,
-                    kind: hir::ImplItemKind::Fn(..),
+                    kind: hir::ImplItemKind::Fn(fn_sig, ..),
                     ..
                 })
                 | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Trait(_, _, generics, _, _),
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Impl { generics, .. }, ..
+                    kind: hir::ItemKind::Fn(fn_sig, generics, _), ..
                 }) if projection.is_some() => {
-                    // Missing associated type bound.
-                    suggest_restriction(&generics, "the associated type", err);
+                    // Missing restriction on associated type of type parameter (unmet projection).
+                    suggest_restriction(
+                        &generics,
+                        "the associated type",
+                        err,
+                        Some(fn_sig),
+                        projection,
+                        trait_ref,
+                    );
+                    return;
+                }
+                hir::Node::Item(hir::Item {
+                    kind:
+                        hir::ItemKind::Trait(_, _, generics, _, _)
+                        | hir::ItemKind::Impl { generics, .. },
+                    ..
+                }) if projection.is_some() => {
+                    // Missing restriction on associated type of type parameter (unmet projection).
+                    suggest_restriction(
+                        &generics,
+                        "the associated type",
+                        err,
+                        None,
+                        projection,
+                        trait_ref,
+                    );
                     return;
                 }
 
                 hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Struct(_, generics),
-                    span,
+                    kind:
+                        hir::ItemKind::Struct(_, generics)
+                        | hir::ItemKind::Enum(_, generics)
+                        | hir::ItemKind::Union(_, generics)
+                        | hir::ItemKind::Trait(_, _, generics, ..)
+                        | hir::ItemKind::Impl { generics, .. }
+                        | hir::ItemKind::Fn(_, generics, _)
+                        | hir::ItemKind::TyAlias(_, generics)
+                        | hir::ItemKind::TraitAlias(generics, _)
+                        | hir::ItemKind::OpaqueTy(hir::OpaqueTy { generics, .. }),
                     ..
                 })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Enum(_, generics), span, ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Union(_, generics),
-                    span,
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Trait(_, _, generics, ..),
-                    span,
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Impl { generics, .. },
-                    span,
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::Fn(_, generics, _),
-                    span,
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::TyAlias(_, generics),
-                    span,
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::TraitAlias(generics, _),
-                    span,
-                    ..
-                })
-                | hir::Node::Item(hir::Item {
-                    kind: hir::ItemKind::OpaqueTy(hir::OpaqueTy { generics, .. }),
-                    span,
-                    ..
-                })
-                | hir::Node::TraitItem(hir::TraitItem { generics, span, .. })
-                | hir::Node::ImplItem(hir::ImplItem { generics, span, .. })
+                | hir::Node::TraitItem(hir::TraitItem { generics, .. })
+                | hir::Node::ImplItem(hir::ImplItem { generics, .. })
                     if param_ty =>
                 {
                     // Missing generic type parameter bound.
@@ -274,8 +366,6 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                         &mut err,
                         &param_name,
                         &constraint,
-                        self.tcx.sess.source_map(),
-                        *span,
                         Some(trait_ref.def_id()),
                     ) {
                         return;
@@ -342,7 +432,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             };
 
         let hir = self.tcx.hir();
-        let hir_id = hir.as_local_hir_id(def_id)?;
+        let hir_id = hir.as_local_hir_id(def_id.as_local()?);
         let parent_node = hir.get_parent_node(hir_id);
         match hir.find(parent_node) {
             Some(hir::Node::Stmt(hir::Stmt { kind: hir::StmtKind::Local(local), .. })) => {
@@ -351,7 +441,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             // Different to previous arm because one is `&hir::Local` and the other
             // is `P<hir::Local>`.
             Some(hir::Node::Local(local)) => get_name(err, &local.pat.kind),
-            _ => return None,
+            _ => None,
         }
     }
 
@@ -367,9 +457,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     ) {
         let self_ty = trait_ref.self_ty();
         let (def_id, output_ty, callable) = match self_ty.kind {
-            ty::Closure(def_id, substs) => {
-                (def_id, self.closure_sig(def_id, substs).output(), "closure")
-            }
+            ty::Closure(def_id, substs) => (def_id, substs.as_closure().sig().output(), "closure"),
             ty::FnDef(def_id, _) => (def_id, self_ty.fn_sig(self.tcx).output(), "function"),
             _ => return,
         };
@@ -383,14 +471,16 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         );
 
         match self.evaluate_obligation(&obligation) {
-            Ok(EvaluationResult::EvaluatedToOk)
-            | Ok(EvaluationResult::EvaluatedToOkModuloRegions)
-            | Ok(EvaluationResult::EvaluatedToAmbig) => {}
+            Ok(
+                EvaluationResult::EvaluatedToOk
+                | EvaluationResult::EvaluatedToOkModuloRegions
+                | EvaluationResult::EvaluatedToAmbig,
+            ) => {}
             _ => return,
         }
         let hir = self.tcx.hir();
         // Get the name of the callable and the arguments to be used in the suggestion.
-        let snippet = match hir.get_if_local(def_id) {
+        let (snippet, sugg) = match hir.get_if_local(def_id) {
             Some(hir::Node::Expr(hir::Expr {
                 kind: hir::ExprKind::Closure(_, decl, _, span, ..),
                 ..
@@ -401,7 +491,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     None => return,
                 };
                 let args = decl.inputs.iter().map(|_| "_").collect::<Vec<_>>().join(", ");
-                format!("{}({})", name, args)
+                let sugg = format!("({})", args);
+                (format!("{}{}", name, sugg), sugg)
             }
             Some(hir::Node::Item(hir::Item {
                 ident,
@@ -422,7 +513,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{}({})", ident, args)
+                let sugg = format!("({})", args);
+                (format!("{}{}", ident, sugg), sugg)
             }
             _ => return,
         };
@@ -431,10 +523,10 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             // an argument, the `obligation.cause.span` points at the expression
             // of the argument, so we can provide a suggestion. This is signaled
             // by `points_at_arg`. Otherwise, we give a more general note.
-            err.span_suggestion(
-                obligation.cause.span,
+            err.span_suggestion_verbose(
+                obligation.cause.span.shrink_to_hi(),
                 &msg,
-                snippet,
+                sugg,
                 Applicability::HasPlaceholders,
             );
         } else {
@@ -619,7 +711,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                         .source_map()
                         .span_take_while(span, |c| c.is_whitespace() || *c == '&');
                     if points_at_arg && mutability == hir::Mutability::Not && refs_number > 0 {
-                        err.span_suggestion(
+                        err.span_suggestion_verbose(
                             sp,
                             "consider changing this borrow's mutability",
                             "&mut ".to_string(),
@@ -669,6 +761,17 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 }
             }
         }
+    }
+
+    fn return_type_span(&self, obligation: &PredicateObligation<'tcx>) -> Option<Span> {
+        let hir = self.tcx.hir();
+        let parent_node = hir.get_parent_node(obligation.cause.body_id);
+        let sig = match hir.find(parent_node) {
+            Some(hir::Node::Item(hir::Item { kind: hir::ItemKind::Fn(sig, ..), .. })) => sig,
+            _ => return None,
+        };
+
+        if let hir::FnRetTy::Return(ret_ty) = sig.decl.output { Some(ret_ty.span) } else { None }
     }
 
     /// If all conditions are met to identify a returned `dyn Trait`, suggest using `impl Trait` if
@@ -737,12 +840,28 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             .iter()
             .filter_map(|expr| tables.node_type_opt(expr.hir_id))
             .map(|ty| self.resolve_vars_if_possible(&ty));
-        let (last_ty, all_returns_have_same_type) = ret_types.clone().fold(
-            (None, true),
-            |(last_ty, mut same): (std::option::Option<Ty<'_>>, bool), ty| {
+        let (last_ty, all_returns_have_same_type, only_never_return) = ret_types.clone().fold(
+            (None, true, true),
+            |(last_ty, mut same, only_never_return): (std::option::Option<Ty<'_>>, bool, bool),
+             ty| {
                 let ty = self.resolve_vars_if_possible(&ty);
-                same &= last_ty.map_or(true, |last_ty| last_ty == ty) && ty.kind != ty::Error;
-                (Some(ty), same)
+                same &=
+                    ty.kind != ty::Error
+                        && last_ty.map_or(true, |last_ty| {
+                            // FIXME: ideally we would use `can_coerce` here instead, but `typeck` comes
+                            // *after* in the dependency graph.
+                            match (&ty.kind, &last_ty.kind) {
+                                (Infer(InferTy::IntVar(_)), Infer(InferTy::IntVar(_)))
+                                | (Infer(InferTy::FloatVar(_)), Infer(InferTy::FloatVar(_)))
+                                | (Infer(InferTy::FreshIntTy(_)), Infer(InferTy::FreshIntTy(_)))
+                                | (
+                                    Infer(InferTy::FreshFloatTy(_)),
+                                    Infer(InferTy::FreshFloatTy(_)),
+                                ) => true,
+                                _ => ty == last_ty,
+                            }
+                        });
+                (Some(ty), same, only_never_return && matches!(ty.kind, ty::Never))
             },
         );
         let all_returns_conform_to_trait =
@@ -751,13 +870,14 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     ty::Dynamic(predicates, _) => {
                         let cause = ObligationCause::misc(ret_ty.span, ret_ty.hir_id);
                         let param_env = ty::ParamEnv::empty();
-                        ret_types.all(|returned_ty| {
-                            predicates.iter().all(|predicate| {
-                                let pred = predicate.with_self_ty(self.tcx, returned_ty);
-                                let obl = Obligation::new(cause.clone(), param_env, pred);
-                                self.predicate_may_hold(&obl)
+                        only_never_return
+                            || ret_types.all(|returned_ty| {
+                                predicates.iter().all(|predicate| {
+                                    let pred = predicate.with_self_ty(self.tcx, returned_ty);
+                                    let obl = Obligation::new(cause.clone(), param_env, pred);
+                                    self.predicate_may_hold(&obl)
+                                })
                             })
-                        })
                     }
                     _ => false,
                 }
@@ -765,21 +885,20 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 true
             };
 
-        let (snippet, last_ty) =
-            if let (true, hir::TyKind::TraitObject(..), Ok(snippet), true, Some(last_ty)) = (
-                // Verify that we're dealing with a return `dyn Trait`
-                ret_ty.span.overlaps(span),
-                &ret_ty.kind,
-                self.tcx.sess.source_map().span_to_snippet(ret_ty.span),
-                // If any of the return types does not conform to the trait, then we can't
-                // suggest `impl Trait` nor trait objects, it is a type mismatch error.
-                all_returns_conform_to_trait,
-                last_ty,
-            ) {
-                (snippet, last_ty)
-            } else {
-                return false;
-            };
+        let sm = self.tcx.sess.source_map();
+        let snippet = if let (true, hir::TyKind::TraitObject(..), Ok(snippet), true) = (
+            // Verify that we're dealing with a return `dyn Trait`
+            ret_ty.span.overlaps(span),
+            &ret_ty.kind,
+            sm.span_to_snippet(ret_ty.span),
+            // If any of the return types does not conform to the trait, then we can't
+            // suggest `impl Trait` nor trait objects: it is a type mismatch error.
+            all_returns_conform_to_trait,
+        ) {
+            snippet
+        } else {
+            return false;
+        };
         err.code(error_code!(E0746));
         err.set_primary_message("return type cannot have an unboxed trait object");
         err.children.clear();
@@ -791,13 +910,22 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             #using-trait-objects-that-allow-for-values-of-different-types>";
         let has_dyn = snippet.split_whitespace().next().map_or(false, |s| s == "dyn");
         let trait_obj = if has_dyn { &snippet[4..] } else { &snippet[..] };
-        if all_returns_have_same_type {
+        if only_never_return {
+            // No return paths, probably using `panic!()` or similar.
+            // Suggest `-> T`, `-> impl Trait`, and if `Trait` is object safe, `-> Box<dyn Trait>`.
+            suggest_trait_object_return_type_alternatives(
+                err,
+                ret_ty.span,
+                trait_obj,
+                is_object_safe,
+            );
+        } else if let (Some(last_ty), true) = (last_ty, all_returns_have_same_type) {
             // Suggest `-> impl Trait`.
             err.span_suggestion(
                 ret_ty.span,
                 &format!(
-                    "return `impl {1}` instead, as all return paths are of type `{}`, \
-                        which implements `{1}`",
+                    "use `impl {1}` as the return type, as all return paths are of type `{}`, \
+                     which implements `{1}`",
                     last_ty, trait_obj,
                 ),
                 format!("impl {}", trait_obj),
@@ -808,26 +936,23 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             if is_object_safe {
                 // Suggest `-> Box<dyn Trait>` and `Box::new(returned_value)`.
                 // Get all the return values and collect their span and suggestion.
-                let mut suggestions = visitor
+                if let Some(mut suggestions) = visitor
                     .returns
                     .iter()
                     .map(|expr| {
-                        (
-                            expr.span,
-                            format!(
-                                "Box::new({})",
-                                self.tcx.sess.source_map().span_to_snippet(expr.span).unwrap()
-                            ),
-                        )
+                        let snip = sm.span_to_snippet(expr.span).ok()?;
+                        Some((expr.span, format!("Box::new({})", snip)))
                     })
-                    .collect::<Vec<_>>();
-                // Add the suggestion for the return type.
-                suggestions.push((ret_ty.span, format!("Box<dyn {}>", trait_obj)));
-                err.multipart_suggestion(
-                    "return a boxed trait object instead",
-                    suggestions,
-                    Applicability::MaybeIncorrect,
-                );
+                    .collect::<Option<Vec<_>>>()
+                {
+                    // Add the suggestion for the return type.
+                    suggestions.push((ret_ty.span, format!("Box<dyn {}>", trait_obj)));
+                    err.multipart_suggestion(
+                        "return a boxed trait object instead",
+                        suggestions,
+                        Applicability::MaybeIncorrect,
+                    );
+                }
             } else {
                 // This is currently not possible to trigger because E0038 takes precedence, but
                 // leave it in for completeness in case anything changes in an earlier stage.
@@ -838,8 +963,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             }
             err.note(trait_obj_msg);
             err.note(&format!(
-                "if all the returned values were of the same type you could use \
-                    `impl {}` as the return type",
+                "if all the returned values were of the same type you could use `impl {}` as the \
+                 return type",
                 trait_obj,
             ));
             err.note(impl_trait_msg);
@@ -947,7 +1072,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 err.note(&format!(
                     "{}s cannot be accessed directly on a `trait`, they can only be \
                         accessed through a specific `impl`",
-                    assoc_item.kind.suggestion_descr(),
+                    assoc_item.kind.as_def_kind().descr(def_id)
                 ));
                 err.span_suggestion(
                     span,
@@ -962,7 +1087,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     /// Adds an async-await specific note to the diagnostic when the future does not implement
     /// an auto trait because of a captured type.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text
     /// note: future does not implement `Qux` as this value is used across an await
     ///   --> $DIR/issue-64130-3-other.rs:17:5
     ///    |
@@ -977,12 +1102,12 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
     /// When the diagnostic does not implement `Send` or `Sync` specifically, then the diagnostic
     /// is "replaced" with a different message and a more specific error.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text
     /// error: future cannot be sent between threads safely
     ///   --> $DIR/issue-64130-2-send.rs:21:5
     ///    |
     /// LL | fn is_send<T: Send>(t: T) { }
-    ///    |    -------    ---- required by this bound in `is_send`
+    ///    |               ---- required by this bound in `is_send`
     /// ...
     /// LL |     is_send(bar());
     ///    |     ^^^^^^^ future returned by `bar` is not send
@@ -1012,6 +1137,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             obligation.predicate, obligation.cause.span
         );
         let source_map = self.tcx.sess.source_map();
+        let hir = self.tcx.hir();
 
         // Attempt to detect an async-await error by looking at the obligation causes, looking
         // for a generator to be present.
@@ -1036,8 +1162,9 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         // - `BindingObligation` with `impl_send (Send requirement)
         //
         // The first obligation in the chain is the most useful and has the generator that captured
-        // the type. The last generator has information about where the bound was introduced. At
-        // least one generator should be present for this diagnostic to be modified.
+        // the type. The last generator (`outer_generator` below) has information about where the
+        // bound was introduced. At least one generator should be present for this diagnostic to be
+        // modified.
         let (mut trait_ref, mut target_ty) = match obligation.predicate {
             ty::Predicate::Trait(p, _) => {
                 (Some(p.skip_binder().trait_ref), Some(p.skip_binder().self_ty()))
@@ -1045,12 +1172,13 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             _ => (None, None),
         };
         let mut generator = None;
-        let mut last_generator = None;
+        let mut outer_generator = None;
         let mut next_code = Some(&obligation.cause.code);
         while let Some(code) = next_code {
             debug!("maybe_note_obligation_cause_for_async_await: code={:?}", code);
             match code {
-                ObligationCauseCode::BuiltinDerivedObligation(derived_obligation)
+                ObligationCauseCode::DerivedObligation(derived_obligation)
+                | ObligationCauseCode::BuiltinDerivedObligation(derived_obligation)
                 | ObligationCauseCode::ImplDerivedObligation(derived_obligation) => {
                     let ty = derived_obligation.parent_trait_ref.self_ty();
                     debug!(
@@ -1062,7 +1190,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     match ty.kind {
                         ty::Generator(did, ..) => {
                             generator = generator.or(Some(did));
-                            last_generator = Some(did);
+                            outer_generator = Some(did);
                         }
                         ty::GeneratorWitness(..) => {}
                         _ if generator.is_none() => {
@@ -1094,7 +1222,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         let span = self.tcx.def_span(generator_did);
 
         // Do not ICE on closure typeck (#66868).
-        if self.tcx.hir().as_local_hir_id(generator_did).is_none() {
+        if !generator_did.is_local() {
             return false;
         }
 
@@ -1105,52 +1233,87 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         let generator_did_root = self.tcx.closure_base_def_id(generator_did);
         debug!(
             "maybe_note_obligation_cause_for_async_await: generator_did={:?} \
-             generator_did_root={:?} in_progress_tables.local_id_root={:?} span={:?}",
+             generator_did_root={:?} in_progress_tables.hir_owner={:?} span={:?}",
             generator_did,
             generator_did_root,
-            in_progress_tables.as_ref().map(|t| t.local_id_root),
+            in_progress_tables.as_ref().map(|t| t.hir_owner),
             span
         );
         let query_tables;
         let tables: &TypeckTables<'tcx> = match &in_progress_tables {
-            Some(t) if t.local_id_root == Some(generator_did_root) => t,
+            Some(t) if t.hir_owner.map(|owner| owner.to_def_id()) == Some(generator_did_root) => t,
             _ => {
-                query_tables = self.tcx.typeck_tables_of(generator_did);
+                query_tables = self.tcx.typeck_tables_of(generator_did.expect_local());
                 &query_tables
             }
         };
 
+        let generator_body = generator_did
+            .as_local()
+            .map(|def_id| hir.as_local_hir_id(def_id))
+            .and_then(|hir_id| hir.maybe_body_owned_by(hir_id))
+            .map(|body_id| hir.body(body_id));
+        let mut visitor = AwaitsVisitor::default();
+        if let Some(body) = generator_body {
+            visitor.visit_body(body);
+        }
+        debug!("maybe_note_obligation_cause_for_async_await: awaits = {:?}", visitor.awaits);
+
         // Look for a type inside the generator interior that matches the target type to get
         // a span.
         let target_ty_erased = self.tcx.erase_regions(&target_ty);
+        let ty_matches = |ty| -> bool {
+            // Careful: the regions for types that appear in the
+            // generator interior are not generally known, so we
+            // want to erase them when comparing (and anyway,
+            // `Send` and other bounds are generally unaffected by
+            // the choice of region).  When erasing regions, we
+            // also have to erase late-bound regions. This is
+            // because the types that appear in the generator
+            // interior generally contain "bound regions" to
+            // represent regions that are part of the suspended
+            // generator frame. Bound regions are preserved by
+            // `erase_regions` and so we must also call
+            // `erase_late_bound_regions`.
+            let ty_erased = self.tcx.erase_late_bound_regions(&ty::Binder::bind(ty));
+            let ty_erased = self.tcx.erase_regions(&ty_erased);
+            let eq = ty::TyS::same_type(ty_erased, target_ty_erased);
+            debug!(
+                "maybe_note_obligation_cause_for_async_await: ty_erased={:?} \
+                    target_ty_erased={:?} eq={:?}",
+                ty_erased, target_ty_erased, eq
+            );
+            eq
+        };
         let target_span = tables
             .generator_interior_types
             .iter()
-            .find(|ty::GeneratorInteriorTypeCause { ty, .. }| {
-                // Careful: the regions for types that appear in the
-                // generator interior are not generally known, so we
-                // want to erase them when comparing (and anyway,
-                // `Send` and other bounds are generally unaffected by
-                // the choice of region).  When erasing regions, we
-                // also have to erase late-bound regions. This is
-                // because the types that appear in the generator
-                // interior generally contain "bound regions" to
-                // represent regions that are part of the suspended
-                // generator frame. Bound regions are preserved by
-                // `erase_regions` and so we must also call
-                // `erase_late_bound_regions`.
-                let ty_erased = self.tcx.erase_late_bound_regions(&ty::Binder::bind(*ty));
-                let ty_erased = self.tcx.erase_regions(&ty_erased);
-                let eq = ty::TyS::same_type(ty_erased, target_ty_erased);
-                debug!(
-                    "maybe_note_obligation_cause_for_async_await: ty_erased={:?} \
-                        target_ty_erased={:?} eq={:?}",
-                    ty_erased, target_ty_erased, eq
-                );
-                eq
-            })
-            .map(|ty::GeneratorInteriorTypeCause { span, scope_span, expr, .. }| {
-                (span, source_map.span_to_snippet(*span), scope_span, expr)
+            .find(|ty::GeneratorInteriorTypeCause { ty, .. }| ty_matches(ty))
+            .map(|cause| {
+                // Check to see if any awaited expressions have the target type.
+                let from_awaited_ty = visitor
+                    .awaits
+                    .into_iter()
+                    .map(|id| hir.expect_expr(id))
+                    .find(|await_expr| {
+                        let ty = tables.expr_ty_adjusted(&await_expr);
+                        debug!(
+                            "maybe_note_obligation_cause_for_async_await: await_expr={:?}",
+                            await_expr
+                        );
+                        ty_matches(ty)
+                    })
+                    .map(|expr| expr.span);
+                let ty::GeneratorInteriorTypeCause { span, scope_span, yield_span, expr, .. } =
+                    cause;
+                (
+                    span,
+                    source_map.span_to_snippet(*span),
+                    scope_span,
+                    yield_span,
+                    expr,
+                    from_awaited_ty,
+                )
             });
 
         debug!(
@@ -1158,20 +1321,24 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 generator_interior_types={:?} target_span={:?}",
             target_ty, tables.generator_interior_types, target_span
         );
-        if let Some((target_span, Ok(snippet), scope_span, expr)) = target_span {
+        if let Some((target_span, Ok(snippet), scope_span, yield_span, expr, from_awaited_ty)) =
+            target_span
+        {
             self.note_obligation_cause_for_async_await(
                 err,
                 *target_span,
                 scope_span,
+                *yield_span,
                 *expr,
                 snippet,
-                generator_did,
-                last_generator,
+                generator_body,
+                outer_generator,
                 trait_ref,
                 target_ty,
                 tables,
                 obligation,
                 next_code,
+                from_awaited_ty,
             );
             true
         } else {
@@ -1186,37 +1353,27 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         err: &mut DiagnosticBuilder<'_>,
         target_span: Span,
         scope_span: &Option<Span>,
+        yield_span: Span,
         expr: Option<hir::HirId>,
         snippet: String,
-        first_generator: DefId,
-        last_generator: Option<DefId>,
+        inner_generator_body: Option<&hir::Body<'_>>,
+        outer_generator: Option<DefId>,
         trait_ref: ty::TraitRef<'_>,
         target_ty: Ty<'tcx>,
         tables: &ty::TypeckTables<'_>,
         obligation: &PredicateObligation<'tcx>,
         next_code: Option<&ObligationCauseCode<'tcx>>,
+        from_awaited_ty: Option<Span>,
     ) {
         let source_map = self.tcx.sess.source_map();
 
-        let is_async_fn = self
-            .tcx
-            .parent(first_generator)
-            .map(|parent_did| self.tcx.asyncness(parent_did))
-            .map(|parent_asyncness| parent_asyncness == hir::IsAsync::Async)
-            .unwrap_or(false);
-        let is_async_move = self
-            .tcx
-            .hir()
-            .as_local_hir_id(first_generator)
-            .and_then(|hir_id| self.tcx.hir().maybe_body_owned_by(hir_id))
-            .map(|body_id| self.tcx.hir().body(body_id))
+        let is_async = inner_generator_body
             .and_then(|body| body.generator_kind())
-            .map(|generator_kind| match generator_kind {
-                hir::GeneratorKind::Async(..) => true,
-                _ => false,
-            })
+            .map(|generator_kind| matches!(generator_kind, hir::GeneratorKind::Async(..)))
             .unwrap_or(false);
-        let await_or_yield = if is_async_fn || is_async_move { "await" } else { "yield" };
+        let (await_or_yield, an_await_or_yield) =
+            if is_async { ("await", "an await") } else { ("yield", "a yield") };
+        let future_or_generator = if is_async { "future" } else { "generator" };
 
         // Special case the primary error message when send or sync is the trait that was
         // not implemented.
@@ -1229,22 +1386,35 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
 
             err.clear_code();
             err.set_primary_message(format!(
-                "future cannot be {} between threads safely",
-                trait_verb
+                "{} cannot be {} between threads safely",
+                future_or_generator, trait_verb
             ));
 
             let original_span = err.span.primary_span().unwrap();
             let mut span = MultiSpan::from_span(original_span);
 
-            let message = if let Some(name) = last_generator
-                .and_then(|generator_did| self.tcx.parent(generator_did))
-                .and_then(|parent_did| hir.as_local_hir_id(parent_did))
-                .and_then(|parent_hir_id| hir.opt_name(parent_hir_id))
-            {
-                format!("future returned by `{}` is not {}", name, trait_name)
-            } else {
-                format!("future is not {}", trait_name)
-            };
+            let message = outer_generator
+                .and_then(|generator_did| {
+                    Some(match self.tcx.generator_kind(generator_did).unwrap() {
+                        GeneratorKind::Gen => format!("generator is not {}", trait_name),
+                        GeneratorKind::Async(AsyncGeneratorKind::Fn) => self
+                            .tcx
+                            .parent(generator_did)
+                            .and_then(|parent_did| parent_did.as_local())
+                            .map(|parent_did| hir.as_local_hir_id(parent_did))
+                            .and_then(|parent_hir_id| hir.opt_name(parent_hir_id))
+                            .map(|name| {
+                                format!("future returned by `{}` is not {}", name, trait_name)
+                            })?,
+                        GeneratorKind::Async(AsyncGeneratorKind::Block) => {
+                            format!("future created by async block is not {}", trait_name)
+                        }
+                        GeneratorKind::Async(AsyncGeneratorKind::Closure) => {
+                            format!("future created by async closure is not {}", trait_name)
+                        }
+                    })
+                })
+                .unwrap_or_else(|| format!("{} is not {}", future_or_generator, trait_name));
 
             span.push_span_label(original_span, message);
             err.set_span(span);
@@ -1254,31 +1424,55 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             format!("does not implement `{}`", trait_ref.print_only_trait_path())
         };
 
-        // Look at the last interior type to get a span for the `.await`.
-        let await_span = tables.generator_interior_types.iter().map(|t| t.span).last().unwrap();
-        let mut span = MultiSpan::from_span(await_span);
-        span.push_span_label(
-            await_span,
-            format!("{} occurs here, with `{}` maybe used later", await_or_yield, snippet),
-        );
+        if let Some(await_span) = from_awaited_ty {
+            // The type causing this obligation is one being awaited at await_span.
+            let mut span = MultiSpan::from_span(await_span);
 
-        span.push_span_label(target_span, format!("has type `{}`", target_ty));
-
-        // If available, use the scope span to annotate the drop location.
-        if let Some(scope_span) = scope_span {
             span.push_span_label(
-                source_map.end_point(*scope_span),
-                format!("`{}` is later dropped here", snippet),
+                await_span,
+                format!("await occurs here on type `{}`, which {}", target_ty, trait_explanation),
+            );
+
+            err.span_note(
+                span,
+                &format!(
+                    "future {not_trait} as it awaits another future which {not_trait}",
+                    not_trait = trait_explanation
+                ),
+            );
+        } else {
+            // Look at the last interior type to get a span for the `.await`.
+            debug!(
+                "note_obligation_cause_for_async_await generator_interior_types: {:#?}",
+                tables.generator_interior_types
+            );
+            let mut span = MultiSpan::from_span(yield_span);
+            span.push_span_label(
+                yield_span,
+                format!("{} occurs here, with `{}` maybe used later", await_or_yield, snippet),
+            );
+
+            span.push_span_label(
+                target_span,
+                format!("has type `{}` which {}", target_ty, trait_explanation),
+            );
+
+            // If available, use the scope span to annotate the drop location.
+            if let Some(scope_span) = scope_span {
+                span.push_span_label(
+                    source_map.end_point(*scope_span),
+                    format!("`{}` is later dropped here", snippet),
+                );
+            }
+
+            err.span_note(
+                span,
+                &format!(
+                    "{} {} as this value is used across {}",
+                    future_or_generator, trait_explanation, an_await_or_yield
+                ),
             );
         }
-
-        err.span_note(
-            span,
-            &format!(
-                "future {} as this value is used across an {}",
-                trait_explanation, await_or_yield,
-            ),
-        );
 
         if let Some(expr_id) = expr {
             let expr = hir.expect_expr(expr_id);
@@ -1306,7 +1500,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 // ```
                 debug!("parent_def_kind: {:?}", self.tcx.def_kind(parent_did));
                 let is_raw_borrow_inside_fn_like_call = match self.tcx.def_kind(parent_did) {
-                    Some(DefKind::Fn) | Some(DefKind::Ctor(..)) => target_ty.is_unsafe_ptr(),
+                    DefKind::Fn | DefKind::Ctor(..) => target_ty.is_unsafe_ptr(),
                     _ => false,
                 };
 
@@ -1379,9 +1573,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             ObligationCauseCode::ItemObligation(item_def_id) => {
                 let item_name = tcx.def_path_str(item_def_id);
                 let msg = format!("required by `{}`", item_name);
-
                 if let Some(sp) = tcx.hir().span_if_local(item_def_id) {
-                    let sp = tcx.sess.source_map().def_span(sp);
+                    let sp = tcx.sess.source_map().guess_head_span(sp);
                     err.span_label(sp, &msg);
                 } else {
                     err.note(&msg);
@@ -1391,7 +1584,15 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 let item_name = tcx.def_path_str(item_def_id);
                 let msg = format!("required by this bound in `{}`", item_name);
                 if let Some(ident) = tcx.opt_item_name(item_def_id) {
-                    err.span_label(ident.span, "");
+                    let sm = tcx.sess.source_map();
+                    let same_line =
+                        match (sm.lookup_line(ident.span.hi()), sm.lookup_line(span.lo())) {
+                            (Ok(l), Ok(r)) => l.line == r.line,
+                            _ => true,
+                        };
+                    if !ident.span.overlaps(span) && !same_line {
+                        err.span_label(ident.span, "required by a bound in this");
+                    }
                 }
                 if span != DUMMY_SP {
                     err.span_label(span, &msg);
@@ -1513,6 +1714,16 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     obligated_types,
                 );
             }
+            ObligationCauseCode::DerivedObligation(ref data) => {
+                let parent_trait_ref = self.resolve_vars_if_possible(&data.parent_trait_ref);
+                let parent_predicate = parent_trait_ref.without_const().to_predicate();
+                self.note_obligation_cause_code(
+                    err,
+                    &parent_predicate,
+                    &data.parent_code,
+                    obligated_types,
+                );
+            }
             ObligationCauseCode::CompareImplMethodObligation { .. } => {
                 err.note(&format!(
                     "the requirement `{}` appears on the impl method \
@@ -1527,6 +1738,13 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     predicate
                 ));
             }
+            ObligationCauseCode::CompareImplConstObligation => {
+                err.note(&format!(
+                    "the requirement `{}` appears on the associated impl constant \
+                     but not on the corresponding associated trait constant",
+                    predicate
+                ));
+            }
             ObligationCauseCode::ReturnType
             | ObligationCauseCode::ReturnValue(_)
             | ObligationCauseCode::BlockTailExpression(_) => (),
@@ -1534,15 +1752,6 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 err.help("see issue #48214");
                 if tcx.sess.opts.unstable_features.is_nightly_build() {
                     err.help("add `#![feature(trivial_bounds)]` to the crate attributes to enable");
-                }
-            }
-            ObligationCauseCode::AssocTypeBound(ref data) => {
-                err.span_label(data.original, "associated type defined here");
-                if let Some(sp) = data.impl_span {
-                    err.span_label(sp, "in this `impl` item");
-                }
-                for sp in &data.bounds {
-                    err.span_label(*sp, "restricted in this bound");
                 }
             }
         }
@@ -1613,5 +1822,88 @@ impl<'v> Visitor<'v> for ReturnsVisitor<'v> {
             }
         }
         hir::intravisit::walk_body(self, body);
+    }
+}
+
+/// Collect all the awaited expressions within the input expression.
+#[derive(Default)]
+struct AwaitsVisitor {
+    awaits: Vec<hir::HirId>,
+}
+
+impl<'v> Visitor<'v> for AwaitsVisitor {
+    type Map = hir::intravisit::ErasedMap<'v>;
+
+    fn nested_visit_map(&mut self) -> hir::intravisit::NestedVisitorMap<Self::Map> {
+        hir::intravisit::NestedVisitorMap::None
+    }
+
+    fn visit_expr(&mut self, ex: &'v hir::Expr<'v>) {
+        if let hir::ExprKind::Yield(_, hir::YieldSource::Await { expr: Some(id) }) = ex.kind {
+            self.awaits.push(id)
+        }
+        hir::intravisit::walk_expr(self, ex)
+    }
+}
+
+pub trait NextTypeParamName {
+    fn next_type_param_name(&self, name: Option<&str>) -> String;
+}
+
+impl NextTypeParamName for &[hir::GenericParam<'_>] {
+    fn next_type_param_name(&self, name: Option<&str>) -> String {
+        // This is the whitelist of possible parameter names that we might suggest.
+        let name = name.and_then(|n| n.chars().next()).map(|c| c.to_string().to_uppercase());
+        let name = name.as_ref().map(|s| s.as_str());
+        let possible_names = [name.unwrap_or("T"), "T", "U", "V", "X", "Y", "Z", "A", "B", "C"];
+        let used_names = self
+            .iter()
+            .filter_map(|p| match p.name {
+                hir::ParamName::Plain(ident) => Some(ident.name),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        possible_names
+            .iter()
+            .find(|n| !used_names.contains(&Symbol::intern(n)))
+            .unwrap_or(&"ParamName")
+            .to_string()
+    }
+}
+
+fn suggest_trait_object_return_type_alternatives(
+    err: &mut DiagnosticBuilder<'tcx>,
+    ret_ty: Span,
+    trait_obj: &str,
+    is_object_safe: bool,
+) {
+    err.span_suggestion(
+        ret_ty,
+        "use some type `T` that is `T: Sized` as the return type if all return paths have the \
+            same type",
+        "T".to_string(),
+        Applicability::MaybeIncorrect,
+    );
+    err.span_suggestion(
+        ret_ty,
+        &format!(
+            "use `impl {}` as the return type if all return paths have the same type but you \
+                want to expose only the trait in the signature",
+            trait_obj,
+        ),
+        format!("impl {}", trait_obj),
+        Applicability::MaybeIncorrect,
+    );
+    if is_object_safe {
+        err.span_suggestion(
+            ret_ty,
+            &format!(
+                "use a boxed trait object if all return paths implement trait `{}`",
+                trait_obj,
+            ),
+            format!("Box<dyn {}>", trait_obj),
+            Applicability::MaybeIncorrect,
+        );
     }
 }

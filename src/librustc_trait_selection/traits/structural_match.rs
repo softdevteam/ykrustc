@@ -2,21 +2,22 @@ use crate::infer::{InferCtxt, TyCtxtInferExt};
 use crate::traits::ObligationCause;
 use crate::traits::{self, ConstPatternStructural, TraitEngine};
 
-use rustc::ty::{self, AdtDef, Ty, TyCtxt, TypeFoldable, TypeVisitor};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
+use rustc_middle::ty::{self, AdtDef, Ty, TyCtxt, TypeFoldable, TypeVisitor};
 use rustc_span::Span;
 
 #[derive(Debug)]
 pub enum NonStructuralMatchTy<'tcx> {
     Adt(&'tcx AdtDef),
     Param,
+    Dynamic,
 }
 
 /// This method traverses the structure of `ty`, trying to find an
-/// instance of an ADT (i.e. struct or enum) that was declared without
-/// the `#[structural_match]` attribute, or a generic type parameter
-/// (which cannot be determined to be `structural_match`).
+/// instance of an ADT (i.e. struct or enum) that doesn't implement
+/// the structural-match traits, or a generic type parameter
+/// (which cannot be determined to be structural-match).
 ///
 /// The "structure of a type" includes all components that would be
 /// considered when doing a pattern match on a constant of that
@@ -30,8 +31,8 @@ pub enum NonStructuralMatchTy<'tcx> {
 ///    instantiated generic like `PhantomData<T>`.
 ///
 /// The reason we do this search is Rust currently require all ADTs
-/// reachable from a constant's type to be annotated with
-/// `#[structural_match]`, an attribute which essentially says that
+/// reachable from a constant's type to implement the
+/// structural-match traits, which essentially say that
 /// the implementation of `PartialEq::eq` behaves *equivalently* to a
 /// comparison against the unfolded structure.
 ///
@@ -135,6 +136,10 @@ impl<'a, 'tcx> TypeVisitor<'tcx> for Search<'a, 'tcx> {
             ty::Adt(adt_def, substs) => (adt_def, substs),
             ty::Param(_) => {
                 self.found = Some(NonStructuralMatchTy::Param);
+                return true; // Stop visiting.
+            }
+            ty::Dynamic(..) => {
+                self.found = Some(NonStructuralMatchTy::Dynamic);
                 return true; // Stop visiting.
             }
             ty::RawPtr(..) => {

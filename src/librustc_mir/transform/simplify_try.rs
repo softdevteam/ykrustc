@@ -11,8 +11,8 @@
 
 use crate::transform::{simplify, MirPass, MirSource};
 use itertools::Itertools as _;
-use rustc::mir::*;
-use rustc::ty::{Ty, TyCtxt};
+use rustc_middle::mir::*;
+use rustc_middle::ty::{Ty, TyCtxt};
 use rustc_target::abi::VariantIdx;
 
 /// Simplifies arms of form `Variant(x) => Variant(x)` to just a move.
@@ -33,7 +33,7 @@ use rustc_target::abi::VariantIdx;
 pub struct SimplifyArmIdentity;
 
 impl<'tcx> MirPass<'tcx> for SimplifyArmIdentity {
-    fn run_pass(&self, _: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut BodyAndCache<'tcx>) {
+    fn run_pass(&self, _: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut Body<'tcx>) {
         let (basic_blocks, local_decls) = body.basic_blocks_and_local_decls_mut();
         for bb in basic_blocks {
             // Need 3 statements:
@@ -87,9 +87,9 @@ impl<'tcx> MirPass<'tcx> for SimplifyArmIdentity {
 fn match_get_variant_field<'tcx>(stmt: &Statement<'tcx>) -> Option<(Local, Local, VarField<'tcx>)> {
     match &stmt.kind {
         StatementKind::Assign(box (place_into, rvalue_from)) => match rvalue_from {
-            Rvalue::Use(Operand::Copy(pf)) | Rvalue::Use(Operand::Move(pf)) => {
+            Rvalue::Use(Operand::Copy(pf) | Operand::Move(pf)) => {
                 let local_into = place_into.as_local()?;
-                let (local_from, vf) = match_variant_field_place(&pf)?;
+                let (local_from, vf) = match_variant_field_place(*pf)?;
                 Some((local_into, local_from, vf))
             }
             _ => None,
@@ -107,7 +107,7 @@ fn match_set_variant_field<'tcx>(stmt: &Statement<'tcx>) -> Option<(Local, Local
         StatementKind::Assign(box (place_from, rvalue_into)) => match rvalue_into {
             Rvalue::Use(Operand::Move(place_into)) => {
                 let local_into = place_into.as_local()?;
-                let (local_from, vf) = match_variant_field_place(&place_from)?;
+                let (local_from, vf) = match_variant_field_place(*place_from)?;
                 Some((local_into, local_from, vf))
             }
             _ => None,
@@ -137,7 +137,7 @@ struct VarField<'tcx> {
 }
 
 /// Match on `((_LOCAL as Variant).FIELD: TY)`.
-fn match_variant_field_place<'tcx>(place: &Place<'tcx>) -> Option<(Local, VarField<'tcx>)> {
+fn match_variant_field_place<'tcx>(place: Place<'tcx>) -> Option<(Local, VarField<'tcx>)> {
     match place.as_ref() {
         PlaceRef {
             local,
@@ -153,7 +153,7 @@ fn match_variant_field_place<'tcx>(place: &Place<'tcx>) -> Option<(Local, VarFie
 pub struct SimplifyBranchSame;
 
 impl<'tcx> MirPass<'tcx> for SimplifyBranchSame {
-    fn run_pass(&self, _: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut BodyAndCache<'tcx>) {
+    fn run_pass(&self, _: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut Body<'tcx>) {
         let mut did_remove_blocks = false;
         let bbs = body.basic_blocks_mut();
         for bb_idx in bbs.indices() {
@@ -172,7 +172,7 @@ impl<'tcx> MirPass<'tcx> for SimplifyBranchSame {
                     // so we cannot assume that the `unreachable` terminator itself is reachable.
                     // FIXME(Centril): use a normalization pass instead of a check.
                     || bb.statements.iter().any(|stmt| match stmt.kind {
-                        StatementKind::InlineAsm(..) => true,
+                        StatementKind::LlvmInlineAsm(..) => true,
                         _ => false,
                     })
                 })

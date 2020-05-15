@@ -1,5 +1,6 @@
 #![feature(allocator_api)]
 #![feature(box_syntax)]
+#![feature(btree_drain_filter)]
 #![feature(drain_filter)]
 #![feature(exact_size_is_empty)]
 #![feature(map_first_last)]
@@ -13,6 +14,7 @@
 #![feature(binary_heap_drain_sorted)]
 #![feature(vec_remove_item)]
 #![feature(split_inclusive)]
+#![feature(binary_heap_retain)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};

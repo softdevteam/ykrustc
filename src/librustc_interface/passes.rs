@@ -3,36 +3,34 @@ use crate::proc_macro_decls;
 use crate::util;
 
 use log::{info, log_enabled, warn};
-use rustc::arena::Arena;
-use rustc::dep_graph::DepGraph;
-use rustc::hir::map::Definitions;
-use rustc::middle;
-use rustc::middle::cstore::{CrateStore, MetadataLoader, MetadataLoaderDyn};
-use rustc::sir::Sir;
-use rustc::ty::steal::Steal;
-use rustc::ty::{self, GlobalCtxt, ResolverOutputs, TyCtxt};
-use rustc::util::common::ErrorReported;
 use rustc_ast::mut_visit::MutVisitor;
 use rustc_ast::{self, ast, visit};
 use rustc_codegen_ssa::back::link::emit_metadata;
-use rustc_codegen_utils::codegen_backend::CodegenBackend;
-use rustc_codegen_utils::link::filename_for_metadata;
+use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_data_structures::sync::{par_iter, Lrc, Once, ParallelIterator, WorkerLocal};
 use rustc_data_structures::{box_region_allow_access, declare_box_region_type, parallel};
-use rustc_errors::PResult;
+use rustc_errors::{ErrorReported, PResult};
 use rustc_expand::base::ExtCtxt;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
+use rustc_hir::definitions::Definitions;
 use rustc_hir::Crate;
 use rustc_lint::LintStore;
+use rustc_middle::arena::Arena;
+use rustc_middle::dep_graph::DepGraph;
+use rustc_middle::middle;
+use rustc_middle::middle::cstore::{CrateStore, MetadataLoader, MetadataLoaderDyn};
+use rustc_middle::sir::Sir;
+use rustc_middle::ty::steal::Steal;
+use rustc_middle::ty::{self, GlobalCtxt, ResolverOutputs, TyCtxt};
 use rustc_mir as mir;
 use rustc_mir_build as mir_build;
 use rustc_parse::{parse_crate_from_file, parse_crate_from_source_str};
 use rustc_passes::{self, hir_stats, layout_test};
 use rustc_plugin_impl as plugin;
 use rustc_resolve::{Resolver, ResolverArenas};
-use rustc_session::config::{self, CrateType, Input, OutputFilenames, OutputType};
-use rustc_session::config::{PpMode, PpSourceMode};
+use rustc_session::config::{CrateType, Input, OutputFilenames, OutputType, PpMode, PpSourceMode};
 use rustc_session::lint;
+use rustc_session::output::{filename_for_input, filename_for_metadata};
 use rustc_session::search_paths::PathKind;
 use rustc_session::Session;
 use rustc_span::symbol::Symbol;
@@ -110,7 +108,8 @@ pub fn configure_and_expand(
     // its contents but the results of name resolution on those contents. Hopefully we'll push
     // this back at some point.
     let crate_name = crate_name.to_string();
-    let (result, resolver) = BoxedResolver::new(static move || {
+    let (result, resolver) = BoxedResolver::new(static move |mut action| {
+        let _ = action;
         let sess = &*sess;
         let resolver_arenas = Resolver::arenas();
         let res = configure_and_expand_inner(
@@ -127,11 +126,11 @@ pub fn configure_and_expand(
                 panic!()
             }
             Ok((krate, resolver)) => {
-                yield BoxedResolver::initial_yield(Ok(krate));
+                action = yield BoxedResolver::initial_yield(Ok(krate));
                 resolver
             }
         };
-        box_region_allow_access!(for(), (&mut Resolver<'_>), (&mut resolver));
+        box_region_allow_access!(for(), (&mut Resolver<'_>), (&mut resolver), action);
         resolver.into_outputs()
     });
     result.map(|k| (k, resolver))
@@ -312,6 +311,8 @@ fn configure_and_expand_inner<'a>(
             ecx.parse_sess.missing_fragment_specifiers.borrow().iter().cloned().collect();
         missing_fragment_specifiers.sort();
 
+        let recursion_limit_hit = ecx.reduced_recursion_limit.is_some();
+
         for span in missing_fragment_specifiers {
             let lint = lint::builtin::MISSING_FRAGMENT_SPECIFIER;
             let msg = "missing fragment specifier";
@@ -320,8 +321,15 @@ fn configure_and_expand_inner<'a>(
         if cfg!(windows) {
             env::set_var("PATH", &old_path);
         }
-        krate
-    });
+
+        if recursion_limit_hit {
+            // If we hit a recursion limit, exit early to avoid later passes getting overwhelmed
+            // with a large AST
+            Err(ErrorReported)
+        } else {
+            Ok(krate)
+        }
+    })?;
 
     sess.time("maybe_building_test_harness", || {
         rustc_builtin_macros::test_harness::inject(
@@ -352,7 +360,7 @@ fn configure_and_expand_inner<'a>(
     });
 
     let crate_types = sess.crate_types.borrow();
-    let is_proc_macro_crate = crate_types.contains(&config::CrateType::ProcMacro);
+    let is_proc_macro_crate = crate_types.contains(&CrateType::ProcMacro);
 
     // For backwards compatibility, we don't try to run proc macro injection
     // if rustdoc is run on a proc macro crate without '--crate-type proc-macro' being
@@ -428,12 +436,16 @@ pub fn lower_to_hir<'res, 'tcx>(
     resolver: &'res mut Resolver<'_>,
     dep_graph: &'res DepGraph,
     krate: &'res ast::Crate,
-    arena: &'tcx Arena<'tcx>,
+    arena: &'tcx rustc_ast_lowering::Arena<'tcx>,
 ) -> Crate<'tcx> {
+    // We're constructing the HIR here; we don't care what we will
+    // read, since we haven't even constructed the *input* to
+    // incr. comp. yet.
+    dep_graph.assert_ignored();
+
     // Lower AST to HIR.
     let hir_crate = rustc_ast_lowering::lower_crate(
         sess,
-        &dep_graph,
         &krate,
         resolver,
         rustc_parse::nt_to_tokenstream,
@@ -478,12 +490,7 @@ fn generated_output_paths(
             // by appending `.rlib`, `.exe`, etc., so we can skip this transformation.
             OutputType::Exe if !exact_name => {
                 for crate_type in sess.crate_types.borrow().iter() {
-                    let p = ::rustc_codegen_utils::link::filename_for_input(
-                        sess,
-                        *crate_type,
-                        crate_name,
-                        outputs,
-                    );
+                    let p = filename_for_input(sess, *crate_type, crate_name, outputs);
                     out_filenames.push(p);
                 }
             }
@@ -670,7 +677,7 @@ pub fn default_provide(providers: &mut ty::query::Providers<'_>) {
     providers.analysis = analysis;
     proc_macro_decls::provide(providers);
     plugin::build::provide(providers);
-    rustc::hir::provide(providers);
+    rustc_middle::hir::provide(providers);
     mir::provide(providers);
     mir_build::provide(providers);
     rustc_privacy::provide(providers);
@@ -683,7 +690,7 @@ pub fn default_provide(providers: &mut ty::query::Providers<'_>) {
     rustc_ty::provide(providers);
     rustc_metadata::provide(providers);
     rustc_lint::provide(providers);
-    rustc_codegen_utils::provide(providers);
+    rustc_symbol_mangling::provide(providers);
     rustc_codegen_ssa::provide(providers);
 }
 
@@ -699,11 +706,11 @@ impl<'tcx> QueryContext<'tcx> {
     where
         F: FnOnce(TyCtxt<'tcx>) -> R,
     {
-        ty::tls::enter_global(self.0, |tcx| f(tcx))
+        ty::tls::enter_global(self.0, f)
     }
 
     pub fn print_stats(&mut self) {
-        self.enter(|tcx| ty::query::print_stats(tcx))
+        self.enter(ty::query::print_stats)
     }
 }
 
@@ -768,7 +775,7 @@ pub fn create_global_ctxt<'tcx>(
 fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
     assert_eq!(cnum, LOCAL_CRATE);
 
-    rustc::hir::map::check_crate(tcx);
+    rustc_passes::hir_id_validator::check_crate(tcx);
 
     let sess = tcx.sess;
     let mut entry_point = None;
@@ -805,7 +812,7 @@ fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
             {
                 sess.time("match_checking", || {
                     tcx.par_body_owners(|def_id| {
-                        tcx.ensure().check_match(def_id);
+                        tcx.ensure().check_match(def_id.to_def_id());
                     });
                 });
             },
@@ -830,13 +837,9 @@ fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
         tcx.par_body_owners(|def_id| tcx.ensure().mir_borrowck(def_id));
     });
 
-    sess.time("dumping_chalk_like_clauses", || {
-        rustc_traits::lowering::dump_program_clauses(tcx);
-    });
-
     sess.time("MIR_effect_checking", || {
         for def_id in tcx.body_owners() {
-            mir::transform::check_unsafety::check_unsafety(tcx, def_id)
+            mir::transform::check_unsafety::check_unsafety(tcx, def_id.to_def_id())
         }
     });
 

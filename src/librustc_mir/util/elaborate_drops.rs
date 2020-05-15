@@ -1,13 +1,13 @@
 use crate::util::patch::MirPatch;
-use rustc::middle::lang_items;
-use rustc::mir::*;
-use rustc::traits::Reveal;
-use rustc::ty::layout::VariantIdx;
-use rustc::ty::subst::SubstsRef;
-use rustc::ty::util::IntTypeExt;
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_hir as hir;
+use rustc_hir::lang_items;
 use rustc_index::vec::Idx;
+use rustc_middle::mir::*;
+use rustc_middle::traits::Reveal;
+use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::ty::util::IntTypeExt;
+use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_target::abi::VariantIdx;
 use std::fmt;
 
 use std::convert::TryInto;
@@ -100,7 +100,7 @@ where
 
     source_info: SourceInfo,
 
-    place: &'l Place<'tcx>,
+    place: Place<'tcx>,
     path: D::Path,
     succ: BasicBlock,
     unwind: Unwind,
@@ -109,7 +109,7 @@ where
 pub fn elaborate_drop<'b, 'tcx, D>(
     elaborator: &mut D,
     source_info: SourceInfo,
-    place: &Place<'tcx>,
+    place: Place<'tcx>,
     path: D::Path,
     succ: BasicBlock,
     unwind: Unwind,
@@ -126,7 +126,7 @@ where
     D: DropElaborator<'b, 'tcx>,
     'tcx: 'b,
 {
-    fn place_ty(&self, place: &Place<'tcx>) -> Ty<'tcx> {
+    fn place_ty(&self, place: Place<'tcx>) -> Ty<'tcx> {
         place.ty(self.elaborator.body(), self.tcx()).ty
     }
 
@@ -168,7 +168,7 @@ where
                 self.elaborator.patch().patch_terminator(
                     bb,
                     TerminatorKind::Drop {
-                        location: *self.place,
+                        location: self.place,
                         target: self.succ,
                         unwind: self.unwind.into_option(),
                     },
@@ -195,7 +195,7 @@ where
     /// (the move path is `None` if the field is a rest field).
     fn move_paths_for_fields(
         &self,
-        base_place: &Place<'tcx>,
+        base_place: Place<'tcx>,
         variant_path: D::Path,
         variant: &'tcx ty::VariantDef,
         substs: SubstsRef<'tcx>,
@@ -212,14 +212,14 @@ where
                 assert_eq!(self.elaborator.param_env().reveal, Reveal::All);
                 let field_ty =
                     tcx.normalize_erasing_regions(self.elaborator.param_env(), f.ty(tcx, substs));
-                (tcx.mk_place_field(base_place.clone(), field, field_ty), subpath)
+                (tcx.mk_place_field(base_place, field, field_ty), subpath)
             })
             .collect()
     }
 
     fn drop_subpath(
         &mut self,
-        place: &Place<'tcx>,
+        place: Place<'tcx>,
         path: Option<D::Path>,
         succ: BasicBlock,
         unwind: Unwind,
@@ -267,12 +267,10 @@ where
     ) -> Vec<BasicBlock> {
         Some(succ)
             .into_iter()
-            .chain(fields.iter().rev().zip(unwind_ladder).map(
-                |(&(ref place, path), &unwind_succ)| {
-                    succ = self.drop_subpath(place, path, succ, unwind_succ);
-                    succ
-                },
-            ))
+            .chain(fields.iter().rev().zip(unwind_ladder).map(|(&(place, path), &unwind_succ)| {
+                succ = self.drop_subpath(place, path, succ, unwind_succ);
+                succ
+            }))
             .collect()
     }
 
@@ -315,7 +313,7 @@ where
         debug!("drop_ladder({:?}, {:?})", self, fields);
 
         let mut fields = fields;
-        fields.retain(|&(ref place, _)| {
+        fields.retain(|&(place, _)| {
             self.place_ty(place).needs_drop(self.tcx(), self.elaborator.param_env())
         });
 
@@ -342,7 +340,7 @@ where
             .enumerate()
             .map(|(i, &ty)| {
                 (
-                    self.tcx().mk_place_field(self.place.clone(), Field::new(i), ty),
+                    self.tcx().mk_place_field(self.place, Field::new(i), ty),
                     self.elaborator.field_subpath(self.path, Field::new(i)),
                 )
             })
@@ -355,7 +353,7 @@ where
     fn open_drop_for_box(&mut self, adt: &'tcx ty::AdtDef, substs: SubstsRef<'tcx>) -> BasicBlock {
         debug!("open_drop_for_box({:?}, {:?}, {:?})", self, adt, substs);
 
-        let interior = self.tcx().mk_place_deref(self.place.clone());
+        let interior = self.tcx().mk_place_deref(self.place);
         let interior_path = self.elaborator.deref_subpath(self.path);
 
         let succ = self.succ; // FIXME(#43234)
@@ -364,7 +362,7 @@ where
         let unwind_succ =
             self.unwind.map(|unwind| self.box_free_block(adt, substs, unwind, Unwind::InCleanup));
 
-        self.drop_subpath(&interior, interior_path, succ, unwind_succ)
+        self.drop_subpath(interior, interior_path, succ, unwind_succ)
     }
 
     fn open_drop_for_adt(&mut self, adt: &'tcx ty::AdtDef, substs: SubstsRef<'tcx>) -> BasicBlock {
@@ -436,11 +434,10 @@ where
 
             if let Some(variant_path) = subpath {
                 let base_place = tcx.mk_place_elem(
-                    self.place.clone(),
+                    self.place,
                     ProjectionElem::Downcast(Some(variant.ident.name), variant_index),
                 );
-                let fields =
-                    self.move_paths_for_fields(&base_place, variant_path, &variant, substs);
+                let fields = self.move_paths_for_fields(base_place, variant_path, &variant, substs);
                 values.push(discr.val);
                 if let Unwind::To(unwind) = unwind {
                     // We can't use the half-ladder from the original
@@ -527,9 +524,9 @@ where
         // way lies only trouble.
         let discr_ty = adt.repr.discr_type().to_ty(self.tcx());
         let discr = Place::from(self.new_temp(discr_ty));
-        let discr_rv = Rvalue::Discriminant(*self.place);
+        let discr_rv = Rvalue::Discriminant(self.place);
         let switch_block = BasicBlockData {
-            statements: vec![self.assign(&discr, discr_rv)],
+            statements: vec![self.assign(discr, discr_rv)],
             terminator: Some(Terminator {
                 source_info: self.source_info,
                 kind: TerminatorKind::SwitchInt {
@@ -560,11 +557,11 @@ where
 
         let result = BasicBlockData {
             statements: vec![self.assign(
-                &Place::from(ref_place),
+                Place::from(ref_place),
                 Rvalue::Ref(
                     tcx.lifetimes.re_erased,
                     BorrowKind::Mut { allow_two_phase_borrow: false },
-                    *self.place,
+                    self.place,
                 ),
             )],
             terminator: Some(Terminator {
@@ -607,7 +604,7 @@ where
         &mut self,
         succ: BasicBlock,
         cur: Local,
-        length_or_end: &Place<'tcx>,
+        length_or_end: Place<'tcx>,
         ety: Ty<'tcx>,
         unwind: Unwind,
         ptr_based: bool,
@@ -617,7 +614,7 @@ where
         let tcx = self.tcx();
 
         let ptr_ty = tcx.mk_ptr(ty::TypeAndMut { ty: ety, mutbl: hir::Mutability::Mut });
-        let ptr = &Place::from(self.new_temp(ptr_ty));
+        let ptr = Place::from(self.new_temp(ptr_ty));
         let can_go = Place::from(self.new_temp(tcx.types.bool));
 
         let one = self.constant_usize(1);
@@ -625,13 +622,13 @@ where
             (Rvalue::Use(copy(cur.into())), Rvalue::BinaryOp(BinOp::Offset, move_(cur.into()), one))
         } else {
             (
-                Rvalue::AddressOf(Mutability::Mut, tcx.mk_place_index(self.place.clone(), cur)),
+                Rvalue::AddressOf(Mutability::Mut, tcx.mk_place_index(self.place, cur)),
                 Rvalue::BinaryOp(BinOp::Add, move_(cur.into()), one),
             )
         };
 
         let drop_block = BasicBlockData {
-            statements: vec![self.assign(ptr, ptr_next), self.assign(&Place::from(cur), cur_next)],
+            statements: vec![self.assign(ptr, ptr_next), self.assign(Place::from(cur), cur_next)],
             is_cleanup: unwind.is_cleanup(),
             terminator: Some(Terminator {
                 source_info: self.source_info,
@@ -643,8 +640,8 @@ where
 
         let loop_block = BasicBlockData {
             statements: vec![self.assign(
-                &can_go,
-                Rvalue::BinaryOp(BinOp::Eq, copy(Place::from(cur)), copy(*length_or_end)),
+                can_go,
+                Rvalue::BinaryOp(BinOp::Eq, copy(Place::from(cur)), copy(length_or_end)),
             )],
             is_cleanup: unwind.is_cleanup(),
             terminator: Some(Terminator {
@@ -657,7 +654,7 @@ where
         self.elaborator.patch().patch_terminator(
             drop_block,
             TerminatorKind::Drop {
-                location: tcx.mk_place_deref(ptr.clone()),
+                location: tcx.mk_place_deref(ptr),
                 target: loop_block,
                 unwind: unwind.into_option(),
             },
@@ -685,7 +682,7 @@ where
                 .map(|i| {
                     (
                         tcx.mk_place_elem(
-                            self.place.clone(),
+                            self.place,
                             ProjectionElem::ConstantIndex {
                                 offset: i,
                                 min_length: size,
@@ -703,16 +700,16 @@ where
             }
         }
 
-        let move_ = |place: &Place<'tcx>| Operand::Move(*place);
-        let elem_size = &Place::from(self.new_temp(tcx.types.usize));
-        let len = &Place::from(self.new_temp(tcx.types.usize));
+        let move_ = |place: Place<'tcx>| Operand::Move(place);
+        let elem_size = Place::from(self.new_temp(tcx.types.usize));
+        let len = Place::from(self.new_temp(tcx.types.usize));
 
         static USIZE_SWITCH_ZERO: &[u128] = &[0];
 
         let base_block = BasicBlockData {
             statements: vec![
                 self.assign(elem_size, Rvalue::NullaryOp(NullOp::SizeOf, ety)),
-                self.assign(len, Rvalue::Len(*self.place)),
+                self.assign(len, Rvalue::Len(self.place)),
             ],
             is_cleanup: self.unwind.is_cleanup(),
             terminator: Some(Terminator {
@@ -722,8 +719,8 @@ where
                     switch_ty: tcx.types.usize,
                     values: From::from(USIZE_SWITCH_ZERO),
                     targets: vec![
-                        self.drop_loop_pair(ety, false, len.clone()),
-                        self.drop_loop_pair(ety, true, len.clone()),
+                        self.drop_loop_pair(ety, false, len),
+                        self.drop_loop_pair(ety, true, len),
                     ],
                 },
             }),
@@ -748,10 +745,10 @@ where
         let length_or_end = if ptr_based { Place::from(self.new_temp(iter_ty)) } else { length };
 
         let unwind = self.unwind.map(|unwind| {
-            self.drop_loop(unwind, cur, &length_or_end, ety, Unwind::InCleanup, ptr_based)
+            self.drop_loop(unwind, cur, length_or_end, ety, Unwind::InCleanup, ptr_based)
         });
 
-        let loop_block = self.drop_loop(self.succ, cur, &length_or_end, ety, unwind, ptr_based);
+        let loop_block = self.drop_loop(self.succ, cur, length_or_end, ety, unwind, ptr_based);
 
         let cur = Place::from(cur);
         let drop_block_stmts = if ptr_based {
@@ -761,17 +758,17 @@ where
             // cur = tmp as *mut T;
             // end = Offset(cur, len);
             vec![
-                self.assign(&tmp, Rvalue::AddressOf(Mutability::Mut, *self.place)),
-                self.assign(&cur, Rvalue::Cast(CastKind::Misc, Operand::Move(tmp), iter_ty)),
+                self.assign(tmp, Rvalue::AddressOf(Mutability::Mut, self.place)),
+                self.assign(cur, Rvalue::Cast(CastKind::Misc, Operand::Move(tmp), iter_ty)),
                 self.assign(
-                    &length_or_end,
+                    length_or_end,
                     Rvalue::BinaryOp(BinOp::Offset, Operand::Copy(cur), Operand::Move(length)),
                 ),
             ]
         } else {
             // cur = 0 (length already pushed)
             let zero = self.constant_usize(0);
-            vec![self.assign(&cur, Rvalue::Use(zero))]
+            vec![self.assign(cur, Rvalue::Use(zero))]
         };
         let drop_block = self.elaborator.patch().new_block(BasicBlockData {
             statements: drop_block_stmts,
@@ -798,8 +795,8 @@ where
     fn open_drop(&mut self) -> BasicBlock {
         let ty = self.place_ty(self.place);
         match ty.kind {
-            ty::Closure(def_id, substs) => {
-                let tys: Vec<_> = substs.as_closure().upvar_tys(def_id, self.tcx()).collect();
+            ty::Closure(_, substs) => {
+                let tys: Vec<_> = substs.as_closure().upvar_tys().collect();
                 self.open_drop_for_tuple(&tys)
             }
             // Note that `elaborate_drops` only drops the upvars of a generator,
@@ -808,8 +805,8 @@ where
             // This should only happen for the self argument on the resume function.
             // It effetively only contains upvars until the generator transformation runs.
             // See librustc_body/transform/generator.rs for more details.
-            ty::Generator(def_id, substs, _) => {
-                let tys: Vec<_> = substs.as_generator().upvar_tys(def_id, self.tcx()).collect();
+            ty::Generator(_, substs, _) => {
+                let tys: Vec<_> = substs.as_generator().upvar_tys().collect();
                 self.open_drop_for_tuple(&tys)
             }
             ty::Tuple(..) => {
@@ -838,13 +835,6 @@ where
         }
     }
 
-    /// Returns a basic block that drop a place using the context
-    /// and path in `c`. If `mode` is something, also clear `c`
-    /// according to it.
-    ///
-    /// if FLAG(self.path)
-    ///     if let Some(mode) = mode: FLAG(self.path)[mode] = false
-    ///     drop(self.place)
     fn complete_drop(
         &mut self,
         drop_mode: Option<DropFlagMode>,
@@ -915,7 +905,7 @@ where
             .map(|(i, f)| {
                 let field = Field::new(i);
                 let field_ty = f.ty(tcx, substs);
-                Operand::Move(tcx.mk_place_field(self.place.clone(), field, field_ty))
+                Operand::Move(tcx.mk_place_field(self.place, field, field_ty))
             })
             .collect();
 
@@ -935,7 +925,7 @@ where
 
     fn drop_block(&mut self, target: BasicBlock, unwind: Unwind) -> BasicBlock {
         let block =
-            TerminatorKind::Drop { location: *self.place, target, unwind: unwind.into_option() };
+            TerminatorKind::Drop { location: self.place, target, unwind: unwind.into_option() };
         self.new_block(unwind, block)
     }
 
@@ -992,7 +982,7 @@ where
         })
     }
 
-    fn assign(&self, lhs: &Place<'tcx>, rhs: Rvalue<'tcx>) -> Statement<'tcx> {
-        Statement { source_info: self.source_info, kind: StatementKind::Assign(box (*lhs, rhs)) }
+    fn assign(&self, lhs: Place<'tcx>, rhs: Rvalue<'tcx>) -> Statement<'tcx> {
+        Statement { source_info: self.source_info, kind: StatementKind::Assign(box (lhs, rhs)) }
     }
 }

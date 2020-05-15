@@ -16,9 +16,6 @@
 [submodule "src/tools/rls"]
 	path = src/tools/rls
 	url = https://github.com/rust-lang/rls.git
-[submodule "src/tools/clippy"]
-	path = src/tools/clippy
-	url = https://github.com/rust-lang/rust-clippy.git
 [submodule "src/tools/rustfmt"]
 	path = src/tools/rustfmt
 	url = https://github.com/rust-lang/rustfmt.git
@@ -31,9 +28,9 @@
 [submodule "src/stdarch"]
 	path = src/stdarch
 	url = https://github.com/rust-lang/stdarch.git
-[submodule "src/doc/rustc-guide"]
-	path = src/doc/rustc-guide
-	url = https://github.com/rust-lang/rustc-guide.git
+[submodule "src/doc/rustc-dev-guide"]
+	path = src/doc/rustc-dev-guide
+	url = https://github.com/rust-lang/rustc-dev-guide.git
 [submodule "src/doc/edition-guide"]
 	path = src/doc/edition-guide
 	url = https://github.com/rust-lang/edition-guide.git
