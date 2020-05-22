@@ -74,7 +74,12 @@ pub struct SirFuncCx {
 }
 
 impl SirFuncCx {
-    pub fn new<'tcx>(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>, num_blocks: usize) -> Self {
+    pub fn new<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        instance: &Instance<'tcx>,
+        num_blocks: usize,
+        num_locals: usize,
+    ) -> Self {
         let mut flags = 0;
         for attr in tcx.get_attrs(instance.def_id()).iter() {
             if attr.check_name(sym::trace_head) {
@@ -95,7 +100,7 @@ impl SirFuncCx {
         ];
 
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name.as_str());
-        Self { func: ykpack::Body { symbol_name, blocks, flags } }
+        Self { func: ykpack::Body { symbol_name, blocks, flags, num_locals } }
     }
 
     /// Returns true if there are no basic blocks.
