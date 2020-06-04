@@ -69,12 +69,13 @@ impl Sir {
 }
 
 /// A structure for building the SIR of a function.
-pub struct SirFuncCx {
+pub struct SirFuncCx<'tcx> {
     pub func: ykpack::Body,
+    tcx: TyCtxt<'tcx>,
 }
 
-impl SirFuncCx {
-    pub fn new<'tcx>(
+impl SirFuncCx<'tcx> {
+    pub fn new(
         tcx: TyCtxt<'tcx>,
         instance: &Instance<'tcx>,
         num_blocks: usize,
@@ -100,7 +101,7 @@ impl SirFuncCx {
         ];
 
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name.as_str());
-        Self { func: ykpack::Body { symbol_name, blocks, flags, num_locals } }
+        Self { func: ykpack::Body { symbol_name, blocks, flags, num_locals }, tcx }
     }
 
     /// Returns true if there are no basic blocks.
@@ -206,11 +207,21 @@ impl SirFuncCx {
                         ty.kind
                     ))
                 }),
+            ty::Int(int) => self
+                .lower_int(int, s)
+                .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::SignedInt(i)))
+                .unwrap_or_else(|_| {
+                    ykpack::Constant::Unimplemented(format!(
+                        "unimplemented signed int scalar: {:?}",
+                        ty.kind
+                    ))
+                }),
             ty::Bool => self.lower_bool(s),
             _ => ykpack::Constant::Unimplemented(format!("unimplemented scalar: {:?}", ty.kind)),
         }
     }
 
+    /// Lower an unsigned integer.
     fn lower_uint(
         &self,
         uint: ast::UintTy,
@@ -225,10 +236,52 @@ impl SirFuncCx {
                 Ok(val) => Ok(ykpack::UnsignedInt::U16(val)),
                 Err(e) => panic!("Could not lower scalar to u16: {}", e),
             },
+            ast::UintTy::U32 => match s.to_u32() {
+                Ok(val) => Ok(ykpack::UnsignedInt::U32(val)),
+                Err(e) => panic!("Could not lower scalar to u32: {}", e),
+            },
+            ast::UintTy::U64 => match s.to_u64() {
+                Ok(val) => Ok(ykpack::UnsignedInt::U64(val)),
+                Err(e) => panic!("Could not lower scalar to u64: {}", e),
+            },
+            ast::UintTy::Usize => match s.to_machine_usize(&self.tcx) {
+                Ok(val) => Ok(ykpack::UnsignedInt::Usize(val as usize)),
+                Err(e) => panic!("Could not lower scalar to usize: {}", e),
+            },
             _ => Err(()),
         }
     }
 
+    /// Lower a signed integer.
+    fn lower_int(
+        &self,
+        int: ast::IntTy,
+        s: mir::interpret::Scalar,
+    ) -> Result<ykpack::SignedInt, ()> {
+        match int {
+            ast::IntTy::I8 => match s.to_i8() {
+                Ok(val) => Ok(ykpack::SignedInt::I8(val)),
+                Err(e) => panic!("Could not lower scalar to i8: {}", e),
+            },
+            ast::IntTy::I16 => match s.to_i16() {
+                Ok(val) => Ok(ykpack::SignedInt::I16(val)),
+                Err(e) => panic!("Could not lower scalar to i16: {}", e),
+            },
+            ast::IntTy::I32 => match s.to_i32() {
+                Ok(val) => Ok(ykpack::SignedInt::I32(val)),
+                Err(e) => panic!("Could not lower scalar to i32: {}", e),
+            },
+            ast::IntTy::I64 => match s.to_i64() {
+                Ok(val) => Ok(ykpack::SignedInt::I64(val)),
+                Err(e) => panic!("Could not lower scalar to i64: {}", e),
+            },
+            ast::IntTy::Isize => match s.to_machine_isize(&self.tcx) {
+                Ok(val) => Ok(ykpack::SignedInt::Isize(val as isize)),
+                Err(e) => panic!("Could not lower scalar to isize: {}", e),
+            },
+            _ => Err(()),
+        }
+    }
     fn lower_binop(
         &self,
         op: mir::BinOp,

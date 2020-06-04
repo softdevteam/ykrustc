@@ -20,5 +20,5 @@ pub trait MiscMethods<'tcx>: BackendTypes {
     fn set_frame_pointer_elimination(&self, llfn: Self::Function);
     fn apply_target_cpu_attr(&self, llfn: Self::Function);
     fn create_used_variable(&self);
-    fn push_sir_func(&self, func_cx: SirFuncCx);
+    fn push_sir_func(&self, func_cx: SirFuncCx<'_>);
 }
