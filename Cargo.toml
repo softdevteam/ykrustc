@@ -67,3 +67,8 @@ rustc-std-workspace-std = { path = 'src/tools/rustc-std-workspace-std' }
 
 [patch."https://github.com/rust-lang/rust-clippy"]
 clippy_lints = { path = "src/tools/clippy/clippy_lints" }
+
+# When developing Yorick, you may find that you need to override ykpack.
+# You can do it once here, instead of all over the place.
+#[patch."https://github.com/softdevteam/yk"]
+#ykpack = { path = "../yk/ykpack" }
