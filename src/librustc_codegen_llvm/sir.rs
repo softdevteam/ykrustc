@@ -32,6 +32,14 @@ pub fn write_sir<'tcx>(tcx: TyCtxt<'tcx>, sir_llvm_module: &mut ModuleLlvm) {
     let mut buf = Vec::new();
     let mut encoder = ykpack::Encoder::from(&mut buf);
 
+    // First we serialise the types which will be referenced in the body packs that will follow.
+    // The serialisation order matters here, as the load order (in the runtime) corresponds with
+    // the type indices, hence use of `IndexMap` for insertion order.
+    let types =
+        tcx.sir_types.borrow_mut().map.drain(..).map(|(k, _)| k).collect::<Vec<ykpack::Ty>>();
+    let crate_hash = tcx.crate_hash(LOCAL_CRATE).as_u64();
+    encoder.serialise(ykpack::Pack::Types(ykpack::Types { crate_hash, types })).unwrap();
+
     for func in sir_funcs {
         encoder.serialise(ykpack::Pack::Body(func)).unwrap();
     }
