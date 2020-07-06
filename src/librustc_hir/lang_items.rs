@@ -253,6 +253,7 @@ language_item_table! {
     MaybeUninitLangItem,         "maybe_uninit",       maybe_uninit,            Target::Union;
 
     YkSwtRecLocLangItem,         "yk_swt_rec_loc",     yk_swt_rec_loc,          Target::Fn;
+    YkTraceInputsLangItem,       "yk_trace_inputs",    yk_trace_inputs,         Target::Fn;
 
     // Align offset for stride != 1; must not panic.
     AlignOffsetLangItem,         "align_offset",       align_offset_fn,         Target::Fn;
