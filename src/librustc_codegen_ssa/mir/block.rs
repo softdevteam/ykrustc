@@ -559,22 +559,62 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let def = instance.map(|i| i.def);
 
         if let Some(sfcx) = &mut self.sir_func_cx {
-            let sir_opnd = if let Some(inst) = instance {
-                let sym = (&*bx.tcx().symbol_name(inst).name.as_str()).to_owned();
-                ykpack::CallOperand::Fn(sym)
-            } else {
-                ykpack::CallOperand::Unknown
+            let opnd = match instance {
+                Some(inst) if inst.def_id() == sfcx.trace_inputs_defid => {
+                    // Call to our special lang item. The return value is used to identify the
+                    // trace inputs. It should be an owned tuple.
+                    let ret_place = destination.unwrap().0;
+
+                    // The user must assign the return value to a top-level local.
+                    if !ret_place.projection.is_empty() {
+                        panic!("Return value of `trace_inputs()` is assigned to a projection.");
+                    }
+
+                    // Check trace inputs are not assigned more than once.
+                    if sfcx.func.trace_inputs_local.is_some() {
+                        panic!(
+                            "Multiple trace input declarations detected in {}",
+                            bx.tcx().def_path_str(inst.def_id())
+                        );
+                    }
+
+                    // Check it's the right type.
+                    let local_decl = &self.mir.local_decls[ret_place.local];
+                    match local_decl.ty.kind {
+                        ty::Tuple(_) => (),
+                        _ => panic!("Argument to `trace_inputs()` should be a tuple."),
+                    }
+
+                    sfcx.func.trace_inputs_local = Some(sfcx.lower_local(ret_place.local));
+                    None
+                }
+                Some(inst) => {
+                    let sym = (&*bx.tcx().symbol_name(inst).name.as_str()).to_owned();
+                    Some(ykpack::CallOperand::Fn(sym))
+                }
+                None => Some(ykpack::CallOperand::Unknown),
             };
 
-            sfcx.set_terminator(
-                bb.as_u32(),
-                ykpack::Terminator::Call {
-                    operand: sir_opnd,
-                    args: args.iter().map(|a| sfcx.lower_operand(a)).collect(),
-                    destination: destination
-                        .map(|(ret_val, ret_bb)| (sfcx.lower_place(&ret_val), ret_bb.as_u32())),
-                },
-            );
+            if let Some(operand) = opnd {
+                sfcx.set_terminator(
+                    bb.as_u32(),
+                    ykpack::Terminator::Call {
+                        operand,
+                        args: args.iter().map(|a| sfcx.lower_operand(a)).collect(),
+                        destination: destination
+                            .map(|(ret_val, ret_bb)| (sfcx.lower_place(&ret_val), ret_bb.as_u32())),
+                    },
+                );
+            } else {
+                // It was a call to the dummy 'core::trace_inputs()` function. Just jump to where
+                // the call would have returned to.
+                sfcx.set_terminator(
+                    bb.as_u32(),
+                    ykpack::Terminator::Goto(
+                        destination.map(|(_, ret_bb)| ret_bb.as_u32()).unwrap(),
+                    ),
+                );
+            }
         }
 
         if let Some(ty::InstanceDef::DropGlue(_, None)) = def {

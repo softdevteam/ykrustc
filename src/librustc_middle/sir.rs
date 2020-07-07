@@ -6,7 +6,7 @@
 use crate::mir;
 use crate::ty::{self, Instance, Ty, TyCtxt};
 use rustc_ast::ast;
-use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_session::config::OutputType;
 use rustc_span::sym;
 use std::cell::RefCell;
@@ -72,6 +72,7 @@ impl Sir {
 pub struct SirFuncCx<'tcx> {
     pub func: ykpack::Body,
     tcx: TyCtxt<'tcx>,
+    pub trace_inputs_defid: DefId,
 }
 
 impl SirFuncCx<'tcx> {
@@ -100,8 +101,17 @@ impl SirFuncCx<'tcx> {
             num_blocks
         ];
 
+        let trace_inputs_defid = tcx
+            .get_lang_items(LOCAL_CRATE)
+            .yk_trace_inputs()
+            .expect("couldn't find software trace recorder function");
+
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name.as_str());
-        Self { func: ykpack::Body { symbol_name, blocks, flags, num_locals }, tcx }
+        Self {
+            func: ykpack::Body { symbol_name, blocks, flags, num_locals, trace_inputs_local: None },
+            tcx,
+            trace_inputs_defid,
+        }
     }
 
     /// Returns true if there are no basic blocks.
@@ -181,7 +191,7 @@ impl SirFuncCx<'tcx> {
         }
     }
 
-    fn lower_local(&self, local: mir::Local) -> ykpack::Local {
+    pub fn lower_local(&self, local: mir::Local) -> ykpack::Local {
         // For the lowering of `Local`s we currently assume a 1:1 mapping from MIR to SIR. If this
         // mapping turns out to be impossible or impractial, this is the place to change it.
         ykpack::Local(local.as_u32())

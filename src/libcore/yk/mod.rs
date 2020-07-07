@@ -40,3 +40,11 @@ impl SirLoc {
         self.bb_idx
     }
 }
+
+/// This is a special function used to indicate the trace inputs to the compiler.
+/// `tup` is a tuple of the trace inputs. The local variable number of the returned tuple is stored
+/// in SIR for consumption at runtime.
+#[cfg_attr(not(bootstrap), lang = "yk_trace_inputs")]
+pub fn trace_inputs<T>(tup: T) -> T {
+    tup
+}
