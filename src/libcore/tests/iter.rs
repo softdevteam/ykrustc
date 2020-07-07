@@ -813,6 +813,30 @@ fn test_iterator_peekable_rfold() {
     assert_eq!(i, xs.len());
 }
 
+#[test]
+fn test_iterator_peekable_next_if_eq() {
+    // first, try on references
+    let xs = vec!["Heart", "of", "Gold"];
+    let mut it = xs.into_iter().peekable();
+    // try before `peek()`
+    assert_eq!(it.next_if_eq(&"trillian"), None);
+    assert_eq!(it.next_if_eq(&"Heart"), Some("Heart"));
+    // try after peek()
+    assert_eq!(it.peek(), Some(&"of"));
+    assert_eq!(it.next_if_eq(&"of"), Some("of"));
+    assert_eq!(it.next_if_eq(&"zaphod"), None);
+    // make sure `next()` still behaves
+    assert_eq!(it.next(), Some("Gold"));
+
+    // make sure comparison works for owned values
+    let xs = vec![String::from("Ludicrous"), "speed".into()];
+    let mut it = xs.into_iter().peekable();
+    // make sure basic functionality works
+    assert_eq!(it.next_if_eq("Ludicrous"), Some("Ludicrous".into()));
+    assert_eq!(it.next_if_eq("speed"), Some("speed".into()));
+    assert_eq!(it.next_if_eq(""), None);
+}
+
 /// This is an iterator that follows the Iterator contract,
 /// but it is not fused. After having returned None once, it will start
 /// producing elements if .next() is called again.
@@ -1933,6 +1957,21 @@ fn test_range() {
 }
 
 #[test]
+fn test_char_range() {
+    use std::char;
+    // Miri is too slow
+    let from = if cfg!(miri) { char::from_u32(0xD800 - 10).unwrap() } else { '\0' };
+    let to = if cfg!(miri) { char::from_u32(0xDFFF + 10).unwrap() } else { char::MAX };
+    assert!((from..=to).eq((from as u32..=to as u32).filter_map(char::from_u32)));
+    assert!((from..=to).rev().eq((from as u32..=to as u32).filter_map(char::from_u32).rev()));
+
+    assert_eq!(('\u{D7FF}'..='\u{E000}').count(), 2);
+    assert_eq!(('\u{D7FF}'..='\u{E000}').size_hint(), (2, Some(2)));
+    assert_eq!(('\u{D7FF}'..'\u{E000}').count(), 1);
+    assert_eq!(('\u{D7FF}'..'\u{E000}').size_hint(), (1, Some(1)));
+}
+
+#[test]
 fn test_range_exhaustion() {
     let mut r = 10..10;
     assert!(r.is_empty());
@@ -2137,6 +2176,24 @@ fn test_range_inclusive_nth_back() {
     assert_eq!(r.is_empty(), true);
     assert_eq!(r, exhausted_via_next_back);
     assert_eq!(ExactSizeIterator::is_empty(&r), true);
+}
+
+#[test]
+fn test_range_len() {
+    assert_eq!((0..10_u8).len(), 10);
+    assert_eq!((9..10_u8).len(), 1);
+    assert_eq!((10..10_u8).len(), 0);
+    assert_eq!((11..10_u8).len(), 0);
+    assert_eq!((100..10_u8).len(), 0);
+}
+
+#[test]
+fn test_range_inclusive_len() {
+    assert_eq!((0..=10_u8).len(), 11);
+    assert_eq!((9..=10_u8).len(), 2);
+    assert_eq!((10..=10_u8).len(), 1);
+    assert_eq!((11..=10_u8).len(), 0);
+    assert_eq!((100..=10_u8).len(), 0);
 }
 
 #[test]
@@ -2509,42 +2566,91 @@ fn test_chain_fold() {
 }
 
 #[test]
-fn test_step_replace_unsigned() {
-    let mut x = 4u32;
-    let y = x.replace_zero();
-    assert_eq!(x, 0);
-    assert_eq!(y, 4);
+fn test_steps_between() {
+    assert_eq!(Step::steps_between(&20_u8, &200_u8), Some(180_usize));
+    assert_eq!(Step::steps_between(&-20_i8, &80_i8), Some(100_usize));
+    assert_eq!(Step::steps_between(&-120_i8, &80_i8), Some(200_usize));
+    assert_eq!(Step::steps_between(&20_u32, &4_000_100_u32), Some(4_000_080_usize));
+    assert_eq!(Step::steps_between(&-20_i32, &80_i32), Some(100_usize));
+    assert_eq!(Step::steps_between(&-2_000_030_i32, &2_000_050_i32), Some(4_000_080_usize));
 
-    x = 5;
-    let y = x.replace_one();
-    assert_eq!(x, 1);
-    assert_eq!(y, 5);
+    // Skip u64/i64 to avoid differences with 32-bit vs 64-bit platforms
+
+    assert_eq!(Step::steps_between(&20_u128, &200_u128), Some(180_usize));
+    assert_eq!(Step::steps_between(&-20_i128, &80_i128), Some(100_usize));
+    if cfg!(target_pointer_width = "64") {
+        assert_eq!(Step::steps_between(&10_u128, &0x1_0000_0000_0000_0009_u128), Some(usize::MAX));
+    }
+    assert_eq!(Step::steps_between(&10_u128, &0x1_0000_0000_0000_000a_u128), None);
+    assert_eq!(Step::steps_between(&10_i128, &0x1_0000_0000_0000_000a_i128), None);
+    assert_eq!(
+        Step::steps_between(&-0x1_0000_0000_0000_0000_i128, &0x1_0000_0000_0000_0000_i128,),
+        None,
+    );
 }
 
 #[test]
-fn test_step_replace_signed() {
-    let mut x = 4i32;
-    let y = x.replace_zero();
-    assert_eq!(x, 0);
-    assert_eq!(y, 4);
+fn test_step_forward() {
+    assert_eq!(Step::forward_checked(55_u8, 200_usize), Some(255_u8));
+    assert_eq!(Step::forward_checked(252_u8, 200_usize), None);
+    assert_eq!(Step::forward_checked(0_u8, 256_usize), None);
+    assert_eq!(Step::forward_checked(-110_i8, 200_usize), Some(90_i8));
+    assert_eq!(Step::forward_checked(-110_i8, 248_usize), None);
+    assert_eq!(Step::forward_checked(-126_i8, 256_usize), None);
 
-    x = 5;
-    let y = x.replace_one();
-    assert_eq!(x, 1);
-    assert_eq!(y, 5);
+    assert_eq!(Step::forward_checked(35_u16, 100_usize), Some(135_u16));
+    assert_eq!(Step::forward_checked(35_u16, 65500_usize), Some(u16::MAX));
+    assert_eq!(Step::forward_checked(36_u16, 65500_usize), None);
+    assert_eq!(Step::forward_checked(-110_i16, 200_usize), Some(90_i16));
+    assert_eq!(Step::forward_checked(-20_030_i16, 50_050_usize), Some(30_020_i16));
+    assert_eq!(Step::forward_checked(-10_i16, 40_000_usize), None);
+    assert_eq!(Step::forward_checked(-10_i16, 70_000_usize), None);
+
+    assert_eq!(Step::forward_checked(10_u128, 70_000_usize), Some(70_010_u128));
+    assert_eq!(Step::forward_checked(10_i128, 70_030_usize), Some(70_040_i128));
+    assert_eq!(
+        Step::forward_checked(0xffff_ffff_ffff_ffff__ffff_ffff_ffff_ff00_u128, 0xff_usize),
+        Some(u128::MAX),
+    );
+    assert_eq!(
+        Step::forward_checked(0xffff_ffff_ffff_ffff__ffff_ffff_ffff_ff00_u128, 0x100_usize),
+        None
+    );
+    assert_eq!(
+        Step::forward_checked(0x7fff_ffff_ffff_ffff__ffff_ffff_ffff_ff00_i128, 0xff_usize),
+        Some(i128::MAX),
+    );
+    assert_eq!(
+        Step::forward_checked(0x7fff_ffff_ffff_ffff__ffff_ffff_ffff_ff00_i128, 0x100_usize),
+        None
+    );
 }
 
 #[test]
-fn test_step_replace_no_between() {
-    let mut x = 4u128;
-    let y = x.replace_zero();
-    assert_eq!(x, 0);
-    assert_eq!(y, 4);
+fn test_step_backward() {
+    assert_eq!(Step::backward_checked(255_u8, 200_usize), Some(55_u8));
+    assert_eq!(Step::backward_checked(100_u8, 200_usize), None);
+    assert_eq!(Step::backward_checked(255_u8, 256_usize), None);
+    assert_eq!(Step::backward_checked(90_i8, 200_usize), Some(-110_i8));
+    assert_eq!(Step::backward_checked(110_i8, 248_usize), None);
+    assert_eq!(Step::backward_checked(127_i8, 256_usize), None);
 
-    x = 5;
-    let y = x.replace_one();
-    assert_eq!(x, 1);
-    assert_eq!(y, 5);
+    assert_eq!(Step::backward_checked(135_u16, 100_usize), Some(35_u16));
+    assert_eq!(Step::backward_checked(u16::MAX, 65500_usize), Some(35_u16));
+    assert_eq!(Step::backward_checked(10_u16, 11_usize), None);
+    assert_eq!(Step::backward_checked(90_i16, 200_usize), Some(-110_i16));
+    assert_eq!(Step::backward_checked(30_020_i16, 50_050_usize), Some(-20_030_i16));
+    assert_eq!(Step::backward_checked(-10_i16, 40_000_usize), None);
+    assert_eq!(Step::backward_checked(-10_i16, 70_000_usize), None);
+
+    assert_eq!(Step::backward_checked(70_010_u128, 70_000_usize), Some(10_u128));
+    assert_eq!(Step::backward_checked(70_020_i128, 70_030_usize), Some(-10_i128));
+    assert_eq!(Step::backward_checked(10_u128, 7_usize), Some(3_u128));
+    assert_eq!(Step::backward_checked(10_u128, 11_usize), None);
+    assert_eq!(
+        Step::backward_checked(-0x7fff_ffff_ffff_ffff__ffff_ffff_ffff_ff00_i128, 0x100_usize),
+        Some(i128::MIN)
+    );
 }
 
 #[test]

@@ -44,7 +44,7 @@ use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag};
 mod tests;
 
 fn opts() -> Options {
-    Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES
+    Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH
 }
 
 /// When `to_string` is called, this struct will emit the HTML corresponding to
@@ -192,6 +192,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
     fn next(&mut self) -> Option<Self::Item> {
         let event = self.inner.next();
         let compile_fail;
+        let should_panic;
         let ignore;
         let edition;
         if let Some(Event::Start(Tag::CodeBlock(kind))) = event {
@@ -205,6 +206,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
                 return Some(Event::Start(Tag::CodeBlock(kind)));
             }
             compile_fail = parse_result.compile_fail;
+            should_panic = parse_result.should_panic;
             ignore = parse_result.ignore;
             edition = parse_result.edition;
         } else {
@@ -280,6 +282,8 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
             Some(("This example is not tested".to_owned(), "ignore"))
         } else if compile_fail {
             Some(("This example deliberately fails to compile".to_owned(), "compile_fail"))
+        } else if should_panic {
+            Some(("This example panics".to_owned(), "should_panic"))
         } else if explicit_edition {
             Some((format!("This code runs with edition {}", edition), "edition"))
         } else {
@@ -295,6 +299,8 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
                         " ignore"
                     } else if compile_fail {
                         " compile_fail"
+                    } else if should_panic {
+                        " should_panic"
                     } else if explicit_edition {
                         " edition "
                     } else {
@@ -314,6 +320,8 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
                         " ignore"
                     } else if compile_fail {
                         " compile_fail"
+                    } else if should_panic {
+                        " should_panic"
                     } else if explicit_edition {
                         " edition "
                     } else {
@@ -933,7 +941,11 @@ impl MarkdownSummaryLine<'_> {
             }
         };
 
-        let p = Parser::new_with_broken_link_callback(md, Options::empty(), Some(&replacer));
+        let p = Parser::new_with_broken_link_callback(
+            md,
+            Options::ENABLE_STRIKETHROUGH,
+            Some(&replacer),
+        );
 
         let mut s = String::new();
 
@@ -975,7 +987,11 @@ pub fn plain_summary_line(md: &str) -> String {
         }
     }
     let mut s = String::with_capacity(md.len() * 3 / 2);
-    let p = ParserWrapper { inner: Parser::new(md), is_in: 0, is_first: true };
+    let p = ParserWrapper {
+        inner: Parser::new_ext(md, Options::ENABLE_STRIKETHROUGH),
+        is_in: 0,
+        is_first: true,
+    };
     p.filter(|t| !t.is_empty()).for_each(|i| s.push_str(&i));
     s
 }

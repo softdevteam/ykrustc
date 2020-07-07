@@ -1,13 +1,14 @@
 use crate::utils::{span_lint, span_lint_and_then};
 use rustc_ast::ast::{
-    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, Ident, Item, ItemKind, Local, MacCall, Pat, PatKind,
+    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, Item, ItemKind, Local, MacCall, Pat, PatKind,
 };
 use rustc_ast::attr;
 use rustc_ast::visit::{walk_block, walk_expr, walk_pat, Visitor};
 use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
-use rustc_span::symbol::SymbolStr;
+use rustc_span::symbol::{Ident, SymbolStr};
 use std::cmp::Ordering;
 
 declare_clippy_lint! {
@@ -131,7 +132,11 @@ struct SimilarNamesNameVisitor<'a, 'tcx, 'b>(&'b mut SimilarNamesLocalVisitor<'a
 impl<'a, 'tcx, 'b> Visitor<'tcx> for SimilarNamesNameVisitor<'a, 'tcx, 'b> {
     fn visit_pat(&mut self, pat: &'tcx Pat) {
         match pat.kind {
-            PatKind::Ident(_, ident, _) => self.check_ident(ident),
+            PatKind::Ident(_, ident, _) => {
+                if !pat.span.from_expansion() {
+                    self.check_ident(ident);
+                }
+            },
             PatKind::Struct(_, ref fields, _) => {
                 for field in fields {
                     if !field.is_shorthand {
@@ -354,12 +359,20 @@ impl<'a, 'tcx> Visitor<'tcx> for SimilarNamesLocalVisitor<'a, 'tcx> {
 
 impl EarlyLintPass for NonExpressiveNames {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
+        if in_external_macro(cx.sess, item.span) {
+            return;
+        }
+
         if let ItemKind::Fn(_, ref sig, _, Some(ref blk)) = item.kind {
             do_check(self, cx, &item.attrs, &sig.decl, blk);
         }
     }
 
     fn check_impl_item(&mut self, cx: &EarlyContext<'_>, item: &AssocItem) {
+        if in_external_macro(cx.sess, item.span) {
+            return;
+        }
+
         if let AssocItemKind::Fn(_, ref sig, _, Some(ref blk)) = item.kind {
             do_check(self, cx, &item.attrs, &sig.decl, blk);
         }

@@ -142,11 +142,6 @@ use crate::{
     ops::{self, Deref, DerefMut},
 };
 
-// Note that this is not a lang item per se, but it has a hidden dependency on
-// `Iterator`, which is one. The compiler assumes that the `next` method of
-// `Iterator` is an enumeration with one type parameter and two variants,
-// which basically means it must be `Option`.
-
 /// The `Option` type. See [the module level documentation](index.html) for more.
 #[derive(Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 #[rustc_diagnostic_item = "option_type"]
@@ -926,7 +921,6 @@ impl<T> Option<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(option_zip)]
     /// let x = Some(1);
     /// let y = Some("hi");
     /// let z = None::<u8>;
@@ -934,9 +928,12 @@ impl<T> Option<T> {
     /// assert_eq!(x.zip(y), Some((1, "hi")));
     /// assert_eq!(x.zip(z), None);
     /// ```
-    #[unstable(feature = "option_zip", issue = "70086")]
+    #[stable(feature = "option_zip_option", since = "1.46.0")]
     pub fn zip<U>(self, other: Option<U>) -> Option<(T, U)> {
-        self.zip_with(other, |a, b| (a, b))
+        match (self, other) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        }
     }
 
     /// Zips `self` and another `Option` with function `f`.
@@ -1357,6 +1354,15 @@ impl<'a, T> IntoIterator for &'a mut Option<T> {
 
 #[stable(since = "1.12.0", feature = "option_from")]
 impl<T> From<T> for Option<T> {
+    /// Copies `val` into a new `Some`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let o: Option<u8> = Option::from(67);
+    ///
+    /// assert_eq!(Some(67), o);
+    /// ```
     fn from(val: T) -> Option<T> {
         Some(val)
     }
@@ -1364,6 +1370,27 @@ impl<T> From<T> for Option<T> {
 
 #[stable(feature = "option_ref_from_ref_option", since = "1.30.0")]
 impl<'a, T> From<&'a Option<T>> for Option<&'a T> {
+    /// Converts from `&Option<T>` to `Option<&T>`.
+    ///
+    /// # Examples
+    ///
+    /// Converts an `Option<`[`String`]`>` into an `Option<`[`usize`]`>`, preserving the original.
+    /// The [`map`] method takes the `self` argument by value, consuming the original,
+    /// so this technique uses `as_ref` to first take an `Option` to a reference
+    /// to the value inside the original.
+    ///
+    /// [`map`]: ../../std/option/enum.Option.html#method.map
+    /// [`String`]: ../../std/string/struct.String.html
+    /// [`usize`]: ../../std/primitive.usize.html
+    ///
+    /// ```
+    /// let s: Option<String> = Some(String::from("Hello, Rustaceans!"));
+    /// let o: Option<usize> = Option::from(&s).map(|ss: &String| ss.len());
+    ///
+    /// println!("Can still print s: {:?}", s);
+    ///
+    /// assert_eq!(o, Some(18));
+    /// ```
     fn from(o: &'a Option<T>) -> Option<&'a T> {
         o.as_ref()
     }
@@ -1371,6 +1398,21 @@ impl<'a, T> From<&'a Option<T>> for Option<&'a T> {
 
 #[stable(feature = "option_ref_from_ref_option", since = "1.30.0")]
 impl<'a, T> From<&'a mut Option<T>> for Option<&'a mut T> {
+    /// Converts from `&mut Option<T>` to `Option<&mut T>`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut s = Some(String::from("Hello"));
+    /// let o: Option<&mut String> = Option::from(&mut s);
+    ///
+    /// match o {
+    ///     Some(t) => *t = String::from("Hello, Rustaceans!"),
+    ///     None => (),
+    /// }
+    ///
+    /// assert_eq!(s, Some(String::from("Hello, Rustaceans!")));
+    /// ```
     fn from(o: &'a mut Option<T>) -> Option<&'a mut T> {
         o.as_mut()
     }

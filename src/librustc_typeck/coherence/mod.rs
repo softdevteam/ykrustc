@@ -48,7 +48,20 @@ fn enforce_trait_manually_implementable(
     let did = Some(trait_def_id);
     let li = tcx.lang_items();
 
-    // Disallow *all* explicit impls of `Sized` and `Unsize` for now.
+    // Disallow *all* explicit impls of `DiscriminantKind`, `Sized` and `Unsize` for now.
+    if did == li.discriminant_kind_trait() {
+        let span = impl_header_span(tcx, impl_def_id);
+        struct_span_err!(
+            tcx.sess,
+            span,
+            E0322,
+            "explicit impls for the `DiscriminantKind` trait are not permitted"
+        )
+        .span_label(span, "impl of 'DiscriminantKind' not allowed")
+        .emit();
+        return;
+    }
+
     if did == li.sized_trait() {
         let span = impl_header_span(tcx, impl_def_id);
         struct_span_err!(
@@ -203,7 +216,7 @@ fn check_object_overlap<'tcx>(
         let component_def_ids = data.iter().flat_map(|predicate| {
             match predicate.skip_binder() {
                 ty::ExistentialPredicate::Trait(tr) => Some(tr.def_id),
-                ty::ExistentialPredicate::AutoTrait(def_id) => Some(*def_id),
+                ty::ExistentialPredicate::AutoTrait(def_id) => Some(def_id),
                 // An associated type projection necessarily comes with
                 // an additional `Trait` requirement.
                 ty::ExistentialPredicate::Projection(..) => None,

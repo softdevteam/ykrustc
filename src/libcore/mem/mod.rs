@@ -10,7 +10,7 @@ use crate::cmp;
 use crate::fmt;
 use crate::hash;
 use crate::intrinsics;
-use crate::marker::{Copy, PhantomData, Sized};
+use crate::marker::{Copy, DiscriminantKind, Sized};
 use crate::ptr;
 
 mod manually_drop;
@@ -129,7 +129,7 @@ pub use crate::intrinsics::transmute;
 /// erring on the side of (double-)dropping.
 ///
 /// Also, `ManuallyDrop` prevents us from having to "touch" `v` after transferring the
-/// ownership to `s` - the final step of interacting with `v` to dispoe of it without
+/// ownership to `s` — the final step of interacting with `v` to dispose of it without
 /// running its destructor is entirely avoided.
 ///
 /// [drop]: fn.drop.html
@@ -358,12 +358,13 @@ pub fn size_of_val<T: ?Sized>(val: &T) -> usize {
 ///     - an (unstable) [extern type], then this function is always safe to
 ///       call, but may panic or otherwise return the wrong value, as the
 ///       extern type's layout is not known. This is the same behavior as
-///       [`size_of_val`] on a reference to an extern type tail.
+///       [`size_of_val`] on a reference to a type with an extern type tail.
 ///     - otherwise, it is conservatively not allowed to call this function.
 ///
 /// [slice]: ../../std/primitive.slice.html
 /// [trait object]: ../../book/ch17-02-trait-objects.html
 /// [extern type]: ../../unstable-book/language-features/extern-types.html
+/// [`size_of_val`]: ../../core/mem/fn.size_of_val.html
 ///
 /// # Examples
 ///
@@ -492,12 +493,13 @@ pub fn align_of_val<T: ?Sized>(val: &T) -> usize {
 ///     - an (unstable) [extern type], then this function is always safe to
 ///       call, but may panic or otherwise return the wrong value, as the
 ///       extern type's layout is not known. This is the same behavior as
-///       [`align_of_val`] on a reference to an extern type tail.
+///       [`align_of_val`] on a reference to a type with an extern type tail.
 ///     - otherwise, it is conservatively not allowed to call this function.
 ///
 /// [slice]: ../../std/primitive.slice.html
 /// [trait object]: ../../book/ch17-02-trait-objects.html
 /// [extern type]: ../../unstable-book/language-features/extern-types.html
+/// [`align_of_val`]: ../../core/mem/fn.align_of_val.html
 ///
 /// # Examples
 ///
@@ -581,11 +583,12 @@ pub const fn needs_drop<T>() -> bool {
 /// This means that, for example, the padding byte in `(u8, u16)` is not
 /// necessarily zeroed.
 ///
-/// There is no guarantee that an all-zero byte-pattern represents a valid value of
-/// some type `T`. For example, the all-zero byte-pattern is not a valid value
-/// for reference types (`&T` and `&mut T`). Using `zeroed` on such types
-/// causes immediate [undefined behavior][ub] because [the Rust compiler assumes][inv]
-/// that there always is a valid value in a variable it considers initialized.
+/// There is no guarantee that an all-zero byte-pattern represents a valid value
+/// of some type `T`. For example, the all-zero byte-pattern is not a valid value
+/// for reference types (`&T`, `&mut T`) and functions pointers. Using `zeroed`
+/// on such types causes immediate [undefined behavior][ub] because [the Rust
+/// compiler assumes][inv] that there always is a valid value in a variable it
+/// considers initialized.
 ///
 /// This has the same effect as [`MaybeUninit::zeroed().assume_init()`][zeroed].
 /// It is useful for FFI sometimes, but should generally be avoided.
@@ -612,6 +615,7 @@ pub const fn needs_drop<T>() -> bool {
 /// use std::mem;
 ///
 /// let _x: &i32 = unsafe { mem::zeroed() }; // Undefined behavior!
+/// let _y: fn() = unsafe { mem::zeroed() }; // And again!
 /// ```
 #[inline(always)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -619,8 +623,11 @@ pub const fn needs_drop<T>() -> bool {
 #[allow(deprecated)]
 #[rustc_diagnostic_item = "mem_zeroed"]
 pub unsafe fn zeroed<T>() -> T {
-    intrinsics::assert_zero_valid::<T>();
-    MaybeUninit::zeroed().assume_init()
+    // SAFETY: the caller must guarantee that an all-zero value is valid for `T`.
+    unsafe {
+        intrinsics::assert_zero_valid::<T>();
+        MaybeUninit::zeroed().assume_init()
+    }
 }
 
 /// Bypasses Rust's normal memory-initialization checks by pretending to
@@ -652,8 +659,11 @@ pub unsafe fn zeroed<T>() -> T {
 #[allow(deprecated)]
 #[rustc_diagnostic_item = "mem_uninitialized"]
 pub unsafe fn uninitialized<T>() -> T {
-    intrinsics::assert_uninit_valid::<T>();
-    MaybeUninit::uninit().assume_init()
+    // SAFETY: the caller must guarantee that an unitialized value is valid for `T`.
+    unsafe {
+        intrinsics::assert_uninit_valid::<T>();
+        MaybeUninit::uninit().assume_init()
+    }
 }
 
 /// Swaps the values at two mutable locations, without deinitializing either one.
@@ -808,7 +818,7 @@ pub fn replace<T>(dest: &mut T, mut src: T) -> T {
 
 /// Disposes of a value.
 ///
-/// This does call the argument's implementation of [`Drop`][drop].
+/// This does so by calling the argument's implementation of [`Drop`][drop].
 ///
 /// This effectively does nothing for types which implement `Copy`, e.g.
 /// integers. Such values are copied and _then_ moved into the function, so the
@@ -918,9 +928,14 @@ pub fn drop<T>(_x: T) {}
 pub unsafe fn transmute_copy<T, U>(src: &T) -> U {
     // If U has a higher alignment requirement, src may not be suitably aligned.
     if align_of::<U>() > align_of::<T>() {
-        ptr::read_unaligned(src as *const T as *const U)
+        // SAFETY: `src` is a reference which is guaranteed to be valid for reads.
+        // The caller must guarantee that the actual transmutation is safe.
+        unsafe { ptr::read_unaligned(src as *const T as *const U) }
     } else {
-        ptr::read(src as *const T as *const U)
+        // SAFETY: `src` is a reference which is guaranteed to be valid for reads.
+        // We just checked that `src as *const U` was properly aligned.
+        // The caller must guarantee that the actual transmutation is safe.
+        unsafe { ptr::read(src as *const T as *const U) }
     }
 }
 
@@ -930,7 +945,7 @@ pub unsafe fn transmute_copy<T, U>(src: &T) -> U {
 ///
 /// [`discriminant`]: fn.discriminant.html
 #[stable(feature = "discriminant_value", since = "1.21.0")]
-pub struct Discriminant<T>(u64, PhantomData<fn() -> T>);
+pub struct Discriminant<T>(<T as DiscriminantKind>::Discriminant);
 
 // N.B. These trait implementations cannot be derived because we don't want any bounds on T.
 
@@ -995,5 +1010,36 @@ impl<T> fmt::Debug for Discriminant<T> {
 #[stable(feature = "discriminant_value", since = "1.21.0")]
 #[rustc_const_unstable(feature = "const_discriminant", issue = "69821")]
 pub const fn discriminant<T>(v: &T) -> Discriminant<T> {
-    Discriminant(intrinsics::discriminant_value(v), PhantomData)
+    Discriminant(intrinsics::discriminant_value(v))
+}
+
+/// Returns the number of variants in the enum type `T`.
+///
+/// If `T` is not an enum, calling this function will not result in undefined behavior, but the
+/// return value is unspecified. Equally, if `T` is an enum with more variants than `usize::MAX`
+/// the return value is unspecified. Uninhabited variants will be counted.
+///
+/// # Examples
+///
+/// ```
+/// # #![feature(never_type)]
+/// # #![feature(variant_count)]
+///
+/// use std::mem;
+///
+/// enum Void {}
+/// enum Foo { A(&'static str), B(i32), C(i32) }
+///
+/// assert_eq!(mem::variant_count::<Void>(), 0);
+/// assert_eq!(mem::variant_count::<Foo>(), 3);
+///
+/// assert_eq!(mem::variant_count::<Option<!>>(), 2);
+/// assert_eq!(mem::variant_count::<Result<!, !>>(), 2);
+/// ```
+#[inline(always)]
+#[cfg(not(bootstrap))]
+#[unstable(feature = "variant_count", issue = "73662")]
+#[rustc_const_unstable(feature = "variant_count", issue = "73662")]
+pub const fn variant_count<T>() -> usize {
+    intrinsics::variant_count::<T>()
 }

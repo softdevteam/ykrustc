@@ -35,8 +35,8 @@ fn main() {
         u_16 -= 1;
     }
 
-    let mut end_32: u32 = 7000;
-    let mut start_32: u32 = 7010;
+    let mut end_32: u32 = 7010;
+    let mut start_32: u32 = 7000;
 
     let mut u_32: u32 = end_32 - start_32;
 
@@ -110,7 +110,7 @@ fn main() {
     }
 
     // Lint
-    if i_8 > i8::min_value() {
+    if i_8 > i8::MIN {
         i_8 -= 1;
     }
 
@@ -120,7 +120,7 @@ fn main() {
     }
 
     // Lint
-    if i_8 != i8::min_value() {
+    if i_8 != i8::MIN {
         i_8 -= 1;
     }
 
@@ -135,7 +135,7 @@ fn main() {
     }
 
     // Lint
-    if i_16 > i16::min_value() {
+    if i_16 > i16::MIN {
         i_16 -= 1;
     }
 
@@ -145,7 +145,7 @@ fn main() {
     }
 
     // Lint
-    if i_16 != i16::min_value() {
+    if i_16 != i16::MIN {
         i_16 -= 1;
     }
 
@@ -160,7 +160,7 @@ fn main() {
     }
 
     // Lint
-    if i_32 > i32::min_value() {
+    if i_32 > i32::MIN {
         i_32 -= 1;
     }
 
@@ -170,7 +170,7 @@ fn main() {
     }
 
     // Lint
-    if i_32 != i32::min_value() {
+    if i_32 != i32::MIN {
         i_32 -= 1;
     }
 
@@ -180,7 +180,7 @@ fn main() {
     let mut i_64: i64 = endi_64 - starti_64;
 
     // Lint
-    if i64::min_value() < i_64 {
+    if i64::MIN < i_64 {
         i_64 -= 1;
     }
 

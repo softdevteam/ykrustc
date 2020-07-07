@@ -1,4 +1,5 @@
 use rustc_hir as hir;
+use rustc_hir::lang_items::EqTraitLangItem;
 use rustc_index::vec::Idx;
 use rustc_infer::infer::{InferCtxt, TyCtxtInferExt};
 use rustc_middle::mir::Field;
@@ -79,7 +80,7 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
     }
 
     fn type_marked_structural(&self, ty: Ty<'tcx>) -> bool {
-        traits::type_marked_structural(self.id, self.span, &self.infcx, ty)
+        ty.is_structural_eq_shallow(self.infcx.tcx)
     }
 
     fn to_pat(
@@ -106,8 +107,15 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
                 cv.ty, structural
             );
 
+            // This can occur because const qualification treats all associated constants as
+            // opaque, whereas `search_for_structural_match_violation` tries to monomorphize them
+            // before it runs.
+            //
+            // FIXME(#73448): Find a way to bring const qualification into parity with
+            // `search_for_structural_match_violation`.
             if structural.is_none() && mir_structural_match_violation {
-                bug!("MIR const-checker found novel structural match violation");
+                warn!("MIR const-checker found novel structural match violation. See #73448.");
+                return inlined_const_as_pat;
             }
 
             if let Some(non_sm_ty) = structural {
@@ -121,10 +129,25 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
                         )
                     }
                     traits::NonStructuralMatchTy::Dynamic => {
-                        format!("trait objects cannot be used in patterns")
+                        "trait objects cannot be used in patterns".to_string()
+                    }
+                    traits::NonStructuralMatchTy::Opaque => {
+                        "opaque types cannot be used in patterns".to_string()
+                    }
+                    traits::NonStructuralMatchTy::Generator => {
+                        "generators cannot be used in patterns".to_string()
+                    }
+                    traits::NonStructuralMatchTy::Closure => {
+                        "closures cannot be used in patterns".to_string()
                     }
                     traits::NonStructuralMatchTy::Param => {
-                        bug!("use of constant whose type is a parameter inside a pattern")
+                        bug!("use of a constant whose type is a parameter inside a pattern")
+                    }
+                    traits::NonStructuralMatchTy::Projection => {
+                        bug!("use of a constant whose type is a projection inside a pattern")
+                    }
+                    traits::NonStructuralMatchTy::Foreign => {
+                        bug!("use of a value of a foreign type inside a pattern")
                     }
                 };
 
@@ -140,7 +163,8 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
                 // code at the moment, because types like `for <'a> fn(&'a ())` do
                 // not *yet* implement `PartialEq`. So for now we leave this here.
                 let ty_is_partial_eq: bool = {
-                    let partial_eq_trait_id = self.tcx().lang_items().eq_trait().unwrap();
+                    let partial_eq_trait_id =
+                        self.tcx().require_lang_item(EqTraitLangItem, Some(self.span));
                     let obligation: PredicateObligation<'_> = predicate_for_trait_def(
                         self.tcx(),
                         self.param_env,
@@ -251,7 +275,9 @@ impl<'a, 'tcx> ConstToPat<'a, 'tcx> {
                 PatKind::Variant {
                     adt_def,
                     substs,
-                    variant_index: destructured.variant,
+                    variant_index: destructured
+                        .variant
+                        .expect("destructed const of adt without variant id"),
                     subpatterns: field_pats(destructured.fields),
                 }
             }

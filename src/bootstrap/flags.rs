@@ -3,18 +3,16 @@
 //! This module implements the command-line parsing of the build system which
 //! has various flags to configure how it's run.
 
-use std::fs;
+use std::env;
 use std::path::PathBuf;
 use std::process;
 
 use getopts::Options;
 
 use crate::builder::Builder;
-use crate::config::Config;
-use crate::metadata;
-use crate::{Build, DocTests};
-
 use crate::cache::{Interned, INTERNER};
+use crate::config::Config;
+use crate::{Build, DocTests};
 
 /// Deserialized version of all flags for this compile.
 pub struct Flags {
@@ -61,6 +59,7 @@ pub enum Subcommand {
     },
     Doc {
         paths: Vec<PathBuf>,
+        open: bool,
     },
     Test {
         paths: Vec<PathBuf>,
@@ -148,7 +147,12 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`",
             "N",
         );
         opts.optopt("", "src", "path to the root of the rust checkout", "DIR");
-        opts.optopt("j", "jobs", "number of jobs to run in parallel", "JOBS");
+        let j_msg = format!(
+            "number of jobs to run in parallel; \
+             defaults to {} (this host's logical CPU count)",
+            num_cpus::get()
+        );
+        opts.optopt("j", "jobs", &j_msg, "JOBS");
         opts.optflag("h", "help", "print this help message");
         opts.optopt(
             "",
@@ -247,6 +251,9 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`",
             }
             "bench" => {
                 opts.optmulti("", "test-args", "extra arguments", "ARGS");
+            }
+            "doc" => {
+                opts.optflag("", "open", "open the docs in a browser");
             }
             "clean" => {
                 opts.optflag("", "all", "clean all build artifacts");
@@ -404,6 +411,7 @@ Arguments:
         ./x.py doc src/doc/book
         ./x.py doc src/doc/nomicon
         ./x.py doc src/doc/book src/libstd
+        ./x.py doc src/libstd --open
 
     If no arguments are passed then everything is documented:
 
@@ -428,19 +436,12 @@ Arguments:
         // Get any optional paths which occur after the subcommand
         let paths = matches.free[1..].iter().map(|p| p.into()).collect::<Vec<PathBuf>>();
 
-        let cfg_file = matches.opt_str("config").map(PathBuf::from).or_else(|| {
-            if fs::metadata("config.toml").is_ok() {
-                Some(PathBuf::from("config.toml"))
-            } else {
-                None
-            }
-        });
+        let cfg_file = env::var_os("BOOTSTRAP_CONFIG").map(PathBuf::from);
 
         // All subcommands except `clean` can have an optional "Available paths" section
         if matches.opt_present("verbose") {
             let config = Config::parse(&["build".to_string()]);
-            let mut build = Build::new(config);
-            metadata::build(&mut build);
+            let build = Build::new(config);
 
             let maybe_rules_help = Builder::get_help(&build, subcommand.as_str());
             extra_help.push_str(maybe_rules_help.unwrap_or_default().as_str());
@@ -479,7 +480,7 @@ Arguments:
                 },
             },
             "bench" => Subcommand::Bench { paths, test_args: matches.opt_strs("test-args") },
-            "doc" => Subcommand::Doc { paths },
+            "doc" => Subcommand::Doc { paths, open: matches.opt_present("open") },
             "clean" => {
                 if !paths.is_empty() {
                     println!("\nclean does not take a path argument\n");
@@ -502,6 +503,20 @@ Arguments:
                 usage(1, &opts, &subcommand_help, &extra_help);
             }
         };
+
+        if let Subcommand::Check { .. } = &cmd {
+            if matches.opt_str("stage").is_some() {
+                println!("{}", "--stage not supported for x.py check, always treated as stage 0");
+                process::exit(1);
+            }
+            if matches.opt_str("keep-stage").is_some() {
+                println!(
+                    "{}",
+                    "--keep-stage not supported for x.py check, only one stage available"
+                );
+                process::exit(1);
+            }
+        }
 
         Flags {
             verbose: matches.opt_count("verbose"),
@@ -597,6 +612,13 @@ impl Subcommand {
         match *self {
             Subcommand::Test { ref pass, .. } => pass.as_ref().map(|s| &s[..]),
             _ => None,
+        }
+    }
+
+    pub fn open(&self) -> bool {
+        match *self {
+            Subcommand::Doc { open, .. } => open,
+            _ => false,
         }
     }
 }

@@ -15,7 +15,7 @@ use rustc_middle::mir::interpret::{InterpError, InterpErrorInfo};
 use rustc_middle::ty;
 use rustc_middle::ty::layout::TyAndLayout;
 use rustc_span::symbol::{sym, Symbol};
-use rustc_target::abi::{Abi, LayoutOf, Scalar, VariantIdx, Variants};
+use rustc_target::abi::{Abi, LayoutOf, Scalar, Size, VariantIdx, Variants};
 
 use std::hash::Hash;
 
@@ -208,8 +208,8 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
     fn aggregate_field_path_elem(&mut self, layout: TyAndLayout<'tcx>, field: usize) -> PathElem {
         // First, check if we are projecting to a variant.
         match layout.variants {
-            Variants::Multiple { discr_index, .. } => {
-                if discr_index == field {
+            Variants::Multiple { tag_field, .. } => {
+                if tag_field == field {
                     return match layout.ty.kind {
                         ty::Adt(def, ..) if def.is_enum() => PathElem::EnumTag,
                         ty::Generator(..) => PathElem::GeneratorTag,
@@ -227,7 +227,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 let mut name = None;
                 if let Some(def_id) = def_id.as_local() {
                     let tables = self.ecx.tcx.typeck_tables_of(def_id);
-                    if let Some(upvars) = tables.upvar_list.get(&def_id.to_def_id()) {
+                    if let Some(upvars) = tables.closure_captures.get(&def_id.to_def_id()) {
                         // Sometimes the index is beyond the number of upvars (seen
                         // for a generator).
                         if let Some((&var_hir_id, _)) = upvars.get_index(field) {
@@ -321,11 +321,12 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 try_validation!(
                     self.ecx.read_drop_type_from_vtable(vtable),
                     self.path,
-                    err_ub!(InvalidDropFn(..)) |
                     err_ub!(DanglingIntPointer(..)) |
                     err_ub!(InvalidFunctionPointer(..)) |
                     err_unsup!(ReadBytesAsPointer) =>
-                        { "invalid drop function pointer in vtable" },
+                        { "invalid drop function pointer in vtable (not pointing to a function)" },
+                    err_ub!(InvalidDropFn(..)) =>
+                        { "invalid drop function pointer in vtable (function has incompatible signature)" },
                 );
                 try_validation!(
                     self.ecx.read_size_and_align_from_vtable(vtable),
@@ -365,7 +366,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
         let place = try_validation!(
             self.ecx.ref_to_mplace(value),
             self.path,
-            err_ub!(InvalidUndefBytes(..)) => { "uninitialized {}", kind },
+            err_ub!(InvalidUninitBytes { .. }) => { "uninitialized {}", kind },
         );
         if place.layout.is_unsized() {
             self.check_wide_ptr_meta(place.meta, place.layout)?;
@@ -400,7 +401,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
             err_ub!(DanglingIntPointer(0, _)) =>
                 { "a NULL {}", kind },
             err_ub!(DanglingIntPointer(i, _)) =>
-                { "a dangling {} (address {} is unallocated)", kind, i },
+                { "a dangling {} (address 0x{:x} is unallocated)", kind, i },
             err_ub!(PointerOutOfBounds { .. }) =>
                 { "a dangling {} (going beyond the bounds of its allocation)", kind },
             err_unsup!(ReadBytesAsPointer) =>
@@ -415,8 +416,9 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
             if let Some(ptr) = ptr {
                 // not a ZST
                 // Skip validation entirely for some external statics
-                let alloc_kind = self.ecx.tcx.alloc_map.lock().get(ptr.alloc_id);
+                let alloc_kind = self.ecx.tcx.get_global_alloc(ptr.alloc_id);
                 if let Some(GlobalAlloc::Static(did)) = alloc_kind {
+                    assert!(!self.ecx.tcx.is_thread_local_static(did));
                     // See const_eval::machine::MemoryExtra::can_access_statics for why
                     // this check is so important.
                     // This check is reachable when the const just referenced the static,
@@ -484,7 +486,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 try_validation!(
                     value.to_char(),
                     self.path,
-                    err_ub!(InvalidChar(..)) => { "{}", value } expected { "a valid unicode codepoint" },
+                    err_ub!(InvalidChar(..)) => { "{}", value } expected { "a valid unicode scalar value (in `0..=0x10FFFF` but not in `0xD800..=0xDFFF`)" },
                 );
                 Ok(true)
             }
@@ -513,7 +515,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
                 let place = try_validation!(
                     self.ecx.ref_to_mplace(self.ecx.read_immediate(value)?),
                     self.path,
-                    err_ub!(InvalidUndefBytes(..)) => { "uninitialized raw pointer" },
+                    err_ub!(InvalidUninitBytes { .. } ) => { "uninitialized raw pointer" },
                 );
                 if place.layout.is_unsized() {
                     self.check_wide_ptr_meta(place.meta, place.layout)?;
@@ -559,13 +561,12 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
             | ty::Generator(..) => Ok(false),
             // Some types only occur during typechecking, they have no layout.
             // We should not see them here and we could not check them anyway.
-            ty::Error
+            ty::Error(_)
             | ty::Infer(..)
             | ty::Placeholder(..)
             | ty::Bound(..)
             | ty::Param(..)
             | ty::Opaque(..)
-            | ty::UnnormalizedProjection(..)
             | ty::Projection(..)
             | ty::GeneratorWitness(..) => bug!("Encountered invalid type {:?}", ty),
         }
@@ -592,7 +593,7 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, '
         let value = try_validation!(
             value.not_undef(),
             self.path,
-            err_ub!(InvalidUndefBytes(..)) => { "{}", value }
+            err_ub!(InvalidUninitBytes { .. }) => { "{}", value }
                 expected { "something {}", wrapping_range_format(valid_range, max_hi) },
         );
         let bits = match value.to_bits_or_ptr(op.layout.size, self.ecx) {
@@ -696,8 +697,8 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
         try_validation!(
             self.walk_value(op),
             self.path,
-            err_ub!(InvalidDiscriminant(val)) =>
-                { "{}", val } expected { "a valid enum discriminant" },
+            err_ub!(InvalidTag(val)) =>
+                { "{}", val } expected { "a valid enum tag" },
             err_unsup!(ReadPointerAsBytes) =>
                 { "a pointer" } expected { "plain (non-pointer) bytes" },
         );
@@ -743,10 +744,11 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
         match op.layout.ty.kind {
             ty::Str => {
                 let mplace = op.assert_mem_place(self.ecx); // strings are never immediate
+                let len = mplace.len(self.ecx)?;
                 try_validation!(
-                    self.ecx.read_str(mplace),
+                    self.ecx.memory.read_bytes(mplace.ptr, Size::from_bytes(len)),
                     self.path,
-                    err_ub!(InvalidStr(..)) => { "uninitialized or non-UTF-8 data in str" },
+                    err_ub!(InvalidUninitBytes(..)) => { "uninitialized data in `str`" },
                 );
             }
             ty::Array(tys, ..) | ty::Slice(tys)
@@ -802,12 +804,14 @@ impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                         // For some errors we might be able to provide extra information.
                         // (This custom logic does not fit the `try_validation!` macro.)
                         match err.kind {
-                            err_ub!(InvalidUndefBytes(Some(ptr))) => {
+                            err_ub!(InvalidUninitBytes(Some(access))) => {
                                 // Some byte was uninitialized, determine which
                                 // element that byte belongs to so we can
                                 // provide an index.
-                                let i = usize::try_from(ptr.offset.bytes() / layout.size.bytes())
-                                    .unwrap();
+                                let i = usize::try_from(
+                                    access.uninit_ptr.offset.bytes() / layout.size.bytes(),
+                                )
+                                .unwrap();
                                 self.path.push(PathElem::ArrayElem(i));
 
                                 throw_validation_failure!(self.path, { "uninitialized bytes" })

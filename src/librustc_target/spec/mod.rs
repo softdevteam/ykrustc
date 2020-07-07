@@ -35,6 +35,7 @@
 //! to the list specified by the target, rather than replace.
 
 use crate::spec::abi::{lookup as lookup_abi, Abi};
+use crate::spec::crt_objects::{CrtObjects, CrtObjectsFallback};
 use rustc_serialize::json::{Json, ToJson};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,8 @@ use std::{fmt, io};
 use rustc_macros::HashStable_Generic;
 
 pub mod abi;
+pub mod crt_objects;
+
 mod android_base;
 mod apple_base;
 mod apple_sdk_base;
@@ -51,6 +54,7 @@ mod arm_base;
 mod cloudabi_base;
 mod dragonfly_base;
 mod freebsd_base;
+mod freestanding_base;
 mod fuchsia_base;
 mod haiku_base;
 mod hermit_base;
@@ -306,6 +310,43 @@ impl ToJson for RelocModel {
 }
 
 #[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum CodeModel {
+    Tiny,
+    Small,
+    Kernel,
+    Medium,
+    Large,
+}
+
+impl FromStr for CodeModel {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<CodeModel, ()> {
+        Ok(match s {
+            "tiny" => CodeModel::Tiny,
+            "small" => CodeModel::Small,
+            "kernel" => CodeModel::Kernel,
+            "medium" => CodeModel::Medium,
+            "large" => CodeModel::Large,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl ToJson for CodeModel {
+    fn to_json(&self) -> Json {
+        match *self {
+            CodeModel::Tiny => "tiny",
+            CodeModel::Small => "small",
+            CodeModel::Kernel => "kernel",
+            CodeModel::Medium => "medium",
+            CodeModel::Large => "large",
+        }
+        .to_json()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
 pub enum TlsModel {
     GeneralDynamic,
     LocalDynamic,
@@ -338,6 +379,54 @@ impl ToJson for TlsModel {
             TlsModel::LocalExec => "local-exec",
         }
         .to_json()
+    }
+}
+
+/// Everything is flattened to a single enum to make the json encoding/decoding less annoying.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum LinkOutputKind {
+    /// Dynamically linked non position-independent executable.
+    DynamicNoPicExe,
+    /// Dynamically linked position-independent executable.
+    DynamicPicExe,
+    /// Statically linked non position-independent executable.
+    StaticNoPicExe,
+    /// Statically linked position-independent executable.
+    StaticPicExe,
+    /// Regular dynamic library ("dynamically linked").
+    DynamicDylib,
+    /// Dynamic library with bundled libc ("statically linked").
+    StaticDylib,
+}
+
+impl LinkOutputKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            LinkOutputKind::DynamicNoPicExe => "dynamic-nopic-exe",
+            LinkOutputKind::DynamicPicExe => "dynamic-pic-exe",
+            LinkOutputKind::StaticNoPicExe => "static-nopic-exe",
+            LinkOutputKind::StaticPicExe => "static-pic-exe",
+            LinkOutputKind::DynamicDylib => "dynamic-dylib",
+            LinkOutputKind::StaticDylib => "static-dylib",
+        }
+    }
+
+    pub(super) fn from_str(s: &str) -> Option<LinkOutputKind> {
+        Some(match s {
+            "dynamic-nopic-exe" => LinkOutputKind::DynamicNoPicExe,
+            "dynamic-pic-exe" => LinkOutputKind::DynamicPicExe,
+            "static-nopic-exe" => LinkOutputKind::StaticNoPicExe,
+            "static-pic-exe" => LinkOutputKind::StaticPicExe,
+            "dynamic-dylib" => LinkOutputKind::DynamicDylib,
+            "static-dylib" => LinkOutputKind::StaticDylib,
+            _ => return None,
+        })
+    }
+}
+
+impl fmt::Display for LinkOutputKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -491,6 +580,8 @@ supported_targets! {
     ("aarch64-fuchsia", aarch64_fuchsia),
     ("x86_64-fuchsia", x86_64_fuchsia),
 
+    ("avr-unknown-unknown", avr_unknown_unknown),
+
     ("x86_64-unknown-l4re-uclibc", x86_64_unknown_l4re_uclibc),
 
     ("aarch64-unknown-redox", aarch64_unknown_redox),
@@ -530,6 +621,7 @@ supported_targets! {
     ("i686-uwp-windows-msvc", i686_uwp_windows_msvc),
     ("i586-pc-windows-msvc", i586_pc_windows_msvc),
     ("thumbv7a-pc-windows-msvc", thumbv7a_pc_windows_msvc),
+    ("thumbv7a-uwp-windows-msvc", thumbv7a_uwp_windows_msvc),
 
     ("asmjs-unknown-emscripten", asmjs_unknown_emscripten),
     ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
@@ -582,6 +674,8 @@ supported_targets! {
     ("powerpc-wrs-vxworks", powerpc_wrs_vxworks),
     ("powerpc-wrs-vxworks-spe", powerpc_wrs_vxworks_spe),
     ("powerpc64-wrs-vxworks", powerpc64_wrs_vxworks),
+
+    ("mipsel-sony-psp", mipsel_sony_psp),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -642,15 +736,20 @@ pub struct TargetOptions {
     pub lld_flavor: LldFlavor,
 
     /// Linker arguments that are passed *before* any user-defined libraries.
-    pub pre_link_args: LinkArgs, // ... unconditionally
-    pub pre_link_args_crt: LinkArgs, // ... when linking with a bundled crt
-    /// Objects to link before all others, always found within the
-    /// sysroot folder.
-    pub pre_link_objects_exe: Vec<String>, // ... when linking an executable, unconditionally
-    pub pre_link_objects_exe_crt: Vec<String>, // ... when linking an executable with a bundled crt
-    pub pre_link_objects_dll: Vec<String>, // ... when linking a dylib
+    pub pre_link_args: LinkArgs,
+    /// Objects to link before and after all other object code.
+    pub pre_link_objects: CrtObjects,
+    pub post_link_objects: CrtObjects,
+    /// Same as `(pre|post)_link_objects`, but when we fail to pull the objects with help of the
+    /// target's native gcc and fall back to the "self-contained" mode and pull them manually.
+    /// See `crt_objects.rs` for some more detailed documentation.
+    pub pre_link_objects_fallback: CrtObjects,
+    pub post_link_objects_fallback: CrtObjects,
+    /// Which logic to use to determine whether to fall back to the "self-contained" mode or not.
+    pub crt_objects_fallback: Option<CrtObjectsFallback>,
+
     /// Linker arguments that are unconditionally passed after any
-    /// user-defined but before post_link_objects. Standard platform
+    /// user-defined but before post-link objects. Standard platform
     /// libraries that should be always be linked to, usually go here.
     pub late_link_args: LinkArgs,
     /// Linker arguments used in addition to `late_link_args` if at least one
@@ -659,13 +758,13 @@ pub struct TargetOptions {
     /// Linker arguments used in addition to `late_link_args` if aall Rust
     /// dependencies are statically linked.
     pub late_link_args_static: LinkArgs,
-    /// Objects to link after all others, always found within the
-    /// sysroot folder.
-    pub post_link_objects: Vec<String>, // ... unconditionally
-    pub post_link_objects_crt: Vec<String>, // ... when linking with a bundled crt
     /// Linker arguments that are unconditionally passed *after* any
     /// user-defined libraries.
     pub post_link_args: LinkArgs,
+    /// Optional link script applied to `dylib` and `executable` crate types.
+    /// This is a string containing the script, not a path. Can only be applied
+    /// to linkers where `linker_is_gnu` is true.
+    pub link_script: Option<String>,
 
     /// Environment variables to be set for the linker invocation.
     pub link_env: Vec<(String, String)>,
@@ -693,7 +792,8 @@ pub struct TargetOptions {
     /// -relocation-model=$relocation_model`. Defaults to `Pic`.
     pub relocation_model: RelocModel,
     /// Code model to use. Corresponds to `llc -code-model=$code_model`.
-    pub code_model: Option<String>,
+    /// Defaults to `None` which means "inherited from the base LLVM target".
+    pub code_model: Option<CodeModel>,
     /// TLS model to use. Options are "global-dynamic" (default), "local-dynamic", "initial-exec"
     /// and "local-exec". This is similar to the -ftls-model option in GCC/Clang.
     pub tls_model: TlsModel,
@@ -758,6 +858,8 @@ pub struct TargetOptions {
     /// the functions in the executable are not randomized and can be used
     /// during an exploit of a vulnerability in any code.
     pub position_independent_executables: bool,
+    /// Executables that are both statically linked and position-independent are supported.
+    pub static_position_independent_executables: bool,
     /// Determines if the target always requires using the PLT for indirect
     /// library calls or not. This controls the default value of the `-Z plt` flag.
     pub needs_plt: bool,
@@ -783,6 +885,10 @@ pub struct TargetOptions {
     // If we give emcc .o files that are actually .bc files it
     // will 'just work'.
     pub obj_is_bitcode: bool,
+    /// Whether the target requires that emitted object code includes bitcode.
+    pub forces_embed_bitcode: bool,
+    /// Content of the LLVM cmdline section associated with embedded bitcode.
+    pub bitcode_llvm_cmdline: String,
 
     /// Don't use this field; instead use the `.min_atomic_width()` method.
     pub min_atomic_width: Option<u64>,
@@ -878,6 +984,10 @@ pub struct TargetOptions {
 
     /// Additional arguments to pass to LLVM, similar to the `-C llvm-args` codegen option.
     pub llvm_args: Vec<String>,
+
+    /// Whether to use legacy .ctors initialization hooks rather than .init_array. Defaults
+    /// to false (uses .init_array).
+    pub use_ctors_section: bool,
 }
 
 impl Default for TargetOptions {
@@ -889,8 +999,8 @@ impl Default for TargetOptions {
             linker: option_env!("CFG_DEFAULT_LINKER").map(|s| s.to_string()),
             lld_flavor: LldFlavor::Ld,
             pre_link_args: LinkArgs::new(),
-            pre_link_args_crt: LinkArgs::new(),
             post_link_args: LinkArgs::new(),
+            link_script: None,
             asm_args: Vec::new(),
             cpu: "generic".to_string(),
             features: String::new(),
@@ -922,13 +1032,14 @@ impl Default for TargetOptions {
             has_rpath: false,
             no_default_libraries: true,
             position_independent_executables: false,
+            static_position_independent_executables: false,
             needs_plt: false,
             relro_level: RelroLevel::None,
-            pre_link_objects_exe: Vec::new(),
-            pre_link_objects_exe_crt: Vec::new(),
-            pre_link_objects_dll: Vec::new(),
-            post_link_objects: Vec::new(),
-            post_link_objects_crt: Vec::new(),
+            pre_link_objects: Default::default(),
+            post_link_objects: Default::default(),
+            pre_link_objects_fallback: Default::default(),
+            post_link_objects_fallback: Default::default(),
+            crt_objects_fallback: None,
             late_link_args: LinkArgs::new(),
             late_link_args_dynamic: LinkArgs::new(),
             late_link_args_static: LinkArgs::new(),
@@ -939,6 +1050,8 @@ impl Default for TargetOptions {
             allow_asm: true,
             has_elf_tls: false,
             obj_is_bitcode: false,
+            forces_embed_bitcode: false,
+            bitcode_llvm_cmdline: String::new(),
             min_atomic_width: None,
             max_atomic_width: None,
             atomic_cas: true,
@@ -966,6 +1079,7 @@ impl Default for TargetOptions {
             llvm_abiname: "".to_string(),
             relax_elf_relocations: false,
             llvm_args: vec![],
+            use_ctors_section: false,
         }
     }
 }
@@ -1096,6 +1210,18 @@ impl Target {
                     Some(Ok(()))
                 })).unwrap_or(Ok(()))
             } );
+            ($key_name:ident, CodeModel) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                    match s.parse::<CodeModel>() {
+                        Ok(code_model) => base.options.$key_name = Some(code_model),
+                        _ => return Some(Err(format!("'{}' is not a valid code model. \
+                                                      Run `rustc --print code-models` to \
+                                                      see the list of supported values.", s))),
+                    }
+                    Some(Ok(()))
+                })).unwrap_or(Ok(()))
+            } );
             ($key_name:ident, TlsModel) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
                 obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
@@ -1180,6 +1306,45 @@ impl Target {
                     })
                 })).unwrap_or(Ok(()))
             } );
+            ($key_name:ident, crt_objects_fallback) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                obj.find(&name[..]).and_then(|o| o.as_string().and_then(|s| {
+                    match s.parse::<CrtObjectsFallback>() {
+                        Ok(fallback) => base.options.$key_name = Some(fallback),
+                        _ => return Some(Err(format!("'{}' is not a valid CRT objects fallback. \
+                                                      Use 'musl', 'mingw' or 'wasm'", s))),
+                    }
+                    Some(Ok(()))
+                })).unwrap_or(Ok(()))
+            } );
+            ($key_name:ident, link_objects) => ( {
+                let name = (stringify!($key_name)).replace("_", "-");
+                if let Some(val) = obj.find(&name[..]) {
+                    let obj = val.as_object().ok_or_else(|| format!("{}: expected a \
+                        JSON object with fields per CRT object kind.", name))?;
+                    let mut args = CrtObjects::new();
+                    for (k, v) in obj {
+                        let kind = LinkOutputKind::from_str(&k).ok_or_else(|| {
+                            format!("{}: '{}' is not a valid value for CRT object kind. \
+                                     Use '(dynamic,static)-(nopic,pic)-exe' or \
+                                     '(dynamic,static)-dylib'", name, k)
+                        })?;
+
+                        let v = v.as_array().ok_or_else(||
+                            format!("{}.{}: expected a JSON array", name, k)
+                        )?.iter().enumerate()
+                            .map(|(i,s)| {
+                                let s = s.as_string().ok_or_else(||
+                                    format!("{}.{}[{}]: expected a JSON string", name, k, i))?;
+                                Ok(s.to_owned())
+                            })
+                            .collect::<Result<Vec<_>, String>>()?;
+
+                        args.insert(kind, v);
+                    }
+                    base.options.$key_name = args;
+                }
+            } );
             ($key_name:ident, link_args) => ( {
                 let name = (stringify!($key_name)).replace("_", "-");
                 if let Some(val) = obj.find(&name[..]) {
@@ -1227,17 +1392,17 @@ impl Target {
         key!(is_builtin, bool);
         key!(linker, optional);
         key!(lld_flavor, LldFlavor)?;
+        key!(pre_link_objects, link_objects);
+        key!(post_link_objects, link_objects);
+        key!(pre_link_objects_fallback, link_objects);
+        key!(post_link_objects_fallback, link_objects);
+        key!(crt_objects_fallback, crt_objects_fallback)?;
         key!(pre_link_args, link_args);
-        key!(pre_link_args_crt, link_args);
-        key!(pre_link_objects_exe, list);
-        key!(pre_link_objects_exe_crt, list);
-        key!(pre_link_objects_dll, list);
         key!(late_link_args, link_args);
         key!(late_link_args_dynamic, link_args);
         key!(late_link_args_static, link_args);
-        key!(post_link_objects, list);
-        key!(post_link_objects_crt, list);
         key!(post_link_args, link_args);
+        key!(link_script, optional);
         key!(link_env, env);
         key!(link_env_remove, list);
         key!(asm_args, list);
@@ -1247,7 +1412,7 @@ impl Target {
         key!(only_cdylib, bool);
         key!(executables, bool);
         key!(relocation_model, RelocModel)?;
-        key!(code_model, optional);
+        key!(code_model, CodeModel)?;
         key!(tls_model, TlsModel)?;
         key!(disable_redzone, bool);
         key!(eliminate_frame_pointer, bool);
@@ -1271,6 +1436,7 @@ impl Target {
         key!(has_rpath, bool);
         key!(no_default_libraries, bool);
         key!(position_independent_executables, bool);
+        key!(static_position_independent_executables, bool);
         key!(needs_plt, bool);
         key!(relro_level, RelroLevel)?;
         key!(archive_format);
@@ -1278,6 +1444,8 @@ impl Target {
         key!(main_needs_argc_argv, bool);
         key!(has_elf_tls, bool);
         key!(obj_is_bitcode, bool);
+        key!(forces_embed_bitcode, bool);
+        key!(bitcode_llvm_cmdline);
         key!(max_atomic_width, Option<u64>);
         key!(min_atomic_width, Option<u64>);
         key!(atomic_cas, bool);
@@ -1304,6 +1472,7 @@ impl Target {
         key!(llvm_abiname);
         key!(relax_elf_relocations, bool);
         key!(llvm_args, list);
+        key!(use_ctors_section, bool);
 
         if let Some(array) = obj.find("abi-blacklist").and_then(Json::as_array) {
             for name in array.iter().filter_map(|abi| abi.as_string()) {
@@ -1454,17 +1623,17 @@ impl ToJson for Target {
         target_option_val!(is_builtin);
         target_option_val!(linker);
         target_option_val!(lld_flavor);
+        target_option_val!(pre_link_objects);
+        target_option_val!(post_link_objects);
+        target_option_val!(pre_link_objects_fallback);
+        target_option_val!(post_link_objects_fallback);
+        target_option_val!(crt_objects_fallback);
         target_option_val!(link_args - pre_link_args);
-        target_option_val!(link_args - pre_link_args_crt);
-        target_option_val!(pre_link_objects_exe);
-        target_option_val!(pre_link_objects_exe_crt);
-        target_option_val!(pre_link_objects_dll);
         target_option_val!(link_args - late_link_args);
         target_option_val!(link_args - late_link_args_dynamic);
         target_option_val!(link_args - late_link_args_static);
-        target_option_val!(post_link_objects);
-        target_option_val!(post_link_objects_crt);
         target_option_val!(link_args - post_link_args);
+        target_option_val!(link_script);
         target_option_val!(env - link_env);
         target_option_val!(link_env_remove);
         target_option_val!(asm_args);
@@ -1498,6 +1667,7 @@ impl ToJson for Target {
         target_option_val!(has_rpath);
         target_option_val!(no_default_libraries);
         target_option_val!(position_independent_executables);
+        target_option_val!(static_position_independent_executables);
         target_option_val!(needs_plt);
         target_option_val!(relro_level);
         target_option_val!(archive_format);
@@ -1505,6 +1675,8 @@ impl ToJson for Target {
         target_option_val!(main_needs_argc_argv);
         target_option_val!(has_elf_tls);
         target_option_val!(obj_is_bitcode);
+        target_option_val!(forces_embed_bitcode);
+        target_option_val!(bitcode_llvm_cmdline);
         target_option_val!(min_atomic_width);
         target_option_val!(max_atomic_width);
         target_option_val!(atomic_cas);
@@ -1531,6 +1703,7 @@ impl ToJson for Target {
         target_option_val!(llvm_abiname);
         target_option_val!(relax_elf_relocations);
         target_option_val!(llvm_args);
+        target_option_val!(use_ctors_section);
 
         if default.abi_blacklist != self.options.abi_blacklist {
             d.insert(

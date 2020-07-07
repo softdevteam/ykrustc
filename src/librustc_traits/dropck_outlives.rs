@@ -163,7 +163,7 @@ fn dtorck_constraint_for_ty<'tcx>(
 ) -> Result<(), NoSolution> {
     debug!("dtorck_constraint_for_ty({:?}, {:?}, {:?}, {:?})", span, for_ty, depth, ty);
 
-    if depth >= *tcx.sess.recursion_limit.get() {
+    if !tcx.sess.recursion_limit().value_within_limit(depth) {
         constraints.overflows.push(ty);
         return Ok(());
     }
@@ -271,9 +271,7 @@ fn dtorck_constraint_for_ty<'tcx>(
             constraints.dtorck_types.push(ty);
         }
 
-        ty::UnnormalizedProjection(..) => bug!("only used with chalk-engine"),
-
-        ty::Placeholder(..) | ty::Bound(..) | ty::Infer(..) | ty::Error => {
+        ty::Placeholder(..) | ty::Bound(..) | ty::Infer(..) | ty::Error(_) => {
             // By the time this code runs, all type variables ought to
             // be fully resolved.
             return Err(NoSolution);

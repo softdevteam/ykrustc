@@ -248,12 +248,11 @@ declare_lint_pass!(Attributes => [
     INLINE_ALWAYS,
     DEPRECATED_SEMVER,
     USELESS_ATTRIBUTE,
-    EMPTY_LINE_AFTER_OUTER_ATTR,
     UNKNOWN_CLIPPY_LINTS,
 ]);
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
-    fn check_attribute(&mut self, cx: &LateContext<'a, 'tcx>, attr: &'tcx Attribute) {
+impl<'tcx> LateLintPass<'tcx> for Attributes {
+    fn check_attribute(&mut self, cx: &LateContext<'tcx>, attr: &'tcx Attribute) {
         if let Some(items) = &attr.meta_item_list() {
             if let Some(ident) = attr.ident() {
                 match &*ident.as_str() {
@@ -279,7 +278,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
         }
     }
 
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
+    fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
         if is_relevant_item(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
@@ -351,13 +350,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
+    fn check_impl_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx ImplItem<'_>) {
         if is_relevant_impl(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
+    fn check_trait_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx TraitItem<'_>) {
         if is_relevant_trait(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
@@ -365,7 +364,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
 }
 
 #[allow(clippy::single_match_else)]
-fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
+fn check_clippy_lint_names(cx: &LateContext<'_>, items: &[NestedMetaItem]) {
     let lint_store = cx.lints();
     for lint in items {
         if_chain! {
@@ -417,7 +416,7 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
     }
 }
 
-fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item<'_>) -> bool {
+fn is_relevant_item(cx: &LateContext<'_>, item: &Item<'_>) -> bool {
     if let ItemKind::Fn(_, _, eid) = item.kind {
         is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value)
     } else {
@@ -425,14 +424,14 @@ fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item<'_>) -> bool {
     }
 }
 
-fn is_relevant_impl(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) -> bool {
+fn is_relevant_impl(cx: &LateContext<'_>, item: &ImplItem<'_>) -> bool {
     match item.kind {
         ImplItemKind::Fn(_, eid) => is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value),
         _ => false,
     }
 }
 
-fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem<'_>) -> bool {
+fn is_relevant_trait(cx: &LateContext<'_>, item: &TraitItem<'_>) -> bool {
     match item.kind {
         TraitItemKind::Fn(_, TraitFn::Required(_)) => true,
         TraitItemKind::Fn(_, TraitFn::Provided(eid)) => {
@@ -442,7 +441,7 @@ fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem<'_>) -> bool {
     }
 }
 
-fn is_relevant_block(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, block: &Block<'_>) -> bool {
+fn is_relevant_block(cx: &LateContext<'_>, tables: &ty::TypeckTables<'_>, block: &Block<'_>) -> bool {
     if let Some(stmt) = block.stmts.first() {
         match &stmt.kind {
             StmtKind::Local(_) => true,
@@ -454,7 +453,7 @@ fn is_relevant_block(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, bl
     }
 }
 
-fn is_relevant_expr(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, expr: &Expr<'_>) -> bool {
+fn is_relevant_expr(cx: &LateContext<'_>, tables: &ty::TypeckTables<'_>, expr: &Expr<'_>) -> bool {
     match &expr.kind {
         ExprKind::Block(block, _) => is_relevant_block(cx, tables, block),
         ExprKind::Ret(Some(e)) => is_relevant_expr(cx, tables, e),
@@ -474,42 +473,12 @@ fn is_relevant_expr(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, exp
     }
 }
 
-fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attribute]) {
+fn check_attrs(cx: &LateContext<'_>, span: Span, name: Name, attrs: &[Attribute]) {
     if span.from_expansion() {
         return;
     }
 
     for attr in attrs {
-        let attr_item = if let AttrKind::Normal(ref attr) = attr.kind {
-            attr
-        } else {
-            continue;
-        };
-
-        if attr.style == AttrStyle::Outer {
-            if attr_item.args.inner_tokens().is_empty() || !is_present_in_source(cx, attr.span) {
-                return;
-            }
-
-            let begin_of_attr_to_item = Span::new(attr.span.lo(), span.lo(), span.ctxt());
-            let end_of_attr_to_item = Span::new(attr.span.hi(), span.lo(), span.ctxt());
-
-            if let Some(snippet) = snippet_opt(cx, end_of_attr_to_item) {
-                let lines = snippet.split('\n').collect::<Vec<_>>();
-                let lines = without_block_comments(lines);
-
-                if lines.iter().filter(|l| l.trim().is_empty()).count() > 2 {
-                    span_lint(
-                        cx,
-                        EMPTY_LINE_AFTER_OUTER_ATTR,
-                        begin_of_attr_to_item,
-                        "Found an empty line after an outer attribute. \
-                         Perhaps you forgot to add a `!` to make it an inner attribute?",
-                    );
-                }
-            }
-        }
-
         if let Some(values) = attr.meta_item_list() {
             if values.len() != 1 || !attr.check_name(sym!(inline)) {
                 continue;
@@ -529,7 +498,7 @@ fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attrib
     }
 }
 
-fn check_semver(cx: &LateContext<'_, '_>, span: Span, lit: &Lit) {
+fn check_semver(cx: &LateContext<'_>, span: Span, lit: &Lit) {
     if let LitKind::Str(is, _) = lit.kind {
         if Version::parse(&is.as_str()).is_ok() {
             return;
@@ -551,12 +520,54 @@ fn is_word(nmi: &NestedMetaItem, expected: Symbol) -> bool {
     }
 }
 
-declare_lint_pass!(EarlyAttributes => [DEPRECATED_CFG_ATTR, MISMATCHED_TARGET_OS]);
+declare_lint_pass!(EarlyAttributes => [
+    DEPRECATED_CFG_ATTR,
+    MISMATCHED_TARGET_OS,
+    EMPTY_LINE_AFTER_OUTER_ATTR,
+]);
 
 impl EarlyLintPass for EarlyAttributes {
+    fn check_item(&mut self, cx: &EarlyContext<'_>, item: &rustc_ast::ast::Item) {
+        check_empty_line_after_outer_attr(cx, item);
+    }
+
     fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
         check_deprecated_cfg_attr(cx, attr);
         check_mismatched_target_os(cx, attr);
+    }
+}
+
+fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::ast::Item) {
+    for attr in &item.attrs {
+        let attr_item = if let AttrKind::Normal(ref attr) = attr.kind {
+            attr
+        } else {
+            return;
+        };
+
+        if attr.style == AttrStyle::Outer {
+            if attr_item.args.inner_tokens().is_empty() || !is_present_in_source(cx, attr.span) {
+                return;
+            }
+
+            let begin_of_attr_to_item = Span::new(attr.span.lo(), item.span.lo(), item.span.ctxt());
+            let end_of_attr_to_item = Span::new(attr.span.hi(), item.span.lo(), item.span.ctxt());
+
+            if let Some(snippet) = snippet_opt(cx, end_of_attr_to_item) {
+                let lines = snippet.split('\n').collect::<Vec<_>>();
+                let lines = without_block_comments(lines);
+
+                if lines.iter().filter(|l| l.trim().is_empty()).count() > 2 {
+                    span_lint(
+                        cx,
+                        EMPTY_LINE_AFTER_OUTER_ATTR,
+                        begin_of_attr_to_item,
+                        "Found an empty line after an outer attribute. \
+                        Perhaps you forgot to add a `!` to make it an inner attribute?",
+                    );
+                }
+            }
+        }
     }
 }
 

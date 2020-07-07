@@ -26,9 +26,6 @@ const LICENSES: &[&str] = &[
 const EXCEPTIONS: &[(&str, &str)] = &[
     ("mdbook", "MPL-2.0"),                  // mdbook
     ("openssl", "Apache-2.0"),              // cargo, mdbook
-    ("toml-query", "MPL-2.0"),              // mdbook
-    ("toml-query_derive", "MPL-2.0"),       // mdbook
-    ("is-match", "MPL-2.0"),                // mdbook
     ("rdrand", "ISC"),                      // mdbook, rustfmt
     ("fuchsia-cprng", "BSD-3-Clause"),      // mdbook, rustfmt
     ("fuchsia-zircon-sys", "BSD-3-Clause"), // rustdoc, rustc, cargo
@@ -45,9 +42,6 @@ const EXCEPTIONS: &[(&str, &str)] = &[
     ("bitmaps", "MPL-2.0+"),                // cargo via im-rc
     // FIXME: this dependency violates the documentation comment above:
     ("fortanix-sgx-abi", "MPL-2.0"), // libstd but only for `sgx` target
-    ("dunce", "CC0-1.0"),            // mdbook-linkcheck
-    ("codespan-reporting", "Apache-2.0"), // mdbook-linkcheck
-    ("codespan", "Apache-2.0"),      // mdbook-linkcheck
     ("crossbeam-channel", "MIT/Apache-2.0 AND BSD-2-Clause"), // cargo
 ];
 
@@ -77,9 +71,10 @@ const WHITELIST: &[&str] = &[
     "block-padding",
     "byte-tools",
     "byteorder",
-    "c2-chacha",
     "cc",
     "cfg-if",
+    "chalk-derive",
+    "chalk-ir",
     "cloudabi",
     "cmake",
     "compiler_builtins",
@@ -124,6 +119,7 @@ const WHITELIST: &[&str] = &[
     "miniz_oxide",
     "nodrop",
     "num_cpus",
+    "once_cell",
     "opaque-debug",
     "parking_lot",
     "parking_lot_core",
@@ -143,7 +139,6 @@ const WHITELIST: &[&str] = &[
     "rand_pcg",
     "rand_xorshift",
     "redox_syscall",
-    "redox_termios",
     "regex",
     "regex-syntax",
     "remove_dir_all",
@@ -166,17 +161,14 @@ const WHITELIST: &[&str] = &[
     "synstructure",
     "tempfile",
     "termcolor",
-    "termion",
     "termize",
     "thread_local",
     "typenum",
-    "ucd-util",
     "unicode-normalization",
     "unicode-script",
     "unicode-security",
     "unicode-width",
     "unicode-xid",
-    "utf8-ranges",
     "vcpkg",
     "version_check",
     "wasi",

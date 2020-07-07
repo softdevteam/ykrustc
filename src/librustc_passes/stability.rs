@@ -7,7 +7,7 @@ use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
+use rustc_hir::def_id::{DefId, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{Generics, HirId, Item, StructField, Variant};
 use rustc_middle::hir::map::Map;
@@ -331,12 +331,12 @@ impl<'a, 'tcx> Visitor<'tcx> for Annotator<'a, 'tcx> {
     }
 }
 
-struct MissingStabilityAnnotations<'a, 'tcx> {
+struct MissingStabilityAnnotations<'tcx> {
     tcx: TyCtxt<'tcx>,
-    access_levels: &'a AccessLevels,
+    access_levels: &'tcx AccessLevels,
 }
 
-impl<'a, 'tcx> MissingStabilityAnnotations<'a, 'tcx> {
+impl<'tcx> MissingStabilityAnnotations<'tcx> {
     fn check_missing_stability(&self, hir_id: HirId, span: Span) {
         let stab = self.tcx.stability().local_stability(hir_id);
         let is_error =
@@ -349,7 +349,7 @@ impl<'a, 'tcx> MissingStabilityAnnotations<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'a, 'tcx> {
+impl<'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'tcx> {
     type Map = Map<'tcx>;
 
     fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
@@ -472,7 +472,7 @@ fn new_index(tcx: TyCtxt<'tcx>) -> Index<'tcx> {
 
 /// Cross-references the feature names of unstable APIs with enabled
 /// features and possibly prints errors.
-fn check_mod_unstable_api_usage(tcx: TyCtxt<'_>, module_def_id: DefId) {
+fn check_mod_unstable_api_usage(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
     tcx.hir().visit_item_likes_in_module(module_def_id, &mut Checker { tcx }.as_deep_visitor());
 }
 

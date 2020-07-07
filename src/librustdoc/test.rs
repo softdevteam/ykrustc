@@ -28,6 +28,7 @@ use std::str;
 
 use crate::clean::Attributes;
 use crate::config::Options;
+use crate::core::init_lints;
 use crate::html::markdown::{self, ErrorCodes, Ignore, LangString};
 use crate::passes::span_of_attrs;
 
@@ -42,47 +43,22 @@ pub struct TestOptions {
     pub attrs: Vec<String>,
 }
 
-pub fn run(options: Options) -> i32 {
+pub fn run(options: Options) -> Result<(), String> {
     let input = config::Input::File(options.input.clone());
 
-    let warnings_lint_name = lint::builtin::WARNINGS.name;
     let invalid_codeblock_attribute_name = rustc_lint::builtin::INVALID_CODEBLOCK_ATTRIBUTE.name;
 
     // In addition to those specific lints, we also need to whitelist those given through
     // command line, otherwise they'll get ignored and we don't want that.
-    let mut whitelisted_lints =
-        vec![warnings_lint_name.to_owned(), invalid_codeblock_attribute_name.to_owned()];
+    let whitelisted_lints = vec![invalid_codeblock_attribute_name.to_owned()];
 
-    whitelisted_lints.extend(options.lint_opts.iter().map(|(lint, _)| lint).cloned());
-
-    let lints = || {
-        lint::builtin::HardwiredLints::get_lints()
-            .into_iter()
-            .chain(rustc_lint::SoftLints::get_lints().into_iter())
-    };
-
-    let lint_opts = lints()
-        .filter_map(|lint| {
-            if lint.name == warnings_lint_name || lint.name == invalid_codeblock_attribute_name {
-                None
-            } else {
-                Some((lint.name_lower(), lint::Allow))
-            }
-        })
-        .chain(options.lint_opts.clone().into_iter())
-        .collect::<Vec<_>>();
-
-    let lint_caps = lints()
-        .filter_map(|lint| {
-            // We don't want to whitelist *all* lints so let's
-            // ignore those ones.
-            if whitelisted_lints.iter().any(|l| lint.name == l) {
-                None
-            } else {
-                Some((lint::LintId::of(lint), lint::Allow))
-            }
-        })
-        .collect();
+    let (lint_opts, lint_caps) = init_lints(whitelisted_lints, options.lint_opts.clone(), |lint| {
+        if lint.name == invalid_codeblock_attribute_name {
+            None
+        } else {
+            Some((lint.name_lower(), lint::Allow))
+        }
+    });
 
     let crate_types =
         if options.proc_macro_crate { vec![CrateType::ProcMacro] } else { vec![CrateType::Rlib] };
@@ -138,7 +114,7 @@ pub fn run(options: Options) -> i32 {
                 options,
                 false,
                 opts,
-                Some(compiler.source_map().clone()),
+                Some(compiler.session().parse_sess.clone_source_map()),
                 None,
                 enable_per_target_ignores,
             );
@@ -175,7 +151,7 @@ pub fn run(options: Options) -> i32 {
     });
     let tests = match tests {
         Ok(tests) => tests,
-        Err(ErrorReported) => return 1,
+        Err(ErrorReported) => return Err(String::new()),
     };
 
     test_args.insert(0, "rustdoctest".to_string());
@@ -186,11 +162,11 @@ pub fn run(options: Options) -> i32 {
         Some(testing::Options::new().display_output(display_warnings)),
     );
 
-    0
+    Ok(())
 }
 
 // Look for `#![doc(test(no_crate_inject))]`, used by crates in the std facade.
-fn scrape_test_config(krate: &::rustc_hir::Crate) -> TestOptions {
+fn scrape_test_config(krate: &::rustc_hir::Crate<'_>) -> TestOptions {
     use rustc_ast_pretty::pprust;
 
     let mut opts =
@@ -279,8 +255,7 @@ fn run_test(
 
     let rustc_binary = options
         .test_builder
-        .as_ref()
-        .map(|v| &**v)
+        .as_deref()
         .unwrap_or_else(|| rustc_interface::util::rustc_path().expect("found rustc"));
     let mut compiler = Command::new(&rustc_binary);
     compiler.arg("--crate-type").arg("bin");
@@ -701,7 +676,11 @@ impl Collector {
     }
 
     fn generate_name(&self, line: usize, filename: &FileName) -> String {
-        format!("{} - {} (line {})", filename, self.names.join("::"), line)
+        let mut item_path = self.names.join("::");
+        if !item_path.is_empty() {
+            item_path.push(' ');
+        }
+        format!("{} - {}(line {})", filename, item_path, line)
     }
 
     pub fn set_position(&mut self, position: Span) {
@@ -713,7 +692,7 @@ impl Collector {
             let filename = source_map.span_to_filename(self.position);
             if let FileName::Real(ref filename) = filename {
                 if let Ok(cur_dir) = env::current_dir() {
-                    if let Ok(path) = filename.strip_prefix(&cur_dir) {
+                    if let Ok(path) = filename.local_path().strip_prefix(&cur_dir) {
                         return path.to_owned().into();
                     }
                 }
@@ -743,7 +722,7 @@ impl Tester for Collector {
         // FIXME(#44940): if doctests ever support path remapping, then this filename
         // needs to be the result of `SourceMap::span_to_unmapped_path`.
         let path = match &filename {
-            FileName::Real(path) => path.clone(),
+            FileName::Real(path) => path.local_path().to_path_buf(),
             _ => PathBuf::from(r"doctest.rs"),
         };
 
@@ -994,7 +973,7 @@ impl<'a, 'hir, 'tcx> intravisit::Visitor<'hir> for HirCollector<'a, 'hir, 'tcx> 
         intravisit::NestedVisitorMap::All(self.map)
     }
 
-    fn visit_item(&mut self, item: &'hir hir::Item) {
+    fn visit_item(&mut self, item: &'hir hir::Item<'_>) {
         let name = if let hir::ItemKind::Impl { ref self_ty, .. } = item.kind {
             rustc_hir_pretty::id_to_string(&self.map, self_ty.hir_id)
         } else {
@@ -1006,19 +985,19 @@ impl<'a, 'hir, 'tcx> intravisit::Visitor<'hir> for HirCollector<'a, 'hir, 'tcx> 
         });
     }
 
-    fn visit_trait_item(&mut self, item: &'hir hir::TraitItem) {
+    fn visit_trait_item(&mut self, item: &'hir hir::TraitItem<'_>) {
         self.visit_testable(item.ident.to_string(), &item.attrs, item.hir_id, item.span, |this| {
             intravisit::walk_trait_item(this, item);
         });
     }
 
-    fn visit_impl_item(&mut self, item: &'hir hir::ImplItem) {
+    fn visit_impl_item(&mut self, item: &'hir hir::ImplItem<'_>) {
         self.visit_testable(item.ident.to_string(), &item.attrs, item.hir_id, item.span, |this| {
             intravisit::walk_impl_item(this, item);
         });
     }
 
-    fn visit_foreign_item(&mut self, item: &'hir hir::ForeignItem) {
+    fn visit_foreign_item(&mut self, item: &'hir hir::ForeignItem<'_>) {
         self.visit_testable(item.ident.to_string(), &item.attrs, item.hir_id, item.span, |this| {
             intravisit::walk_foreign_item(this, item);
         });
@@ -1026,8 +1005,8 @@ impl<'a, 'hir, 'tcx> intravisit::Visitor<'hir> for HirCollector<'a, 'hir, 'tcx> 
 
     fn visit_variant(
         &mut self,
-        v: &'hir hir::Variant,
-        g: &'hir hir::Generics,
+        v: &'hir hir::Variant<'_>,
+        g: &'hir hir::Generics<'_>,
         item_id: hir::HirId,
     ) {
         self.visit_testable(v.ident.to_string(), &v.attrs, v.id, v.span, |this| {
@@ -1035,13 +1014,13 @@ impl<'a, 'hir, 'tcx> intravisit::Visitor<'hir> for HirCollector<'a, 'hir, 'tcx> 
         });
     }
 
-    fn visit_struct_field(&mut self, f: &'hir hir::StructField) {
+    fn visit_struct_field(&mut self, f: &'hir hir::StructField<'_>) {
         self.visit_testable(f.ident.to_string(), &f.attrs, f.hir_id, f.span, |this| {
             intravisit::walk_struct_field(this, f);
         });
     }
 
-    fn visit_macro_def(&mut self, macro_def: &'hir hir::MacroDef) {
+    fn visit_macro_def(&mut self, macro_def: &'hir hir::MacroDef<'_>) {
         self.visit_testable(
             macro_def.ident.to_string(),
             &macro_def.attrs,

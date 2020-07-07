@@ -517,6 +517,11 @@ pub trait Read {
     ///    reader will *always* no longer be able to produce bytes.
     /// 2. The buffer specified was 0 bytes in length.
     ///
+    /// It is not an error if the returned value `n` is smaller than the buffer size,
+    /// even when the reader is not at the end of the stream yet.
+    /// This may happen for example because fewer bytes are actually available right now
+    /// (e. g. being close to end-of-file) or because read() was interrupted by a signal.
+    ///
     /// No guarantees are provided about the contents of `buf` when this
     /// function is called, implementations cannot rely on any property of the
     /// contents of `buf` being true. It is recommended that *implementations*
@@ -1878,6 +1883,10 @@ pub trait BufRead: Read {
     ///
     /// If successful, this function will return the total number of bytes read.
     ///
+    /// This function is blocking and should be used carefully: it is possible for
+    /// an attacker to continuously send bytes without ever sending the delimiter
+    /// or EOF.
+    ///
     /// # Errors
     ///
     /// This function will ignore all instances of [`ErrorKind::Interrupted`] and
@@ -1939,6 +1948,10 @@ pub trait BufRead: Read {
     /// If successful, this function will return the total number of bytes read.
     ///
     /// If this function returns `Ok(0)`, the stream has reached EOF.
+    ///
+    /// This function is blocking and should be used carefully: it is possible for
+    /// an attacker to continuously send bytes without ever sending a newline
+    /// or EOF.
     ///
     /// # Errors
     ///

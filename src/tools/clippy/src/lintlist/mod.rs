@@ -67,6 +67,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "bit_mask",
     },
     Lint {
+        name: "bind_instead_of_map",
+        group: "complexity",
+        desc: "using `Option.and_then(|x| Some(y))`, which is more succinctly expressed as `map(|x| y)`",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "blacklisted_name",
         group: "style",
         desc: "usage of a blacklisted/placeholder name",
@@ -74,18 +81,11 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "blacklisted_name",
     },
     Lint {
-        name: "block_in_if_condition_expr",
+        name: "blocks_in_if_conditions",
         group: "style",
-        desc: "braces that can be eliminated in conditions, e.g., `if { true } ...`",
+        desc: "useless or complex blocks that can be eliminated in conditions",
         deprecation: None,
-        module: "block_in_if_condition",
-    },
-    Lint {
-        name: "block_in_if_condition_stmt",
-        group: "style",
-        desc: "complex blocks in conditions, e.g., `if { let x = true; x } ...`",
-        deprecation: None,
-        module: "block_in_if_condition",
+        module: "blocks_in_if_conditions",
     },
     Lint {
         name: "bool_comparison",
@@ -166,7 +166,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "cast_ptr_alignment",
-        group: "correctness",
+        group: "pedantic",
         desc: "cast from a pointer to a more-strictly-aligned pointer",
         deprecation: None,
         module: "types",
@@ -522,6 +522,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "methods",
     },
     Lint {
+        name: "expect_used",
+        group: "restriction",
+        desc: "using `.expect()` on `Result` or `Option`, which might be better handled",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "expl_impl_clone_on_copy",
         group: "pedantic",
         desc: "implementing `Clone` explicitly on `Copy` types",
@@ -676,16 +683,9 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "loops",
     },
     Lint {
-        name: "for_loop_over_option",
+        name: "for_loops_over_fallibles",
         group: "correctness",
-        desc: "for-looping over an `Option`, which is more clearly expressed as an `if let`",
-        deprecation: None,
-        module: "loops",
-    },
-    Lint {
-        name: "for_loop_over_result",
-        group: "correctness",
-        desc: "for-looping over a `Result`, which is more clearly expressed as an `if let`",
+        desc: "for-looping over an `Option` or a `Result`, which is more clearly expressed as an `if let`",
         deprecation: None,
         module: "loops",
     },
@@ -723,13 +723,6 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "using `.get().unwrap()` or `.get_mut().unwrap()` when using `[]` would work instead",
         deprecation: None,
         module: "methods",
-    },
-    Lint {
-        name: "identity_conversion",
-        group: "complexity",
-        desc: "using always-identical `Into`/`From`/`IntoIter` conversions",
-        deprecation: None,
-        module: "identity_conversion",
     },
     Lint {
         name: "identity_op",
@@ -942,6 +935,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "loops",
     },
     Lint {
+        name: "iter_next_slice",
+        group: "style",
+        desc: "using `.iter().next()` on a sliced array, which can be shortened to just `.get()`",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "iter_nth",
         group: "perf",
         desc: "using `.iter().nth()` on a standard library type with O(1) element access",
@@ -1023,7 +1023,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         group: "style",
         desc: "creating a let-binding and then immediately returning it like `let x = expr; x` at the end of a block",
         deprecation: None,
-        module: "returns",
+        module: "let_and_return",
     },
     Lint {
         name: "let_underscore_lock",
@@ -1082,11 +1082,25 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "main_recursion",
     },
     Lint {
+        name: "manual_async_fn",
+        group: "style",
+        desc: "manual implementations of `async` functions can be simplified using the dedicated syntax",
+        deprecation: None,
+        module: "manual_async_fn",
+    },
+    Lint {
         name: "manual_memcpy",
         group: "perf",
         desc: "manually copying items between slices",
         deprecation: None,
         module: "loops",
+    },
+    Lint {
+        name: "manual_non_exhaustive",
+        group: "style",
+        desc: "manual implementations of the non-exhaustive pattern can be simplified using #[non_exhaustive]",
+        deprecation: None,
+        module: "manual_non_exhaustive",
     },
     Lint {
         name: "manual_saturating_arithmetic",
@@ -1131,6 +1145,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "methods",
     },
     Lint {
+        name: "map_unwrap_or",
+        group: "pedantic",
+        desc: "using `.map(f).unwrap_or(a)` or `.map(f).unwrap_or_else(func)`, which are more succinctly expressed as `map_or(a, f)` or `map_or_else(a, f)`",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "match_as_ref",
         group: "complexity",
         desc: "a `match` on an Option value instead of using `as_ref()` or `as_mut`",
@@ -1146,7 +1167,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "match_on_vec_items",
-        group: "correctness",
+        group: "pedantic",
         desc: "matching on vector elements can panic",
         deprecation: None,
         module: "match_on_vec_items",
@@ -1181,8 +1202,15 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "match_wild_err_arm",
-        group: "style",
+        group: "pedantic",
         desc: "a `match` with `Err(_)` arm and take drastic actions",
+        deprecation: None,
+        module: "matches",
+    },
+    Lint {
+        name: "match_wildcard_for_single_variants",
+        group: "pedantic",
+        desc: "a wildcard enum match for a single variant",
         deprecation: None,
         module: "matches",
     },
@@ -1565,13 +1593,6 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "eq_op",
     },
     Lint {
-        name: "option_and_then_some",
-        group: "complexity",
-        desc: "using `Option.and_then(|x| Some(y))`, which is more succinctly expressed as `map(|x| y)`",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
         name: "option_as_ref_deref",
         group: "complexity",
         desc: "using `as_ref().map(Deref::deref)`, which is more succinctly expressed as `as_deref()`",
@@ -1584,13 +1605,6 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "using `option_env!(...).unwrap()` to get environment variable",
         deprecation: None,
         module: "option_env_unwrap",
-    },
-    Lint {
-        name: "option_expect_used",
-        group: "restriction",
-        desc: "using `Option.expect()`, which might be better handled",
-        deprecation: None,
-        module: "methods",
     },
     Lint {
         name: "option_map_or_none",
@@ -1607,32 +1621,11 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "map_unit_fn",
     },
     Lint {
-        name: "option_map_unwrap_or",
-        group: "pedantic",
-        desc: "using `Option.map(f).unwrap_or(a)`, which is more succinctly expressed as `map_or(a, f)`",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
-        name: "option_map_unwrap_or_else",
-        group: "pedantic",
-        desc: "using `Option.map(f).unwrap_or_else(g)`, which is more succinctly expressed as `map_or_else(g, f)`",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
         name: "option_option",
         group: "pedantic",
         desc: "usage of `Option<Option<T>>`",
         deprecation: None,
         module: "types",
-    },
-    Lint {
-        name: "option_unwrap_used",
-        group: "restriction",
-        desc: "using `Option.unwrap()`, which should at least get a better message using `expect()`",
-        deprecation: None,
-        module: "methods",
     },
     Lint {
         name: "or_fun_call",
@@ -1749,7 +1742,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     Lint {
         name: "pub_enum_variant_names",
         group: "pedantic",
-        desc: "enums where all variants share a prefix/postfix",
+        desc: "public enums where all variants share a prefix/postfix",
         deprecation: None,
         module: "enum_variants",
     },
@@ -1873,13 +1866,6 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "matches",
     },
     Lint {
-        name: "result_expect_used",
-        group: "restriction",
-        desc: "using `Result.expect()`, which might be better handled",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
         name: "result_map_or_into_option",
         group: "style",
         desc: "using `Result.map_or(None, Some)`, which is more succinctly expressed as `ok()`",
@@ -1894,25 +1880,11 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "map_unit_fn",
     },
     Lint {
-        name: "result_map_unwrap_or_else",
-        group: "pedantic",
-        desc: "using `Result.map(f).unwrap_or_else(g)`, which is more succinctly expressed as `.map_or_else(g, f)`",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
-        name: "result_unwrap_used",
-        group: "restriction",
-        desc: "using `Result.unwrap()`, which might be better handled",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
-        name: "reverse_range_loop",
+        name: "reversed_empty_ranges",
         group: "correctness",
-        desc: "iteration over an empty range, such as `10..0` or `5..5`",
+        desc: "reversing the limits of range expressions, resulting in empty ranges",
         deprecation: None,
-        module: "loops",
+        module: "ranges",
     },
     Lint {
         name: "same_functions_in_if_condition",
@@ -2328,6 +2300,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "no_effect",
     },
     Lint {
+        name: "unnecessary_sort_by",
+        group: "complexity",
+        desc: "Use of `Vec::sort_by` when `Vec::sort_by_key` or `Vec::sort` would be clearer",
+        deprecation: None,
+        module: "unnecessary_sort_by",
+    },
+    Lint {
         name: "unnecessary_unwrap",
         group: "complexity",
         desc: "checks for calls of `unwrap[_err]()` that cannot fail",
@@ -2347,6 +2326,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "tuple patterns with a wildcard pattern (`_`) is next to a rest pattern (`..`)",
         deprecation: None,
         module: "misc_early",
+    },
+    Lint {
+        name: "unnested_or_patterns",
+        group: "pedantic",
+        desc: "unnested or-patterns, e.g., `Foo(Bar) | Foo(Baz) instead of `Foo(Bar | Baz)`",
+        deprecation: None,
+        module: "unnested_or_patterns",
     },
     Lint {
         name: "unreachable",
@@ -2412,6 +2398,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "returns",
     },
     Lint {
+        name: "unwrap_used",
+        group: "restriction",
+        desc: "using `.unwrap()` on `Result` or `Option`, which should at least get a better message using `expect()`",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "use_debug",
         group: "restriction",
         desc: "use of `Debug`-based formatting",
@@ -2447,6 +2440,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "attrs",
     },
     Lint {
+        name: "useless_conversion",
+        group: "complexity",
+        desc: "calls to `Into`, `TryInto`, `From`, `TryFrom`, `IntoIter` that performs useless conversions to the same type",
+        deprecation: None,
+        module: "useless_conversion",
+    },
+    Lint {
         name: "useless_format",
         group: "complexity",
         desc: "useless use of `format!`",
@@ -2455,7 +2455,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "useless_let_if_seq",
-        group: "style",
+        group: "nursery",
         desc: "unidiomatic `let mut` declaration followed by initialization in `if`",
         deprecation: None,
         module: "let_if_seq",
@@ -2480,6 +2480,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "usage of `Vec<Box<T>>` where T: Sized, vector elements are already on the heap",
         deprecation: None,
         module: "types",
+    },
+    Lint {
+        name: "vec_resize_to_zero",
+        group: "correctness",
+        desc: "emptying a vector with `resize(0, an_int)` instead of `clear()` is probably an argument inversion mistake",
+        deprecation: None,
+        module: "vec_resize_to_zero",
     },
     Lint {
         name: "verbose_bit_mask",

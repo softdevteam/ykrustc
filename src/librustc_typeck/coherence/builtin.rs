@@ -4,12 +4,13 @@
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_hir::lang_items::UnsizeTraitLangItem;
+use rustc_hir::lang_items::{
+    CoerceUnsizedTraitLangItem, DispatchFromDynTraitLangItem, UnsizeTraitLangItem,
+};
 use rustc_hir::ItemKind;
 use rustc_infer::infer;
 use rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use rustc_infer::infer::{RegionckMode, TyCtxtInferExt};
-use rustc_middle::middle::region;
 use rustc_middle::ty::adjustment::CoerceUnsizedInfo;
 use rustc_middle::ty::TypeFoldable;
 use rustc_middle::ty::{self, Ty, TyCtxt};
@@ -49,7 +50,7 @@ impl<'tcx> Checker<'tcx> {
 
 fn visit_implementation_of_drop(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
     // Destructors only work on nominal types.
-    if let ty::Adt(..) | ty::Error = tcx.type_of(impl_did).kind {
+    if let ty::Adt(..) | ty::Error(_) = tcx.type_of(impl_did).kind {
         return;
     }
 
@@ -145,10 +146,10 @@ fn visit_implementation_of_coerce_unsized(tcx: TyCtxt<'tcx>, impl_did: LocalDefI
 fn visit_implementation_of_dispatch_from_dyn(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
     debug!("visit_implementation_of_dispatch_from_dyn: impl_did={:?}", impl_did);
 
-    let dispatch_from_dyn_trait = tcx.lang_items().dispatch_from_dyn_trait().unwrap();
-
     let impl_hir_id = tcx.hir().as_local_hir_id(impl_did);
     let span = tcx.hir().span(impl_hir_id);
+
+    let dispatch_from_dyn_trait = tcx.require_lang_item(DispatchFromDynTraitLangItem, Some(span));
 
     let source = tcx.type_of(impl_did);
     assert!(!source.has_escaping_bound_vars());
@@ -291,11 +292,9 @@ fn visit_implementation_of_dispatch_from_dyn(tcx: TyCtxt<'_>, impl_did: LocalDef
                     }
 
                     // Finally, resolve all regions.
-                    let region_scope_tree = region::ScopeTree::default();
                     let outlives_env = OutlivesEnvironment::new(param_env);
                     infcx.resolve_regions_and_report_errors(
                         impl_did.to_def_id(),
-                        &region_scope_tree,
                         &outlives_env,
                         RegionckMode::default(),
                     );
@@ -314,14 +313,16 @@ fn visit_implementation_of_dispatch_from_dyn(tcx: TyCtxt<'_>, impl_did: LocalDef
 
 pub fn coerce_unsized_info(tcx: TyCtxt<'tcx>, impl_did: DefId) -> CoerceUnsizedInfo {
     debug!("compute_coerce_unsized_info(impl_did={:?})", impl_did);
-    let coerce_unsized_trait = tcx.lang_items().coerce_unsized_trait().unwrap();
+
+    // this provider should only get invoked for local def-ids
+    let impl_hir_id = tcx.hir().as_local_hir_id(impl_did.expect_local());
+    let span = tcx.hir().span(impl_hir_id);
+
+    let coerce_unsized_trait = tcx.require_lang_item(CoerceUnsizedTraitLangItem, Some(span));
 
     let unsize_trait = tcx.lang_items().require(UnsizeTraitLangItem).unwrap_or_else(|err| {
         tcx.sess.fatal(&format!("`CoerceUnsized` implementation {}", err));
     });
-
-    // this provider should only get invoked for local def-ids
-    let impl_hir_id = tcx.hir().as_local_hir_id(impl_did.expect_local());
 
     let source = tcx.type_of(impl_did);
     let trait_ref = tcx.impl_trait_ref(impl_did).unwrap();
@@ -329,7 +330,6 @@ pub fn coerce_unsized_info(tcx: TyCtxt<'tcx>, impl_did: DefId) -> CoerceUnsizedI
     let target = trait_ref.substs.type_at(1);
     debug!("visit_implementation_of_coerce_unsized: {:?} -> {:?} (bound)", source, target);
 
-    let span = tcx.hir().span(impl_hir_id);
     let param_env = tcx.param_env(impl_did);
     assert!(!source.has_escaping_bound_vars());
 
@@ -549,14 +549,8 @@ pub fn coerce_unsized_info(tcx: TyCtxt<'tcx>, impl_did: DefId) -> CoerceUnsizedI
         }
 
         // Finally, resolve all regions.
-        let region_scope_tree = region::ScopeTree::default();
         let outlives_env = OutlivesEnvironment::new(param_env);
-        infcx.resolve_regions_and_report_errors(
-            impl_did,
-            &region_scope_tree,
-            &outlives_env,
-            RegionckMode::default(),
-        );
+        infcx.resolve_regions_and_report_errors(impl_did, &outlives_env, RegionckMode::default());
 
         CoerceUnsizedInfo { custom_kind: kind }
     })

@@ -126,6 +126,7 @@ pub enum FailMode {
 pub enum CompareMode {
     Nll,
     Polonius,
+    Chalk,
 }
 
 impl CompareMode {
@@ -133,6 +134,7 @@ impl CompareMode {
         match *self {
             CompareMode::Nll => "nll",
             CompareMode::Polonius => "polonius",
+            CompareMode::Chalk => "chalk",
         }
     }
 
@@ -140,6 +142,7 @@ impl CompareMode {
         match s.as_str() {
             "nll" => CompareMode::Nll,
             "polonius" => CompareMode::Polonius,
+            "chalk" => CompareMode::Chalk,
             x => panic!("unknown --compare-mode option: {}", x),
         }
     }

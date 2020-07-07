@@ -52,8 +52,8 @@ declare_clippy_lint! {
 
 declare_lint_pass!(ComparisonChain => [COMPARISON_CHAIN]);
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ComparisonChain {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
+impl<'tcx> LateLintPass<'tcx> for ComparisonChain {
+    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if expr.span.from_expansion() {
             return;
         }
@@ -81,14 +81,25 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ComparisonChain {
 
                 // Check that both sets of operands are equal
                 let mut spanless_eq = SpanlessEq::new(cx);
-                if (!spanless_eq.eq_expr(lhs1, lhs2) || !spanless_eq.eq_expr(rhs1, rhs2))
-                    && (!spanless_eq.eq_expr(lhs1, rhs2) || !spanless_eq.eq_expr(rhs1, lhs2))
-                {
+                let same_fixed_operands = spanless_eq.eq_expr(lhs1, lhs2) && spanless_eq.eq_expr(rhs1, rhs2);
+                let same_transposed_operands = spanless_eq.eq_expr(lhs1, rhs2) && spanless_eq.eq_expr(rhs1, lhs2);
+
+                if !same_fixed_operands && !same_transposed_operands {
                     return;
                 }
 
+                // Check that if the operation is the same, either it's not `==` or the operands are transposed
+                if kind1.node == kind2.node {
+                    if kind1.node == BinOpKind::Eq {
+                        return;
+                    }
+                    if !same_transposed_operands {
+                        return;
+                    }
+                }
+
                 // Check that the type being compared implements `core::cmp::Ord`
-                let ty = cx.tables.expr_ty(lhs1);
+                let ty = cx.tables().expr_ty(lhs1);
                 let is_ord = get_trait_def_id(cx, &paths::ORD).map_or(false, |id| implements_trait(cx, ty, id, &[]));
 
                 if !is_ord {

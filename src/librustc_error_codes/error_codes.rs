@@ -120,6 +120,7 @@ E0223: include_str!("./error_codes/E0223.md"),
 E0224: include_str!("./error_codes/E0224.md"),
 E0225: include_str!("./error_codes/E0225.md"),
 E0226: include_str!("./error_codes/E0226.md"),
+E0228: include_str!("./error_codes/E0228.md"),
 E0229: include_str!("./error_codes/E0229.md"),
 E0230: include_str!("./error_codes/E0230.md"),
 E0231: include_str!("./error_codes/E0231.md"),
@@ -381,6 +382,7 @@ E0668: include_str!("./error_codes/E0668.md"),
 E0669: include_str!("./error_codes/E0669.md"),
 E0670: include_str!("./error_codes/E0670.md"),
 E0671: include_str!("./error_codes/E0671.md"),
+E0687: include_str!("./error_codes/E0687.md"),
 E0689: include_str!("./error_codes/E0689.md"),
 E0690: include_str!("./error_codes/E0690.md"),
 E0691: include_str!("./error_codes/E0691.md"),
@@ -408,6 +410,7 @@ E0718: include_str!("./error_codes/E0718.md"),
 E0719: include_str!("./error_codes/E0719.md"),
 E0720: include_str!("./error_codes/E0720.md"),
 E0723: include_str!("./error_codes/E0723.md"),
+E0724: include_str!("./error_codes/E0724.md"),
 E0725: include_str!("./error_codes/E0725.md"),
 E0727: include_str!("./error_codes/E0727.md"),
 E0728: include_str!("./error_codes/E0728.md"),
@@ -435,6 +438,18 @@ E0750: include_str!("./error_codes/E0750.md"),
 E0751: include_str!("./error_codes/E0751.md"),
 E0752: include_str!("./error_codes/E0752.md"),
 E0753: include_str!("./error_codes/E0753.md"),
+E0754: include_str!("./error_codes/E0754.md"),
+E0758: include_str!("./error_codes/E0758.md"),
+E0759: include_str!("./error_codes/E0759.md"),
+E0760: include_str!("./error_codes/E0760.md"),
+E0761: include_str!("./error_codes/E0761.md"),
+E0762: include_str!("./error_codes/E0762.md"),
+E0763: include_str!("./error_codes/E0763.md"),
+E0764: include_str!("./error_codes/E0764.md"),
+E0765: include_str!("./error_codes/E0765.md"),
+E0766: include_str!("./error_codes/E0766.md"),
+E0767: include_str!("./error_codes/E0767.md"),
+E0768: include_str!("./error_codes/E0768.md"),
 ;
 //  E0006, // merged with E0005
 //  E0008, // cannot bind by-move into a pattern guard
@@ -482,7 +497,6 @@ E0753: include_str!("./error_codes/E0753.md"),
 //  E0218, // no associated type defined
 //  E0219, // associated type defined in higher-ranked supertrait
     E0227, // ambiguous lifetime bound, explicit lifetime bound required
-    E0228, // explicit lifetime bound required
 //  E0233,
 //  E0234,
 //  E0235, // structure constructor specifies a structure of type but
@@ -602,7 +616,6 @@ E0753: include_str!("./error_codes/E0753.md"),
     E0640, // infer outlives requirements
 //  E0645, // trait aliases not finished
     E0667, // `impl Trait` in projections
-    E0687, // in-band lifetimes cannot be used in `fn`/`Fn` syntax
     E0688, // in-band lifetimes cannot be mixed with explicit lifetime binders
 //  E0694, // an unknown tool name found in scoped attributes
 //  E0702, // replaced with a generic attribute input check
@@ -612,7 +625,9 @@ E0753: include_str!("./error_codes/E0753.md"),
     E0717, // rustc_promotable without stability attribute
 //  E0721, // `await` keyword
     E0722, // Malformed `#[optimize]` attribute
-    E0724, // `#[ffi_returns_twice]` is only allowed in foreign functions
     E0726, // non-explicit (not `'_`) elided lifetime in unsupported position
 //  E0738, // Removed; errored on `#[track_caller] fn`s in `extern "Rust" { ... }`.
+    E0755, // `#[ffi_pure]` is only allowed on foreign functions
+    E0756, // `#[ffi_const]` is only allowed on foreign functions
+    E0757, // `#[ffi_const]` functions cannot be `#[ffi_pure]`
 }

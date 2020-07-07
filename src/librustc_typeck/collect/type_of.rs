@@ -10,8 +10,7 @@ use rustc_middle::hir::map::Map;
 use rustc_middle::ty::subst::{GenericArgKind, InternalSubsts};
 use rustc_middle::ty::util::IntTypeExt;
 use rustc_middle::ty::{self, DefIdTree, Ty, TyCtxt, TypeFoldable};
-use rustc_session::parse::feature_err;
-use rustc_span::symbol::{sym, Ident};
+use rustc_span::symbol::Ident;
 use rustc_span::{Span, DUMMY_SP};
 use rustc_trait_selection::traits;
 
@@ -64,13 +63,6 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     icx.to_ty(ty)
                 }
             }
-            ImplItemKind::OpaqueTy(_) => {
-                if tcx.impl_trait_ref(tcx.hir().get_parent_did(hir_id).to_def_id()).is_none() {
-                    report_assoc_ty_on_inherent_impl(tcx, item.span);
-                }
-
-                find_opaque_ty_constraints(tcx, def_id.expect_local())
-            }
             ImplItemKind::TyAlias(ref ty) => {
                 if tcx.impl_trait_ref(tcx.hir().get_parent_did(hir_id).to_def_id()).is_none() {
                     report_assoc_ty_on_inherent_impl(tcx, item.span);
@@ -107,26 +99,17 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     let substs = InternalSubsts::identity_for_item(tcx, def_id);
                     tcx.mk_adt(def, substs)
                 }
+                ItemKind::OpaqueTy(OpaqueTy { origin: hir::OpaqueTyOrigin::Binding, .. }) => {
+                    let_position_impl_trait_type(tcx, def_id.expect_local())
+                }
                 ItemKind::OpaqueTy(OpaqueTy { impl_trait_fn: None, .. }) => {
                     find_opaque_ty_constraints(tcx, def_id.expect_local())
                 }
                 // Opaque types desugared from `impl Trait`.
-                ItemKind::OpaqueTy(OpaqueTy { impl_trait_fn: Some(owner), origin, .. }) => {
-                    let concrete_types = match origin {
-                        OpaqueTyOrigin::FnReturn | OpaqueTyOrigin::AsyncFn => {
-                            &tcx.mir_borrowck(owner.expect_local()).concrete_opaque_types
-                        }
-                        OpaqueTyOrigin::Misc => {
-                            // We shouldn't leak borrowck results through impl trait in bindings.
-                            // For example, we shouldn't be able to tell if `x` in
-                            // `let x: impl Sized + 'a = &()` has type `&'static ()` or `&'a ()`.
-                            &tcx.typeck_tables_of(owner.expect_local()).concrete_opaque_types
-                        }
-                        OpaqueTyOrigin::TypeAlias => {
-                            span_bug!(item.span, "Type alias impl trait shouldn't have an owner")
-                        }
-                    };
-                    let concrete_ty = concrete_types
+                ItemKind::OpaqueTy(OpaqueTy { impl_trait_fn: Some(owner), .. }) => {
+                    let concrete_ty = tcx
+                        .mir_borrowck(owner.expect_local())
+                        .concrete_opaque_types
                         .get(&def_id)
                         .map(|opaque| opaque.concrete_type)
                         .unwrap_or_else(|| {
@@ -143,7 +126,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                                 // Some error in the
                                 // owner fn prevented us from populating
                                 // the `concrete_opaque_types` table.
-                                tcx.types.err
+                                tcx.ty_error()
                             } else {
                                 // We failed to resolve the opaque type or it
                                 // resolves to itself. Return the non-revealed
@@ -155,13 +138,6 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                             }
                         });
                     debug!("concrete_ty = {:?}", concrete_ty);
-                    if concrete_ty.has_erased_regions() {
-                        // FIXME(impl_trait_in_bindings) Handle this case.
-                        tcx.sess.span_fatal(
-                            item.span,
-                            "lifetimes in impl Trait types in bindings are not currently supported",
-                        );
-                    }
                     concrete_ty
                 }
                 ItemKind::Trait(..)
@@ -240,11 +216,10 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                         })
                         | Node::TraitRef(&TraitRef { path, .. }) => &*path,
                         _ => {
-                            tcx.sess.delay_span_bug(
+                            return tcx.ty_error_with_message(
                                 DUMMY_SP,
                                 &format!("unexpected const parent path {:?}", parent_node),
                             );
-                            return tcx.types.err;
                         }
                     };
 
@@ -277,14 +252,13 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                         }
                         Res::Def(_, def_id) => tcx.generics_of(def_id),
                         res => {
-                            tcx.sess.delay_span_bug(
+                            return tcx.ty_error_with_message(
                                 DUMMY_SP,
                                 &format!(
                                     "unexpected anon const res {:?} in path: {:?}",
                                     res, path,
                                 ),
-                            );
-                            return tcx.types.err;
+                                );
                         }
                     };
 
@@ -306,24 +280,21 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     } else {
                         // This is no generic parameter associated with the arg. This is
                         // probably from an extra arg where one is not needed.
-                        tcx.sess.delay_span_bug(
+                        tcx.ty_error_with_message(
                             DUMMY_SP,
                             &format!(
-                                "missing generic parameter for `AnonConst`, parent: {:?}, res: {:?}",
+                                "missing generic parameter for `AnonConst`, \
+                                 parent: {:?}, res: {:?}",
                                 parent_node, res
                             ),
-                        );
-                        tcx.types.err
+                        )
                     }
                 }
 
-                x => {
-                    tcx.sess.delay_span_bug(
-                        DUMMY_SP,
-                        &format!("unexpected const parent in type_of_def_id(): {:?}", x),
-                    );
-                    tcx.types.err
-                }
+                x => tcx.ty_error_with_message(
+                    DUMMY_SP,
+                    &format!("unexpected const parent in type_of_def_id(): {:?}", x),
+                ),
             }
         }
 
@@ -331,25 +302,22 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
             GenericParamKind::Type { default: Some(ref ty), .. } => icx.to_ty(ty),
             GenericParamKind::Const { ty: ref hir_ty, .. } => {
                 let ty = icx.to_ty(hir_ty);
-                if !tcx.features().const_compare_raw_pointers {
-                    let err = match ty.peel_refs().kind {
-                        ty::FnPtr(_) => Some("function pointers"),
-                        ty::RawPtr(_) => Some("raw pointers"),
-                        _ => None,
-                    };
-                    if let Some(unsupported_type) = err {
-                        feature_err(
-                            &tcx.sess.parse_sess,
-                            sym::const_compare_raw_pointers,
+                let err = match ty.peel_refs().kind {
+                    ty::FnPtr(_) => Some("function pointers"),
+                    ty::RawPtr(_) => Some("raw pointers"),
+                    _ => None,
+                };
+                if let Some(unsupported_type) = err {
+                    tcx.sess
+                        .struct_span_err(
                             hir_ty.span,
                             &format!(
-                                "using {} as const generic parameters is unstable",
+                                "using {} as const generic parameters is forbidden",
                                 unsupported_type
                             ),
                         )
                         .emit();
-                    };
-                }
+                };
                 if traits::search_for_structural_match_violation(param.hir_id, param.span, tcx, ty)
                     .is_some()
                 {
@@ -591,9 +559,63 @@ fn find_opaque_ty_constraints(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Ty<'_> {
         None => {
             let span = tcx.def_span(def_id);
             tcx.sess.span_err(span, "could not find defining uses");
-            tcx.types.err
+            tcx.ty_error()
         }
     }
+}
+
+/// Retrieve the inferred concrete type for let position impl trait.
+///
+/// This is different to other kinds of impl trait because:
+///
+/// 1. We know which function contains the defining use (the function that
+///    contains the let statement)
+/// 2. We do not currently allow (free) lifetimes in the return type. `let`
+///    statements in some statically unreachable code are removed from the MIR
+///    by the time we borrow check, and it's not clear how we should handle
+///    those.
+fn let_position_impl_trait_type(tcx: TyCtxt<'_>, opaque_ty_id: LocalDefId) -> Ty<'_> {
+    let scope = tcx.hir().get_defining_scope(tcx.hir().as_local_hir_id(opaque_ty_id));
+    let scope_def_id = tcx.hir().local_def_id(scope);
+
+    let opaque_ty_def_id = opaque_ty_id.to_def_id();
+
+    let owner_tables = tcx.typeck_tables_of(scope_def_id);
+    let concrete_ty = owner_tables
+        .concrete_opaque_types
+        .get(&opaque_ty_def_id)
+        .map(|opaque| opaque.concrete_type)
+        .unwrap_or_else(|| {
+            tcx.sess.delay_span_bug(
+                DUMMY_SP,
+                &format!(
+                    "owner {:?} has no opaque type for {:?} in its tables",
+                    scope_def_id, opaque_ty_id
+                ),
+            );
+            if let Some(ErrorReported) = owner_tables.tainted_by_errors {
+                // Some error in the owner fn prevented us from populating the
+                // `concrete_opaque_types` table.
+                tcx.ty_error()
+            } else {
+                // We failed to resolve the opaque type or it resolves to
+                // itself. Return the non-revealed type, which should result in
+                // E0720.
+                tcx.mk_opaque(
+                    opaque_ty_def_id,
+                    InternalSubsts::identity_for_item(tcx, opaque_ty_def_id),
+                )
+            }
+        });
+    debug!("concrete_ty = {:?}", concrete_ty);
+    if concrete_ty.has_erased_regions() {
+        // FIXME(impl_trait_in_bindings) Handle this case.
+        tcx.sess.span_fatal(
+            tcx.hir().span(tcx.hir().as_local_hir_id(opaque_ty_id)),
+            "lifetimes in impl Trait types in bindings are not currently supported",
+        );
+    }
+    concrete_ty
 }
 
 fn infer_placeholder_type(
@@ -624,7 +646,7 @@ fn infer_placeholder_type(
         }
         None => {
             let mut diag = bad_placeholder_type(tcx, vec![span]);
-            if ty != tcx.types.err {
+            if !matches!(ty.kind, ty::Error(_)) {
                 diag.span_suggestion(
                     span,
                     "replace `_` with the correct type",

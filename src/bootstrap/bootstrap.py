@@ -180,12 +180,16 @@ def format_build_time(duration):
 def default_build_triple():
     """Build triple as in LLVM"""
     default_encoding = sys.getdefaultencoding()
-    required = not sys.platform == 'win32'
-    ostype = require(["uname", "-s"], exit=required).decode(default_encoding)
-    cputype = require(['uname', '-m'], exit=required).decode(default_encoding)
+    required = sys.platform != 'win32'
+    ostype = require(["uname", "-s"], exit=required)
+    cputype = require(['uname', '-m'], exit=required)
 
+    # If we do not have `uname`, assume Windows.
     if ostype is None or cputype is None:
         return 'x86_64-pc-windows-msvc'
+
+    ostype = ostype.decode(default_encoding)
+    cputype = cputype.decode(default_encoding)
 
     # The goal here is to come up with the same triple as LLVM would,
     # at least for the subset of platforms we're willing to target.
@@ -233,6 +237,11 @@ def default_build_triple():
         if ostype.endswith('WOW64'):
             cputype = 'x86_64'
         ostype = 'pc-windows-gnu'
+    elif sys.platform == 'win32':
+        # Some Windows platforms might have a `uname` command that returns a
+        # non-standard string (e.g. gnuwin32 tools returns `windows32`). In
+        # these cases, fall back to using sys.platform.
+        return 'x86_64-pc-windows-msvc'
     else:
         err = "unknown OS type: {}".format(ostype)
         sys.exit(err)
@@ -332,7 +341,7 @@ class RustBuild(object):
         self.rustc_channel = ''
         self.rustfmt_channel = ''
         self.build = ''
-        self.build_dir = os.path.join(os.getcwd(), "build")
+        self.build_dir = ''
         self.clean = False
         self.config_toml = ''
         self.rust_root = ''
@@ -860,7 +869,7 @@ class RustBuild(object):
         # the rust git repository is updated. Normal development usually does
         # not use vendoring, so hopefully this isn't too much of a problem.
         if self.use_vendored_sources and not os.path.exists(vendor_dir):
-            run([self.cargo(), "vendor"],
+            run([self.cargo(), "vendor", "--sync=./src/tools/rust-analyzer/Cargo.toml"],
                 verbose=self.verbose, cwd=self.rust_root)
 
 
@@ -890,11 +899,18 @@ def bootstrap(help_triggered):
     build.verbose = args.verbose
     build.clean = args.clean
 
-    try:
-        with open(args.config or 'config.toml') as config:
+    # Read from `RUST_BOOTSTRAP_CONFIG`, then `--config`, then fallback to `config.toml` (if it
+    # exists).
+    toml_path = os.getenv('RUST_BOOTSTRAP_CONFIG') or args.config
+    if not toml_path and os.path.exists('config.toml'):
+        toml_path = 'config.toml'
+
+    if toml_path:
+        if not os.path.exists(toml_path):
+            toml_path = os.path.join(build.rust_root, toml_path)
+
+        with open(toml_path) as config:
             build.config_toml = config.read()
-    except (OSError, IOError):
-        pass
 
     config_verbose = build.get_toml('verbose', 'build')
     if config_verbose is not None:
@@ -905,6 +921,9 @@ def bootstrap(help_triggered):
     build.use_locked_deps = build.get_toml('locked-deps', 'build') == 'true'
 
     build.check_vendored_status()
+
+    build_dir = build.get_toml('build-dir', 'build') or 'build'
+    build.build_dir = os.path.abspath(build_dir.replace("$ROOT", build.rust_root))
 
     data = stage0_data(build.rust_root)
     build.date = data['date']
@@ -941,6 +960,8 @@ def bootstrap(help_triggered):
     env["RUSTC_BOOTSTRAP"] = '1'
     env["CARGO"] = build.cargo()
     env["RUSTC"] = build.rustc()
+    if toml_path:
+        env["BOOTSTRAP_CONFIG"] = toml_path
     if build.rustfmt():
         env["RUSTFMT"] = build.rustfmt()
     run(args, env=env, verbose=build.verbose)

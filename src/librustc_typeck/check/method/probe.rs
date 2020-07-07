@@ -3,7 +3,6 @@ use super::MethodError;
 use super::NoMatchData;
 use super::{CandidateSource, ImplSource, TraitSource};
 
-use crate::check::autoderef::{self, Autoderef};
 use crate::check::FnCtxt;
 use crate::hir::def::DefKind;
 use crate::hir::def_id::DefId;
@@ -28,7 +27,9 @@ use rustc_middle::ty::{
 };
 use rustc_session::config::nightly_options;
 use rustc_session::lint;
-use rustc_span::{symbol::Symbol, Span, DUMMY_SP};
+use rustc_span::def_id::LocalDefId;
+use rustc_span::{symbol::Ident, Span, Symbol, DUMMY_SP};
+use rustc_trait_selection::autoderef::{self, Autoderef};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_trait_selection::traits::query::method_autoderef::MethodAutoderefBadTy;
 use rustc_trait_selection::traits::query::method_autoderef::{
@@ -55,7 +56,7 @@ struct ProbeContext<'a, 'tcx> {
     fcx: &'a FnCtxt<'a, 'tcx>,
     span: Span,
     mode: Mode,
-    method_name: Option<ast::Ident>,
+    method_name: Option<Ident>,
     return_type: Option<Ty<'tcx>>,
 
     /// This is the OriginalQueryValues for the steps queries
@@ -129,7 +130,7 @@ struct Candidate<'tcx> {
     xform_ret_ty: Option<Ty<'tcx>>,
     item: ty::AssocItem,
     kind: CandidateKind<'tcx>,
-    import_ids: SmallVec<[hir::HirId; 1]>,
+    import_ids: SmallVec<[LocalDefId; 1]>,
 }
 
 #[derive(Debug)]
@@ -158,7 +159,7 @@ enum ProbeResult {
 pub struct Pick<'tcx> {
     pub item: ty::AssocItem,
     pub kind: PickKind<'tcx>,
-    pub import_ids: SmallVec<[hir::HirId; 1]>,
+    pub import_ids: SmallVec<[LocalDefId; 1]>,
 
     // Indicates that the source expression should be autoderef'd N times
     //
@@ -268,7 +269,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         &self,
         span: Span,
         mode: Mode,
-        item_name: ast::Ident,
+        item_name: Ident,
         is_suggestion: IsSuggestion,
         self_ty: Ty<'tcx>,
         scope_expr_id: hir::HirId,
@@ -295,7 +296,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         &'a self,
         span: Span,
         mode: Mode,
-        method_name: Option<ast::Ident>,
+        method_name: Option<Ident>,
         return_type: Option<Ty<'tcx>>,
         is_suggestion: IsSuggestion,
         self_ty: Ty<'tcx>,
@@ -379,8 +380,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         self.tcx.sess,
                         span,
                         E0699,
-                        "the type of this value must be known \
-                               to call a method on a raw pointer on it"
+                        "the type of this value must be known to call a method on a raw pointer on \
+                         it"
                     )
                     .emit();
                 } else {
@@ -400,7 +401,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     .probe_instantiate_query_response(span, &orig_values, ty)
                     .unwrap_or_else(|_| span_bug!(span, "instantiating {:?} failed?", ty));
                 let ty = self.structurally_resolved_type(span, ty.value);
-                assert_eq!(ty, self.tcx.types.err);
+                assert!(matches!(ty.kind, ty::Error(_)));
                 return Err(MethodError::NoMatch(NoMatchData::new(
                     Vec::new(),
                     Vec::new(),
@@ -476,9 +477,9 @@ fn method_autoderef_steps<'tcx>(
             })
             .collect();
 
-        let final_ty = autoderef.maybe_ambiguous_final_ty();
+        let final_ty = autoderef.final_ty(true);
         let opt_bad_ty = match final_ty.kind {
-            ty::Infer(ty::TyVar(_)) | ty::Error => Some(MethodAutoderefBadTy {
+            ty::Infer(ty::TyVar(_)) | ty::Error(_) => Some(MethodAutoderefBadTy {
                 reached_raw_pointer,
                 ty: infcx
                     .make_query_response_ignoring_pending_obligations(inference_vars, final_ty),
@@ -518,7 +519,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         fcx: &'a FnCtxt<'a, 'tcx>,
         span: Span,
         mode: Mode,
-        method_name: Option<ast::Ident>,
+        method_name: Option<Ident>,
         return_type: Option<Ty<'tcx>>,
         orig_steps_var_values: OriginalQueryValues<'tcx>,
         steps: Lrc<Vec<CandidateStep<'tcx>>>,
@@ -795,22 +796,26 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
     fn assemble_inherent_candidates_from_param(&mut self, param_ty: ty::ParamTy) {
         // FIXME: do we want to commit to this behavior for param bounds?
+        debug!("assemble_inherent_candidates_from_param(param_ty={:?})", param_ty);
 
-        let bounds = self.param_env.caller_bounds.iter().filter_map(|predicate| match *predicate {
-            ty::Predicate::Trait(ref trait_predicate, _) => {
+        let bounds = self.param_env.caller_bounds().iter().filter_map(|predicate| match predicate
+            .kind()
+        {
+            ty::PredicateKind::Trait(ref trait_predicate, _) => {
                 match trait_predicate.skip_binder().trait_ref.self_ty().kind {
                     ty::Param(ref p) if *p == param_ty => Some(trait_predicate.to_poly_trait_ref()),
                     _ => None,
                 }
             }
-            ty::Predicate::Subtype(..)
-            | ty::Predicate::Projection(..)
-            | ty::Predicate::RegionOutlives(..)
-            | ty::Predicate::WellFormed(..)
-            | ty::Predicate::ObjectSafe(..)
-            | ty::Predicate::ClosureKind(..)
-            | ty::Predicate::TypeOutlives(..)
-            | ty::Predicate::ConstEvaluatable(..) => None,
+            ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::Projection(..)
+            | ty::PredicateKind::RegionOutlives(..)
+            | ty::PredicateKind::WellFormed(..)
+            | ty::PredicateKind::ObjectSafe(..)
+            | ty::PredicateKind::ClosureKind(..)
+            | ty::PredicateKind::TypeOutlives(..)
+            | ty::PredicateKind::ConstEvaluatable(..)
+            | ty::PredicateKind::ConstEquate(..) => None,
         });
 
         self.elaborate_bounds(bounds, |this, poly_trait_ref, item| {
@@ -925,7 +930,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
 
     fn assemble_extension_candidates_for_trait(
         &mut self,
-        import_ids: &SmallVec<[hir::HirId; 1]>,
+        import_ids: &SmallVec<[LocalDefId; 1]>,
         trait_def_id: DefId,
     ) -> Result<(), MethodError<'tcx>> {
         debug!("assemble_extension_candidates_for_trait(trait_def_id={:?})", trait_def_id);
@@ -948,7 +953,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         import_ids: import_ids.clone(),
                         kind: TraitCandidate(new_trait_ref),
                     },
-                    true,
+                    false,
                 );
             });
         } else {
@@ -978,7 +983,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         Ok(())
     }
 
-    fn candidate_method_names(&self) -> Vec<ast::Ident> {
+    fn candidate_method_names(&self) -> Vec<Ident> {
         let mut set = FxHashSet::default();
         let mut names: Vec<_> = self
             .inherent_candidates
@@ -1299,7 +1304,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                     .at(&ObligationCause::dummy(), self.param_env)
                     .sup(candidate.xform_self_ty, self_ty);
                 match self.select_trait_candidate(trait_ref) {
-                    Ok(Some(traits::Vtable::VtableImpl(ref impl_data))) => {
+                    Ok(Some(traits::ImplSource::ImplSourceUserDefined(ref impl_data))) => {
                         // If only a single impl matches, make the error message point
                         // to that impl.
                         ImplSource(impl_data.impl_def_id)
@@ -1373,17 +1378,17 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 }
 
                 TraitCandidate(trait_ref) => {
-                    let predicate = trait_ref.without_const().to_predicate();
+                    let predicate = trait_ref.without_const().to_predicate(self.tcx);
                     let obligation = traits::Obligation::new(cause, self.param_env, predicate);
                     if !self.predicate_may_hold(&obligation) {
                         result = ProbeResult::NoMatch;
                         if self.probe(|_| {
                             match self.select_trait_candidate(trait_ref) {
                                 Err(_) => return true,
-                                Ok(Some(vtable))
-                                    if !vtable.borrow_nested_obligations().is_empty() =>
+                                Ok(Some(impl_source))
+                                    if !impl_source.borrow_nested_obligations().is_empty() =>
                                 {
-                                    for obligation in vtable.borrow_nested_obligations() {
+                                    for obligation in impl_source.borrow_nested_obligations() {
                                         // Determine exactly which obligation wasn't met, so
                                         // that we can give more context in the error.
                                         if !self.predicate_may_hold(&obligation) {
@@ -1462,7 +1467,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     ///
     /// ```
     /// trait Foo { ... }
-    /// impl Foo for Vec<int> { ... }
+    /// impl Foo for Vec<i32> { ... }
     /// impl Foo for Vec<usize> { ... }
     /// ```
     ///
@@ -1552,7 +1557,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         match self.mode {
             Mode::MethodCall => item.fn_has_self_parameter,
             Mode::Path => match item.kind {
-                ty::AssocKind::OpaqueTy | ty::AssocKind::Type => false,
+                ty::AssocKind::Type => false,
                 ty::AssocKind::Fn | ty::AssocKind::Const => true,
             },
         }

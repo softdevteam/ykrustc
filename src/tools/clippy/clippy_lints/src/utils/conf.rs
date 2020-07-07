@@ -106,8 +106,8 @@ macro_rules! define_Conf {
 
 pub use self::helpers::Conf;
 define_Conf! {
-    /// Lint: BLACKLISTED_NAME. The list of blacklisted names to lint about
-    (blacklisted_names, "blacklisted_names": Vec<String>, ["foo", "bar", "baz", "quux"].iter().map(ToString::to_string).collect()),
+    /// Lint: BLACKLISTED_NAME. The list of blacklisted names to lint about. NB: `bar` is not here since it has legitimate uses
+    (blacklisted_names, "blacklisted_names": Vec<String>, ["foo", "baz", "quux"].iter().map(ToString::to_string).collect()),
     /// Lint: COGNITIVE_COMPLEXITY. The maximum cognitive complexity a function can have
     (cognitive_complexity_threshold, "cognitive_complexity_threshold": u64, 25),
     /// DEPRECATED LINT: CYCLOMATIC_COMPLEXITY. Use the Cognitive Complexity lint instead.
@@ -120,10 +120,12 @@ define_Conf! {
         "GPLv2", "GPLv3",
         "GitHub", "GitLab",
         "IPv4", "IPv6",
-        "JavaScript",
+        "ClojureScript", "CoffeeScript", "JavaScript", "PureScript", "TypeScript",
         "NaN", "NaNs",
         "OAuth",
-        "OpenGL", "OpenSSH", "OpenSSL", "OpenStreetMap",
+        "OCaml",
+        "OpenGL", "OpenMP", "OpenSSH", "OpenSSL", "OpenStreetMap",
+        "TensorFlow",
         "TrueType",
         "iOS", "macOS",
         "TeX", "LaTeX", "BibTeX", "BibLaTeX",
@@ -158,6 +160,8 @@ define_Conf! {
     (max_struct_bools, "max_struct_bools": u64, 3),
     /// Lint: FN_PARAMS_EXCESSIVE_BOOLS. The maximum number of bools function parameters can have
     (max_fn_params_bools, "max_fn_params_bools": u64, 3),
+    /// Lint: WILDCARD_IMPORTS. Whether to allow certain wildcard imports (prelude, super in tests).
+    (warn_on_all_wildcard_imports, "warn_on_all_wildcard_imports": bool, false),
 }
 
 impl Default for Conf {

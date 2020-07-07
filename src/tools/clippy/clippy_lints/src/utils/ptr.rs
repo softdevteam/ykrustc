@@ -1,14 +1,13 @@
 use crate::utils::{get_pat_name, match_var, snippet};
-use rustc_ast::ast::Name;
 use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc_hir::{Body, BodyId, Expr, ExprKind, Param};
 use rustc_lint::LateContext;
 use rustc_middle::hir::map::Map;
-use rustc_span::source_map::Span;
+use rustc_span::{Span, Symbol};
 use std::borrow::Cow;
 
 pub fn get_spans(
-    cx: &LateContext<'_, '_>,
+    cx: &LateContext<'_>,
     opt_body_id: Option<BodyId>,
     idx: usize,
     replacements: &[(&'static str, &'static str)],
@@ -23,9 +22,9 @@ pub fn get_spans(
     }
 }
 
-fn extract_clone_suggestions<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
-    name: Name,
+fn extract_clone_suggestions<'tcx>(
+    cx: &LateContext<'tcx>,
+    name: Symbol,
     replace: &[(&'static str, &'static str)],
     body: &'tcx Body<'_>,
 ) -> Option<Vec<(Span, Cow<'static, str>)>> {
@@ -45,8 +44,8 @@ fn extract_clone_suggestions<'a, 'tcx>(
 }
 
 struct PtrCloneVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
-    name: Name,
+    cx: &'a LateContext<'tcx>,
+    name: Symbol,
     replace: &'a [(&'static str, &'static str)],
     spans: Vec<(Span, Cow<'static, str>)>,
     abort: bool,
@@ -59,7 +58,7 @@ impl<'a, 'tcx> Visitor<'tcx> for PtrCloneVisitor<'a, 'tcx> {
         if self.abort {
             return;
         }
-        if let ExprKind::MethodCall(ref seg, _, ref args) = expr.kind {
+        if let ExprKind::MethodCall(ref seg, _, ref args, _) = expr.kind {
             if args.len() == 1 && match_var(&args[0], self.name) {
                 if seg.ident.name.as_str() == "capacity" {
                     self.abort = true;
@@ -83,6 +82,6 @@ impl<'a, 'tcx> Visitor<'tcx> for PtrCloneVisitor<'a, 'tcx> {
     }
 }
 
-fn get_binding_name(arg: &Param<'_>) -> Option<Name> {
+fn get_binding_name(arg: &Param<'_>) -> Option<Symbol> {
     get_pat_name(&arg.pat)
 }

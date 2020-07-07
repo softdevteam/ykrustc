@@ -183,6 +183,23 @@ impl<'mir, 'tcx> dataflow::GenKillAnalysis<'tcx> for MaybeRequiresStorage<'mir, 
             // place to have storage *before* the yield, only after.
             TerminatorKind::Yield { .. } => {}
 
+            TerminatorKind::InlineAsm { operands, .. } => {
+                for op in operands {
+                    match op {
+                        InlineAsmOperand::Out { place, .. }
+                        | InlineAsmOperand::InOut { out_place: place, .. } => {
+                            if let Some(place) = place {
+                                trans.gen(place.local);
+                            }
+                        }
+                        InlineAsmOperand::In { .. }
+                        | InlineAsmOperand::Const { .. }
+                        | InlineAsmOperand::SymFn { .. }
+                        | InlineAsmOperand::SymStatic { .. } => {}
+                    }
+                }
+            }
+
             // Nothing to do for these. Match exhaustively so this fails to compile when new
             // variants are added.
             TerminatorKind::Call { destination: None, .. }
@@ -190,7 +207,7 @@ impl<'mir, 'tcx> dataflow::GenKillAnalysis<'tcx> for MaybeRequiresStorage<'mir, 
             | TerminatorKind::Assert { .. }
             | TerminatorKind::Drop { .. }
             | TerminatorKind::DropAndReplace { .. }
-            | TerminatorKind::FalseEdges { .. }
+            | TerminatorKind::FalseEdge { .. }
             | TerminatorKind::FalseUnwind { .. }
             | TerminatorKind::GeneratorDrop
             | TerminatorKind::Goto { .. }
@@ -224,10 +241,11 @@ impl<'mir, 'tcx> dataflow::GenKillAnalysis<'tcx> for MaybeRequiresStorage<'mir, 
             | TerminatorKind::Assert { .. }
             | TerminatorKind::Drop { .. }
             | TerminatorKind::DropAndReplace { .. }
-            | TerminatorKind::FalseEdges { .. }
+            | TerminatorKind::FalseEdge { .. }
             | TerminatorKind::FalseUnwind { .. }
             | TerminatorKind::GeneratorDrop
             | TerminatorKind::Goto { .. }
+            | TerminatorKind::InlineAsm { .. }
             | TerminatorKind::Resume
             | TerminatorKind::Return
             | TerminatorKind::SwitchInt { .. }

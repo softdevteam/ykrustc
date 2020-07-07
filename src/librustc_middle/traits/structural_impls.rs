@@ -6,97 +6,99 @@ use std::rc::Rc;
 
 // Structural impls for the structs in `traits`.
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::Vtable<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSource<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            super::VtableImpl(ref v) => write!(f, "{:?}", v),
+            super::ImplSourceUserDefined(ref v) => write!(f, "{:?}", v),
 
-            super::VtableAutoImpl(ref t) => write!(f, "{:?}", t),
+            super::ImplSourceAutoImpl(ref t) => write!(f, "{:?}", t),
 
-            super::VtableClosure(ref d) => write!(f, "{:?}", d),
+            super::ImplSourceClosure(ref d) => write!(f, "{:?}", d),
 
-            super::VtableGenerator(ref d) => write!(f, "{:?}", d),
+            super::ImplSourceGenerator(ref d) => write!(f, "{:?}", d),
 
-            super::VtableFnPointer(ref d) => write!(f, "VtableFnPointer({:?})", d),
+            super::ImplSourceFnPointer(ref d) => write!(f, "ImplSourceFnPointer({:?})", d),
 
-            super::VtableObject(ref d) => write!(f, "{:?}", d),
+            super::ImplSourceDiscriminantKind(ref d) => write!(f, "{:?}", d),
 
-            super::VtableParam(ref n) => write!(f, "VtableParam({:?})", n),
+            super::ImplSourceObject(ref d) => write!(f, "{:?}", d),
 
-            super::VtableBuiltin(ref d) => write!(f, "{:?}", d),
+            super::ImplSourceParam(ref n) => write!(f, "ImplSourceParam({:?})", n),
 
-            super::VtableTraitAlias(ref d) => write!(f, "{:?}", d),
+            super::ImplSourceBuiltin(ref d) => write!(f, "{:?}", d),
+
+            super::ImplSourceTraitAlias(ref d) => write!(f, "{:?}", d),
         }
     }
 }
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::VtableImplData<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceUserDefinedData<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VtableImplData(impl_def_id={:?}, substs={:?}, nested={:?})",
+            "ImplSourceUserDefinedData(impl_def_id={:?}, substs={:?}, nested={:?})",
             self.impl_def_id, self.substs, self.nested
         )
     }
 }
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::VtableGeneratorData<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceGeneratorData<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VtableGeneratorData(generator_def_id={:?}, substs={:?}, nested={:?})",
+            "ImplSourceGeneratorData(generator_def_id={:?}, substs={:?}, nested={:?})",
             self.generator_def_id, self.substs, self.nested
         )
     }
 }
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::VtableClosureData<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceClosureData<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VtableClosureData(closure_def_id={:?}, substs={:?}, nested={:?})",
+            "ImplSourceClosureData(closure_def_id={:?}, substs={:?}, nested={:?})",
             self.closure_def_id, self.substs, self.nested
         )
     }
 }
 
-impl<N: fmt::Debug> fmt::Debug for traits::VtableBuiltinData<N> {
+impl<N: fmt::Debug> fmt::Debug for traits::ImplSourceBuiltinData<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "VtableBuiltinData(nested={:?})", self.nested)
+        write!(f, "ImplSourceBuiltinData(nested={:?})", self.nested)
     }
 }
 
-impl<N: fmt::Debug> fmt::Debug for traits::VtableAutoImplData<N> {
+impl<N: fmt::Debug> fmt::Debug for traits::ImplSourceAutoImplData<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VtableAutoImplData(trait_def_id={:?}, nested={:?})",
+            "ImplSourceAutoImplData(trait_def_id={:?}, nested={:?})",
             self.trait_def_id, self.nested
         )
     }
 }
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::VtableObjectData<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceObjectData<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VtableObjectData(upcast={:?}, vtable_base={}, nested={:?})",
+            "ImplSourceObjectData(upcast={:?}, vtable_base={}, nested={:?})",
             self.upcast_trait_ref, self.vtable_base, self.nested
         )
     }
 }
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::VtableFnPointerData<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceFnPointerData<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "VtableFnPointerData(fn_ty={:?}, nested={:?})", self.fn_ty, self.nested)
+        write!(f, "ImplSourceFnPointerData(fn_ty={:?}, nested={:?})", self.fn_ty, self.nested)
     }
 }
 
-impl<'tcx, N: fmt::Debug> fmt::Debug for traits::VtableTraitAliasData<'tcx, N> {
+impl<'tcx, N: fmt::Debug> fmt::Debug for traits::ImplSourceTraitAliasData<'tcx, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "VtableTraitAlias(alias_def_id={:?}, substs={:?}, nested={:?})",
+            "ImplSourceTraitAlias(alias_def_id={:?}, substs={:?}, nested={:?})",
             self.alias_def_id, self.substs, self.nested
         )
     }
@@ -152,6 +154,7 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::SizedArgumentType => Some(super::SizedArgumentType),
             super::SizedReturnType => Some(super::SizedReturnType),
             super::SizedYieldType => Some(super::SizedYieldType),
+            super::InlineAsmSized => Some(super::InlineAsmSized),
             super::RepeatVec(suggest_flag) => Some(super::RepeatVec(suggest_flag)),
             super::FieldSized { adt_kind, last } => Some(super::FieldSized { adt_kind, last }),
             super::ConstSized => Some(super::ConstSized),
@@ -229,69 +232,76 @@ impl<'a, 'tcx> Lift<'tcx> for traits::DerivedObligationCause<'a> {
 impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCause<'a> {
     type Lifted = traits::ObligationCause<'tcx>;
     fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
-        tcx.lift(&self.code).map(|code| traits::ObligationCause {
-            span: self.span,
-            body_id: self.body_id,
-            code,
-        })
+        tcx.lift(&self.code).map(|code| traits::ObligationCause::new(self.span, self.body_id, code))
     }
 }
 
 // For codegen only.
-impl<'a, 'tcx> Lift<'tcx> for traits::Vtable<'a, ()> {
-    type Lifted = traits::Vtable<'tcx, ()>;
+impl<'a, 'tcx> Lift<'tcx> for traits::ImplSource<'a, ()> {
+    type Lifted = traits::ImplSource<'tcx, ()>;
     fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
         match self.clone() {
-            traits::VtableImpl(traits::VtableImplData { impl_def_id, substs, nested }) => {
-                tcx.lift(&substs).map(|substs| {
-                    traits::VtableImpl(traits::VtableImplData { impl_def_id, substs, nested })
+            traits::ImplSourceUserDefined(traits::ImplSourceUserDefinedData {
+                impl_def_id,
+                substs,
+                nested,
+            }) => tcx.lift(&substs).map(|substs| {
+                traits::ImplSourceUserDefined(traits::ImplSourceUserDefinedData {
+                    impl_def_id,
+                    substs,
+                    nested,
                 })
-            }
-            traits::VtableAutoImpl(t) => Some(traits::VtableAutoImpl(t)),
-            traits::VtableGenerator(traits::VtableGeneratorData {
+            }),
+            traits::ImplSourceAutoImpl(t) => Some(traits::ImplSourceAutoImpl(t)),
+            traits::ImplSourceGenerator(traits::ImplSourceGeneratorData {
                 generator_def_id,
                 substs,
                 nested,
             }) => tcx.lift(&substs).map(|substs| {
-                traits::VtableGenerator(traits::VtableGeneratorData {
+                traits::ImplSourceGenerator(traits::ImplSourceGeneratorData {
                     generator_def_id,
                     substs,
                     nested,
                 })
             }),
-            traits::VtableClosure(traits::VtableClosureData { closure_def_id, substs, nested }) => {
-                tcx.lift(&substs).map(|substs| {
-                    traits::VtableClosure(traits::VtableClosureData {
-                        closure_def_id,
-                        substs,
-                        nested,
-                    })
+            traits::ImplSourceClosure(traits::ImplSourceClosureData {
+                closure_def_id,
+                substs,
+                nested,
+            }) => tcx.lift(&substs).map(|substs| {
+                traits::ImplSourceClosure(traits::ImplSourceClosureData {
+                    closure_def_id,
+                    substs,
+                    nested,
                 })
-            }
-            traits::VtableFnPointer(traits::VtableFnPointerData { fn_ty, nested }) => {
+            }),
+            traits::ImplSourceFnPointer(traits::ImplSourceFnPointerData { fn_ty, nested }) => {
                 tcx.lift(&fn_ty).map(|fn_ty| {
-                    traits::VtableFnPointer(traits::VtableFnPointerData { fn_ty, nested })
+                    traits::ImplSourceFnPointer(traits::ImplSourceFnPointerData { fn_ty, nested })
                 })
             }
-            traits::VtableParam(n) => Some(traits::VtableParam(n)),
-            traits::VtableBuiltin(n) => Some(traits::VtableBuiltin(n)),
-            traits::VtableObject(traits::VtableObjectData {
+            traits::ImplSourceDiscriminantKind(traits::ImplSourceDiscriminantKindData) => {
+                Some(traits::ImplSourceDiscriminantKind(traits::ImplSourceDiscriminantKindData))
+            }
+            traits::ImplSourceParam(n) => Some(traits::ImplSourceParam(n)),
+            traits::ImplSourceBuiltin(n) => Some(traits::ImplSourceBuiltin(n)),
+            traits::ImplSourceObject(traits::ImplSourceObjectData {
                 upcast_trait_ref,
                 vtable_base,
                 nested,
             }) => tcx.lift(&upcast_trait_ref).map(|trait_ref| {
-                traits::VtableObject(traits::VtableObjectData {
+                traits::ImplSourceObject(traits::ImplSourceObjectData {
                     upcast_trait_ref: trait_ref,
                     vtable_base,
                     nested,
                 })
             }),
-            traits::VtableTraitAlias(traits::VtableTraitAliasData {
+            traits::ImplSourceTraitAlias(traits::ImplSourceTraitAliasData {
                 alias_def_id,
                 substs,
                 nested,
             }) => tcx.lift(&substs).map(|substs| {
-                traits::VtableTraitAlias(traits::VtableTraitAliasData {
+                traits::ImplSourceTraitAlias(traits::ImplSourceTraitAliasData {
                     alias_def_id,
                     substs,
                     nested,

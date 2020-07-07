@@ -13,15 +13,16 @@ use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, CRATE_DEF_INDEX, LOCAL_CRATE}
 use rustc_hir::definitions::DefPathTable;
 use rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
 use rustc_middle::hir::exports::Export;
-use rustc_middle::middle::cstore::{CrateSource, CrateStore, EncodedMetadata, NativeLibraryKind};
+use rustc_middle::middle::cstore::{CrateSource, CrateStore, EncodedMetadata};
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::middle::stability::DeprecationEntry;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::query::QueryConfig;
 use rustc_middle::ty::{self, TyCtxt};
+use rustc_session::utils::NativeLibKind;
 use rustc_session::{CrateDisambiguator, Session};
 use rustc_span::source_map::{self, Span, Spanned};
-use rustc_span::symbol::Symbol;
+use rustc_span::symbol::{Ident, Symbol};
 
 use rustc_data_structures::sync::Lrc;
 use smallvec::SmallVec;
@@ -238,6 +239,8 @@ provide! { <'tcx> tcx, def_id, other, cdata,
 
         syms
     }
+
+    crate_extern_paths => { cdata.source().paths().cloned().collect() }
 }
 
 pub fn provide(providers: &mut Providers<'_>) {
@@ -246,11 +249,13 @@ pub fn provide(providers: &mut Providers<'_>) {
     // resolve! Does this work? Unsure! That's what the issue is about
     *providers = Providers {
         is_dllimport_foreign_item: |tcx, id| match tcx.native_library_kind(id) {
-            Some(NativeLibraryKind::NativeUnknown | NativeLibraryKind::NativeRawDylib) => true,
+            Some(NativeLibKind::Dylib | NativeLibKind::RawDylib | NativeLibKind::Unspecified) => {
+                true
+            }
             _ => false,
         },
         is_statically_included_foreign_item: |tcx, id| match tcx.native_library_kind(id) {
-            Some(NativeLibraryKind::NativeStatic | NativeLibraryKind::NativeStaticNobundle) => true,
+            Some(NativeLibKind::StaticBundle | NativeLibKind::StaticNoBundle) => true,
             _ => false,
         },
         native_library_kind: |tcx, id| {
@@ -419,7 +424,7 @@ impl CStore {
             .disambiguated_data
             .data
             .get_opt_name()
-            .map(ast::Ident::with_dummy_span) // FIXME: cross-crate hygiene
+            .map(Ident::with_dummy_span) // FIXME: cross-crate hygiene
             .expect("no name in load_macro");
 
         LoadedMacro::MacroDef(

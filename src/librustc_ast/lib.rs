@@ -7,7 +7,7 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
 #![feature(bool_to_option)]
 #![feature(box_syntax)]
-#![feature(const_if_match)]
+#![cfg_attr(bootstrap, feature(const_if_match))]
 #![feature(const_fn)] // For the `transmute` in `P::new`
 #![feature(const_panic)]
 #![feature(const_transmute)]
@@ -18,6 +18,10 @@
 #![feature(try_trait)]
 #![feature(unicode_internals)]
 #![recursion_limit = "256"]
+
+// FIXME(#56935): Work around ICEs during cross-compilation.
+#[allow(unused)]
+extern crate rustc_macros;
 
 #[macro_export]
 macro_rules! unwrap_or {

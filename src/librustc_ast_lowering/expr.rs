@@ -3,13 +3,17 @@ use super::{ImplTraitContext, LoweringContext, ParamMode, ParenthesizedGenericAr
 use rustc_ast::ast::*;
 use rustc_ast::attr;
 use rustc_ast::ptr::P as AstP;
+use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_data_structures::thin_vec::ThinVec;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def::Res;
-use rustc_span::source_map::{respan, DesugaringKind, Span, Spanned};
-use rustc_span::symbol::{sym, Symbol};
+use rustc_span::source_map::{respan, DesugaringKind, ForLoopLoc, Span, Spanned};
+use rustc_span::symbol::{sym, Ident, Symbol};
+use rustc_target::asm;
+use std::collections::hash_map::Entry;
+use std::fmt::Write;
 
 impl<'hir> LoweringContext<'_, 'hir> {
     fn lower_exprs(&mut self, exprs: &[AstP<Expr>]) -> &'hir [hir::Expr<'hir>] {
@@ -35,7 +39,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     let f = self.lower_expr(f);
                     hir::ExprKind::Call(f, self.lower_exprs(args))
                 }
-                ExprKind::MethodCall(ref seg, ref args) => {
+                ExprKind::MethodCall(ref seg, ref args, span) => {
                     let hir_seg = self.arena.alloc(self.lower_path_segment(
                         e.span,
                         seg,
@@ -46,7 +50,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         None,
                     ));
                     let args = self.lower_exprs(args);
-                    hir::ExprKind::MethodCall(hir_seg, seg.ident.span, args)
+                    hir::ExprKind::MethodCall(hir_seg, seg.ident.span, args, span)
                 }
                 ExprKind::Binary(binop, ref lhs, ref rhs) => {
                     let binop = self.lower_binop(binop);
@@ -175,7 +179,8 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     let e = e.as_ref().map(|x| self.lower_expr(x));
                     hir::ExprKind::Ret(e)
                 }
-                ExprKind::LlvmInlineAsm(ref asm) => self.lower_expr_asm(asm),
+                ExprKind::InlineAsm(ref asm) => self.lower_expr_asm(e.span, asm),
+                ExprKind::LlvmInlineAsm(ref asm) => self.lower_expr_llvm_asm(asm),
                 ExprKind::Struct(ref path, ref fields, ref maybe_expr) => {
                     let maybe_expr = maybe_expr.as_ref().map(|x| self.lower_expr(x));
                     hir::ExprKind::Struct(
@@ -968,7 +973,305 @@ impl<'hir> LoweringContext<'_, 'hir> {
         result
     }
 
-    fn lower_expr_asm(&mut self, asm: &LlvmInlineAsm) -> hir::ExprKind<'hir> {
+    fn lower_expr_asm(&mut self, sp: Span, asm: &InlineAsm) -> hir::ExprKind<'hir> {
+        if self.sess.asm_arch.is_none() {
+            struct_span_err!(self.sess, sp, E0472, "asm! is unsupported on this target").emit();
+        }
+        if asm.options.contains(InlineAsmOptions::ATT_SYNTAX)
+            && !matches!(
+                self.sess.asm_arch,
+                Some(asm::InlineAsmArch::X86 | asm::InlineAsmArch::X86_64)
+            )
+        {
+            self.sess
+                .struct_span_err(sp, "the `att_syntax` option is only supported on x86")
+                .emit();
+        }
+
+        // Lower operands to HIR, filter_map skips any operands with invalid
+        // register classes.
+        let sess = self.sess;
+        let operands: Vec<_> = asm
+            .operands
+            .iter()
+            .filter_map(|(op, op_sp)| {
+                let lower_reg = |reg| {
+                    Some(match reg {
+                        InlineAsmRegOrRegClass::Reg(s) => asm::InlineAsmRegOrRegClass::Reg(
+                            asm::InlineAsmReg::parse(
+                                sess.asm_arch?,
+                                |feature| sess.target_features.contains(&Symbol::intern(feature)),
+                                &sess.target.target,
+                                s,
+                            )
+                            .map_err(|e| {
+                                let msg = format!("invalid register `{}`: {}", s.as_str(), e);
+                                sess.struct_span_err(*op_sp, &msg).emit();
+                            })
+                            .ok()?,
+                        ),
+                        InlineAsmRegOrRegClass::RegClass(s) => {
+                            asm::InlineAsmRegOrRegClass::RegClass(
+                                asm::InlineAsmRegClass::parse(sess.asm_arch?, s)
+                                    .map_err(|e| {
+                                        let msg = format!(
+                                            "invalid register class `{}`: {}",
+                                            s.as_str(),
+                                            e
+                                        );
+                                        sess.struct_span_err(*op_sp, &msg).emit();
+                                    })
+                                    .ok()?,
+                            )
+                        }
+                    })
+                };
+
+                // lower_reg is executed last because we need to lower all
+                // sub-expressions even if we throw them away later.
+                let op = match *op {
+                    InlineAsmOperand::In { reg, ref expr } => hir::InlineAsmOperand::In {
+                        expr: self.lower_expr_mut(expr),
+                        reg: lower_reg(reg)?,
+                    },
+                    InlineAsmOperand::Out { reg, late, ref expr } => hir::InlineAsmOperand::Out {
+                        late,
+                        expr: expr.as_ref().map(|expr| self.lower_expr_mut(expr)),
+                        reg: lower_reg(reg)?,
+                    },
+                    InlineAsmOperand::InOut { reg, late, ref expr } => {
+                        hir::InlineAsmOperand::InOut {
+                            late,
+                            expr: self.lower_expr_mut(expr),
+                            reg: lower_reg(reg)?,
+                        }
+                    }
+                    InlineAsmOperand::SplitInOut { reg, late, ref in_expr, ref out_expr } => {
+                        hir::InlineAsmOperand::SplitInOut {
+                            late,
+                            in_expr: self.lower_expr_mut(in_expr),
+                            out_expr: out_expr.as_ref().map(|expr| self.lower_expr_mut(expr)),
+                            reg: lower_reg(reg)?,
+                        }
+                    }
+                    InlineAsmOperand::Const { ref expr } => {
+                        hir::InlineAsmOperand::Const { expr: self.lower_expr_mut(expr) }
+                    }
+                    InlineAsmOperand::Sym { ref expr } => {
+                        hir::InlineAsmOperand::Sym { expr: self.lower_expr_mut(expr) }
+                    }
+                };
+                Some(op)
+            })
+            .collect();
+
+        // Stop if there were any errors when lowering the register classes
+        if operands.len() != asm.operands.len() {
+            return hir::ExprKind::Err;
+        }
+
+        // Validate template modifiers against the register classes for the operands
+        let asm_arch = sess.asm_arch.unwrap();
+        for p in &asm.template {
+            if let InlineAsmTemplatePiece::Placeholder {
+                operand_idx,
+                modifier: Some(modifier),
+                span: placeholder_span,
+            } = *p
+            {
+                let op_sp = asm.operands[operand_idx].1;
+                match &operands[operand_idx] {
+                    hir::InlineAsmOperand::In { reg, .. }
+                    | hir::InlineAsmOperand::Out { reg, .. }
+                    | hir::InlineAsmOperand::InOut { reg, .. }
+                    | hir::InlineAsmOperand::SplitInOut { reg, .. } => {
+                        let class = reg.reg_class();
+                        let valid_modifiers = class.valid_modifiers(asm_arch);
+                        if !valid_modifiers.contains(&modifier) {
+                            let mut err = sess.struct_span_err(
+                                placeholder_span,
+                                "invalid asm template modifier for this register class",
+                            );
+                            err.span_label(placeholder_span, "template modifier");
+                            err.span_label(op_sp, "argument");
+                            if !valid_modifiers.is_empty() {
+                                let mut mods = format!("`{}`", valid_modifiers[0]);
+                                for m in &valid_modifiers[1..] {
+                                    let _ = write!(mods, ", `{}`", m);
+                                }
+                                err.note(&format!(
+                                    "the `{}` register class supports \
+                                     the following template modifiers: {}",
+                                    class.name(),
+                                    mods
+                                ));
+                            } else {
+                                err.note(&format!(
+                                    "the `{}` register class does not support template modifiers",
+                                    class.name()
+                                ));
+                            }
+                            err.emit();
+                        }
+                    }
+                    hir::InlineAsmOperand::Const { .. } => {
+                        let mut err = sess.struct_span_err(
+                            placeholder_span,
+                            "asm template modifiers are not allowed for `const` arguments",
+                        );
+                        err.span_label(placeholder_span, "template modifier");
+                        err.span_label(op_sp, "argument");
+                        err.emit();
+                    }
+                    hir::InlineAsmOperand::Sym { .. } => {
+                        let mut err = sess.struct_span_err(
+                            placeholder_span,
+                            "asm template modifiers are not allowed for `sym` arguments",
+                        );
+                        err.span_label(placeholder_span, "template modifier");
+                        err.span_label(op_sp, "argument");
+                        err.emit();
+                    }
+                }
+            }
+        }
+
+        let mut used_input_regs = FxHashMap::default();
+        let mut used_output_regs = FxHashMap::default();
+        for (idx, op) in operands.iter().enumerate() {
+            let op_sp = asm.operands[idx].1;
+            if let Some(reg) = op.reg() {
+                // Validate register classes against currently enabled target
+                // features. We check that at least one type is available for
+                // the current target.
+                let reg_class = reg.reg_class();
+                let mut required_features = vec![];
+                for &(_, feature) in reg_class.supported_types(asm_arch) {
+                    if let Some(feature) = feature {
+                        if self.sess.target_features.contains(&Symbol::intern(feature)) {
+                            required_features.clear();
+                            break;
+                        } else {
+                            required_features.push(feature);
+                        }
+                    } else {
+                        required_features.clear();
+                        break;
+                    }
+                }
+                required_features.sort();
+                required_features.dedup();
+                match &required_features[..] {
+                    [] => {}
+                    [feature] => {
+                        let msg = format!(
+                            "register class `{}` requires the `{}` target feature",
+                            reg_class.name(),
+                            feature
+                        );
+                        sess.struct_span_err(op_sp, &msg).emit();
+                    }
+                    features => {
+                        let msg = format!(
+                            "register class `{}` requires at least one target feature: {}",
+                            reg_class.name(),
+                            features.join(", ")
+                        );
+                        sess.struct_span_err(op_sp, &msg).emit();
+                    }
+                }
+
+                // Check for conflicts between explicit register operands.
+                if let asm::InlineAsmRegOrRegClass::Reg(reg) = reg {
+                    let (input, output) = match op {
+                        hir::InlineAsmOperand::In { .. } => (true, false),
+                        // Late output do not conflict with inputs, but normal outputs do
+                        hir::InlineAsmOperand::Out { late, .. } => (!late, true),
+                        hir::InlineAsmOperand::InOut { .. }
+                        | hir::InlineAsmOperand::SplitInOut { .. } => (true, true),
+                        hir::InlineAsmOperand::Const { .. } | hir::InlineAsmOperand::Sym { .. } => {
+                            unreachable!()
+                        }
+                    };
+
+                    // Flag to output the error only once per operand
+                    let mut skip = false;
+                    reg.overlapping_regs(|r| {
+                        let mut check = |used_regs: &mut FxHashMap<asm::InlineAsmReg, usize>,
+                                         input| {
+                            match used_regs.entry(r) {
+                                Entry::Occupied(o) => {
+                                    if !skip {
+                                        skip = true;
+
+                                        let idx2 = *o.get();
+                                        let op2 = &operands[idx2];
+                                        let op_sp2 = asm.operands[idx2].1;
+                                        let reg2 = match op2.reg() {
+                                            Some(asm::InlineAsmRegOrRegClass::Reg(r)) => r,
+                                            _ => unreachable!(),
+                                        };
+
+                                        let msg = format!(
+                                            "register `{}` conflicts with register `{}`",
+                                            reg.name(),
+                                            reg2.name()
+                                        );
+                                        let mut err = sess.struct_span_err(op_sp, &msg);
+                                        err.span_label(
+                                            op_sp,
+                                            &format!("register `{}`", reg.name()),
+                                        );
+                                        err.span_label(
+                                            op_sp2,
+                                            &format!("register `{}`", reg2.name()),
+                                        );
+
+                                        match (op, op2) {
+                                            (
+                                                hir::InlineAsmOperand::In { .. },
+                                                hir::InlineAsmOperand::Out { late, .. },
+                                            )
+                                            | (
+                                                hir::InlineAsmOperand::Out { late, .. },
+                                                hir::InlineAsmOperand::In { .. },
+                                            ) => {
+                                                assert!(!*late);
+                                                let out_op_sp = if input { op_sp2 } else { op_sp };
+                                                let msg = "use `lateout` instead of \
+                                                     `out` to avoid conflict";
+                                                err.span_help(out_op_sp, msg);
+                                            }
+                                            _ => {}
+                                        }
+
+                                        err.emit();
+                                    }
+                                }
+                                Entry::Vacant(v) => {
+                                    v.insert(idx);
+                                }
+                            }
+                        };
+                        if input {
+                            check(&mut used_input_regs, true);
+                        }
+                        if output {
+                            check(&mut used_output_regs, false);
+                        }
+                    });
+                }
+            }
+        }
+
+        let operands = self.arena.alloc_from_iter(operands);
+        let template = self.arena.alloc_from_iter(asm.template.iter().cloned());
+        let line_spans = self.arena.alloc_slice(&asm.line_spans[..]);
+        let hir_asm = hir::InlineAsm { template, operands, options: asm.options, line_spans };
+        hir::ExprKind::InlineAsm(self.arena.alloc(hir_asm))
+    }
+
+    fn lower_expr_llvm_asm(&mut self, asm: &LlvmInlineAsm) -> hir::ExprKind<'hir> {
         let inner = hir::LlvmInlineAsmInner {
             inputs: asm.inputs.iter().map(|&(c, _)| c).collect(),
             outputs: asm
@@ -1021,7 +1324,6 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     "`async` generators are not yet supported"
                 )
                 .emit();
-                return hir::ExprKind::Err;
             }
             None => self.generator_kind = Some(hir::GeneratorKind::Gen),
         }
@@ -1059,9 +1361,14 @@ impl<'hir> LoweringContext<'_, 'hir> {
         body: &Block,
         opt_label: Option<Label>,
     ) -> hir::Expr<'hir> {
+        let orig_head_span = head.span;
         // expand <head>
         let mut head = self.lower_expr_mut(head);
-        let desugared_span = self.mark_span_with_reason(DesugaringKind::ForLoop, head.span, None);
+        let desugared_span = self.mark_span_with_reason(
+            DesugaringKind::ForLoop(ForLoopLoc::Head),
+            orig_head_span,
+            None,
+        );
         head.span = desugared_span;
 
         let iter = Ident::with_dummy_span(sym::iter);
@@ -1156,10 +1463,16 @@ impl<'hir> LoweringContext<'_, 'hir> {
         // `mut iter => { ... }`
         let iter_arm = self.arm(iter_pat, loop_expr);
 
+        let into_iter_span = self.mark_span_with_reason(
+            DesugaringKind::ForLoop(ForLoopLoc::IntoIter),
+            orig_head_span,
+            None,
+        );
+
         // `match ::std::iter::IntoIterator::into_iter(<head>) { ... }`
         let into_iter_expr = {
             let into_iter_path = &[sym::iter, sym::IntoIterator, sym::into_iter];
-            self.expr_call_std_path(desugared_span, into_iter_path, arena_vec![self; head])
+            self.expr_call_std_path(into_iter_span, into_iter_path, arena_vec![self; head])
         };
 
         let match_expr = self.arena.alloc(self.expr_match(

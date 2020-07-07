@@ -12,7 +12,7 @@
 #![feature(generators)]
 #![feature(generator_trait)]
 #![feature(fn_traits)]
-#![feature(specialization)]
+#![feature(min_specialization)]
 #![feature(optin_builtin_traits)]
 #![feature(nll)]
 #![feature(allow_internal_unstable)]
@@ -22,6 +22,7 @@
 #![feature(test)]
 #![feature(associated_type_bounds)]
 #![feature(thread_id_value)]
+#![feature(extend_one)]
 #![allow(rustc::default_hash_types)]
 
 #[macro_use]

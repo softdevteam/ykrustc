@@ -131,11 +131,11 @@ fn dump_matched_mir_node<'tcx, F>(
         }
         writeln!(file, " {} {}", disambiguator, pass_name)?;
         if let Some(ref layout) = body.generator_layout {
-            writeln!(file, "// generator_layout = {:?}", layout)?;
+            writeln!(file, "/* generator_layout = {:#?} */", layout)?;
         }
         writeln!(file)?;
         extra_data(PassWhere::BeforeCFG, &mut file)?;
-        write_user_type_annotations(body, &mut file)?;
+        write_user_type_annotations(tcx, body, &mut file)?;
         write_mir_fn(tcx, source, body, &mut extra_data, &mut file)?;
         extra_data(PassWhere::AfterCFG, &mut file)?;
     };
@@ -351,7 +351,7 @@ fn write_extra<'tcx, F>(tcx: TyCtxt<'tcx>, write: &mut dyn Write, mut visit_op: 
 where
     F: FnMut(&mut ExtraComments<'tcx>),
 {
-    let mut extra_comments = ExtraComments { _tcx: tcx, comments: vec![] };
+    let mut extra_comments = ExtraComments { tcx, comments: vec![] };
     visit_op(&mut extra_comments);
     for comment in extra_comments.comments {
         writeln!(write, "{:A$} // {}", "", comment, A = ALIGN)?;
@@ -360,7 +360,7 @@ where
 }
 
 struct ExtraComments<'tcx> {
-    _tcx: TyCtxt<'tcx>, // don't need it now, but bet we will soon
+    tcx: TyCtxt<'tcx>,
     comments: Vec<String>,
 }
 
@@ -377,7 +377,7 @@ impl Visitor<'tcx> for ExtraComments<'tcx> {
         self.super_constant(constant, location);
         let Constant { span, user_ty, literal } = constant;
         self.push("mir::Constant");
-        self.push(&format!("+ span: {:?}", span));
+        self.push(&format!("+ span: {}", self.tcx.sess.source_map().span_to_string(*span)));
         if let Some(user_ty) = user_ty {
             self.push(&format!("+ user_ty: {:?}", user_ty));
         }
@@ -472,8 +472,10 @@ fn write_scope_tree(
 
         let mut indented_decl =
             format!("{0:1$}let {2}{3:?}: {4:?}", INDENT, indent, mut_str, local, local_decl.ty);
-        for user_ty in local_decl.user_ty.projections() {
-            write!(indented_decl, " as {:?}", user_ty).unwrap();
+        if let Some(user_ty) = &local_decl.user_ty {
+            for user_ty in user_ty.projections() {
+                write!(indented_decl, " as {:?}", user_ty).unwrap();
+            }
         }
         indented_decl.push_str(";");
 
@@ -586,8 +588,7 @@ pub fn write_allocations<'tcx>(
                 write_allocation(tcx, alloc, w)
             };
         write!(w, "\n{}", id)?;
-        let alloc = tcx.alloc_map.lock().get(id);
-        match alloc {
+        match tcx.get_global_alloc(id) {
             // This can't really happen unless there are bugs, but it doesn't cost us anything to
             // gracefully handle it and allow buggy rustc to be debugged via allocation printing.
             None => write!(w, " (deallocated)")?,
@@ -774,7 +775,7 @@ fn write_allocation_bytes<Tag: Copy + Debug, Extra>(
                 ascii.push('╼');
                 i += ptr_size;
             }
-        } else if alloc.undef_mask().is_range_defined(i, i + Size::from_bytes(1)).is_ok() {
+        } else if alloc.init_mask().is_range_initialized(i, i + Size::from_bytes(1)).is_ok() {
             let j = i.bytes_usize();
 
             // Checked definedness (and thus range) and relocations. This access also doesn't
@@ -861,12 +862,22 @@ fn write_mir_sig(
     Ok(())
 }
 
-fn write_user_type_annotations(body: &Body<'_>, w: &mut dyn Write) -> io::Result<()> {
+fn write_user_type_annotations(
+    tcx: TyCtxt<'_>,
+    body: &Body<'_>,
+    w: &mut dyn Write,
+) -> io::Result<()> {
     if !body.user_type_annotations.is_empty() {
         writeln!(w, "| User Type Annotations")?;
     }
     for (index, annotation) in body.user_type_annotations.iter_enumerated() {
-        writeln!(w, "| {:?}: {:?} at {:?}", index.index(), annotation.user_ty, annotation.span)?;
+        writeln!(
+            w,
+            "| {:?}: {:?} at {}",
+            index.index(),
+            annotation.user_ty,
+            tcx.sess.source_map().span_to_string(annotation.span)
+        )?;
     }
     if !body.user_type_annotations.is_empty() {
         writeln!(w, "|")?;

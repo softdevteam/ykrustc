@@ -6,7 +6,6 @@ use crate::back::profiling::{
 use crate::base;
 use crate::common;
 use crate::consts;
-use crate::context::all_outputs_are_pic_executables;
 use crate::llvm::{self, DiagnosticInfo, PassManager, SMDiagnostic};
 use crate::llvm_util;
 use crate::type_::Type;
@@ -17,14 +16,16 @@ use rustc_codegen_ssa::back::write::{BitcodeSection, CodegenContext, EmitObj, Mo
 use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::{CompiledModule, ModuleCodegen};
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_errors::{FatalError, Handler};
+use rustc_errors::{FatalError, Handler, Level};
 use rustc_fs_util::{link_or_copy, path_to_c_string};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::bug;
 use rustc_middle::ty::TyCtxt;
-use rustc_session::config::{self, Lto, OutputType, Passes, Sanitizer, SwitchWithOptPath};
+use rustc_session::config::{self, Lto, OutputType, Passes, SanitizerSet, SwitchWithOptPath};
 use rustc_session::Session;
-use rustc_target::spec::RelocModel;
+use rustc_span::symbol::sym;
+use rustc_span::InnerSpan;
+use rustc_target::spec::{CodeModel, RelocModel};
 
 use libc::{c_char, c_int, c_uint, c_void, size_t};
 use std::ffi::CString;
@@ -34,13 +35,6 @@ use std::path::{Path, PathBuf};
 use std::slice;
 use std::str;
 use std::sync::Arc;
-
-pub const CODE_GEN_MODEL_ARGS: &[(&str, llvm::CodeModel)] = &[
-    ("small", llvm::CodeModel::Small),
-    ("kernel", llvm::CodeModel::Kernel),
-    ("medium", llvm::CodeModel::Medium),
-    ("large", llvm::CodeModel::Large),
-];
 
 pub fn llvm_err(handler: &rustc_errors::Handler, msg: &str) -> FatalError {
     match llvm::last_error() {
@@ -114,6 +108,17 @@ fn to_llvm_relocation_model(relocation_model: RelocModel) -> llvm::RelocModel {
     }
 }
 
+fn to_llvm_code_model(code_model: Option<CodeModel>) -> llvm::CodeModel {
+    match code_model {
+        Some(CodeModel::Tiny) => llvm::CodeModel::Tiny,
+        Some(CodeModel::Small) => llvm::CodeModel::Small,
+        Some(CodeModel::Kernel) => llvm::CodeModel::Kernel,
+        Some(CodeModel::Medium) => llvm::CodeModel::Medium,
+        Some(CodeModel::Large) => llvm::CodeModel::Large,
+        None => llvm::CodeModel::None,
+    }
+}
+
 pub fn target_machine_factory(
     sess: &Session,
     optlvl: config::OptLevel,
@@ -126,20 +131,7 @@ pub fn target_machine_factory(
     let ffunction_sections = sess.target.target.options.function_sections;
     let fdata_sections = ffunction_sections;
 
-    let code_model_arg =
-        sess.opts.cg.code_model.as_ref().or(sess.target.target.options.code_model.as_ref());
-
-    let code_model = match code_model_arg {
-        Some(s) => match CODE_GEN_MODEL_ARGS.iter().find(|arg| arg.0 == s) {
-            Some(x) => x.1,
-            _ => {
-                sess.err(&format!("{:?} is not a valid code model", code_model_arg));
-                sess.abort_if_errors();
-                bug!();
-            }
-        },
-        None => llvm::CodeModel::None,
-    };
+    let code_model = to_llvm_code_model(sess.code_model());
 
     let features = attributes::llvm_target_features(sess).collect::<Vec<_>>();
     let mut singlethread = sess.target.target.options.singlethread;
@@ -149,7 +141,7 @@ pub fn target_machine_factory(
     // lower atomic operations to single-threaded operations.
     if singlethread
         && sess.target.target.llvm_target.contains("wasm32")
-        && features.iter().any(|s| *s == "+atomics")
+        && sess.target_features.contains(&sym::atomics)
     {
         singlethread = false;
     }
@@ -159,12 +151,18 @@ pub fn target_machine_factory(
     let features = features.join(",");
     let features = CString::new(features).unwrap();
     let abi = SmallCStr::new(&sess.target.target.options.llvm_abiname);
-    let pic_is_pie = all_outputs_are_pic_executables(sess);
     let trap_unreachable = sess.target.target.options.trap_unreachable;
     let emit_stack_size_section = sess.opts.debugging_opts.emit_stack_sizes;
 
     let asm_comments = sess.asm_comments();
     let relax_elf_relocations = sess.target.target.options.relax_elf_relocations;
+
+    let use_init_array = !sess
+        .opts
+        .debugging_opts
+        .use_ctors_section
+        .unwrap_or(sess.target.target.options.use_ctors_section);
+
     Arc::new(move || {
         let tm = unsafe {
             llvm::LLVMRustCreateTargetMachine(
@@ -176,7 +174,6 @@ pub fn target_machine_factory(
                 reloc_model,
                 opt_level,
                 use_softfp,
-                pic_is_pie,
                 ffunction_sections,
                 fdata_sections,
                 trap_unreachable,
@@ -184,6 +181,7 @@ pub fn target_machine_factory(
                 asm_comments,
                 emit_stack_size_section,
                 relax_elf_relocations,
+                use_init_array,
             )
         };
 
@@ -242,12 +240,25 @@ impl<'a> Drop for DiagnosticHandlers<'a> {
     }
 }
 
-unsafe extern "C" fn report_inline_asm(
+fn report_inline_asm(
     cgcx: &CodegenContext<LlvmCodegenBackend>,
-    msg: &str,
-    cookie: c_uint,
+    msg: String,
+    level: llvm::DiagnosticLevel,
+    mut cookie: c_uint,
+    source: Option<(String, Vec<InnerSpan>)>,
 ) {
-    cgcx.diag_emitter.inline_asm_error(cookie as u32, msg.to_owned());
+    // In LTO build we may get srcloc values from other crates which are invalid
+    // since they use a different source map. To be safe we just suppress these
+    // in LTO builds.
+    if matches!(cgcx.lto, Lto::Fat | Lto::Thin) {
+        cookie = 0;
+    }
+    let level = match level {
+        llvm::DiagnosticLevel::Error => Level::Error,
+        llvm::DiagnosticLevel::Warning => Level::Warning,
+        llvm::DiagnosticLevel::Note | llvm::DiagnosticLevel::Remark => Level::Note,
+    };
+    cgcx.diag_emitter.inline_asm_error(cookie as u32, msg, level, source);
 }
 
 unsafe extern "C" fn inline_asm_handler(diag: &SMDiagnostic, user: *const c_void, cookie: c_uint) {
@@ -256,10 +267,39 @@ unsafe extern "C" fn inline_asm_handler(diag: &SMDiagnostic, user: *const c_void
     }
     let (cgcx, _) = *(user as *const (&CodegenContext<LlvmCodegenBackend>, &Handler));
 
-    let msg = llvm::build_string(|s| llvm::LLVMRustWriteSMDiagnosticToString(diag, s))
-        .expect("non-UTF8 SMDiagnostic");
+    // Recover the post-substitution assembly code from LLVM for better
+    // diagnostics.
+    let mut have_source = false;
+    let mut buffer = String::new();
+    let mut level = llvm::DiagnosticLevel::Error;
+    let mut loc = 0;
+    let mut ranges = [0; 8];
+    let mut num_ranges = ranges.len() / 2;
+    let msg = llvm::build_string(|msg| {
+        buffer = llvm::build_string(|buffer| {
+            have_source = llvm::LLVMRustUnpackSMDiagnostic(
+                diag,
+                msg,
+                buffer,
+                &mut level,
+                &mut loc,
+                ranges.as_mut_ptr(),
+                &mut num_ranges,
+            );
+        })
+        .expect("non-UTF8 inline asm");
+    })
+    .expect("non-UTF8 SMDiagnostic");
 
-    report_inline_asm(cgcx, &msg, cookie);
+    let source = have_source.then(|| {
+        let mut spans = vec![InnerSpan::new(loc as usize, loc as usize)];
+        for i in 0..num_ranges {
+            spans.push(InnerSpan::new(ranges[i * 2] as usize, ranges[i * 2 + 1] as usize));
+        }
+        (buffer, spans)
+    });
+
+    report_inline_asm(cgcx, msg, level, cookie, source);
 }
 
 unsafe extern "C" fn diagnostic_handler(info: &DiagnosticInfo, user: *mut c_void) {
@@ -270,7 +310,13 @@ unsafe extern "C" fn diagnostic_handler(info: &DiagnosticInfo, user: *mut c_void
 
     match llvm::diagnostic::Diagnostic::unpack(info) {
         llvm::diagnostic::InlineAsm(inline) => {
-            report_inline_asm(cgcx, &llvm::twine_to_string(inline.message), inline.cookie);
+            report_inline_asm(
+                cgcx,
+                llvm::twine_to_string(inline.message),
+                inline.level,
+                inline.cookie,
+                None,
+            );
         }
 
         llvm::diagnostic::Optimization(opt) => {
@@ -349,12 +395,13 @@ pub(crate) unsafe fn optimize_with_new_llvm_pass_manager(
     let is_lto = opt_stage == llvm::OptStage::ThinLTO || opt_stage == llvm::OptStage::FatLTO;
     // Sanitizer instrumentation is only inserted during the pre-link optimization stage.
     let sanitizer_options = if !is_lto {
-        config.sanitizer.as_ref().map(|s| llvm::SanitizerOptions {
-            sanitize_memory: *s == Sanitizer::Memory,
-            sanitize_thread: *s == Sanitizer::Thread,
-            sanitize_address: *s == Sanitizer::Address,
-            sanitize_recover: config.sanitizer_recover.contains(s),
+        Some(llvm::SanitizerOptions {
+            sanitize_address: config.sanitizer.contains(SanitizerSet::ADDRESS),
+            sanitize_address_recover: config.sanitizer_recover.contains(SanitizerSet::ADDRESS),
+            sanitize_memory: config.sanitizer.contains(SanitizerSet::MEMORY),
+            sanitize_memory_recover: config.sanitizer_recover.contains(SanitizerSet::MEMORY),
             sanitize_memory_track_origins: config.sanitizer_memory_track_origins as c_int,
+            sanitize_thread: config.sanitizer.contains(SanitizerSet::THREAD),
         })
     } else {
         None
@@ -386,6 +433,7 @@ pub(crate) unsafe fn optimize_with_new_llvm_pass_manager(
         config.vectorize_slp,
         config.vectorize_loop,
         config.no_builtins,
+        config.emit_lifetime_markers,
         sanitizer_options.as_ref(),
         pgo_gen_path.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
         pgo_use_path.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
@@ -554,25 +602,18 @@ pub(crate) unsafe fn optimize(
 }
 
 unsafe fn add_sanitizer_passes(config: &ModuleConfig, passes: &mut Vec<&'static mut llvm::Pass>) {
-    let sanitizer = match &config.sanitizer {
-        None => return,
-        Some(s) => s,
-    };
-
-    let recover = config.sanitizer_recover.contains(sanitizer);
-    match sanitizer {
-        Sanitizer::Address => {
-            passes.push(llvm::LLVMRustCreateAddressSanitizerFunctionPass(recover));
-            passes.push(llvm::LLVMRustCreateModuleAddressSanitizerPass(recover));
-        }
-        Sanitizer::Memory => {
-            let track_origins = config.sanitizer_memory_track_origins as c_int;
-            passes.push(llvm::LLVMRustCreateMemorySanitizerPass(track_origins, recover));
-        }
-        Sanitizer::Thread => {
-            passes.push(llvm::LLVMRustCreateThreadSanitizerPass());
-        }
-        Sanitizer::Leak => {}
+    if config.sanitizer.contains(SanitizerSet::ADDRESS) {
+        let recover = config.sanitizer_recover.contains(SanitizerSet::ADDRESS);
+        passes.push(llvm::LLVMRustCreateAddressSanitizerFunctionPass(recover));
+        passes.push(llvm::LLVMRustCreateModuleAddressSanitizerPass(recover));
+    }
+    if config.sanitizer.contains(SanitizerSet::MEMORY) {
+        let track_origins = config.sanitizer_memory_track_origins as c_int;
+        let recover = config.sanitizer_recover.contains(SanitizerSet::MEMORY);
+        passes.push(llvm::LLVMRustCreateMemorySanitizerPass(track_origins, recover));
+    }
+    if config.sanitizer.contains(SanitizerSet::THREAD) {
+        passes.push(llvm::LLVMRustCreateThreadSanitizerPass());
     }
 }
 
@@ -651,10 +692,8 @@ pub(crate) unsafe fn codegen(
                     "LLVM_module_codegen_embed_bitcode",
                     &module.name[..],
                 );
-                embed_bitcode(cgcx, llcx, llmod, Some(data));
+                embed_bitcode(cgcx, llcx, llmod, &config.bc_cmdline, data);
             }
-        } else if config.emit_obj == EmitObj::ObjectCode(BitcodeSection::Marker) {
-            embed_bitcode(cgcx, llcx, llmod, None);
         }
 
         if config.emit_ir {
@@ -777,8 +816,8 @@ pub(crate) unsafe fn codegen(
 /// * __LLVM,__cmdline
 ///
 /// It appears *both* of these sections are necessary to get the linker to
-/// recognize what's going on. For us though we just always throw in an empty
-/// cmdline section.
+/// recognize what's going on. A suitable cmdline value is taken from the
+/// target spec.
 ///
 /// Furthermore debug/O1 builds don't actually embed bitcode but rather just
 /// embed an empty section.
@@ -789,9 +828,10 @@ unsafe fn embed_bitcode(
     cgcx: &CodegenContext<LlvmCodegenBackend>,
     llcx: &llvm::Context,
     llmod: &llvm::Module,
-    bitcode: Option<&[u8]>,
+    cmdline: &str,
+    bitcode: &[u8],
 ) {
-    let llconst = common::bytes_in_context(llcx, bitcode.unwrap_or(&[]));
+    let llconst = common::bytes_in_context(llcx, bitcode);
     let llglobal = llvm::LLVMAddGlobal(
         llmod,
         common::val_ty(llconst),
@@ -800,14 +840,15 @@ unsafe fn embed_bitcode(
     llvm::LLVMSetInitializer(llglobal, llconst);
 
     let is_apple = cgcx.opts.target_triple.triple().contains("-ios")
-        || cgcx.opts.target_triple.triple().contains("-darwin");
+        || cgcx.opts.target_triple.triple().contains("-darwin")
+        || cgcx.opts.target_triple.triple().contains("-tvos");
 
     let section = if is_apple { "__LLVM,__bitcode\0" } else { ".llvmbc\0" };
     llvm::LLVMSetSection(llglobal, section.as_ptr().cast());
     llvm::LLVMRustSetLinkage(llglobal, llvm::Linkage::PrivateLinkage);
     llvm::LLVMSetGlobalConstant(llglobal, llvm::True);
 
-    let llconst = common::bytes_in_context(llcx, &[]);
+    let llconst = common::bytes_in_context(llcx, cmdline.as_bytes());
     let llglobal = llvm::LLVMAddGlobal(
         llmod,
         common::val_ty(llconst),
@@ -926,10 +967,10 @@ pub unsafe fn with_llvm_pmb(
             llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, 25);
         }
         (llvm::CodeGenOptLevel::None, ..) => {
-            llvm::LLVMRustAddAlwaysInlinePass(builder, false);
+            llvm::LLVMRustAddAlwaysInlinePass(builder, config.emit_lifetime_markers);
         }
         (llvm::CodeGenOptLevel::Less, ..) => {
-            llvm::LLVMRustAddAlwaysInlinePass(builder, true);
+            llvm::LLVMRustAddAlwaysInlinePass(builder, config.emit_lifetime_markers);
         }
         (llvm::CodeGenOptLevel::Default, ..) => {
             llvm::LLVMPassManagerBuilderUseInlinerWithThreshold(builder, 225);

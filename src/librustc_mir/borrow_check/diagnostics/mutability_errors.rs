@@ -85,7 +85,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 } else {
                     item_msg = format!("`{}`", access_place_desc.unwrap());
                     let local_info = &self.body.local_decls[local].local_info;
-                    if let LocalInfo::StaticRef { def_id, .. } = *local_info {
+                    if let Some(box LocalInfo::StaticRef { def_id, .. }) = *local_info {
                         let static_name = &self.infcx.tcx.item_name(def_id);
                         reason = format!(", as `{}` is an immutable static item", static_name);
                     } else {
@@ -216,9 +216,9 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                         .local_decls
                         .get(local)
                         .map(|local_decl| {
-                            if let LocalInfo::User(ClearCrossCrate::Set(
+                            if let Some(box LocalInfo::User(ClearCrossCrate::Set(
                                 mir::BindingForm::ImplicitSelf(kind),
-                            )) = local_decl.local_info
+                            ))) = local_decl.local_info
                             {
                                 // Check if the user variable is a `&mut self` and we can therefore
                                 // suggest removing the `&mut`.
@@ -340,8 +340,8 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
 
                 match self.local_names[local] {
                     Some(name) if !local_decl.from_compiler_desugaring() => {
-                        let label = match local_decl.local_info {
-                            LocalInfo::User(ClearCrossCrate::Set(
+                        let label = match local_decl.local_info.as_ref().unwrap() {
+                            box LocalInfo::User(ClearCrossCrate::Set(
                                 mir::BindingForm::ImplicitSelf(_),
                             )) => {
                                 let (span, suggestion) =
@@ -349,7 +349,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                                 Some((true, span, suggestion))
                             }
 
-                            LocalInfo::User(ClearCrossCrate::Set(mir::BindingForm::Var(
+                            box LocalInfo::User(ClearCrossCrate::Set(mir::BindingForm::Var(
                                 mir::VarBindingForm {
                                     binding_mode: ty::BindingMode::BindByValue(_),
                                     opt_ty_info,
@@ -365,7 +365,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                                     opt_assignment_rhs_span.and_then(|span| span.desugaring_kind());
                                 match opt_desugaring_kind {
                                     // on for loops, RHS points to the iterator part
-                                    Some(DesugaringKind::ForLoop) => Some((
+                                    Some(DesugaringKind::ForLoop(_)) => Some((
                                         false,
                                         opt_assignment_rhs_span.unwrap(),
                                         format!(
@@ -381,14 +381,14 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                                             self.infcx.tcx,
                                             local_decl,
                                             opt_assignment_rhs_span,
-                                            opt_ty_info,
+                                            *opt_ty_info,
                                         );
                                         Some((true, span, suggestion))
                                     }
                                 }
                             }
 
-                            LocalInfo::User(ClearCrossCrate::Set(mir::BindingForm::Var(
+                            box LocalInfo::User(ClearCrossCrate::Set(mir::BindingForm::Var(
                                 mir::VarBindingForm {
                                     binding_mode: ty::BindingMode::BindByReference(_),
                                     ..
@@ -399,7 +399,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                                     .map(|replacement| (true, pattern_span, replacement))
                             }
 
-                            LocalInfo::User(ClearCrossCrate::Clear) => {
+                            box LocalInfo::User(ClearCrossCrate::Clear) => {
                                 bug!("saw cleared local state")
                             }
 
@@ -492,10 +492,10 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         err.span_label(sp, format!("cannot {}", act));
 
         let hir = self.infcx.tcx.hir();
-        let closure_id = hir.as_local_hir_id(self.mir_def_id.expect_local());
+        let closure_id = hir.as_local_hir_id(self.mir_def_id);
         let fn_call_id = hir.get_parent_node(closure_id);
         let node = hir.get(fn_call_id);
-        let item_id = hir.get_parent_item(fn_call_id);
+        let item_id = hir.enclosing_body_owner(fn_call_id);
         let mut look_at_return = true;
         // If we can detect the expression to be an `fn` call where the closure was an argument,
         // we point at the `fn` definition argument...

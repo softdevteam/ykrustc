@@ -1,4 +1,3 @@
-use rustc_ast::ast::CRATE_NODE_ID;
 use rustc_attr as attr;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync::{self, Lrc};
@@ -7,7 +6,7 @@ use rustc_errors::emitter::{Emitter, EmitterWriter};
 use rustc_errors::json::JsonEmitter;
 use rustc_feature::UnstableFeatures;
 use rustc_hir::def::Namespace::TypeNS;
-use rustc_hir::def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE};
+use rustc_hir::def_id::{CrateNum, DefId, DefIndex, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::HirId;
 use rustc_interface::interface;
 use rustc_middle::middle::cstore::CrateStore;
@@ -63,6 +62,8 @@ pub struct DocContext<'tcx> {
     // FIXME(eddyb) make this a `ty::TraitRef<'tcx>` set.
     pub generated_synthetics: RefCell<FxHashSet<(Ty<'tcx>, DefId)>>,
     pub auto_traits: Vec<DefId>,
+    /// The options given to rustdoc that could be relevant to a pass.
+    pub render_options: RenderOptions,
 }
 
 impl<'tcx> DocContext<'tcx> {
@@ -129,7 +130,7 @@ impl<'tcx> DocContext<'tcx> {
         );
 
         MAX_DEF_ID.with(|m| {
-            m.borrow_mut().entry(def_id.krate.clone()).or_insert(start_def_id);
+            m.borrow_mut().entry(def_id.krate).or_insert(start_def_id);
         });
 
         self.all_fake_def_ids.borrow_mut().insert(def_id);
@@ -192,8 +193,15 @@ pub fn new_handler(
                 Lrc::new(source_map::SourceMap::new(source_map::FilePathMapping::empty()))
             });
             Box::new(
-                JsonEmitter::stderr(None, source_map, pretty, json_rendered, false)
-                    .ui_testing(debugging_opts.ui_testing),
+                JsonEmitter::stderr(
+                    None,
+                    source_map,
+                    pretty,
+                    json_rendered,
+                    debugging_opts.terminal_width,
+                    false,
+                )
+                .ui_testing(debugging_opts.ui_testing),
             )
         }
     };
@@ -202,6 +210,64 @@ pub fn new_handler(
         emitter,
         debugging_opts.diagnostic_handler_flags(true),
     )
+}
+
+/// This function is used to setup the lint initialization. By default, in rustdoc, everything
+/// is "allowed". Depending if we run in test mode or not, we want some of them to be at their
+/// default level. For example, the "INVALID_CODEBLOCK_ATTRIBUTE" lint is activated in both
+/// modes.
+///
+/// A little detail easy to forget is that there is a way to set the lint level for all lints
+/// through the "WARNINGS" lint. To prevent this to happen, we set it back to its "normal" level
+/// inside this function.
+///
+/// It returns a tuple containing:
+///  * Vector of tuples of lints' name and their associated "max" level
+///  * HashMap of lint id with their associated "max" level
+pub fn init_lints<F>(
+    mut whitelisted_lints: Vec<String>,
+    lint_opts: Vec<(String, lint::Level)>,
+    filter_call: F,
+) -> (Vec<(String, lint::Level)>, FxHashMap<lint::LintId, lint::Level>)
+where
+    F: Fn(&lint::Lint) -> Option<(String, lint::Level)>,
+{
+    let warnings_lint_name = lint::builtin::WARNINGS.name;
+
+    whitelisted_lints.push(warnings_lint_name.to_owned());
+    whitelisted_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
+
+    let lints = || {
+        lint::builtin::HardwiredLints::get_lints()
+            .into_iter()
+            .chain(rustc_lint::SoftLints::get_lints().into_iter())
+    };
+
+    let lint_opts = lints()
+        .filter_map(|lint| {
+            // Whitelist feature-gated lints to avoid feature errors when trying to
+            // allow all lints.
+            if lint.name == warnings_lint_name || lint.feature_gate.is_some() {
+                None
+            } else {
+                filter_call(lint)
+            }
+        })
+        .chain(lint_opts.into_iter())
+        .collect::<Vec<_>>();
+
+    let lint_caps = lints()
+        .filter_map(|lint| {
+            // We don't want to whitelist *all* lints so let's
+            // ignore those ones.
+            if whitelisted_lints.iter().any(|l| lint.name == l) {
+                None
+            } else {
+                Some((lint::LintId::of(lint), lint::Allow))
+            }
+        })
+        .collect();
+    (lint_opts, lint_caps)
 }
 
 pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOptions) {
@@ -224,8 +290,6 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         describe_lints,
         lint_cap,
         mut default_passes,
-        mut document_private,
-        document_hidden,
         mut manual_passes,
         display_warnings,
         render_options,
@@ -247,7 +311,6 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
     let input = Input::File(input);
 
     let intra_link_resolution_failure_name = lint::builtin::INTRA_DOC_LINK_RESOLUTION_FAILURE.name;
-    let warnings_lint_name = lint::builtin::WARNINGS.name;
     let missing_docs = rustc_lint::builtin::MISSING_DOCS.name;
     let missing_doc_example = rustc_lint::builtin::MISSING_DOC_CODE_EXAMPLES.name;
     let private_doc_tests = rustc_lint::builtin::PRIVATE_DOC_TESTS.name;
@@ -256,8 +319,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
 
     // In addition to those specific lints, we also need to whitelist those given through
     // command line, otherwise they'll get ignored and we don't want that.
-    let mut whitelisted_lints = vec![
-        warnings_lint_name.to_owned(),
+    let whitelisted_lints = vec![
         intra_link_resolution_failure_name.to_owned(),
         missing_docs.to_owned(),
         missing_doc_example.to_owned(),
@@ -266,39 +328,15 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         invalid_codeblock_attribute_name.to_owned(),
     ];
 
-    whitelisted_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
-
-    let lints = || {
-        lint::builtin::HardwiredLints::get_lints()
-            .into_iter()
-            .chain(rustc_lint::SoftLints::get_lints().into_iter())
-    };
-
-    let lint_opts = lints()
-        .filter_map(|lint| {
-            if lint.name == warnings_lint_name
-                || lint.name == intra_link_resolution_failure_name
-                || lint.name == invalid_codeblock_attribute_name
-            {
-                None
-            } else {
-                Some((lint.name_lower(), lint::Allow))
-            }
-        })
-        .chain(lint_opts.into_iter())
-        .collect::<Vec<_>>();
-
-    let lint_caps = lints()
-        .filter_map(|lint| {
-            // We don't want to whitelist *all* lints so let's
-            // ignore those ones.
-            if whitelisted_lints.iter().any(|l| lint.name == l) {
-                None
-            } else {
-                Some((lint::LintId::of(lint), lint::Allow))
-            }
-        })
-        .collect();
+    let (lint_opts, lint_caps) = init_lints(whitelisted_lints, lint_opts, |lint| {
+        if lint.name == intra_link_resolution_failure_name
+            || lint.name == invalid_codeblock_attribute_name
+        {
+            None
+        } else {
+            Some((lint.name_lower(), lint::Allow))
+        }
+    });
 
     let crate_types =
         if proc_macro_crate { vec![CrateType::ProcMacro] } else { vec![CrateType::Rlib] };
@@ -355,7 +393,12 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                 resolver.borrow_mut().access(|resolver| {
                     for extern_name in &extern_names {
                         resolver
-                            .resolve_str_path_error(DUMMY_SP, extern_name, TypeNS, CRATE_NODE_ID)
+                            .resolve_str_path_error(
+                                DUMMY_SP,
+                                extern_name,
+                                TypeNS,
+                                LocalDefId { local_def_index: CRATE_DEF_INDEX },
+                            )
                             .unwrap_or_else(|()| {
                                 panic!("Unable to resolve external crate {}", extern_name)
                             });
@@ -412,6 +455,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                         .cloned()
                         .filter(|trait_def_id| tcx.trait_is_auto(*trait_def_id))
                         .collect(),
+                    render_options,
                 };
                 debug!("crate: {:?}", tcx.hir().krate());
 
@@ -488,7 +532,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                     }
 
                     if attr.is_word() && name == sym::document_private_items {
-                        document_private = true;
+                        ctxt.render_options.document_private = true;
                     }
                 }
 
@@ -508,9 +552,9 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                 for p in passes {
                     let run = match p.condition {
                         Always => true,
-                        WhenDocumentPrivate => document_private,
-                        WhenNotDocumentPrivate => !document_private,
-                        WhenNotDocumentHidden => !document_hidden,
+                        WhenDocumentPrivate => ctxt.render_options.document_private,
+                        WhenNotDocumentPrivate => !ctxt.render_options.document_private,
+                        WhenNotDocumentHidden => !ctxt.render_options.document_hidden,
                     };
                     if run {
                         debug!("running pass {}", p.pass.name);
@@ -520,7 +564,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
 
                 ctxt.sess().abort_if_errors();
 
-                (krate, ctxt.renderinfo.into_inner(), render_options)
+                (krate, ctxt.renderinfo.into_inner(), ctxt.render_options)
             })
         })
     })

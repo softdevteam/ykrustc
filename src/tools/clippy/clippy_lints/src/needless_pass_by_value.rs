@@ -64,11 +64,11 @@ macro_rules! need {
     };
 }
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
+impl<'tcx> LateLintPass<'tcx> for NeedlessPassByValue {
     #[allow(clippy::too_many_lines)]
     fn check_fn(
         &mut self,
-        cx: &LateContext<'a, 'tcx>,
+        cx: &LateContext<'tcx>,
         kind: FnKind<'tcx>,
         decl: &'tcx FnDecl<'_>,
         body: &'tcx Body<'_>,
@@ -86,7 +86,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                 }
             },
             FnKind::Method(..) => (),
-            _ => return,
+            FnKind::Closure(..) => return,
         }
 
         // Exclude non-inherent impls
@@ -111,10 +111,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
         let fn_def_id = cx.tcx.hir().local_def_id(hir_id);
 
-        let preds = traits::elaborate_predicates(cx.tcx, cx.param_env.caller_bounds.iter().copied())
+        let preds = traits::elaborate_predicates(cx.tcx, cx.param_env.caller_bounds().iter())
             .filter(|p| !p.is_global())
             .filter_map(|obligation| {
-                if let ty::Predicate::Trait(poly_trait_ref, _) = obligation.predicate {
+                if let ty::PredicateKind::Trait(poly_trait_ref, _) = obligation.predicate.kind() {
                     if poly_trait_ref.def_id() == sized_trait || poly_trait_ref.skip_binder().has_escaping_bound_vars()
                     {
                         return None;
@@ -135,7 +135,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         } = {
             let mut ctx = MovedVariablesCtxt::default();
             cx.tcx.infer_ctxt().enter(|infcx| {
-                euv::ExprUseVisitor::new(&mut ctx, &infcx, fn_def_id, cx.param_env, cx.tables).consume_body(body);
+                euv::ExprUseVisitor::new(&mut ctx, &infcx, fn_def_id, cx.param_env, cx.tables()).consume_body(body);
             });
             ctx
         };
@@ -173,14 +173,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                     !preds.is_empty() && {
                         let ty_empty_region = cx.tcx.mk_imm_ref(cx.tcx.lifetimes.re_root_empty, ty);
                         preds.iter().all(|t| {
-                            let ty_params = &t
-                                .skip_binder()
-                                .trait_ref
-                                .substs
-                                .iter()
-                                .skip(1)
-                                .cloned()
-                                .collect::<Vec<_>>();
+                            let ty_params = &t.skip_binder().trait_ref.substs.iter().skip(1).collect::<Vec<_>>();
                             implements_trait(cx, ty_empty_region, t.def_id(), ty_params)
                         })
                     },
@@ -293,7 +286,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                             );
                             spans.sort_by_key(|&(span, _)| span);
                         }
-                        multispan_sugg(diag, "consider taking a reference instead".to_string(), spans);
+                        multispan_sugg(diag, "consider taking a reference instead", spans);
                     };
 
                     span_lint_and_then(
@@ -327,21 +320,21 @@ struct MovedVariablesCtxt {
 }
 
 impl MovedVariablesCtxt {
-    fn move_common(&mut self, cmt: &euv::Place<'_>) {
-        if let euv::PlaceBase::Local(vid) = cmt.base {
+    fn move_common(&mut self, cmt: &euv::PlaceWithHirId<'_>) {
+        if let euv::PlaceBase::Local(vid) = cmt.place.base {
             self.moved_vars.insert(vid);
         }
     }
 }
 
 impl<'tcx> euv::Delegate<'tcx> for MovedVariablesCtxt {
-    fn consume(&mut self, cmt: &euv::Place<'tcx>, mode: euv::ConsumeMode) {
+    fn consume(&mut self, cmt: &euv::PlaceWithHirId<'tcx>, mode: euv::ConsumeMode) {
         if let euv::ConsumeMode::Move = mode {
             self.move_common(cmt);
         }
     }
 
-    fn borrow(&mut self, _: &euv::Place<'tcx>, _: ty::BorrowKind) {}
+    fn borrow(&mut self, _: &euv::PlaceWithHirId<'tcx>, _: ty::BorrowKind) {}
 
-    fn mutate(&mut self, _: &euv::Place<'tcx>) {}
+    fn mutate(&mut self, _: &euv::PlaceWithHirId<'tcx>) {}
 }

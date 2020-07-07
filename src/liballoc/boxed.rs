@@ -92,11 +92,13 @@
 //! pub struct Foo;
 //!
 //! #[no_mangle]
+//! #[allow(improper_ctypes_definitions)]
 //! pub extern "C" fn foo_new() -> Box<Foo> {
 //!     Box::new(Foo)
 //! }
 //!
 //! #[no_mangle]
+//! #[allow(improper_ctypes_definitions)]
 //! pub extern "C" fn foo_delete(_: Option<Box<Foo>>) {}
 //! ```
 //!
@@ -146,6 +148,7 @@ use core::ptr::{self, NonNull, Unique};
 use core::task::{Context, Poll};
 
 use crate::alloc::{self, AllocInit, AllocRef, Global};
+use crate::borrow::Cow;
 use crate::raw_vec::RawVec;
 use crate::str::from_boxed_utf8_unchecked;
 use crate::vec::Vec;
@@ -247,7 +250,7 @@ impl<T> Box<T> {
     #[unstable(feature = "box_into_boxed_slice", issue = "71582")]
     pub fn into_boxed_slice(boxed: Box<T>) -> Box<[T]> {
         // *mut T and *mut [T; 1] have the same size and alignment
-        unsafe { Box::from_raw(Box::into_raw(boxed) as *mut [T; 1] as *mut [T]) }
+        unsafe { Box::from_raw(Box::into_raw(boxed) as *mut [T; 1]) }
     }
 }
 
@@ -310,7 +313,7 @@ impl<T> Box<mem::MaybeUninit<T>> {
     #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub unsafe fn assume_init(self) -> Box<T> {
-        Box::from_raw(Box::into_raw(self) as *mut T)
+        unsafe { Box::from_raw(Box::into_raw(self) as *mut T) }
     }
 }
 
@@ -348,7 +351,7 @@ impl<T> Box<[mem::MaybeUninit<T>]> {
     #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub unsafe fn assume_init(self) -> Box<[T]> {
-        Box::from_raw(Box::into_raw(self) as *mut [T])
+        unsafe { Box::from_raw(Box::into_raw(self) as *mut [T]) }
     }
 }
 
@@ -381,7 +384,10 @@ impl<T: ?Sized> Box<T> {
     ///
     /// unsafe {
     ///     let ptr = alloc(Layout::new::<i32>()) as *mut i32;
-    ///     *ptr = 5;
+    ///     // In general .write is required to avoid attempting to destruct
+    ///     // the (uninitialized) previous contents of `ptr`, though for this
+    ///     // simple example `*ptr = 5` would have worked as well.
+    ///     ptr.write(5);
     ///     let x = Box::from_raw(ptr);
     /// }
     /// ```
@@ -392,7 +398,7 @@ impl<T: ?Sized> Box<T> {
     #[stable(feature = "box_raw", since = "1.4.0")]
     #[inline]
     pub unsafe fn from_raw(raw: *mut T) -> Self {
-        Box(Unique::new_unchecked(raw))
+        Box(unsafe { Unique::new_unchecked(raw) })
     }
 
     /// Consumes the `Box`, returning a wrapped raw pointer.
@@ -800,6 +806,17 @@ impl<T: Copy> From<&[T]> for Box<[T]> {
     }
 }
 
+#[stable(feature = "box_from_cow", since = "1.45.0")]
+impl<T: Copy> From<Cow<'_, [T]>> for Box<[T]> {
+    #[inline]
+    fn from(cow: Cow<'_, [T]>) -> Box<[T]> {
+        match cow {
+            Cow::Borrowed(slice) => Box::from(slice),
+            Cow::Owned(slice) => Box::from(slice),
+        }
+    }
+}
+
 #[stable(feature = "box_from_slice", since = "1.17.0")]
 impl From<&str> for Box<str> {
     /// Converts a `&str` into a `Box<str>`
@@ -815,6 +832,17 @@ impl From<&str> for Box<str> {
     #[inline]
     fn from(s: &str) -> Box<str> {
         unsafe { from_boxed_utf8_unchecked(Box::from(s.as_bytes())) }
+    }
+}
+
+#[stable(feature = "box_from_cow", since = "1.45.0")]
+impl From<Cow<'_, str>> for Box<str> {
+    #[inline]
+    fn from(cow: Cow<'_, str>) -> Box<str> {
+        match cow {
+            Cow::Borrowed(s) => Box::from(s),
+            Cow::Owned(s) => Box::from(s),
+        }
     }
 }
 
@@ -839,6 +867,25 @@ impl From<Box<str>> for Box<[u8]> {
     #[inline]
     fn from(s: Box<str>) -> Self {
         unsafe { Box::from_raw(Box::into_raw(s) as *mut [u8]) }
+    }
+}
+
+#[stable(feature = "box_from_array", since = "1.45.0")]
+impl<T, const N: usize> From<[T; N]> for Box<[T]>
+where
+    [T; N]: LengthAtMost32,
+{
+    /// Converts a `[T; N]` into a `Box<[T]>`
+    ///
+    /// This conversion moves the array to newly heap-allocated memory.
+    ///
+    /// # Examples
+    /// ```rust
+    /// let boxed: Box<[u8]> = Box::from([4, 2]);
+    /// println!("{:?}", boxed);
+    /// ```
+    fn from(array: [T; N]) -> Box<[T]> {
+        box array
     }
 }
 
@@ -1066,6 +1113,14 @@ impl<A> FromIterator<A> for Box<[A]> {
 impl<T: Clone> Clone for Box<[T]> {
     fn clone(&self) -> Self {
         self.to_vec().into_boxed_slice()
+    }
+
+    fn clone_from(&mut self, other: &Self) {
+        if self.len() == other.len() {
+            self.clone_from_slice(&other);
+        } else {
+            *self = other.clone();
+        }
     }
 }
 
