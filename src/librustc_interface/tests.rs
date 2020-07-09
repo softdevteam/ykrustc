@@ -9,7 +9,6 @@ use rustc_session::config::{CFGuard, ExternEntry, LinkerPluginLto, LtoCli, Switc
 use rustc_session::config::{
     Externs, OutputType, OutputTypes, SanitizerSet, SymbolManglingVersion, TracerMode,
 };
-use rustc_session::getopts;
 use rustc_session::lint::Level;
 use rustc_session::search_paths::SearchPath;
 use rustc_session::utils::NativeLibKind;
