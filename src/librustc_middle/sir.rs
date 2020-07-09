@@ -183,11 +183,14 @@ impl SirFuncCx<'tcx> {
         ykpack::Place {
             local: self.lower_local(place.local),
             // FIXME projections not yet implemented.
-            projection: place
-                .projection
-                .iter()
-                .map(|p| ykpack::PlaceElem::Unimplemented(format!("{:?}", p)))
-                .collect(),
+            projection: place.projection.iter().map(|p| self.lower_projection(&p)).collect(),
+        }
+    }
+
+    pub fn lower_projection(&self, pe: &mir::PlaceElem<'_>) -> ykpack::Projection {
+        match pe {
+            mir::ProjectionElem::Field(field, ..) => ykpack::Projection::Field(field.as_u32()),
+            _ => ykpack::Projection::Unimplemented(format!("{:?}", pe)),
         }
     }
 
