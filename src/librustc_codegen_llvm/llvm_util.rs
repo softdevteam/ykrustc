@@ -156,6 +156,10 @@ const ARM_WHITELIST: &[(&str, Option<Symbol>)] = &[
     ("vfp2", Some(sym::arm_target_feature)),
     ("vfp3", Some(sym::arm_target_feature)),
     ("vfp4", Some(sym::arm_target_feature)),
+    // This is needed for inline assembly, but shouldn't be stabilized as-is
+    // since it should be enabled per-function using #[instruction_set], not
+    // #[target_feature].
+    ("thumb-mode", Some(sym::arm_target_feature)),
 ];
 
 const AARCH64_WHITELIST: &[(&str, Option<Symbol>)] = &[
@@ -170,6 +174,7 @@ const AARCH64_WHITELIST: &[(&str, Option<Symbol>)] = &[
     ("fp16", Some(sym::aarch64_target_feature)),
     ("rcpc", Some(sym::aarch64_target_feature)),
     ("dotprod", Some(sym::aarch64_target_feature)),
+    ("tme", Some(sym::aarch64_target_feature)),
     ("v8.1a", Some(sym::aarch64_target_feature)),
     ("v8.2a", Some(sym::aarch64_target_feature)),
     ("v8.3a", Some(sym::aarch64_target_feature)),
@@ -236,8 +241,20 @@ const POWERPC_WHITELIST: &[(&str, Option<Symbol>)] = &[
 const MIPS_WHITELIST: &[(&str, Option<Symbol>)] =
     &[("fp64", Some(sym::mips_target_feature)), ("msa", Some(sym::mips_target_feature))];
 
-const WASM_WHITELIST: &[(&str, Option<Symbol>)] =
-    &[("simd128", Some(sym::wasm_target_feature)), ("atomics", Some(sym::wasm_target_feature))];
+const RISCV_WHITELIST: &[(&str, Option<Symbol>)] = &[
+    ("m", Some(sym::riscv_target_feature)),
+    ("a", Some(sym::riscv_target_feature)),
+    ("c", Some(sym::riscv_target_feature)),
+    ("f", Some(sym::riscv_target_feature)),
+    ("d", Some(sym::riscv_target_feature)),
+    ("e", Some(sym::riscv_target_feature)),
+];
+
+const WASM_WHITELIST: &[(&str, Option<Symbol>)] = &[
+    ("simd128", Some(sym::wasm_target_feature)),
+    ("atomics", Some(sym::wasm_target_feature)),
+    ("nontrapping-fptoint", Some(sym::wasm_target_feature)),
+];
 
 /// When rustdoc is running, provide a list of all known features so that all their respective
 /// primitives may be documented.
@@ -253,6 +270,7 @@ pub fn all_known_features() -> impl Iterator<Item = (&'static str, Option<Symbol
         .chain(HEXAGON_WHITELIST.iter().cloned())
         .chain(POWERPC_WHITELIST.iter().cloned())
         .chain(MIPS_WHITELIST.iter().cloned())
+        .chain(RISCV_WHITELIST.iter().cloned())
         .chain(WASM_WHITELIST.iter().cloned())
 }
 
@@ -297,6 +315,7 @@ pub fn target_feature_whitelist(sess: &Session) -> &'static [(&'static str, Opti
         "hexagon" => HEXAGON_WHITELIST,
         "mips" | "mips64" => MIPS_WHITELIST,
         "powerpc" | "powerpc64" => POWERPC_WHITELIST,
+        "riscv32" | "riscv64" => RISCV_WHITELIST,
         "wasm32" => WASM_WHITELIST,
         _ => &[],
     }

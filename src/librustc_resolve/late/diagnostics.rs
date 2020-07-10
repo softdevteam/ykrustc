@@ -1,11 +1,11 @@
-use crate::diagnostics::{ImportSuggestion, TypoSuggestion};
+use crate::diagnostics::{ImportSuggestion, LabelSuggestion, TypoSuggestion};
 use crate::late::lifetimes::{ElisionFailureInfo, LifetimeContext};
 use crate::late::{LateResolutionVisitor, RibKind};
 use crate::path_names_to_string;
 use crate::{CrateLint, Module, ModuleKind, ModuleOrUniformRoot};
 use crate::{PathResult, PathSource, Segment};
 
-use rustc_ast::ast::{self, Expr, ExprKind, Ident, Item, ItemKind, NodeId, Path, Ty, TyKind};
+use rustc_ast::ast::{self, Expr, ExprKind, Item, ItemKind, NodeId, Path, Ty, TyKind};
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder};
@@ -16,7 +16,7 @@ use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::PrimTy;
 use rustc_session::config::nightly_options;
 use rustc_span::hygiene::MacroKind;
-use rustc_span::symbol::{kw, sym};
+use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::Span;
 
 use log::debug;
@@ -151,7 +151,11 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
             };
             (
                 format!("cannot find {} `{}` in {}{}", expected, item_str, mod_prefix, mod_str),
-                format!("not found in {}", mod_str),
+                if path_str == "async" && expected.starts_with("struct") {
+                    "`async` blocks are only allowed in the 2018 edition".to_string()
+                } else {
+                    format!("not found in {}", mod_str)
+                },
                 item_span,
                 false,
             )
@@ -191,8 +195,15 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
                 _ => "`self` value is a keyword only available in methods with a `self` parameter"
                      .to_string(),
             });
-            if let Some(span) = &self.diagnostic_metadata.current_function {
-                err.span_label(*span, "this function doesn't have a `self` parameter");
+            if let Some((fn_kind, span)) = &self.diagnostic_metadata.current_function {
+                // The current function has a `self' parameter, but we were unable to resolve
+                // a reference to `self`. This can only happen if the `self` identifier we
+                // are resolving came from a different hygiene context.
+                if fn_kind.decl().inputs.get(0).map(|p| p.is_self()).unwrap_or(false) {
+                    err.span_label(*span, "this function has a `self` parameter, but a macro invocation can only access identifiers it receives from parameters");
+                } else {
+                    err.span_label(*span, "this function doesn't have a `self` parameter");
+                }
             }
             return (err, Vec::new());
         }
@@ -201,7 +212,7 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
         let ident = path.last().unwrap().ident;
         let candidates = self
             .r
-            .lookup_import_candidates(ident, ns, is_expected)
+            .lookup_import_candidates(ident, ns, &self.parent_scope, is_expected)
             .drain(..)
             .filter(|ImportSuggestion { did, .. }| {
                 match (did, res.and_then(|res| res.opt_def_id())) {
@@ -212,7 +223,8 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
             .collect::<Vec<_>>();
         let crate_def_id = DefId::local(CRATE_DEF_INDEX);
         if candidates.is_empty() && is_expected(Res::Def(DefKind::Enum, crate_def_id)) {
-            let enum_candidates = self.r.lookup_import_candidates(ident, ns, is_enum_variant);
+            let enum_candidates =
+                self.r.lookup_import_candidates(ident, ns, &self.parent_scope, is_enum_variant);
             let mut enum_candidates = enum_candidates
                 .iter()
                 .map(|suggestion| import_candidate_to_enum_paths(&suggestion))
@@ -500,7 +512,7 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
                 _ => {}
             }
             if !suggested {
-                if let Some(span) = self.r.definitions.opt_span(def_id) {
+                if let Some(span) = self.r.opt_span(def_id) {
                     err.span_label(span, &format!("`{}` defined here", path_str));
                 }
                 err.span_label(span, format!("did you mean `{} {{ /* fields */ }}`?", path_str));
@@ -524,7 +536,7 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
                 if nightly_options::is_nightly_build() {
                     let msg = "you might have meant to use `#![feature(trait_alias)]` instead of a \
                                `type` alias";
-                    if let Some(span) = self.r.definitions.opt_span(def_id) {
+                    if let Some(span) = self.r.opt_span(def_id) {
                         err.span_help(span, msg);
                     } else {
                         err.help(msg);
@@ -581,7 +593,7 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
                 bad_struct_syntax_suggestion(def_id);
             }
             (Res::Def(DefKind::Ctor(_, CtorKind::Fn), def_id), _) if ns == ValueNS => {
-                if let Some(span) = self.r.definitions.opt_span(def_id) {
+                if let Some(span) = self.r.opt_span(def_id) {
                     err.span_label(span, &format!("`{}` defined here", path_str));
                 }
                 err.span_label(span, format!("did you mean `{}( /* fields */ )`?", path_str));
@@ -873,7 +885,15 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
                     let module_def_id = module.def_id().unwrap();
                     if module_def_id == def_id {
                         let path = Path { span: name_binding.span, segments: path_segments };
-                        result = Some((module, ImportSuggestion { did: Some(def_id), path }));
+                        result = Some((
+                            module,
+                            ImportSuggestion {
+                                did: Some(def_id),
+                                descr: "module",
+                                path,
+                                accessible: true,
+                            },
+                        ));
                     } else {
                         // add the module to the lookup
                         if seen_modules.insert(module_def_id) {
@@ -905,20 +925,47 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
         &self,
         path: &[Segment],
     ) -> Option<(Span, &'static str, String, Applicability)> {
-        let ident = match path {
-            [segment] => segment.ident,
+        let (ident, span) = match path {
+            [segment] if !segment.has_generic_args => {
+                (segment.ident.to_string(), segment.ident.span)
+            }
             _ => return None,
         };
-        match (
-            self.diagnostic_metadata.current_item,
-            self.diagnostic_metadata.currently_processing_generics,
-        ) {
-            (Some(Item { kind: ItemKind::Fn(..), ident, .. }), true) if ident.name == sym::main => {
+        let mut iter = ident.chars().map(|c| c.is_uppercase());
+        let single_uppercase_char =
+            matches!(iter.next(), Some(true)) && matches!(iter.next(), None);
+        if !self.diagnostic_metadata.currently_processing_generics && !single_uppercase_char {
+            return None;
+        }
+        match (self.diagnostic_metadata.current_item, single_uppercase_char) {
+            (Some(Item { kind: ItemKind::Fn(..), ident, .. }), _) if ident.name == sym::main => {
                 // Ignore `fn main()` as we don't want to suggest `fn main<T>()`
             }
-            (Some(Item { kind, .. }), true) => {
+            (
+                Some(Item {
+                    kind:
+                        kind @ ItemKind::Fn(..)
+                        | kind @ ItemKind::Enum(..)
+                        | kind @ ItemKind::Struct(..)
+                        | kind @ ItemKind::Union(..),
+                    ..
+                }),
+                true,
+            )
+            | (Some(Item { kind, .. }), false) => {
                 // Likely missing type parameter.
                 if let Some(generics) = kind.generics() {
+                    if span.overlaps(generics.span) {
+                        // Avoid the following:
+                        // error[E0405]: cannot find trait `A` in this scope
+                        //  --> $DIR/typo-suggestion-named-underscore.rs:CC:LL
+                        //   |
+                        // L | fn foo<T: A>(x: T) {} // Shouldn't suggest underscore
+                        //   |           ^- help: you might be missing a type parameter: `, A`
+                        //   |           |
+                        //   |           not found in this scope
+                        return None;
+                    }
                     let msg = "you might be missing a type parameter";
                     let (span, sugg) = if let [.., param] = &generics.params[..] {
                         let span = if let [.., bound] = &param.bounds[..] {
@@ -944,6 +991,32 @@ impl<'a> LateResolutionVisitor<'a, '_, '_> {
             _ => {}
         }
         None
+    }
+
+    /// Given the target `label`, search the `rib_index`th label rib for similarly named labels,
+    /// optionally returning the closest match and whether it is reachable.
+    crate fn suggestion_for_label_in_rib(
+        &self,
+        rib_index: usize,
+        label: Ident,
+    ) -> Option<LabelSuggestion> {
+        // Are ribs from this `rib_index` within scope?
+        let within_scope = self.is_label_valid_from_rib(rib_index);
+
+        let rib = &self.label_ribs[rib_index];
+        let names = rib
+            .bindings
+            .iter()
+            .filter(|(id, _)| id.span.ctxt() == label.span.ctxt())
+            .map(|(id, _)| &id.name);
+
+        find_best_match_for_name(names, &label.as_str(), None).map(|symbol| {
+            // Upon finding a similar name, get the ident that it was from - the span
+            // contained within helps make a useful diagnostic. In addition, determine
+            // whether this candidate is within scope.
+            let (ident, _) = rib.bindings.iter().find(|(ident, _)| ident.name == symbol).unwrap();
+            (*ident, within_scope)
+        })
     }
 }
 
@@ -1040,7 +1113,7 @@ impl<'tcx> LifetimeContext<'_, 'tcx> {
         err: &mut DiagnosticBuilder<'_>,
         span: Span,
         count: usize,
-        lifetime_names: &FxHashSet<ast::Ident>,
+        lifetime_names: &FxHashSet<Ident>,
         params: &[ElisionFailureInfo],
     ) {
         let snippet = self.tcx.sess.source_map().span_to_snippet(span).ok();

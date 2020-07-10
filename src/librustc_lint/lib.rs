@@ -30,9 +30,11 @@
 #![feature(bool_to_option)]
 #![feature(box_syntax)]
 #![feature(crate_visibility_modifier)]
+#![feature(iter_order_by)]
 #![feature(never_type)]
 #![feature(nll)]
 #![feature(or_patterns)]
+#![cfg_attr(bootstrap, feature(track_caller))]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -61,9 +63,10 @@ use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::lint::builtin::{
     BARE_TRAIT_OBJECTS, ELIDED_LIFETIMES_IN_PATHS, EXPLICIT_OUTLIVES_REQUIREMENTS,
-    INTRA_DOC_LINK_RESOLUTION_FAILURE, INVALID_CODEBLOCK_ATTRIBUTE, MISSING_DOC_CODE_EXAMPLES,
+    INTRA_DOC_LINK_RESOLUTION_FAILURE, INVALID_CODEBLOCK_ATTRIBUTES, MISSING_DOC_CODE_EXAMPLES,
     PRIVATE_DOC_TESTS,
 };
+use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::Span;
 
 use array_into_iter::ArrayIntoIter;
@@ -153,6 +156,7 @@ macro_rules! late_lint_passes {
                 // and change this to a module lint pass
                 MissingDebugImplementations: MissingDebugImplementations::default(),
                 ArrayIntoIter: ArrayIntoIter,
+                ClashingExternDeclarations: ClashingExternDeclarations::new(),
             ]
         );
     };
@@ -164,7 +168,8 @@ macro_rules! late_lint_mod_passes {
             $args,
             [
                 HardwiredLints: HardwiredLints,
-                ImproperCTypes: ImproperCTypes,
+                ImproperCTypesDeclarations: ImproperCTypesDeclarations,
+                ImproperCTypesDefinitions: ImproperCTypesDefinitions,
                 VariantSizeDifferences: VariantSizeDifferences,
                 BoxPointers: BoxPointers,
                 PathStatements: PathStatements,
@@ -300,7 +305,7 @@ fn register_builtins(store: &mut LintStore, no_interleave_lints: bool) {
     add_lint_group!(
         "rustdoc",
         INTRA_DOC_LINK_RESOLUTION_FAILURE,
-        INVALID_CODEBLOCK_ATTRIBUTE,
+        INVALID_CODEBLOCK_ATTRIBUTES,
         MISSING_DOC_CODE_EXAMPLES,
         PRIVATE_DOC_TESTS
     );

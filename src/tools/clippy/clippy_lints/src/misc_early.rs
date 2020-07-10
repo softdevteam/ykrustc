@@ -24,8 +24,25 @@ declare_clippy_lint! {
     /// **Known problems:** None.
     ///
     /// **Example:**
-    /// ```ignore
-    /// let { a: _, b: ref b, c: _ } = ..
+    /// ```rust
+    /// # struct Foo {
+    /// #     a: i32,
+    /// #     b: i32,
+    /// #     c: i32,
+    /// # }
+    /// let f = Foo { a: 0, b: 0, c: 0 };
+    ///
+    /// // Bad
+    /// match f {
+    ///     Foo { a: _, b: 0, .. } => {},
+    ///     Foo { a: _, b: _, c: _ } => {},
+    /// }
+    ///
+    /// // Good
+    /// match f {
+    ///     Foo { b: 0, .. } => {},
+    ///     Foo { .. } => {},
+    /// }
     /// ```
     pub UNNEEDED_FIELD_PATTERN,
     restriction,
@@ -42,7 +59,11 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
+    /// // Bad
     /// fn foo(a: i32, _a: i32) {}
+    ///
+    /// // Good
+    /// fn bar(a: i32, _b: i32) {}
     /// ```
     pub DUPLICATE_UNDERSCORE_ARGUMENT,
     style,
@@ -60,7 +81,11 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust,ignore
-    /// (|| 42)()
+    /// // Bad
+    /// let a = (|| 42)()
+    ///
+    /// // Good
+    /// let a = 42
     /// ```
     pub REDUNDANT_CLOSURE_CALL,
     complexity,
@@ -95,7 +120,11 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
+    /// // Bad
     /// let y = 0x1a9BAcD;
+    ///
+    /// // Good
+    /// let y = 0x1A9BACD;
     /// ```
     pub MIXED_CASE_HEX_LITERALS,
     style,
@@ -112,7 +141,11 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
+    /// // Bad
     /// let y = 123832i32;
+    ///
+    /// // Good
+    /// let y = 123832_i32;
     /// ```
     pub UNSEPARATED_LITERAL_SUFFIX,
     pedantic,
@@ -190,9 +223,16 @@ declare_clippy_lint! {
     /// ```rust
     /// # let v = Some("abc");
     ///
+    /// // Bad
     /// match v {
     ///     Some(x) => (),
-    ///     y @ _ => (), // easier written as `y`,
+    ///     y @ _ => (),
+    /// }
+    ///
+    /// // Good
+    /// match v {
+    ///     Some(x) => (),
+    ///     y => (),
     /// }
     /// ```
     pub REDUNDANT_PATTERN,
@@ -218,16 +258,13 @@ declare_clippy_lint! {
     /// # struct TupleStruct(u32, u32, u32);
     /// # let t = TupleStruct(1, 2, 3);
     ///
+    /// // Bad
     /// match t {
     ///     TupleStruct(0, .., _) => (),
     ///     _ => (),
     /// }
-    /// ```
-    /// can be written as
-    /// ```rust
-    /// # struct TupleStruct(u32, u32, u32);
-    /// # let t = TupleStruct(1, 2, 3);
     ///
+    /// // Good
     /// match t {
     ///     TupleStruct(0, ..) => (),
     ///     _ => (),
@@ -362,7 +399,7 @@ impl EarlyLintPass for MiscEarlyLints {
             let left_binding = match left {
                 BindingMode::ByRef(Mutability::Mut) => "ref mut ",
                 BindingMode::ByRef(Mutability::Not) => "ref ",
-                _ => "",
+                BindingMode::ByValue(..) => "",
             };
 
             if let PatKind::Wild = right.kind {

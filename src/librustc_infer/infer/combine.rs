@@ -39,7 +39,7 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::ty::error::TypeError;
 use rustc_middle::ty::relate::{self, Relate, RelateResult, TypeRelation};
 use rustc_middle::ty::subst::SubstsRef;
-use rustc_middle::ty::{self, InferConst, Ty, TyCtxt};
+use rustc_middle::ty::{self, InferConst, ToPredicate, Ty, TyCtxt, TypeFoldable};
 use rustc_middle::ty::{IntType, UintType};
 use rustc_span::{Span, DUMMY_SP};
 
@@ -112,7 +112,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
 
             // All other cases of inference are errors
             (&ty::Infer(_), _) | (_, &ty::Infer(_)) => {
-                Err(TypeError::Sorts(ty::relate::expected_found(relation, &a, &b)))
+                Err(TypeError::Sorts(ty::relate::expected_found(relation, a, b)))
             }
 
             _ => ty::relate::super_relate_tys(relation, a, b),
@@ -126,7 +126,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
         b: &'tcx ty::Const<'tcx>,
     ) -> RelateResult<'tcx, &'tcx ty::Const<'tcx>>
     where
-        R: TypeRelation<'tcx>,
+        R: ConstEquateRelation<'tcx>,
     {
         debug!("{}.consts({:?}, {:?})", relation.tag(), a, b);
         if a == b {
@@ -164,7 +164,22 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
             (_, ty::ConstKind::Infer(InferConst::Var(vid))) => {
                 return self.unify_const_variable(!a_is_expected, vid, a);
             }
-
+            (ty::ConstKind::Unevaluated(..), _) if self.tcx.lazy_normalization() => {
+                // FIXME(#59490): Need to remove the leak check to accomodate
+                // escaping bound variables here.
+                if !a.has_escaping_bound_vars() && !b.has_escaping_bound_vars() {
+                    relation.const_equate_obligation(a, b);
+                }
+                return Ok(b);
+            }
+            (_, ty::ConstKind::Unevaluated(..)) if self.tcx.lazy_normalization() => {
+                // FIXME(#59490): Need to remove the leak check to accomodate
+                // escaping bound variables here.
+                if !a.has_escaping_bound_vars() && !b.has_escaping_bound_vars() {
+                    relation.const_equate_obligation(a, b);
+                }
+                return Ok(a);
+            }
             _ => {}
         }
 
@@ -292,7 +307,7 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
             self.obligations.push(Obligation::new(
                 self.trace.cause.clone(),
                 self.param_env,
-                ty::Predicate::WellFormed(b_ty),
+                ty::PredicateKind::WellFormed(b_ty.into()).to_predicate(self.infcx.tcx),
             ));
         }
 
@@ -303,10 +318,10 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         // to associate causes/spans with each of the relations in
         // the stack to get this right.
         match dir {
-            EqTo => self.equate(a_is_expected).relate(&a_ty, &b_ty),
-            SubtypeOf => self.sub(a_is_expected).relate(&a_ty, &b_ty),
+            EqTo => self.equate(a_is_expected).relate(a_ty, b_ty),
+            SubtypeOf => self.sub(a_is_expected).relate(a_ty, b_ty),
             SupertypeOf => {
-                self.sub(a_is_expected).relate_with_variance(ty::Contravariant, &a_ty, &b_ty)
+                self.sub(a_is_expected).relate_with_variance(ty::Contravariant, a_ty, b_ty)
             }
         }?;
 
@@ -364,7 +379,7 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
             param_env: self.param_env,
         };
 
-        let ty = match generalize.relate(&ty, &ty) {
+        let ty = match generalize.relate(ty, ty) {
             Ok(ty) => ty,
             Err(e) => {
                 debug!("generalize: failure {:?}", e);
@@ -374,6 +389,24 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         let needs_wf = generalize.needs_wf;
         debug!("generalize: success {{ {:?}, {:?} }}", ty, needs_wf);
         Ok(Generalization { ty, needs_wf })
+    }
+
+    pub fn add_const_equate_obligation(
+        &mut self,
+        a_is_expected: bool,
+        a: &'tcx ty::Const<'tcx>,
+        b: &'tcx ty::Const<'tcx>,
+    ) {
+        let predicate = if a_is_expected {
+            ty::PredicateKind::ConstEquate(a, b)
+        } else {
+            ty::PredicateKind::ConstEquate(b, a)
+        };
+        self.obligations.push(Obligation::new(
+            self.trace.cause.clone(),
+            self.param_env,
+            predicate.to_predicate(self.tcx()),
+        ));
     }
 }
 
@@ -457,8 +490,8 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
 
     fn binders<T>(
         &mut self,
-        a: &ty::Binder<T>,
-        b: &ty::Binder<T>,
+        a: ty::Binder<T>,
+        b: ty::Binder<T>,
     ) -> RelateResult<'tcx, ty::Binder<T>>
     where
         T: Relate<'tcx>,
@@ -486,8 +519,8 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
     fn relate_with_variance<T: Relate<'tcx>>(
         &mut self,
         variance: ty::Variance,
-        a: &T,
-        b: &T,
+        a: T,
+        b: T,
     ) -> RelateResult<'tcx, T> {
         let old_ambient_variance = self.ambient_variance;
         self.ambient_variance = self.ambient_variance.xform(variance);
@@ -519,7 +552,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                     match probe {
                         TypeVariableValue::Known { value: u } => {
                             debug!("generalize: known value {:?}", u);
-                            self.relate(&u, &u)
+                            self.relate(u, u)
                         }
                         TypeVariableValue::Unknown { universe } => {
                             match self.ambient_variance {
@@ -586,7 +619,6 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
             | ty::ReVar(..)
             | ty::ReEmpty(_)
             | ty::ReStatic
-            | ty::ReScope(..)
             | ty::ReEarlyBound(..)
             | ty::ReFree(..) => {
                 // see common code below
@@ -623,7 +655,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                 let variable_table = &mut inner.const_unification_table();
                 let var_value = variable_table.probe_value(vid);
                 match var_value.val {
-                    ConstVariableValue::Known { value: u } => self.relate(&u, &u),
+                    ConstVariableValue::Known { value: u } => self.relate(u, u),
                     ConstVariableValue::Unknown { universe } => {
                         if self.for_universe.can_name(universe) {
                             Ok(c)
@@ -637,9 +669,17 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                     }
                 }
             }
+            ty::ConstKind::Unevaluated(..) if self.tcx().lazy_normalization() => Ok(c),
             _ => relate::super_relate_consts(self, c, c),
         }
     }
+}
+
+pub trait ConstEquateRelation<'tcx>: TypeRelation<'tcx> {
+    /// Register an obligation that both constants must be equal to each other.
+    ///
+    /// If they aren't equal then the relation doesn't hold.
+    fn const_equate_obligation(&mut self, a: &'tcx ty::Const<'tcx>, b: &'tcx ty::Const<'tcx>);
 }
 
 pub trait RelateResultCompare<'tcx, T> {
@@ -661,7 +701,7 @@ pub fn const_unification_error<'tcx>(
     a_is_expected: bool,
     (a, b): (&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>),
 ) -> TypeError<'tcx> {
-    TypeError::ConstMismatch(ty::relate::expected_found_bool(a_is_expected, &a, &b))
+    TypeError::ConstMismatch(ty::relate::expected_found_bool(a_is_expected, a, b))
 }
 
 fn int_unification_error<'tcx>(
@@ -669,7 +709,7 @@ fn int_unification_error<'tcx>(
     v: (ty::IntVarValue, ty::IntVarValue),
 ) -> TypeError<'tcx> {
     let (a, b) = v;
-    TypeError::IntMismatch(ty::relate::expected_found_bool(a_is_expected, &a, &b))
+    TypeError::IntMismatch(ty::relate::expected_found_bool(a_is_expected, a, b))
 }
 
 fn float_unification_error<'tcx>(
@@ -677,5 +717,5 @@ fn float_unification_error<'tcx>(
     v: (ty::FloatVarValue, ty::FloatVarValue),
 ) -> TypeError<'tcx> {
     let (ty::FloatVarValue(a), ty::FloatVarValue(b)) = v;
-    TypeError::FloatMismatch(ty::relate::expected_found_bool(a_is_expected, &a, &b))
+    TypeError::FloatMismatch(ty::relate::expected_found_bool(a_is_expected, a, b))
 }

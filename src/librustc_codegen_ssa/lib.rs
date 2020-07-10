@@ -24,7 +24,7 @@ use rustc_data_structures::sync::Lrc;
 use rustc_hir::def_id::CrateNum;
 use rustc_hir::LangItem;
 use rustc_middle::dep_graph::WorkProduct;
-use rustc_middle::middle::cstore::{CrateSource, LibSource, NativeLibrary};
+use rustc_middle::middle::cstore::{CrateSource, LibSource, NativeLib};
 use rustc_middle::middle::dependency_format::Dependencies;
 use rustc_middle::ty::query::Providers;
 use rustc_session::config::{OutputFilenames, OutputType, RUST_CGU_EXT};
@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 pub mod back;
 pub mod base;
 pub mod common;
+pub mod coverageinfo;
 pub mod debuginfo;
 pub mod glue;
 pub mod meth;
@@ -115,9 +116,9 @@ pub struct CrateInfo {
     pub compiler_builtins: Option<CrateNum>,
     pub profiler_runtime: Option<CrateNum>,
     pub is_no_builtins: FxHashSet<CrateNum>,
-    pub native_libraries: FxHashMap<CrateNum, Lrc<Vec<NativeLibrary>>>,
+    pub native_libraries: FxHashMap<CrateNum, Lrc<Vec<NativeLib>>>,
     pub crate_name: FxHashMap<CrateNum, String>,
-    pub used_libraries: Lrc<Vec<NativeLibrary>>,
+    pub used_libraries: Lrc<Vec<NativeLib>>,
     pub link_args: Lrc<Vec<String>>,
     pub used_crate_source: FxHashMap<CrateNum, Lrc<CrateSource>>,
     pub used_crates_static: Vec<(CrateNum, LibSource)>,

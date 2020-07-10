@@ -488,6 +488,8 @@ impl<'a> CrateLocator<'a> {
                 && self.triple != TargetTriple::from_triple(config::host_triple())
             {
                 err.note(&format!("the `{}` target may not be installed", self.triple));
+            } else if self.crate_name == sym::profiler_builtins {
+                err.note(&"the compiler may have been built without the profiler runtime");
             }
             err.span_label(self.span, "can't find crate");
             err
@@ -670,7 +672,7 @@ impl<'a> CrateLocator<'a> {
 
         // The all loop is because `--crate-type=rlib --crate-type=rlib` is
         // legal and produces both inside this type.
-        let is_rlib = self.sess.crate_types.borrow().iter().all(|c| *c == CrateType::Rlib);
+        let is_rlib = self.sess.crate_types().iter().all(|c| *c == CrateType::Rlib);
         let needs_object_code = self.sess.opts.output_types.should_codegen();
         // If we're producing an rlib, then we don't need object code.
         // Or, if we're not producing object code, then we don't need it either

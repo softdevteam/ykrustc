@@ -120,12 +120,13 @@ fn overlap<'cx, 'tcx>(
     debug!("overlap(a_def_id={:?}, b_def_id={:?})", a_def_id, b_def_id);
 
     selcx.infcx().probe_maybe_skip_leak_check(skip_leak_check.is_yes(), |snapshot| {
-        overlap_within_probe(selcx, a_def_id, b_def_id, snapshot)
+        overlap_within_probe(selcx, skip_leak_check, a_def_id, b_def_id, snapshot)
     })
 }
 
 fn overlap_within_probe(
     selcx: &mut SelectionContext<'cx, 'tcx>,
+    skip_leak_check: SkipLeakCheck,
     a_def_id: DefId,
     b_def_id: DefId,
     snapshot: &CombinedSnapshot<'_, 'tcx>,
@@ -178,6 +179,13 @@ fn overlap_within_probe(
     if let Some(failing_obligation) = opt_failing_obligation {
         debug!("overlap: obligation unsatisfiable {:?}", failing_obligation);
         return None;
+    }
+
+    if !skip_leak_check.is_yes() {
+        if let Err(_) = infcx.leak_check(true, snapshot) {
+            debug!("overlap: leak check failed");
+            return None;
+        }
     }
 
     let impl_header = selcx.infcx().resolve_vars_if_possible(&a_impl_header);
@@ -565,11 +573,10 @@ fn ty_is_non_local_constructor(ty: Ty<'_>, in_crate: InCrate) -> Option<Ty<'_>> 
             }
         }
 
-        ty::Error => None,
+        ty::Error(_) => None,
 
-        ty::UnnormalizedProjection(..)
-        | ty::Closure(..)
-        | ty::Generator(..)
-        | ty::GeneratorWitness(..) => bug!("ty_is_local invoked on unexpected type: {:?}", ty),
+        ty::Closure(..) | ty::Generator(..) | ty::GeneratorWitness(..) => {
+            bug!("ty_is_local invoked on unexpected type: {:?}", ty)
+        }
     }
 }

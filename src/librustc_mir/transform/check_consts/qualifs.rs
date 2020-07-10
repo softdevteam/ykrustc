@@ -2,7 +2,6 @@
 //!
 //! See the `Qualif` trait for more info.
 
-use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, subst::SubstsRef, AdtDef, Ty};
 use rustc_span::DUMMY_SP;
@@ -78,7 +77,7 @@ impl Qualif for HasMutInterior {
     }
 
     fn in_any_value_of_ty(cx: &ConstCx<'_, 'tcx>, ty: Ty<'tcx>) -> bool {
-        !ty.is_freeze(cx.tcx, cx.param_env, DUMMY_SP)
+        !ty.is_freeze(cx.tcx.at(DUMMY_SP), cx.param_env)
     }
 
     fn in_adt_inherently(cx: &ConstCx<'_, 'tcx>, adt: &'tcx AdtDef, _: SubstsRef<'tcx>) -> bool {
@@ -127,7 +126,7 @@ impl Qualif for CustomEq {
         // because that component may be part of an enum variant (e.g.,
         // `Option::<NonStructuralMatchTy>::Some`), in which case some values of this type may be
         // structural-match (`Option::None`).
-        let id = cx.tcx.hir().local_def_id_to_hir_id(cx.def_id.as_local().unwrap());
+        let id = cx.tcx.hir().local_def_id_to_hir_id(cx.def_id);
         traits::search_for_structural_match_violation(id, cx.body.span, cx.tcx, ty).is_some()
     }
 
@@ -137,10 +136,7 @@ impl Qualif for CustomEq {
         substs: SubstsRef<'tcx>,
     ) -> bool {
         let ty = cx.tcx.mk_ty(ty::Adt(adt, substs));
-        let id = cx.tcx.hir().local_def_id_to_hir_id(cx.def_id.as_local().unwrap());
-        cx.tcx
-            .infer_ctxt()
-            .enter(|infcx| !traits::type_marked_structural(id, cx.body.span, &infcx, ty))
+        !ty.is_structural_eq_shallow(cx.tcx)
     }
 }
 
@@ -153,7 +149,9 @@ where
     F: FnMut(Local) -> bool,
 {
     match rvalue {
-        Rvalue::NullaryOp(..) => Q::in_any_value_of_ty(cx, rvalue.ty(cx.body, cx.tcx)),
+        Rvalue::ThreadLocalRef(_) | Rvalue::NullaryOp(..) => {
+            Q::in_any_value_of_ty(cx, rvalue.ty(cx.body, cx.tcx))
+        }
 
         Rvalue::Discriminant(place) | Rvalue::Len(place) => {
             in_place::<Q, _>(cx, in_local, place.as_ref())
@@ -206,8 +204,8 @@ where
     F: FnMut(Local) -> bool,
 {
     let mut projection = place.projection;
-    while let [ref proj_base @ .., proj_elem] = projection {
-        match *proj_elem {
+    while let &[ref proj_base @ .., proj_elem] = projection {
+        match proj_elem {
             ProjectionElem::Index(index) if in_local(index) => return true,
 
             ProjectionElem::Deref

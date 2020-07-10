@@ -88,6 +88,17 @@ impl<'a, 'tcx> Visitor<'tcx> for FindHirNodeVisitor<'a, 'tcx> {
         if let (None, Some(ty)) =
             (self.found_local_pattern, self.node_ty_contains_target(local.hir_id))
         {
+            // FIXME: There's a trade-off here - we can either check that our target span
+            // is contained in `local.span` or not. If we choose to check containment
+            // we can avoid some spurious suggestions (see #72690), but we lose
+            // the ability to report on things like:
+            //
+            // ```
+            // let x = vec![];
+            // ```
+            //
+            // because the target span will be in the macro expansion of `vec![]`.
+            // At present we choose not to check containment.
             self.found_local_pattern = Some(&*local.pat);
             self.found_node_ty = Some(ty);
         }
@@ -99,15 +110,17 @@ impl<'a, 'tcx> Visitor<'tcx> for FindHirNodeVisitor<'a, 'tcx> {
             if let (None, Some(ty)) =
                 (self.found_arg_pattern, self.node_ty_contains_target(param.hir_id))
             {
-                self.found_arg_pattern = Some(&*param.pat);
-                self.found_node_ty = Some(ty);
+                if self.target_span.contains(param.pat.span) {
+                    self.found_arg_pattern = Some(&*param.pat);
+                    self.found_node_ty = Some(ty);
+                }
             }
         }
         intravisit::walk_body(self, body);
     }
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'tcx>) {
-        if let ExprKind::MethodCall(_, call_span, exprs) = expr.kind {
+        if let ExprKind::MethodCall(_, call_span, exprs, _) = expr.kind {
             if call_span == self.target_span
                 && Some(self.target)
                     == self.infcx.in_progress_tables.and_then(|tables| {
@@ -172,8 +185,19 @@ fn closure_args(fn_sig: &ty::PolyFnSig<'_>) -> String {
 }
 
 pub enum TypeAnnotationNeeded {
+    /// ```compile_fail,E0282
+    /// let x = "hello".chars().rev().collect();
+    /// ```
     E0282,
+    /// An implementation cannot be chosen unambiguously because of lack of information.
+    /// ```compile_fail,E0283
+    /// let _ = Default::default();
+    /// ```
     E0283,
+    /// ```compile_fail,E0284
+    /// let mut d: u64 = 2;
+    /// d = d % 1u32.into();
+    /// ```
     E0284,
 }
 
@@ -261,7 +285,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             printer.name_resolver = Some(Box::new(&getter));
             let _ = if let ty::FnDef(..) = ty.kind {
                 // We don't want the regular output for `fn`s because it includes its path in
-                // invalid pseduo-syntax, we want the `fn`-pointer output instead.
+                // invalid pseudo-syntax, we want the `fn`-pointer output instead.
                 ty.fn_sig(self.tcx).print(printer)
             } else {
                 ty.print(printer)
@@ -283,7 +307,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             // 3 |     let _ = x.sum() as f64;
             //   |               ^^^ cannot infer type for `S`
             span
-        } else if let Some(ExprKind::MethodCall(_, call_span, _)) =
+        } else if let Some(ExprKind::MethodCall(_, call_span, _, _)) =
             local_visitor.found_method_call.map(|e| &e.kind)
         {
             // Point at the call instead of the whole expression:
@@ -444,7 +468,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             let msg = if let Some(simple_ident) = pattern.simple_ident() {
                 match pattern.span.desugaring_kind() {
                     None => format!("consider giving `{}` {}", simple_ident, suffix),
-                    Some(DesugaringKind::ForLoop) => {
+                    Some(DesugaringKind::ForLoop(_)) => {
                         "the element type for this iterator is not specified".to_string()
                     }
                     _ => format!("this needs {}", suffix),
@@ -518,6 +542,36 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         err
     }
 
+    // FIXME(const_generics): We should either try and merge this with `need_type_info_err`
+    // or improve the errors created here.
+    //
+    // Unlike for type inference variables, we don't yet store the origin of const inference variables.
+    // This is needed for to get a more relevant error span.
+    pub fn need_type_info_err_const(
+        &self,
+        body_id: Option<hir::BodyId>,
+        span: Span,
+        ct: &'tcx ty::Const<'tcx>,
+        error_code: TypeAnnotationNeeded,
+    ) -> DiagnosticBuilder<'tcx> {
+        let mut local_visitor = FindHirNodeVisitor::new(&self, ct.into(), span);
+        if let Some(body_id) = body_id {
+            let expr = self.tcx.hir().expect_expr(body_id.hir_id);
+            local_visitor.visit_expr(expr);
+        }
+
+        let error_code = error_code.into();
+        let mut err = self.tcx.sess.struct_span_err_with_code(
+            local_visitor.target_span,
+            "type annotations needed",
+            error_code,
+        );
+
+        err.note("unable to infer the value of a const parameter");
+
+        err
+    }
+
     /// If the `FnSig` for the method call can be found and type arguments are identified as
     /// needed, suggest annotating the call, otherwise point out the resulting type of the call.
     fn annotate_method_call(
@@ -554,7 +608,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                     let output = bound_output.skip_binder();
                     err.span_label(e.span, &format!("this method call resolves to `{:?}`", output));
                     let kind = &output.kind;
-                    if let ty::Projection(proj) | ty::UnnormalizedProjection(proj) = kind {
+                    if let ty::Projection(proj) = kind {
                         if let Some(span) = self.tcx.hir().span_if_local(proj.item_def_id) {
                             err.span_label(span, &format!("`{:?}` defined here", output));
                         }

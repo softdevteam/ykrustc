@@ -1,6 +1,6 @@
 //! Clippy wrappers around rustc's diagnostic functions.
 
-use rustc_errors::{Applicability, CodeSuggestion, DiagnosticBuilder, Substitution, SubstitutionPart, SuggestionStyle};
+use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir::HirId;
 use rustc_lint::{LateContext, Lint, LintContext};
 use rustc_span::source_map::{MultiSpan, Span};
@@ -138,7 +138,7 @@ where
     });
 }
 
-pub fn span_lint_hir(cx: &LateContext<'_, '_>, lint: &'static Lint, hir_id: HirId, sp: Span, msg: &str) {
+pub fn span_lint_hir(cx: &LateContext<'_>, lint: &'static Lint, hir_id: HirId, sp: Span, msg: &str) {
     cx.tcx.struct_span_lint_hir(lint, hir_id, sp, |diag| {
         let mut diag = diag.build(msg);
         docs_link(&mut diag, lint);
@@ -147,7 +147,7 @@ pub fn span_lint_hir(cx: &LateContext<'_, '_>, lint: &'static Lint, hir_id: HirI
 }
 
 pub fn span_lint_hir_and_then(
-    cx: &LateContext<'_, '_>,
+    cx: &LateContext<'_>,
     lint: &'static Lint,
     hir_id: HirId,
     sp: Span,
@@ -198,20 +198,20 @@ pub fn span_lint_and_sugg<'a, T: LintContext>(
 /// appear once per
 /// replacement. In human-readable format though, it only appears once before
 /// the whole suggestion.
-pub fn multispan_sugg<I>(diag: &mut DiagnosticBuilder<'_>, help_msg: String, sugg: I)
+pub fn multispan_sugg<I>(diag: &mut DiagnosticBuilder<'_>, help_msg: &str, sugg: I)
 where
     I: IntoIterator<Item = (Span, String)>,
 {
-    let sugg = CodeSuggestion {
-        substitutions: vec![Substitution {
-            parts: sugg
-                .into_iter()
-                .map(|(span, snippet)| SubstitutionPart { snippet, span })
-                .collect(),
-        }],
-        msg: help_msg,
-        style: SuggestionStyle::ShowCode,
-        applicability: Applicability::Unspecified,
-    };
-    diag.suggestions.push(sugg);
+    multispan_sugg_with_applicability(diag, help_msg, Applicability::Unspecified, sugg)
+}
+
+pub fn multispan_sugg_with_applicability<I>(
+    diag: &mut DiagnosticBuilder<'_>,
+    help_msg: &str,
+    applicability: Applicability,
+    sugg: I,
+) where
+    I: IntoIterator<Item = (Span, String)>,
+{
+    diag.multipart_suggestion(help_msg, sugg.into_iter().collect(), applicability);
 }

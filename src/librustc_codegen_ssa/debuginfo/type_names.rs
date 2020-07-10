@@ -48,7 +48,7 @@ pub fn push_debuginfo_type_name<'tcx>(
         }
         ty::Tuple(component_types) => {
             output.push('(');
-            for &component_type in component_types {
+            for component_type in component_types {
                 push_debuginfo_type_name(tcx, component_type.expect_ty(), true, output, visited);
                 output.push_str(", ");
             }
@@ -195,10 +195,9 @@ pub fn push_debuginfo_type_name<'tcx>(
                 tcx.def_key(def_id).disambiguated_data.disambiguator
             ));
         }
-        ty::Error
+        ty::Error(_)
         | ty::Infer(_)
         | ty::Placeholder(..)
-        | ty::UnnormalizedProjection(..)
         | ty::Projection(..)
         | ty::Bound(..)
         | ty::Opaque(..)

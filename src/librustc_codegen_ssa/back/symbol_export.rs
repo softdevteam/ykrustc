@@ -15,10 +15,10 @@ use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::subst::{GenericArgKind, SubstsRef};
 use rustc_middle::ty::Instance;
 use rustc_middle::ty::{SymbolName, TyCtxt};
-use rustc_session::config::{CrateType, Sanitizer};
+use rustc_session::config::{CrateType, SanitizerSet};
 
 pub fn threshold(tcx: TyCtxt<'_>) -> SymbolExportLevel {
-    crates_export_threshold(&tcx.sess.crate_types.borrow())
+    crates_export_threshold(&tcx.sess.crate_types())
 }
 
 fn crate_export_threshold(crate_type: CrateType) -> SymbolExportLevel {
@@ -89,10 +89,12 @@ fn reachable_non_generics_provider(tcx: TyCtxt<'_>, cnum: CrateNum) -> DefIdMap<
                 | Node::ImplItem(&hir::ImplItem { kind: hir::ImplItemKind::Fn(..), .. }) => {
                     let def_id = tcx.hir().local_def_id(hir_id);
                     let generics = tcx.generics_of(def_id);
-                    if !generics.requires_monomorphization(tcx) &&
-                        // Functions marked with #[inline] are only ever codegened
-                        // with "internal" linkage and are never exported.
-                        !Instance::mono(tcx, def_id.to_def_id()).def.generates_cgu_internal_copy(tcx)
+                    if !generics.requires_monomorphization(tcx)
+                        // Functions marked with #[inline] are codegened with "internal"
+                        // linkage and are not exported unless marked with an extern
+                        // inidicator
+                        && (!Instance::mono(tcx, def_id.to_def_id()).def.generates_cgu_internal_copy(tcx)
+                            || tcx.codegen_fn_attrs(def_id.to_def_id()).contains_extern_indicator())
                     {
                         Some(def_id)
                     } else {
@@ -202,7 +204,7 @@ fn exported_symbols_provider_local(
         }));
     }
 
-    if let Some(Sanitizer::Memory) = tcx.sess.opts.debugging_opts.sanitizer {
+    if tcx.sess.opts.debugging_opts.sanitizer.contains(SanitizerSet::MEMORY) {
         // Similar to profiling, preserve weak msan symbol during LTO.
         const MSAN_WEAK_SYMBOLS: [&str; 2] = ["__msan_track_origins", "__msan_keep_going"];
 
@@ -212,7 +214,7 @@ fn exported_symbols_provider_local(
         }));
     }
 
-    if tcx.sess.crate_types.borrow().contains(&CrateType::Dylib) {
+    if tcx.sess.crate_types().contains(&CrateType::Dylib) {
         let symbol_name = metadata_symbol_name(tcx);
         let exported_symbol = ExportedSymbol::NoDefId(SymbolName::new(&symbol_name));
 

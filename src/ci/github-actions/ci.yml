@@ -37,6 +37,7 @@ x--expand-yaml-anchors--remove:
   - &public-variables
     SCCACHE_BUCKET: rust-lang-gha-caches
     TOOLSTATE_REPO: https://github.com/pietroalbini/rust-toolstate
+    CACHE_DOMAIN: ci-caches-gha.rust-lang.org
 
   - &prod-variables
     SCCACHE_BUCKET: rust-lang-gha-caches
@@ -51,6 +52,7 @@ x--expand-yaml-anchors--remove:
     # (caches, artifacts...).
     CACHES_AWS_ACCESS_KEY_ID: AKIA46X5W6CZOMUQATD5
     ARTIFACTS_AWS_ACCESS_KEY_ID: AKIA46X5W6CZH5AYXDVF
+    CACHE_DOMAIN: ci-caches-gha.rust-lang.org
 
   - &base-job
     env: {}
@@ -129,10 +131,6 @@ x--expand-yaml-anchors--remove:
         run: src/ci/scripts/install-wix.sh
         <<: *step
 
-      - name: install InnoSetup
-        run: src/ci/scripts/install-innosetup.sh
-        <<: *step
-
       - name: ensure the build happens on a partition with enough space
         run: src/ci/scripts/symlink-build-dir.sh
         <<: *step
@@ -143,10 +141,6 @@ x--expand-yaml-anchors--remove:
 
       - name: install MSYS2
         run: src/ci/scripts/install-msys2.sh
-        <<: *step
-
-      - name: install MSYS2 packages
-        run: src/ci/scripts/install-msys2-packages.sh
         <<: *step
 
       - name: install MinGW
@@ -281,11 +275,6 @@ jobs:
       matrix:
         include:
           - name: dist-x86_64-linux
-            <<: *job-linux-xl
-
-          - name: dist-x86_64-linux-alt
-            env:
-              IMAGE: dist-x86_64-linux
             <<: *job-linux-xl
 
   auto:
@@ -494,16 +483,10 @@ jobs:
               NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
-          - name: x86_64-msvc-aux
-            env:
-              RUST_CHECK_TARGET: check-aux EXCLUDE_CARGO=1
-              RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc
-            <<: *job-windows-xl
-
           - name: x86_64-msvc-cargo
             env:
               SCRIPT: python x.py test src/tools/cargotest src/tools/cargo
-              RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc
+              RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-lld
               VCVARS_BAT: vcvars64.bat
               # FIXME(#59637)
               NO_DEBUG_ASSERTIONS: 1
@@ -512,7 +495,7 @@ jobs:
 
           - name: x86_64-msvc-tools
             env:
-              SCRIPT: src/ci/docker/x86_64-gnu-tools/checktools.sh x.py /tmp/toolstate/toolstates.json windows
+              SCRIPT: src/ci/docker/host-x86_64/x86_64-gnu-tools/checktools.sh x.py /tmp/toolstate/toolstates.json windows
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --save-toolstates=/tmp/toolstate/toolstates.json
             <<: *job-windows-xl
 

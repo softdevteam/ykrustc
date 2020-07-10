@@ -1,5 +1,6 @@
 use crate::attributes;
 use crate::callee::get_fn;
+use crate::coverageinfo;
 use crate::debuginfo;
 use crate::llvm;
 use crate::llvm_util;
@@ -78,6 +79,7 @@ pub struct CodegenCx<'ll, 'tcx> {
     pub pointee_infos: RefCell<FxHashMap<(Ty<'tcx>, Size), Option<PointeeInfo>>>,
     pub isize_ty: &'ll Type,
 
+    pub coverage_cx: Option<coverageinfo::CrateCoverageContext<'tcx>>,
     pub dbg_cx: Option<debuginfo::CrateDebugContext<'ll, 'tcx>>,
 
     eh_personality: Cell<Option<&'ll Value>>,
@@ -98,17 +100,6 @@ fn to_llvm_tls_model(tls_model: TlsModel) -> llvm::ThreadLocalMode {
         TlsModel::InitialExec => llvm::ThreadLocalMode::InitialExec,
         TlsModel::LocalExec => llvm::ThreadLocalMode::LocalExec,
     }
-}
-
-/// PIE is potentially more effective than PIC, but can only be used in executables.
-/// If all our outputs are executables, then we can relax PIC to PIE when producing object code.
-/// If the list of crate types is not yet known we conservatively return `false`.
-pub fn all_outputs_are_pic_executables(sess: &Session) -> bool {
-    sess.relocation_model() == RelocModel::Pic
-        && sess
-            .crate_types
-            .try_get()
-            .map_or(false, |crate_types| crate_types.iter().all(|ty| *ty == CrateType::Executable))
 }
 
 fn strip_function_ptr_alignment(data_layout: String) -> String {
@@ -186,10 +177,11 @@ pub unsafe fn create_module(
 
     if sess.relocation_model() == RelocModel::Pic {
         llvm::LLVMRustSetModulePICLevel(llmod);
-    }
-
-    if all_outputs_are_pic_executables(sess) {
-        llvm::LLVMRustSetModulePIELevel(llmod);
+        // PIE is potentially more effective than PIC, but can only be used in executables.
+        // If all our outputs are executables, then we can relax PIC to PIE.
+        if sess.crate_types().iter().all(|ty| *ty == CrateType::Executable) {
+            llvm::LLVMRustSetModulePIELevel(llmod);
+        }
     }
 
     // If skipping the PLT is enabled, we need to add some module metadata
@@ -269,6 +261,13 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 
         let (llcx, llmod) = (&*llvm_module.llcx, llvm_module.llmod());
 
+        let coverage_cx = if tcx.sess.opts.debugging_opts.instrument_coverage {
+            let covctx = coverageinfo::CrateCoverageContext::new();
+            Some(covctx)
+        } else {
+            None
+        };
+
         let dbg_cx = if tcx.sess.opts.debuginfo != DebugInfo::None {
             let dctx = debuginfo::CrateDebugContext::new(llmod);
             debuginfo::metadata::compile_unit_metadata(tcx, &codegen_unit.name().as_str(), &dctx);
@@ -303,6 +302,7 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
             scalar_lltypes: Default::default(),
             pointee_infos: Default::default(),
             isize_ty,
+            coverage_cx,
             dbg_cx,
             eh_personality: Cell::new(None),
             rust_try_fn: Cell::new(None),
@@ -314,6 +314,11 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
 
     crate fn statics_to_rauw(&self) -> &RefCell<Vec<(&'ll Value, &'ll Value)>> {
         &self.statics_to_rauw
+    }
+
+    #[inline]
+    pub fn coverage_context(&'a self) -> &'a coverageinfo::CrateCoverageContext<'tcx> {
+        self.coverage_cx.as_ref().unwrap()
     }
 }
 
@@ -506,6 +511,15 @@ impl CodegenCx<'b, 'tcx> {
             t_v4f64: t_f64, 4;
             t_v8f64: t_f64, 8;
         }
+
+        ifn!("llvm.wasm.trunc.saturate.unsigned.i32.f32", fn(t_f32) -> t_i32);
+        ifn!("llvm.wasm.trunc.saturate.unsigned.i32.f64", fn(t_f64) -> t_i32);
+        ifn!("llvm.wasm.trunc.saturate.unsigned.i64.f32", fn(t_f32) -> t_i64);
+        ifn!("llvm.wasm.trunc.saturate.unsigned.i64.f64", fn(t_f64) -> t_i64);
+        ifn!("llvm.wasm.trunc.saturate.signed.i32.f32", fn(t_f32) -> t_i32);
+        ifn!("llvm.wasm.trunc.saturate.signed.i32.f64", fn(t_f64) -> t_i32);
+        ifn!("llvm.wasm.trunc.saturate.signed.i64.f32", fn(t_f32) -> t_i64);
+        ifn!("llvm.wasm.trunc.saturate.signed.i64.f64", fn(t_f64) -> t_i64);
 
         ifn!("llvm.trap", fn() -> void);
         ifn!("llvm.debugtrap", fn() -> void);
@@ -787,6 +801,10 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.va_start", fn(i8p) -> void);
         ifn!("llvm.va_end", fn(i8p) -> void);
         ifn!("llvm.va_copy", fn(i8p, i8p) -> void);
+
+        if self.sess().opts.debugging_opts.instrument_coverage {
+            ifn!("llvm.instrprof.increment", fn(i8p, t_i64, t_i32, t_i32) -> void);
+        }
 
         if self.sess().opts.debuginfo != DebugInfo::None {
             ifn!("llvm.dbg.declare", fn(self.type_metadata(), self.type_metadata()) -> void);

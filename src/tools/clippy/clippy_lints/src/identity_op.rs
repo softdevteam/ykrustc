@@ -1,4 +1,5 @@
-use rustc_hir::{BinOpKind, Expr, ExprKind};
+use if_chain::if_chain;
+use rustc_hir::{BinOp, BinOpKind, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
@@ -27,12 +28,15 @@ declare_clippy_lint! {
 
 declare_lint_pass!(IdentityOp => [IDENTITY_OP]);
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IdentityOp {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
+impl<'tcx> LateLintPass<'tcx> for IdentityOp {
+    fn check_expr(&mut self, cx: &LateContext<'tcx>, e: &'tcx Expr<'_>) {
         if e.span.from_expansion() {
             return;
         }
-        if let ExprKind::Binary(ref cmp, ref left, ref right) = e.kind {
+        if let ExprKind::Binary(cmp, ref left, ref right) = e.kind {
+            if is_allowed(cx, cmp, left, right) {
+                return;
+            }
             match cmp.node {
                 BinOpKind::Add | BinOpKind::BitOr | BinOpKind::BitXor => {
                     check(cx, left, 0, e.span, right.span);
@@ -54,10 +58,24 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IdentityOp {
     }
 }
 
+fn is_allowed(cx: &LateContext<'_>, cmp: BinOp, left: &Expr<'_>, right: &Expr<'_>) -> bool {
+    // `1 << 0` is a common pattern in bit manipulation code
+    if_chain! {
+        if let BinOpKind::Shl = cmp.node;
+        if let Some(Constant::Int(0)) = constant_simple(cx, cx.tables(), right);
+        if let Some(Constant::Int(1)) = constant_simple(cx, cx.tables(), left);
+        then {
+            return true;
+        }
+    }
+
+    false
+}
+
 #[allow(clippy::cast_possible_wrap)]
-fn check(cx: &LateContext<'_, '_>, e: &Expr<'_>, m: i8, span: Span, arg: Span) {
-    if let Some(Constant::Int(v)) = constant_simple(cx, cx.tables, e) {
-        let check = match cx.tables.expr_ty(e).kind {
+fn check(cx: &LateContext<'_>, e: &Expr<'_>, m: i8, span: Span, arg: Span) {
+    if let Some(Constant::Int(v)) = constant_simple(cx, cx.tables(), e) {
+        let check = match cx.tables().expr_ty(e).kind {
             ty::Int(ity) => unsext(cx.tcx, -1_i128, ity),
             ty::Uint(uty) => clip(cx.tcx, !0, uty),
             _ => return,

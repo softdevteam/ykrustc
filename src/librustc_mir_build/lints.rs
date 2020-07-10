@@ -114,12 +114,21 @@ impl<'mir, 'tcx> TriColorVisitor<&'mir Body<'tcx>> for Search<'mir, 'tcx> {
             | TerminatorKind::Unreachable
             | TerminatorKind::Yield { .. } => ControlFlow::Break(NonRecursive),
 
+            // A diverging InlineAsm is treated as non-recursing
+            TerminatorKind::InlineAsm { destination, .. } => {
+                if destination.is_some() {
+                    ControlFlow::Continue
+                } else {
+                    ControlFlow::Break(NonRecursive)
+                }
+            }
+
             // These do not.
             TerminatorKind::Assert { .. }
             | TerminatorKind::Call { .. }
             | TerminatorKind::Drop { .. }
             | TerminatorKind::DropAndReplace { .. }
-            | TerminatorKind::FalseEdges { .. }
+            | TerminatorKind::FalseEdge { .. }
             | TerminatorKind::FalseUnwind { .. }
             | TerminatorKind::Goto { .. }
             | TerminatorKind::SwitchInt { .. } => ControlFlow::Continue,
@@ -144,7 +153,7 @@ impl<'mir, 'tcx> TriColorVisitor<&'mir Body<'tcx>> for Search<'mir, 'tcx> {
             TerminatorKind::Call { ref func, .. } => self.is_recursive_call(func),
 
             TerminatorKind::FalseUnwind { unwind: Some(imaginary_target), .. }
-            | TerminatorKind::FalseEdges { imaginary_target, .. } => imaginary_target == target,
+            | TerminatorKind::FalseEdge { imaginary_target, .. } => imaginary_target == target,
 
             _ => false,
         }

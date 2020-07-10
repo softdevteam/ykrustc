@@ -1003,7 +1003,7 @@ impl<'a, T> Hole<'a, T> {
     unsafe fn new(data: &'a mut [T], pos: usize) -> Self {
         debug_assert!(pos < data.len());
         // SAFE: pos should be inside the slice
-        let elt = ptr::read(data.get_unchecked(pos));
+        let elt = unsafe { ptr::read(data.get_unchecked(pos)) };
         Hole { data, elt: ManuallyDrop::new(elt), pos }
     }
 
@@ -1025,7 +1025,7 @@ impl<'a, T> Hole<'a, T> {
     unsafe fn get(&self, index: usize) -> &T {
         debug_assert!(index != self.pos);
         debug_assert!(index < self.data.len());
-        self.data.get_unchecked(index)
+        unsafe { self.data.get_unchecked(index) }
     }
 
     /// Move hole to new location
@@ -1035,9 +1035,11 @@ impl<'a, T> Hole<'a, T> {
     unsafe fn move_to(&mut self, index: usize) {
         debug_assert!(index != self.pos);
         debug_assert!(index < self.data.len());
-        let index_ptr: *const _ = self.data.get_unchecked(index);
-        let hole_ptr = self.data.get_unchecked_mut(self.pos);
-        ptr::copy_nonoverlapping(index_ptr, hole_ptr, 1);
+        unsafe {
+            let index_ptr: *const _ = self.data.get_unchecked(index);
+            let hole_ptr = self.data.get_unchecked_mut(self.pos);
+            ptr::copy_nonoverlapping(index_ptr, hole_ptr, 1);
+        }
         self.pos = index;
     }
 }
@@ -1376,6 +1378,16 @@ impl<T: Ord> Extend<T> for BinaryHeap<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         <Self as SpecExtend<I>>::spec_extend(self, iter);
     }
+
+    #[inline]
+    fn extend_one(&mut self, item: T) {
+        self.push(item);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
+    }
 }
 
 impl<T: Ord, I: IntoIterator<Item = T>> SpecExtend<I> for BinaryHeap<T> {
@@ -1405,5 +1417,15 @@ impl<T: Ord> BinaryHeap<T> {
 impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BinaryHeap<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.extend(iter.into_iter().cloned());
+    }
+
+    #[inline]
+    fn extend_one(&mut self, &item: &'a T) {
+        self.push(item);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
     }
 }

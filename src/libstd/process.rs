@@ -1620,7 +1620,7 @@ pub fn exit(code: i32) -> ! {
 /// [panic hook]: ../../std/panic/fn.set_hook.html
 #[stable(feature = "process_abort", since = "1.17.0")]
 pub fn abort() -> ! {
-    unsafe { crate::sys::abort_internal() };
+    crate::sys::abort_internal();
 }
 
 /// Returns the OS-assigned process identifier associated with this process.
@@ -2105,8 +2105,8 @@ mod tests {
     }
 
     #[test]
-    fn test_command_implements_send() {
-        fn take_send_type<T: Send>(_: T) {}
-        take_send_type(Command::new(""))
+    fn test_command_implements_send_sync() {
+        fn take_send_sync_type<T: Send + Sync>(_: T) {}
+        take_send_sync_type(Command::new(""))
     }
 }

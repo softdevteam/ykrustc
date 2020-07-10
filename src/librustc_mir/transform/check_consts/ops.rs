@@ -1,19 +1,33 @@
 //! Concrete error types for all operations which may be invalid in a certain const context.
 
 use rustc_errors::struct_span_err;
+use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_session::config::nightly_options;
 use rustc_session::parse::feature_err;
 use rustc_span::symbol::sym;
 use rustc_span::{Span, Symbol};
 
-use super::{ConstCx, ConstKind};
+use super::ConstCx;
+
+/// Emits an error if `op` is not allowed in the given const context.
+pub fn non_const<O: NonConstOp>(ccx: &ConstCx<'_, '_>, op: O, span: Span) {
+    debug!("illegal_op: op={:?}", op);
+
+    if op.is_allowed_in_item(ccx) {
+        return;
+    }
+
+    if ccx.tcx.sess.opts.debugging_opts.unleash_the_miri_inside_of_you {
+        ccx.tcx.sess.miri_unleashed_feature(span, O::feature_gate());
+        return;
+    }
+
+    op.emit_error(ccx, span);
+}
 
 /// An operation that is not *always* allowed in a const context.
 pub trait NonConstOp: std::fmt::Debug {
-    /// Whether this operation can be evaluated by miri.
-    const IS_SUPPORTED_IN_MIRI: bool = true;
-
     /// Returns the `Symbol` corresponding to the feature gate that would enable this operation,
     /// or `None` if such a feature gate does not exist.
     fn feature_gate() -> Option<Symbol> {
@@ -129,47 +143,24 @@ impl NonConstOp for HeapAllocation {
 }
 
 #[derive(Debug)]
-pub struct IfOrMatch;
-impl NonConstOp for IfOrMatch {
-    fn feature_gate() -> Option<Symbol> {
-        Some(sym::const_if_match)
-    }
-
-    fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
-        // This should be caught by the HIR const-checker.
-        ccx.tcx.sess.delay_span_bug(span, "complex control flow is forbidden in a const context");
-    }
-}
-
-#[derive(Debug)]
 pub struct InlineAsm;
 impl NonConstOp for InlineAsm {}
 
 #[derive(Debug)]
-pub struct LiveDrop;
+pub struct LiveDrop(pub Option<Span>);
 impl NonConstOp for LiveDrop {
     fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
-        struct_span_err!(
+        let mut diagnostic = struct_span_err!(
             ccx.tcx.sess,
             span,
             E0493,
             "destructors cannot be evaluated at compile-time"
-        )
-        .span_label(span, format!("{}s cannot evaluate destructors", ccx.const_kind()))
-        .emit();
-    }
-}
-
-#[derive(Debug)]
-pub struct Loop;
-impl NonConstOp for Loop {
-    fn feature_gate() -> Option<Symbol> {
-        Some(sym::const_loop)
-    }
-
-    fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
-        // This should be caught by the HIR const-checker.
-        ccx.tcx.sess.delay_span_bug(span, "complex control flow is forbidden in a const context");
+        );
+        diagnostic.span_label(span, format!("{}s cannot evaluate destructors", ccx.const_kind()));
+        if let Some(span) = self.0 {
+            diagnostic.span_label(span, "value is dropped here");
+        }
+        diagnostic.emit();
     }
 }
 
@@ -191,22 +182,34 @@ impl NonConstOp for CellBorrow {
 #[derive(Debug)]
 pub struct MutBorrow;
 impl NonConstOp for MutBorrow {
+    fn is_allowed_in_item(&self, ccx: &ConstCx<'_, '_>) -> bool {
+        // Forbid everywhere except in const fn
+        ccx.const_kind() == hir::ConstContext::ConstFn
+            && ccx.tcx.features().enabled(Self::feature_gate().unwrap())
+    }
+
     fn feature_gate() -> Option<Symbol> {
         Some(sym::const_mut_refs)
     }
 
     fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
-        let mut err = feature_err(
-            &ccx.tcx.sess.parse_sess,
-            sym::const_mut_refs,
-            span,
-            &format!(
-                "references in {}s may only refer \
-                      to immutable values",
-                ccx.const_kind()
-            ),
-        );
-        err.span_label(span, format!("{}s require immutable values", ccx.const_kind()));
+        let mut err = if ccx.const_kind() == hir::ConstContext::ConstFn {
+            feature_err(
+                &ccx.tcx.sess.parse_sess,
+                sym::const_mut_refs,
+                span,
+                &format!("mutable references are not allowed in {}s", ccx.const_kind()),
+            )
+        } else {
+            struct_span_err!(
+                ccx.tcx.sess,
+                span,
+                E0764,
+                "mutable references are not allowed in {}s",
+                ccx.const_kind(),
+            )
+        };
+        err.span_label(span, "`&mut` is only allowed in `const fn`".to_string());
         if ccx.tcx.sess.teach(&err.get_code().unwrap()) {
             err.note(
                 "References in statics and constants may only refer \
@@ -270,18 +273,16 @@ impl NonConstOp for Panic {
 #[derive(Debug)]
 pub struct RawPtrComparison;
 impl NonConstOp for RawPtrComparison {
-    fn feature_gate() -> Option<Symbol> {
-        Some(sym::const_compare_raw_pointers)
-    }
-
     fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
-        feature_err(
-            &ccx.tcx.sess.parse_sess,
-            sym::const_compare_raw_pointers,
-            span,
-            &format!("comparing raw pointers inside {}", ccx.const_kind()),
-        )
-        .emit();
+        let mut err = ccx
+            .tcx
+            .sess
+            .struct_span_err(span, "pointers cannot be reliably compared during const eval.");
+        err.note(
+            "see issue #53020 <https://github.com/rust-lang/rust/issues/53020> \
+            for more information",
+        );
+        err.emit();
     }
 }
 
@@ -326,7 +327,7 @@ impl NonConstOp for RawPtrToIntCast {
 pub struct StaticAccess;
 impl NonConstOp for StaticAccess {
     fn is_allowed_in_item(&self, ccx: &ConstCx<'_, '_>) -> bool {
-        ccx.const_kind().is_static()
+        matches!(ccx.const_kind(), hir::ConstContext::Static(_))
     }
 
     fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
@@ -355,8 +356,6 @@ impl NonConstOp for StaticAccess {
 #[derive(Debug)]
 pub struct ThreadLocalAccess;
 impl NonConstOp for ThreadLocalAccess {
-    const IS_SUPPORTED_IN_MIRI: bool = false;
-
     fn emit_error(&self, ccx: &ConstCx<'_, '_>, span: Span) {
         struct_span_err!(
             ccx.tcx.sess,
@@ -374,7 +373,7 @@ pub struct UnionAccess;
 impl NonConstOp for UnionAccess {
     fn is_allowed_in_item(&self, ccx: &ConstCx<'_, '_>) -> bool {
         // Union accesses are stable in all contexts except `const fn`.
-        ccx.const_kind() != ConstKind::ConstFn
+        ccx.const_kind() != hir::ConstContext::ConstFn
             || ccx.tcx.features().enabled(Self::feature_gate().unwrap())
     }
 

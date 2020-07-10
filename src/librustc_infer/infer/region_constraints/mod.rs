@@ -50,10 +50,10 @@ pub struct RegionConstraintStorage<'tcx> {
     /// R1 <= R2 and R2 <= R1 and (b) we unify the two regions in this
     /// table. You can then call `opportunistic_resolve_var` early
     /// which will map R1 and R2 to some common region (i.e., either
-    /// R1 or R2). This is important when dropck and other such code
-    /// is iterating to a fixed point, because otherwise we sometimes
-    /// would wind up with a fresh stream of region variables that
-    /// have been equated but appear distinct.
+    /// R1 or R2). This is important when fulfillment, dropck and other such
+    /// code is iterating to a fixed point, because otherwise we sometimes
+    /// would wind up with a fresh stream of region variables that have been
+    /// equated but appear distinct.
     pub(super) unification_table: ut::UnificationTableStorage<ty::RegionVid>,
 
     /// a flag set to true when we perform any unifications; this is used
@@ -68,12 +68,14 @@ pub struct RegionConstraintCollector<'a, 'tcx> {
 
 impl std::ops::Deref for RegionConstraintCollector<'_, 'tcx> {
     type Target = RegionConstraintStorage<'tcx>;
+    #[inline]
     fn deref(&self) -> &RegionConstraintStorage<'tcx> {
         self.storage
     }
 }
 
 impl std::ops::DerefMut for RegionConstraintCollector<'_, 'tcx> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut RegionConstraintStorage<'tcx> {
         self.storage
     }
@@ -287,14 +289,6 @@ pub(crate) enum UndoLog<'tcx> {
 
     /// We added a GLB/LUB "combination variable".
     AddCombination(CombineMapType, TwoRegions<'tcx>),
-
-    /// During skolemization, we sometimes purge entries from the undo
-    /// log in a kind of minisnapshot (unlike other snapshots, this
-    /// purging actually takes place *on success*). In that case, we
-    /// replace the corresponding entry with `Noop` so as to avoid the
-    /// need to do a bunch of swapping. (We can't use `swap_remove` as
-    /// the order of the vector is important.)
-    Purged,
 }
 
 #[derive(Copy, Clone, PartialEq)]
@@ -345,6 +339,7 @@ impl<'tcx> RegionConstraintStorage<'tcx> {
         Self::default()
     }
 
+    #[inline]
     pub(crate) fn with_log<'a>(
         &'a mut self,
         undo_log: &'a mut InferCtxtUndoLogs<'tcx>,
@@ -354,9 +349,6 @@ impl<'tcx> RegionConstraintStorage<'tcx> {
 
     fn rollback_undo_entry(&mut self, undo_entry: UndoLog<'tcx>) {
         match undo_entry {
-            Purged => {
-                // nothing to do here
-            }
             AddVar(vid) => {
                 self.var_infos.pop().unwrap();
                 assert_eq!(self.var_infos.len(), vid.index() as usize);
@@ -483,62 +475,6 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
     /// Returns the origin for the given variable.
     pub fn var_origin(&self, vid: RegionVid) -> RegionVariableOrigin {
         self.var_infos[vid].origin
-    }
-
-    /// Removes all the edges to/from the placeholder regions that are
-    /// in `skols`. This is used after a higher-ranked operation
-    /// completes to remove all trace of the placeholder regions
-    /// created in that time.
-    pub fn pop_placeholders(&mut self, placeholders: &FxHashSet<ty::Region<'tcx>>) {
-        debug!("pop_placeholders(placeholders={:?})", placeholders);
-
-        assert!(UndoLogs::<super::UndoLog<'_>>::in_snapshot(&self.undo_log));
-
-        let constraints_to_kill: Vec<usize> = self
-            .undo_log
-            .iter()
-            .enumerate()
-            .rev()
-            .filter(|&(_, undo_entry)| match undo_entry {
-                super::UndoLog::RegionConstraintCollector(undo_entry) => {
-                    kill_constraint(placeholders, undo_entry)
-                }
-                _ => false,
-            })
-            .map(|(index, _)| index)
-            .collect();
-
-        for index in constraints_to_kill {
-            let undo_entry = match &mut self.undo_log[index] {
-                super::UndoLog::RegionConstraintCollector(undo_entry) => {
-                    mem::replace(undo_entry, Purged)
-                }
-                _ => unreachable!(),
-            };
-            self.rollback_undo_entry(undo_entry);
-        }
-
-        return;
-
-        fn kill_constraint<'tcx>(
-            placeholders: &FxHashSet<ty::Region<'tcx>>,
-            undo_entry: &UndoLog<'tcx>,
-        ) -> bool {
-            match undo_entry {
-                &AddConstraint(Constraint::VarSubVar(..)) => false,
-                &AddConstraint(Constraint::RegSubVar(a, _)) => placeholders.contains(&a),
-                &AddConstraint(Constraint::VarSubReg(_, b)) => placeholders.contains(&b),
-                &AddConstraint(Constraint::RegSubReg(a, b)) => {
-                    placeholders.contains(&a) || placeholders.contains(&b)
-                }
-                &AddGiven(..) => false,
-                &AddVerify(_) => false,
-                &AddCombination(_, ref two_regions) => {
-                    placeholders.contains(&two_regions.a) || placeholders.contains(&two_regions.b)
-                }
-                &AddVar(..) | &Purged => false,
-            }
-        }
     }
 
     fn add_constraint(&mut self, constraint: Constraint<'tcx>, origin: SubregionOrigin<'tcx>) {
@@ -711,13 +647,8 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
         }
     }
 
-    pub fn opportunistic_resolve_var(
-        &mut self,
-        tcx: TyCtxt<'tcx>,
-        rid: RegionVid,
-    ) -> ty::Region<'tcx> {
-        let vid = self.unification_table().probe_value(rid).min_vid;
-        tcx.mk_region(ty::ReVar(vid))
+    pub fn opportunistic_resolve_var(&mut self, rid: RegionVid) -> ty::RegionVid {
+        self.unification_table().probe_value(rid).min_vid
     }
 
     fn combine_map(&mut self, t: CombineMapType) -> &mut CombineMap<'tcx> {
@@ -758,11 +689,9 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
 
     pub fn universe(&self, region: Region<'tcx>) -> ty::UniverseIndex {
         match *region {
-            ty::ReScope(..)
-            | ty::ReStatic
-            | ty::ReErased
-            | ty::ReFree(..)
-            | ty::ReEarlyBound(..) => ty::UniverseIndex::ROOT,
+            ty::ReStatic | ty::ReErased | ty::ReFree(..) | ty::ReEarlyBound(..) => {
+                ty::UniverseIndex::ROOT
+            }
             ty::ReEmpty(ui) => ui,
             ty::RePlaceholder(placeholder) => placeholder.universe,
             ty::ReVar(vid) => self.var_universe(vid),
@@ -784,7 +713,7 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
         )
     }
 
-    /// See [`RegionInference::region_constraints_added_in_snapshot`].
+    /// See `InferCtxt::region_constraints_added_in_snapshot`.
     pub fn region_constraints_added_in_snapshot(&self, mark: &Snapshot<'tcx>) -> Option<bool> {
         self.undo_log
             .region_constraints_in_snapshot(mark)
@@ -796,6 +725,7 @@ impl<'tcx> RegionConstraintCollector<'_, 'tcx> {
             .unwrap_or(None)
     }
 
+    #[inline]
     fn unification_table(&mut self) -> super::UnificationTable<'_, 'tcx, ty::RegionVid> {
         ut::UnificationTable::with_log(&mut self.storage.unification_table, self.undo_log)
     }

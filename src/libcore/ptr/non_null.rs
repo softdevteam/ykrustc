@@ -87,7 +87,8 @@ impl<T: ?Sized> NonNull<T> {
     #[rustc_const_stable(feature = "const_nonnull_new_unchecked", since = "1.32.0")]
     #[inline]
     pub const unsafe fn new_unchecked(ptr: *mut T) -> Self {
-        NonNull { pointer: ptr as _ }
+        // SAFETY: the caller must guarantee that `ptr` is non-null.
+        unsafe { NonNull { pointer: ptr as _ } }
     }
 
     /// Creates a new `NonNull` if `ptr` is non-null.
@@ -118,7 +119,9 @@ impl<T: ?Sized> NonNull<T> {
     #[stable(feature = "nonnull", since = "1.25.0")]
     #[inline]
     pub unsafe fn as_ref(&self) -> &T {
-        &*self.as_ptr()
+        // SAFETY: the caller must guarantee that `self` meets all the
+        // requirements for a reference.
+        unsafe { &*self.as_ptr() }
     }
 
     /// Mutably dereferences the content.
@@ -129,7 +132,9 @@ impl<T: ?Sized> NonNull<T> {
     #[stable(feature = "nonnull", since = "1.25.0")]
     #[inline]
     pub unsafe fn as_mut(&mut self) -> &mut T {
-        &mut *self.as_ptr()
+        // SAFETY: the caller must guarantee that `self` meets all the
+        // requirements for a mutable reference.
+        unsafe { &mut *self.as_ptr() }
     }
 
     /// Casts to a pointer of another type.
@@ -139,6 +144,65 @@ impl<T: ?Sized> NonNull<T> {
     pub const fn cast<U>(self) -> NonNull<U> {
         // SAFETY: `self` is a `NonNull` pointer which is necessarily non-null
         unsafe { NonNull::new_unchecked(self.as_ptr() as *mut U) }
+    }
+}
+
+impl<T> NonNull<[T]> {
+    /// Creates a non-null raw slice from a thin pointer and a length.
+    ///
+    /// The `len` argument is the number of **elements**, not the number of bytes.
+    ///
+    /// This function is safe, but dereferencing the return value is unsafe.
+    /// See the documentation of [`slice::from_raw_parts`] for slice safety requirements.
+    ///
+    /// [`slice::from_raw_parts`]: ../../std/slice/fn.from_raw_parts.html
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// #![feature(nonnull_slice_from_raw_parts)]
+    ///
+    /// use std::ptr::NonNull;
+    ///
+    /// // create a slice pointer when starting out with a pointer to the first element
+    /// let mut x = [5, 6, 7];
+    /// let nonnull_pointer = NonNull::new(x.as_mut_ptr()).unwrap();
+    /// let slice = NonNull::slice_from_raw_parts(nonnull_pointer, 3);
+    /// assert_eq!(unsafe { slice.as_ref()[2] }, 7);
+    /// ```
+    ///
+    /// (Note that this example artifically demonstrates a use of this method,
+    /// but `let slice = NonNull::from(&x[..]);` would be a better way to write code like this.)
+    #[unstable(feature = "nonnull_slice_from_raw_parts", issue = "71941")]
+    #[rustc_const_unstable(feature = "const_nonnull_slice_from_raw_parts", issue = "71941")]
+    #[inline]
+    pub const fn slice_from_raw_parts(data: NonNull<T>, len: usize) -> Self {
+        // SAFETY: `data` is a `NonNull` pointer which is necessarily non-null
+        unsafe { Self::new_unchecked(super::slice_from_raw_parts_mut(data.as_ptr(), len)) }
+    }
+
+    /// Returns the length of a non-null raw slice.
+    ///
+    /// The returned value is the number of **elements**, not the number of bytes.
+    ///
+    /// This function is safe, even when the non-null raw slice cannot be dereferenced to a slice
+    /// because the pointer does not have a valid address.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// #![feature(slice_ptr_len, nonnull_slice_from_raw_parts)]
+    ///
+    /// use std::ptr::NonNull;
+    ///
+    /// let slice: NonNull<[i8]> = NonNull::slice_from_raw_parts(NonNull::dangling(), 3);
+    /// assert_eq!(slice.len(), 3);
+    /// ```
+    #[unstable(feature = "slice_ptr_len", issue = "71146")]
+    #[rustc_const_unstable(feature = "const_slice_ptr_len", issue = "71146")]
+    #[inline]
+    pub const fn len(self) -> usize {
+        self.as_ptr().len()
     }
 }
 

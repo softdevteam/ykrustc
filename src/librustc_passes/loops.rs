@@ -2,13 +2,14 @@ use Context::*;
 
 use rustc_errors::{struct_span_err, Applicability};
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{Destination, Movability, Node};
 use rustc_middle::hir::map::Map;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
+use rustc_span::hygiene::DesugaringKind;
 use rustc_span::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,7 +29,7 @@ struct CheckLoopVisitor<'a, 'hir> {
     cx: Context,
 }
 
-fn check_mod_loops(tcx: TyCtxt<'_>, module_def_id: DefId) {
+fn check_mod_loops(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
     tcx.hir().visit_item_likes_in_module(
         module_def_id,
         &mut CheckLoopVisitor { sess: &tcx.sess, hir_map: tcx.hir(), cx: Normal }.as_deep_visitor(),
@@ -203,7 +204,7 @@ impl<'a, 'hir> CheckLoopVisitor<'a, 'hir> {
         label: &Destination,
         cf_type: &str,
     ) -> bool {
-        if self.cx == LabeledBlock {
+        if !span.is_desugaring(DesugaringKind::QuestionMark) && self.cx == LabeledBlock {
             if label.label.is_none() {
                 struct_span_err!(
                     self.sess,

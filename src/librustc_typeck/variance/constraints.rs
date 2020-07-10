@@ -291,7 +291,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
             }
 
             ty::Tuple(subtys) => {
-                for &subty in subtys {
+                for subty in subtys {
                     self.add_constraints_from_ty(current, subty.expect_ty(), variance);
                 }
             }
@@ -339,16 +339,12 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                 self.add_constraints_from_sig(current, sig, variance);
             }
 
-            ty::Error => {
+            ty::Error(_) => {
                 // we encounter this when walking the trait references for object
                 // types, where we use Error as the Self type
             }
 
-            ty::Placeholder(..)
-            | ty::UnnormalizedProjection(..)
-            | ty::GeneratorWitness(..)
-            | ty::Bound(..)
-            | ty::Infer(..) => {
+            ty::Placeholder(..) | ty::GeneratorWitness(..) | ty::Bound(..) | ty::Infer(..) => {
                 bug!(
                     "unexpected type encountered in \
                       variance inference: {}",
@@ -448,7 +444,6 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
             }
 
             ty::ReFree(..)
-            | ty::ReScope(..)
             | ty::ReVar(..)
             | ty::RePlaceholder(..)
             | ty::ReEmpty(_)

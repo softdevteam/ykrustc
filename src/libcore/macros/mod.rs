@@ -1,6 +1,6 @@
 #[doc(include = "panic.md")]
 #[macro_export]
-#[allow_internal_unstable(core_panic, track_caller)]
+#[allow_internal_unstable(core_panic, const_caller_location)]
 #[stable(feature = "core", since = "1.6.0")]
 macro_rules! panic {
     () => (
@@ -151,7 +151,7 @@ macro_rules! assert_ne {
 /// An unchecked assertion allows a program in an inconsistent state to keep
 /// running, which might have unexpected consequences but does not introduce
 /// unsafety as long as this only happens in safe code. The performance cost
-/// of assertions, is however, not measurable in general. Replacing [`assert!`]
+/// of assertions, however, is not measurable in general. Replacing [`assert!`]
 /// with `debug_assert!` is thus only encouraged after thorough profiling, and
 /// more importantly, only in safe code!
 ///
@@ -1243,7 +1243,7 @@ pub(crate) mod builtin {
     /// be disabled. See [`debug_assert!`] for assertions that are not enabled in
     /// release builds by default.
     ///
-    /// Unsafe code relies on `assert!` to enforce run-time invariants that, if
+    /// Unsafe code may rely on `assert!` to enforce run-time invariants that, if
     /// violated could lead to unsafety.
     ///
     /// Other use-cases of `assert!` include testing and enforcing run-time
@@ -1293,30 +1293,21 @@ pub(crate) mod builtin {
     /// [unstable book]: ../unstable-book/library-features/asm.html
     #[unstable(
         feature = "asm",
-        issue = "70173",
+        issue = "72016",
         reason = "inline assembly is not stable enough for use and is subject to change"
-    )]
-    #[cfg_attr(
-        not(bootstrap),
-        rustc_deprecated(
-            since = "1.44.0",
-            reason = "the syntax of asm! will change soon, use llvm_asm! to avoid breakage",
-            suggestion = "llvm_asm",
-        )
     )]
     #[rustc_builtin_macro]
     #[macro_export]
     macro_rules! asm {
-        ("assembly template"
-                        : $("output"(operand),)*
-                        : $("input"(operand),)*
-                        : $("clobbers",)*
-                        : $("options",)*) => {
+        ("assembly template",
+            $(operands,)*
+            $(options($(option),*))?
+        ) => {
             /* compiler built-in */
         };
     }
 
-    /// Inline assembly.
+    /// LLVM-style inline assembly.
     ///
     /// Read the [unstable book] for the usage.
     ///
@@ -1324,7 +1315,7 @@ pub(crate) mod builtin {
     #[unstable(
         feature = "llvm_asm",
         issue = "70173",
-        reason = "inline assembly is not stable enough for use and is subject to change"
+        reason = "prefer using the new asm! syntax instead"
     )]
     #[rustc_builtin_macro]
     #[macro_export]

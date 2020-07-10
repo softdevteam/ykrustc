@@ -143,49 +143,49 @@ LL |     let x = if let Some(_) = opt { true } else { false };
    |             -------^^^^^^^------ help: try this: `if opt.is_some()`
 
 error: redundant pattern matching, consider using `is_some()`
-  --> $DIR/redundant_pattern_matching.rs:92:20
+  --> $DIR/redundant_pattern_matching.rs:93:20
    |
 LL |     let _ = if let Some(_) = gen_opt() {
    |             -------^^^^^^^------------ help: try this: `if gen_opt().is_some()`
 
 error: redundant pattern matching, consider using `is_none()`
-  --> $DIR/redundant_pattern_matching.rs:94:19
+  --> $DIR/redundant_pattern_matching.rs:95:19
    |
 LL |     } else if let None = gen_opt() {
    |            -------^^^^------------ help: try this: `if gen_opt().is_none()`
 
 error: redundant pattern matching, consider using `is_ok()`
-  --> $DIR/redundant_pattern_matching.rs:96:19
+  --> $DIR/redundant_pattern_matching.rs:97:19
    |
 LL |     } else if let Ok(_) = gen_res() {
    |            -------^^^^^------------ help: try this: `if gen_res().is_ok()`
 
 error: redundant pattern matching, consider using `is_err()`
-  --> $DIR/redundant_pattern_matching.rs:98:19
+  --> $DIR/redundant_pattern_matching.rs:99:19
    |
 LL |     } else if let Err(_) = gen_res() {
    |            -------^^^^^^------------ help: try this: `if gen_res().is_err()`
 
 error: redundant pattern matching, consider using `is_some()`
-  --> $DIR/redundant_pattern_matching.rs:131:19
+  --> $DIR/redundant_pattern_matching.rs:132:19
    |
 LL |         while let Some(_) = r#try!(result_opt()) {}
    |         ----------^^^^^^^----------------------- help: try this: `while r#try!(result_opt()).is_some()`
 
 error: redundant pattern matching, consider using `is_some()`
-  --> $DIR/redundant_pattern_matching.rs:132:16
+  --> $DIR/redundant_pattern_matching.rs:133:16
    |
 LL |         if let Some(_) = r#try!(result_opt()) {}
    |         -------^^^^^^^----------------------- help: try this: `if r#try!(result_opt()).is_some()`
 
 error: redundant pattern matching, consider using `is_some()`
-  --> $DIR/redundant_pattern_matching.rs:138:12
+  --> $DIR/redundant_pattern_matching.rs:139:12
    |
 LL |     if let Some(_) = m!() {}
    |     -------^^^^^^^------- help: try this: `if m!().is_some()`
 
 error: redundant pattern matching, consider using `is_some()`
-  --> $DIR/redundant_pattern_matching.rs:139:15
+  --> $DIR/redundant_pattern_matching.rs:140:15
    |
 LL |     while let Some(_) = m!() {}
    |     ----------^^^^^^^------- help: try this: `while m!().is_some()`

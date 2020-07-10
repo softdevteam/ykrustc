@@ -1,16 +1,16 @@
-#![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![feature(rustc_private)]
-#![feature(str_strip)]
+#![cfg_attr(feature = "deny-warnings", deny(warnings))]
+// warn on lints, that are included in `rust-lang/rust`s bootstrap
+#![warn(rust_2018_idioms, unused_lifetimes)]
+// warn on rustc internal lints
+#![deny(rustc::internal)]
 
 // FIXME: switch to something more ergonomic here, once available.
 // (Currently there is no way to opt into sysroot crates without `extern crate`.)
-#[allow(unused_extern_crates)]
+extern crate rustc_data_structures;
 extern crate rustc_driver;
-#[allow(unused_extern_crates)]
 extern crate rustc_errors;
-#[allow(unused_extern_crates)]
 extern crate rustc_interface;
-#[allow(unused_extern_crates)]
 extern crate rustc_middle;
 
 use rustc_interface::interface;
@@ -79,7 +79,7 @@ impl rustc_driver::Callbacks for ClippyCallbacks {
 
             let conf = clippy_lints::read_conf(&[], &sess);
             clippy_lints::register_plugins(&mut lint_store, &sess, &conf);
-            clippy_lints::register_pre_expansion_lints(&mut lint_store, &conf);
+            clippy_lints::register_pre_expansion_lints(&mut lint_store);
             clippy_lints::register_renamed(&mut lint_store);
         }));
 
@@ -94,7 +94,7 @@ impl rustc_driver::Callbacks for ClippyCallbacks {
 #[allow(clippy::find_map, clippy::filter_map)]
 fn describe_lints() {
     use lintlist::{Level, Lint, ALL_LINTS, LINT_LEVELS};
-    use std::collections::HashSet;
+    use rustc_data_structures::fx::FxHashSet;
 
     println!(
         "
@@ -138,7 +138,7 @@ Available lint options:
 
     let scoped = |x: &str| format!("clippy::{}", x);
 
-    let lint_groups: HashSet<_> = lints.iter().map(|lint| lint.group).collect();
+    let lint_groups: FxHashSet<_> = lints.iter().map(|lint| lint.group).collect();
 
     println!("Lint checks provided by clippy:\n");
     println!("    {}  {:7.7}  meaning", padded("name"), "default");
@@ -208,6 +208,7 @@ Usage:
 
 Common options:
     -h, --help               Print this message
+        --rustc              Pass all args to rustc
     -V, --version            Print version info and exit
 
 Other options are the same as `cargo check`.
@@ -295,123 +296,135 @@ fn toolchain_path(home: Option<String>, toolchain: Option<String>) -> Option<Pat
 pub fn main() {
     rustc_driver::init_rustc_env_logger();
     lazy_static::initialize(&ICE_HOOK);
-    exit(
-        rustc_driver::catch_fatal_errors(move || {
-            let mut orig_args: Vec<String> = env::args().collect();
+    exit(rustc_driver::catch_with_exit_code(move || {
+        let mut orig_args: Vec<String> = env::args().collect();
 
-            if orig_args.iter().any(|a| a == "--version" || a == "-V") {
-                let version_info = rustc_tools_util::get_version_info!();
-                println!("{}", version_info);
-                exit(0);
-            }
+        // Get the sysroot, looking from most specific to this invocation to the least:
+        // - command line
+        // - runtime environment
+        //    - SYSROOT
+        //    - RUSTUP_HOME, MULTIRUST_HOME, RUSTUP_TOOLCHAIN, MULTIRUST_TOOLCHAIN
+        // - sysroot from rustc in the path
+        // - compile-time environment
+        //    - SYSROOT
+        //    - RUSTUP_HOME, MULTIRUST_HOME, RUSTUP_TOOLCHAIN, MULTIRUST_TOOLCHAIN
+        let sys_root_arg = arg_value(&orig_args, "--sysroot", |_| true);
+        let have_sys_root_arg = sys_root_arg.is_some();
+        let sys_root = sys_root_arg
+            .map(PathBuf::from)
+            .or_else(|| std::env::var("SYSROOT").ok().map(PathBuf::from))
+            .or_else(|| {
+                let home = std::env::var("RUSTUP_HOME")
+                    .or_else(|_| std::env::var("MULTIRUST_HOME"))
+                    .ok();
+                let toolchain = std::env::var("RUSTUP_TOOLCHAIN")
+                    .or_else(|_| std::env::var("MULTIRUST_TOOLCHAIN"))
+                    .ok();
+                toolchain_path(home, toolchain)
+            })
+            .or_else(|| {
+                Command::new("rustc")
+                    .arg("--print")
+                    .arg("sysroot")
+                    .output()
+                    .ok()
+                    .and_then(|out| String::from_utf8(out.stdout).ok())
+                    .map(|s| PathBuf::from(s.trim()))
+            })
+            .or_else(|| option_env!("SYSROOT").map(PathBuf::from))
+            .or_else(|| {
+                let home = option_env!("RUSTUP_HOME")
+                    .or(option_env!("MULTIRUST_HOME"))
+                    .map(ToString::to_string);
+                let toolchain = option_env!("RUSTUP_TOOLCHAIN")
+                    .or(option_env!("MULTIRUST_TOOLCHAIN"))
+                    .map(ToString::to_string);
+                toolchain_path(home, toolchain)
+            })
+            .map(|pb| pb.to_string_lossy().to_string())
+            .expect("need to specify SYSROOT env var during clippy compilation, or use rustup or multirust");
 
-            // Get the sysroot, looking from most specific to this invocation to the least:
-            // - command line
-            // - runtime environment
-            //    - SYSROOT
-            //    - RUSTUP_HOME, MULTIRUST_HOME, RUSTUP_TOOLCHAIN, MULTIRUST_TOOLCHAIN
-            // - sysroot from rustc in the path
-            // - compile-time environment
-            //    - SYSROOT
-            //    - RUSTUP_HOME, MULTIRUST_HOME, RUSTUP_TOOLCHAIN, MULTIRUST_TOOLCHAIN
-            let sys_root_arg = arg_value(&orig_args, "--sysroot", |_| true);
-            let have_sys_root_arg = sys_root_arg.is_some();
-            let sys_root = sys_root_arg
-                .map(PathBuf::from)
-                .or_else(|| std::env::var("SYSROOT").ok().map(PathBuf::from))
-                .or_else(|| {
-                    let home = std::env::var("RUSTUP_HOME")
-                        .or_else(|_| std::env::var("MULTIRUST_HOME"))
-                        .ok();
-                    let toolchain = std::env::var("RUSTUP_TOOLCHAIN")
-                        .or_else(|_| std::env::var("MULTIRUST_TOOLCHAIN"))
-                        .ok();
-                    toolchain_path(home, toolchain)
-                })
-                .or_else(|| {
-                    Command::new("rustc")
-                        .arg("--print")
-                        .arg("sysroot")
-                        .output()
-                        .ok()
-                        .and_then(|out| String::from_utf8(out.stdout).ok())
-                        .map(|s| PathBuf::from(s.trim()))
-                })
-                .or_else(|| option_env!("SYSROOT").map(PathBuf::from))
-                .or_else(|| {
-                    let home = option_env!("RUSTUP_HOME")
-                        .or(option_env!("MULTIRUST_HOME"))
-                        .map(ToString::to_string);
-                    let toolchain = option_env!("RUSTUP_TOOLCHAIN")
-                        .or(option_env!("MULTIRUST_TOOLCHAIN"))
-                        .map(ToString::to_string);
-                    toolchain_path(home, toolchain)
-                })
-                .map(|pb| pb.to_string_lossy().to_string())
-                .expect("need to specify SYSROOT env var during clippy compilation, or use rustup or multirust");
+        // make "clippy-driver --rustc" work like a subcommand that passes further args to "rustc"
+        // for example `clippy-driver --rustc --version` will print the rustc version that clippy-driver
+        // uses
+        if let Some(pos) = orig_args.iter().position(|arg| arg == "--rustc") {
+            orig_args.remove(pos);
+            orig_args[0] = "rustc".to_string();
 
-            // Setting RUSTC_WRAPPER causes Cargo to pass 'rustc' as the first argument.
-            // We're invoking the compiler programmatically, so we ignore this/
-            let wrapper_mode = orig_args.get(1).map(Path::new).and_then(Path::file_stem) == Some("rustc".as_ref());
-
-            if wrapper_mode {
-                // we still want to be able to invoke it normally though
-                orig_args.remove(1);
-            }
-
-            if !wrapper_mode && (orig_args.iter().any(|a| a == "--help" || a == "-h") || orig_args.len() == 1) {
-                display_help();
-                exit(0);
-            }
-
-            let should_describe_lints = || {
-                let args: Vec<_> = env::args().collect();
-                args.windows(2).any(|args| {
-                    args[1] == "help"
-                        && match args[0].as_str() {
-                            "-W" | "-A" | "-D" | "-F" => true,
-                            _ => false,
-                        }
-                })
-            };
-
-            if !wrapper_mode && should_describe_lints() {
-                describe_lints();
-                exit(0);
-            }
-
-            // this conditional check for the --sysroot flag is there so users can call
-            // `clippy_driver` directly
-            // without having to pass --sysroot or anything
+            // if we call "rustc", we need to pass --sysroot here as well
             let mut args: Vec<String> = orig_args.clone();
             if !have_sys_root_arg {
                 args.extend(vec!["--sysroot".into(), sys_root]);
             };
 
-            // this check ensures that dependencies are built but not linted and the final
-            // crate is linted but not built
-            let clippy_enabled = env::var("CLIPPY_TESTS").map_or(false, |val| val == "true")
-                || arg_value(&orig_args, "--cap-lints", |val| val == "allow").is_none();
+            return rustc_driver::run_compiler(&args, &mut DefaultCallbacks, None, None);
+        }
 
-            if clippy_enabled {
-                args.extend(vec!["--cfg".into(), r#"feature="cargo-clippy""#.into()]);
-                if let Ok(extra_args) = env::var("CLIPPY_ARGS") {
-                    args.extend(extra_args.split("__CLIPPY_HACKERY__").filter_map(|s| {
-                        if s.is_empty() {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        }
-                    }));
-                }
+        if orig_args.iter().any(|a| a == "--version" || a == "-V") {
+            let version_info = rustc_tools_util::get_version_info!();
+            println!("{}", version_info);
+            exit(0);
+        }
+
+        // Setting RUSTC_WRAPPER causes Cargo to pass 'rustc' as the first argument.
+        // We're invoking the compiler programmatically, so we ignore this/
+        let wrapper_mode = orig_args.get(1).map(Path::new).and_then(Path::file_stem) == Some("rustc".as_ref());
+
+        if wrapper_mode {
+            // we still want to be able to invoke it normally though
+            orig_args.remove(1);
+        }
+
+        if !wrapper_mode && (orig_args.iter().any(|a| a == "--help" || a == "-h") || orig_args.len() == 1) {
+            display_help();
+            exit(0);
+        }
+
+        let should_describe_lints = || {
+            let args: Vec<_> = env::args().collect();
+            args.windows(2).any(|args| {
+                args[1] == "help"
+                    && match args[0].as_str() {
+                        "-W" | "-A" | "-D" | "-F" => true,
+                        _ => false,
+                    }
+            })
+        };
+
+        if !wrapper_mode && should_describe_lints() {
+            describe_lints();
+            exit(0);
+        }
+
+        // this conditional check for the --sysroot flag is there so users can call
+        // `clippy_driver` directly
+        // without having to pass --sysroot or anything
+        let mut args: Vec<String> = orig_args.clone();
+        if !have_sys_root_arg {
+            args.extend(vec!["--sysroot".into(), sys_root]);
+        };
+
+        // this check ensures that dependencies are built but not linted and the final
+        // crate is linted but not built
+        let clippy_enabled = env::var("CLIPPY_TESTS").map_or(false, |val| val == "true")
+            || arg_value(&orig_args, "--cap-lints", |val| val == "allow").is_none();
+
+        if clippy_enabled {
+            args.extend(vec!["--cfg".into(), r#"feature="cargo-clippy""#.into()]);
+            if let Ok(extra_args) = env::var("CLIPPY_ARGS") {
+                args.extend(extra_args.split("__CLIPPY_HACKERY__").filter_map(|s| {
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s.to_string())
+                    }
+                }));
             }
-            let mut clippy = ClippyCallbacks;
-            let mut default = DefaultCallbacks;
-            let callbacks: &mut (dyn rustc_driver::Callbacks + Send) =
-                if clippy_enabled { &mut clippy } else { &mut default };
-            rustc_driver::run_compiler(&args, callbacks, None, None)
-        })
-        .and_then(|result| result)
-        .is_err() as i32,
-    )
+        }
+        let mut clippy = ClippyCallbacks;
+        let mut default = DefaultCallbacks;
+        let callbacks: &mut (dyn rustc_driver::Callbacks + Send) =
+            if clippy_enabled { &mut clippy } else { &mut default };
+        rustc_driver::run_compiler(&args, callbacks, None, None)
+    }))
 }

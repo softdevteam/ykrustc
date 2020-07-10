@@ -336,7 +336,6 @@ impl DirtyCleanVisitor<'tcx> {
                 ImplItemKind::Fn(..) => ("Node::ImplItem", LABELS_FN_IN_IMPL),
                 ImplItemKind::Const(..) => ("NodeImplConst", LABELS_CONST_IN_IMPL),
                 ImplItemKind::TyAlias(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
-                ImplItemKind::OpaqueTy(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
             },
             _ => self.tcx.sess.span_fatal(
                 attr.span,
@@ -499,7 +498,7 @@ fn check_config(tcx: TyCtxt<'_>, attr: &Attribute) -> bool {
     }
 }
 
-fn expect_associated_value(tcx: TyCtxt<'_>, item: &NestedMetaItem) -> ast::Name {
+fn expect_associated_value(tcx: TyCtxt<'_>, item: &NestedMetaItem) -> Symbol {
     if let Some(value) = item.value_str() {
         value
     } else {

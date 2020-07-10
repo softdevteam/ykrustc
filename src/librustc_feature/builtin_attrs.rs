@@ -268,6 +268,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(cold, Whitelisted, template!(Word)),
     ungated!(no_builtins, Whitelisted, template!(Word)),
     ungated!(target_feature, Whitelisted, template!(List: r#"enable = "name""#)),
+    ungated!(track_caller, Whitelisted, template!(Word)),
     gated!(
         no_sanitize, Whitelisted,
         template!(List: "address, memory, thread"),
@@ -339,7 +340,8 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ),
 
     gated!(ffi_returns_twice, Whitelisted, template!(Word), experimental!(ffi_returns_twice)),
-    gated!(track_caller, Whitelisted, template!(Word), experimental!(track_caller)),
+    gated!(ffi_pure, Whitelisted, template!(Word), experimental!(ffi_pure)),
+    gated!(ffi_const, Whitelisted, template!(Word), experimental!(ffi_const)),
     gated!(
         register_attr, CrateLevel, template!(List: "attr1, attr2, ..."),
         experimental!(register_attr),
@@ -372,7 +374,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // FIXME(#14407)
     ungated!(rustc_const_stable, Whitelisted, template!(List: r#"feature = "name""#)),
     gated!(
-        allow_internal_unstable, Normal, template!(Word, List: "feat1, feat2, ..."),
+        allow_internal_unstable, Whitelisted, template!(Word, List: "feat1, feat2, ..."),
         "allow_internal_unstable side-steps feature gating and stability checks",
     ),
     gated!(

@@ -215,59 +215,6 @@ impl<K: Clone, V: Clone> Clone for BTreeMap<K, V> {
             clone_subtree(self.root.as_ref().unwrap().as_ref())
         }
     }
-
-    fn clone_from(&mut self, other: &Self) {
-        BTreeClone::clone_from(self, other);
-    }
-}
-
-trait BTreeClone {
-    fn clone_from(&mut self, other: &Self);
-}
-
-impl<K: Clone, V: Clone> BTreeClone for BTreeMap<K, V> {
-    default fn clone_from(&mut self, other: &Self) {
-        *self = other.clone();
-    }
-}
-
-impl<K: Clone + Ord, V: Clone> BTreeClone for BTreeMap<K, V> {
-    fn clone_from(&mut self, other: &Self) {
-        // This truncates `self` to `other.len()` by calling `split_off` on
-        // the first key after `other.len()` elements if it exists.
-        let split_off_key = if self.len() > other.len() {
-            let diff = self.len() - other.len();
-            if diff <= other.len() {
-                self.iter().nth_back(diff - 1).map(|pair| (*pair.0).clone())
-            } else {
-                self.iter().nth(other.len()).map(|pair| (*pair.0).clone())
-            }
-        } else {
-            None
-        };
-        if let Some(key) = split_off_key {
-            self.split_off(&key);
-        }
-
-        let mut siter = self.range_mut(..);
-        let mut oiter = other.iter();
-        // After truncation, `self` is at most as long as `other` so this loop
-        // replaces every key-value pair in `self`. Since `oiter` is in sorted
-        // order and the structure of the `BTreeMap` stays the same,
-        // the BTree invariants are maintained at the end of the loop.
-        while !siter.is_empty() {
-            if let Some((ok, ov)) = oiter.next() {
-                // SAFETY: This is safe because `siter` is nonempty.
-                let (sk, sv) = unsafe { siter.next_unchecked() };
-                sk.clone_from(ok);
-                sv.clone_from(ov);
-            } else {
-                break;
-            }
-        }
-        // If `other` is longer than `self`, the remaining elements are inserted.
-        self.extend(oiter.map(|(k, v)| ((*k).clone(), (*v).clone())));
-    }
 }
 
 impl<K, Q: ?Sized> super::Recover<Q> for BTreeMap<K, ()>
@@ -541,7 +488,9 @@ struct MergeIter<K, V, I: Iterator<Item = (K, V)>> {
 }
 
 impl<K: Ord, V> BTreeMap<K, V> {
-    /// Makes a new empty BTreeMap with a reasonable choice for B.
+    /// Makes a new empty BTreeMap.
+    ///
+    /// Does not allocate anything on its own.
     ///
     /// # Examples
     ///
@@ -556,7 +505,8 @@ impl<K: Ord, V> BTreeMap<K, V> {
     /// map.insert(1, "a");
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn new() -> BTreeMap<K, V> {
+    #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
+    pub const fn new() -> BTreeMap<K, V> {
         BTreeMap { root: None, length: 0 }
     }
 
@@ -1446,6 +1396,14 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
     fn last(mut self) -> Option<(&'a K, &'a V)> {
         self.next_back()
     }
+
+    fn min(mut self) -> Option<(&'a K, &'a V)> {
+        self.next()
+    }
+
+    fn max(mut self) -> Option<(&'a K, &'a V)> {
+        self.next_back()
+    }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
@@ -1506,6 +1464,14 @@ impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
     }
 
     fn last(mut self) -> Option<(&'a K, &'a mut V)> {
+        self.next_back()
+    }
+
+    fn min(mut self) -> Option<(&'a K, &'a mut V)> {
+        self.next()
+    }
+
+    fn max(mut self) -> Option<(&'a K, &'a mut V)> {
         self.next_back()
     }
 }
@@ -1645,6 +1611,14 @@ impl<'a, K, V> Iterator for Keys<'a, K, V> {
     fn last(mut self) -> Option<&'a K> {
         self.next_back()
     }
+
+    fn min(mut self) -> Option<&'a K> {
+        self.next()
+    }
+
+    fn max(mut self) -> Option<&'a K> {
+        self.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1777,7 +1751,7 @@ impl<'a, K: 'a, V: 'a> DrainFilterInner<'a, K, V> {
         &mut self,
     ) -> Option<Handle<NodeRef<marker::Mut<'a>, K, V, marker::LeafOrInternal>, marker::KV>> {
         let edge = self.cur_leaf_edge.as_ref()?;
-        ptr::read(edge).next_kv().ok()
+        unsafe { ptr::read(edge).next_kv().ok() }
     }
 
     /// Implementation of a typical `DrainFilter::next` method, given the predicate.
@@ -1816,6 +1790,14 @@ impl<'a, K, V> Iterator for Range<'a, K, V> {
     }
 
     fn last(mut self) -> Option<(&'a K, &'a V)> {
+        self.next_back()
+    }
+
+    fn min(mut self) -> Option<(&'a K, &'a V)> {
+        self.next()
+    }
+
+    fn max(mut self) -> Option<(&'a K, &'a V)> {
         self.next_back()
     }
 }
@@ -1860,7 +1842,7 @@ impl<'a, K, V> Range<'a, K, V> {
     }
 
     unsafe fn next_unchecked(&mut self) -> (&'a K, &'a V) {
-        unwrap_unchecked(self.front.as_mut()).next_unchecked()
+        unsafe { unwrap_unchecked(self.front.as_mut()).next_unchecked() }
     }
 }
 
@@ -1873,7 +1855,7 @@ impl<'a, K, V> DoubleEndedIterator for Range<'a, K, V> {
 
 impl<'a, K, V> Range<'a, K, V> {
     unsafe fn next_back_unchecked(&mut self) -> (&'a K, &'a V) {
-        unwrap_unchecked(self.back.as_mut()).next_back_unchecked()
+        unsafe { unwrap_unchecked(self.back.as_mut()).next_back_unchecked() }
     }
 }
 
@@ -1903,6 +1885,14 @@ impl<'a, K, V> Iterator for RangeMut<'a, K, V> {
     fn last(mut self) -> Option<(&'a K, &'a mut V)> {
         self.next_back()
     }
+
+    fn min(mut self) -> Option<(&'a K, &'a mut V)> {
+        self.next()
+    }
+
+    fn max(mut self) -> Option<(&'a K, &'a mut V)> {
+        self.next_back()
+    }
 }
 
 impl<'a, K, V> RangeMut<'a, K, V> {
@@ -1911,7 +1901,7 @@ impl<'a, K, V> RangeMut<'a, K, V> {
     }
 
     unsafe fn next_unchecked(&mut self) -> (&'a mut K, &'a mut V) {
-        unwrap_unchecked(self.front.as_mut()).next_unchecked()
+        unsafe { unwrap_unchecked(self.front.as_mut()).next_unchecked() }
     }
 }
 
@@ -1932,7 +1922,7 @@ impl<K, V> FusedIterator for RangeMut<'_, K, V> {}
 
 impl<'a, K, V> RangeMut<'a, K, V> {
     unsafe fn next_back_unchecked(&mut self) -> (&'a mut K, &'a mut V) {
-        unwrap_unchecked(self.back.as_mut()).next_back_unchecked()
+        unsafe { unwrap_unchecked(self.back.as_mut()).next_back_unchecked() }
     }
 }
 
@@ -1953,12 +1943,22 @@ impl<K: Ord, V> Extend<(K, V)> for BTreeMap<K, V> {
             self.insert(k, v);
         });
     }
+
+    #[inline]
+    fn extend_one(&mut self, (k, v): (K, V)) {
+        self.insert(k, v);
+    }
 }
 
 #[stable(feature = "extend_ref", since = "1.2.0")]
 impl<'a, K: Ord + Copy, V: Copy> Extend<(&'a K, &'a V)> for BTreeMap<K, V> {
     fn extend<I: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: I) {
         self.extend(iter.into_iter().map(|(&key, &value)| (key, value)));
+    }
+
+    #[inline]
+    fn extend_one(&mut self, (&k, &v): (&'a K, &'a V)) {
+        self.insert(k, v);
     }
 }
 

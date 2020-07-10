@@ -1,4 +1,3 @@
-// ignore-debug: the debug assertions get in the way
 // compile-flags: -O
 // ignore-test FIXME swt_ignore
 

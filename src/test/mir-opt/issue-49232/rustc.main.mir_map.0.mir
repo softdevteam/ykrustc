@@ -43,7 +43,7 @@ fn main() -> () {
     }
 
     bb5: {
-        falseEdges -> [real: bb7, imaginary: bb6]; // scope 0 at $DIR/issue-49232.rs:9:17: 9:22
+        falseEdge -> [real: bb7, imaginary: bb6]; // scope 0 at $DIR/issue-49232.rs:9:17: 9:22
     }
 
     bb6: {
@@ -58,7 +58,7 @@ fn main() -> () {
     }
 
     bb7: {
-        _2 = const 4i32;                 // scope 0 at $DIR/issue-49232.rs:9:26: 9:27
+        _2 = const 4_i32;                // scope 0 at $DIR/issue-49232.rs:9:26: 9:27
                                          // ty::Const
                                          // + ty: i32
                                          // + val: Value(Scalar(0x00000004))

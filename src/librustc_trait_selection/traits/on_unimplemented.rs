@@ -1,11 +1,10 @@
-use fmt_macros::{Parser, Piece, Position};
-
 use rustc_ast::ast::{MetaItem, NestedMetaItem};
 use rustc_attr as attr;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::{struct_span_err, ErrorReported};
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, GenericParamDefKind, TyCtxt};
+use rustc_parse_format::{ParseMode, Parser, Piece, Position};
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::Span;
 
@@ -272,7 +271,7 @@ impl<'tcx> OnUnimplementedFormatString {
         let name = tcx.item_name(trait_def_id);
         let generics = tcx.generics_of(trait_def_id);
         let s = self.0.as_str();
-        let parser = Parser::new(&s, None, vec![], false);
+        let parser = Parser::new(&s, None, None, false, ParseMode::Format);
         let mut result = Ok(());
         for token in parser {
             match token {
@@ -350,7 +349,7 @@ impl<'tcx> OnUnimplementedFormatString {
         let empty_string = String::new();
 
         let s = self.0.as_str();
-        let parser = Parser::new(&s, None, vec![], false);
+        let parser = Parser::new(&s, None, None, false, ParseMode::Format);
         let item_context = (options.get(&sym::item_context)).unwrap_or(&empty_string);
         parser
             .map(|p| match p {

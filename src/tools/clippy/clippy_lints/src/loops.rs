@@ -1,4 +1,4 @@
-use crate::consts::{constant, Constant};
+use crate::consts::constant;
 use crate::reexport::Name;
 use crate::utils::paths;
 use crate::utils::usage::{is_unused, mutated_variables};
@@ -8,28 +8,27 @@ use crate::utils::{
     multispan_sugg, snippet, snippet_opt, snippet_with_applicability, span_lint, span_lint_and_help,
     span_lint_and_sugg, span_lint_and_then, SpanlessEq,
 };
-use crate::utils::{is_type_diagnostic_item, qpath_res, same_tys, sext, sugg};
+use crate::utils::{is_type_diagnostic_item, qpath_res, sugg};
 use if_chain::if_chain;
-use itertools::Itertools;
 use rustc_ast::ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::intravisit::{walk_block, walk_expr, walk_pat, walk_stmt, NestedVisitorMap, Visitor};
 use rustc_hir::{
-    def_id, BinOpKind, BindingAnnotation, Block, BorrowKind, Expr, ExprKind, GenericArg, HirId, LoopSource,
-    MatchSource, Mutability, Node, Pat, PatKind, QPath, Stmt, StmtKind,
+    def_id, BinOpKind, BindingAnnotation, Block, BorrowKind, Expr, ExprKind, GenericArg, HirId, InlineAsmOperand,
+    LoopSource, MatchSource, Mutability, Node, Pat, PatKind, QPath, Stmt, StmtKind,
 };
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::middle::region;
-use rustc_middle::ty::{self, Ty};
+use rustc_middle::ty::{self, Ty, TyS};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
-use rustc_span::BytePos;
-use rustc_typeck::expr_use_visitor::{ConsumeMode, Delegate, ExprUseVisitor, Place, PlaceBase};
+use rustc_span::symbol::Symbol;
+use rustc_typeck::expr_use_visitor::{ConsumeMode, Delegate, ExprUseVisitor, PlaceBase, PlaceWithHirId};
 use std::iter::{once, Iterator};
 use std::mem;
 
@@ -169,7 +168,7 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for `for` loops over `Option` values.
+    /// **What it does:** Checks for `for` loops over `Option` or `Result` values.
     ///
     /// **Why is this bad?** Readability. This is more clearly expressed as an `if
     /// let`.
@@ -177,47 +176,38 @@ declare_clippy_lint! {
     /// **Known problems:** None.
     ///
     /// **Example:**
-    /// ```ignore
-    /// for x in option {
-    ///     ..
+    /// ```rust
+    /// # let opt = Some(1);
+    ///
+    /// // Bad
+    /// for x in opt {
+    ///     // ..
+    /// }
+    ///
+    /// // Good
+    /// if let Some(x) = opt {
+    ///     // ..
     /// }
     /// ```
     ///
-    /// This should be
-    /// ```ignore
-    /// if let Some(x) = option {
-    ///     ..
+    /// // or
+    ///
+    /// ```rust
+    /// # let res: Result<i32, std::io::Error> = Ok(1);
+    ///
+    /// // Bad
+    /// for x in &res {
+    ///     // ..
+    /// }
+    ///
+    /// // Good
+    /// if let Ok(x) = res {
+    ///     // ..
     /// }
     /// ```
-    pub FOR_LOOP_OVER_OPTION,
+    pub FOR_LOOPS_OVER_FALLIBLES,
     correctness,
-    "for-looping over an `Option`, which is more clearly expressed as an `if let`"
-}
-
-declare_clippy_lint! {
-    /// **What it does:** Checks for `for` loops over `Result` values.
-    ///
-    /// **Why is this bad?** Readability. This is more clearly expressed as an `if
-    /// let`.
-    ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    /// ```ignore
-    /// for x in result {
-    ///     ..
-    /// }
-    /// ```
-    ///
-    /// This should be
-    /// ```ignore
-    /// if let Ok(x) = result {
-    ///     ..
-    /// }
-    /// ```
-    pub FOR_LOOP_OVER_RESULT,
-    correctness,
-    "for-looping over a `Result`, which is more clearly expressed as an `if let`"
+    "for-looping over an `Option` or a `Result`, which is more clearly expressed as an `if let`"
 }
 
 declare_clippy_lint! {
@@ -269,30 +259,6 @@ declare_clippy_lint! {
     pub NEEDLESS_COLLECT,
     perf,
     "collecting an iterator when collect is not needed"
-}
-
-declare_clippy_lint! {
-    /// **What it does:** Checks for loops over ranges `x..y` where both `x` and `y`
-    /// are constant and `x` is greater or equal to `y`, unless the range is
-    /// reversed or has a negative `.step_by(_)`.
-    ///
-    /// **Why is it bad?** Such loops will either be skipped or loop until
-    /// wrap-around (in debug code, this may `panic!()`). Both options are probably
-    /// not intended.
-    ///
-    /// **Known problems:** The lint cannot catch loops over dynamically defined
-    /// ranges. Doing this would require simulating all possible inputs and code
-    /// paths through the program, which would be complex and error-prone.
-    ///
-    /// **Example:**
-    /// ```ignore
-    /// for x in 5..10 - 5 {
-    ///     ..
-    /// } // oops, stray `-`
-    /// ```
-    pub REVERSE_RANGE_LOOP,
-    correctness,
-    "iteration over an empty range, such as `10..0` or `5..5`"
 }
 
 declare_clippy_lint! {
@@ -460,11 +426,9 @@ declare_lint_pass!(Loops => [
     EXPLICIT_ITER_LOOP,
     EXPLICIT_INTO_ITER_LOOP,
     ITER_NEXT_LOOP,
-    FOR_LOOP_OVER_RESULT,
-    FOR_LOOP_OVER_OPTION,
+    FOR_LOOPS_OVER_FALLIBLES,
     WHILE_LET_LOOP,
     NEEDLESS_COLLECT,
-    REVERSE_RANGE_LOOP,
     EXPLICIT_COUNTER_LOOP,
     EMPTY_LOOP,
     WHILE_LET_ON_ITERATOR,
@@ -474,9 +438,9 @@ declare_lint_pass!(Loops => [
     WHILE_IMMUTABLE_CONDITION,
 ]);
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
+impl<'tcx> LateLintPass<'tcx> for Loops {
     #[allow(clippy::too_many_lines)]
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
+    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if let Some((pat, arg, body)) = higher::for_loop(expr) {
             // we don't want to check expanded macros
             // this check is not at the top of the function
@@ -562,7 +526,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
             let pat = &arms[0].pat.kind;
             if let (
                 &PatKind::TupleStruct(ref qpath, ref pat_args, _),
-                &ExprKind::MethodCall(ref method_path, _, ref method_args),
+                &ExprKind::MethodCall(ref method_path, _, ref method_args, _),
             ) = (pat, &match_expr.kind)
             {
                 let iter_expr = &method_args[0];
@@ -571,7 +535,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
                 if_chain! {
                     if let ExprKind::MethodCall(..) | ExprKind::Call(..) = iter_expr.kind;
                     if let Some(iter_def_id) = get_trait_def_id(cx, &paths::ITERATOR);
-                    if implements_trait(cx, cx.tables.expr_ty(iter_expr), iter_def_id, &[]);
+                    if implements_trait(cx, cx.tables().expr_ty(iter_expr), iter_def_id, &[]);
                     then {
                         return;
                     }
@@ -690,7 +654,7 @@ fn never_loop_expr(expr: &Expr<'_>, main_loop_id: HirId) -> NeverLoopResult {
         | ExprKind::Struct(_, _, Some(ref e))
         | ExprKind::Repeat(ref e, _)
         | ExprKind::DropTemps(ref e) => never_loop_expr(e, main_loop_id),
-        ExprKind::Array(ref es) | ExprKind::MethodCall(_, _, ref es) | ExprKind::Tup(ref es) => {
+        ExprKind::Array(ref es) | ExprKind::MethodCall(_, _, ref es, _) | ExprKind::Tup(ref es) => {
             never_loop_expr_all(&mut es.iter(), main_loop_id)
         },
         ExprKind::Call(ref e, ref es) => never_loop_expr_all(&mut once(&**e).chain(es.iter()), main_loop_id),
@@ -729,6 +693,20 @@ fn never_loop_expr(expr: &Expr<'_>, main_loop_id: HirId) -> NeverLoopResult {
                 NeverLoopResult::AlwaysBreak
             }
         },
+        ExprKind::InlineAsm(ref asm) => asm
+            .operands
+            .iter()
+            .map(|o| match o {
+                InlineAsmOperand::In { expr, .. }
+                | InlineAsmOperand::InOut { expr, .. }
+                | InlineAsmOperand::Const { expr }
+                | InlineAsmOperand::Sym { expr } => never_loop_expr(expr, main_loop_id),
+                InlineAsmOperand::Out { expr, .. } => never_loop_expr_all(&mut expr.iter(), main_loop_id),
+                InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
+                    never_loop_expr_all(&mut once(in_expr).chain(out_expr.iter()), main_loop_id)
+                },
+            })
+            .fold(NeverLoopResult::Otherwise, combine_both),
         ExprKind::Struct(_, _, None)
         | ExprKind::Yield(_, _)
         | ExprKind::Closure(_, _, _, _, _)
@@ -754,15 +732,14 @@ fn never_loop_expr_branch<'a, T: Iterator<Item = &'a Expr<'a>>>(e: &mut T, main_
         .fold(NeverLoopResult::AlwaysBreak, combine_branches)
 }
 
-fn check_for_loop<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
+fn check_for_loop<'tcx>(
+    cx: &LateContext<'tcx>,
     pat: &'tcx Pat<'_>,
     arg: &'tcx Expr<'_>,
     body: &'tcx Expr<'_>,
     expr: &'tcx Expr<'_>,
 ) {
     check_for_loop_range(cx, pat, arg, body, expr);
-    check_for_loop_reverse_range(cx, arg, expr);
     check_for_loop_arg(cx, pat, arg, expr);
     check_for_loop_explicit_counter(cx, pat, arg, body, expr);
     check_for_loop_over_map_kv(cx, pat, arg, body, expr);
@@ -770,46 +747,54 @@ fn check_for_loop<'a, 'tcx>(
     detect_manual_memcpy(cx, pat, arg, body, expr);
 }
 
-fn same_var<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &Expr<'_>, var: HirId) -> bool {
+fn same_var<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'_>, var: HirId) -> bool {
     if_chain! {
-        if let ExprKind::Path(ref qpath) = expr.kind;
-        if let QPath::Resolved(None, ref path) = *qpath;
+        if let ExprKind::Path(qpath) = &expr.kind;
+        if let QPath::Resolved(None, path) = qpath;
         if path.segments.len() == 1;
         if let Res::Local(local_id) = qpath_res(cx, qpath, expr.hir_id);
-        // our variable!
-        if local_id == var;
         then {
-            return true;
+            // our variable!
+            local_id == var
+        } else {
+            false
         }
     }
+}
 
-    false
+#[derive(Clone, Copy)]
+enum OffsetSign {
+    Positive,
+    Negative,
 }
 
 struct Offset {
     value: String,
-    negate: bool,
+    sign: OffsetSign,
 }
 
 impl Offset {
-    fn negative(s: String) -> Self {
-        Self { value: s, negate: true }
+    fn negative(value: String) -> Self {
+        Self {
+            value,
+            sign: OffsetSign::Negative,
+        }
     }
 
-    fn positive(s: String) -> Self {
+    fn positive(value: String) -> Self {
         Self {
-            value: s,
-            negate: false,
+            value,
+            sign: OffsetSign::Positive,
         }
     }
 }
 
-struct FixedOffsetVar {
-    var_name: String,
+struct FixedOffsetVar<'hir> {
+    var: &'hir Expr<'hir>,
     offset: Offset,
 }
 
-fn is_slice_like<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'_>) -> bool {
+fn is_slice_like<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'_>) -> bool {
     let is_slice = match ty.kind {
         ty::Ref(_, subty, _) => is_slice_like(cx, subty),
         ty::Slice(..) | ty::Array(..) => true,
@@ -819,10 +804,20 @@ fn is_slice_like<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'_>) -> bool {
     is_slice || is_type_diagnostic_item(cx, ty, sym!(vec_type)) || is_type_diagnostic_item(cx, ty, sym!(vecdeque_type))
 }
 
-fn get_fixed_offset_var<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &Expr<'_>, var: HirId) -> Option<FixedOffsetVar> {
-    fn extract_offset<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, e: &Expr<'_>, var: HirId) -> Option<String> {
-        match e.kind {
-            ExprKind::Lit(ref l) => match l.node {
+fn fetch_cloned_expr<'tcx>(expr: &'tcx Expr<'tcx>) -> &'tcx Expr<'tcx> {
+    if_chain! {
+        if let ExprKind::MethodCall(method, _, args, _) = expr.kind;
+        if method.ident.name == sym!(clone);
+        if args.len() == 1;
+        if let Some(arg) = args.get(0);
+        then { arg } else { expr }
+    }
+}
+
+fn get_offset<'tcx>(cx: &LateContext<'tcx>, idx: &Expr<'_>, var: HirId) -> Option<Offset> {
+    fn extract_offset<'tcx>(cx: &LateContext<'tcx>, e: &Expr<'_>, var: HirId) -> Option<String> {
+        match &e.kind {
+            ExprKind::Lit(l) => match l.node {
                 ast::LitKind::Int(x, _ty) => Some(x.to_string()),
                 _ => None,
             },
@@ -831,119 +826,143 @@ fn get_fixed_offset_var<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &Expr<'_>, v
         }
     }
 
-    if let ExprKind::Index(ref seqexpr, ref idx) = expr.kind {
-        let ty = cx.tables.expr_ty(seqexpr);
-        if !is_slice_like(cx, ty) {
-            return None;
-        }
-
-        let offset = match idx.kind {
-            ExprKind::Binary(op, ref lhs, ref rhs) => match op.node {
-                BinOpKind::Add => {
-                    let offset_opt = if same_var(cx, lhs, var) {
-                        extract_offset(cx, rhs, var)
-                    } else if same_var(cx, rhs, var) {
-                        extract_offset(cx, lhs, var)
-                    } else {
-                        None
-                    };
-
-                    offset_opt.map(Offset::positive)
-                },
-                BinOpKind::Sub if same_var(cx, lhs, var) => extract_offset(cx, rhs, var).map(Offset::negative),
-                _ => None,
-            },
-            ExprKind::Path(..) => {
-                if same_var(cx, idx, var) {
-                    Some(Offset::positive("0".into()))
+    match idx.kind {
+        ExprKind::Binary(op, lhs, rhs) => match op.node {
+            BinOpKind::Add => {
+                let offset_opt = if same_var(cx, lhs, var) {
+                    extract_offset(cx, rhs, var)
+                } else if same_var(cx, rhs, var) {
+                    extract_offset(cx, lhs, var)
                 } else {
                     None
-                }
+                };
+
+                offset_opt.map(Offset::positive)
             },
+            BinOpKind::Sub if same_var(cx, lhs, var) => extract_offset(cx, rhs, var).map(Offset::negative),
             _ => None,
-        };
-
-        offset.map(|o| FixedOffsetVar {
-            var_name: snippet_opt(cx, seqexpr.span).unwrap_or_else(|| "???".into()),
-            offset: o,
-        })
-    } else {
-        None
+        },
+        ExprKind::Path(..) if same_var(cx, idx, var) => Some(Offset::positive("0".into())),
+        _ => None,
     }
 }
 
-fn fetch_cloned_fixed_offset_var<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
-    expr: &Expr<'_>,
-    var: HirId,
-) -> Option<FixedOffsetVar> {
-    if_chain! {
-        if let ExprKind::MethodCall(ref method, _, ref args) = expr.kind;
-        if method.ident.name == sym!(clone);
-        if args.len() == 1;
-        if let Some(arg) = args.get(0);
-        then {
-            return get_fixed_offset_var(cx, arg, var);
-        }
-    }
-
-    get_fixed_offset_var(cx, expr, var)
-}
-
-fn get_indexed_assignments<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
-    body: &Expr<'_>,
-    var: HirId,
-) -> Vec<(FixedOffsetVar, FixedOffsetVar)> {
-    fn get_assignment<'a, 'tcx>(
-        cx: &LateContext<'a, 'tcx>,
-        e: &Expr<'_>,
-        var: HirId,
-    ) -> Option<(FixedOffsetVar, FixedOffsetVar)> {
-        if let ExprKind::Assign(ref lhs, ref rhs, _) = e.kind {
-            match (
-                get_fixed_offset_var(cx, lhs, var),
-                fetch_cloned_fixed_offset_var(cx, rhs, var),
-            ) {
-                (Some(offset_left), Some(offset_right)) => {
-                    // Source and destination must be different
-                    if offset_left.var_name == offset_right.var_name {
-                        None
-                    } else {
-                        Some((offset_left, offset_right))
-                    }
-                },
-                _ => None,
-            }
+fn get_assignments<'tcx>(body: &'tcx Expr<'tcx>) -> impl Iterator<Item = Option<(&'tcx Expr<'tcx>, &'tcx Expr<'tcx>)>> {
+    fn get_assignment<'tcx>(e: &'tcx Expr<'tcx>) -> Option<(&'tcx Expr<'tcx>, &'tcx Expr<'tcx>)> {
+        if let ExprKind::Assign(lhs, rhs, _) = e.kind {
+            Some((lhs, rhs))
         } else {
             None
         }
     }
 
-    if let ExprKind::Block(ref b, _) = body.kind {
-        let Block {
-            ref stmts, ref expr, ..
-        } = **b;
+    // This is one of few ways to return different iterators
+    // derived from: https://stackoverflow.com/questions/29760668/conditionally-iterate-over-one-of-several-possible-iterators/52064434#52064434
+    let mut iter_a = None;
+    let mut iter_b = None;
 
-        stmts
+    if let ExprKind::Block(b, _) = body.kind {
+        let Block { stmts, expr, .. } = *b;
+
+        iter_a = stmts
             .iter()
-            .map(|stmt| match stmt.kind {
+            .filter_map(|stmt| match stmt.kind {
                 StmtKind::Local(..) | StmtKind::Item(..) => None,
-                StmtKind::Expr(ref e) | StmtKind::Semi(ref e) => Some(get_assignment(cx, e, var)),
+                StmtKind::Expr(e) | StmtKind::Semi(e) => Some(e),
             })
-            .chain(expr.as_ref().into_iter().map(|e| Some(get_assignment(cx, &*e, var))))
-            .filter_map(|op| op)
-            .collect::<Option<Vec<_>>>()
-            .unwrap_or_default()
+            .chain(expr.into_iter())
+            .map(get_assignment)
+            .into()
     } else {
-        get_assignment(cx, body, var).into_iter().collect()
+        iter_b = Some(get_assignment(body))
     }
+
+    iter_a.into_iter().flatten().chain(iter_b.into_iter())
 }
 
+fn build_manual_memcpy_suggestion<'tcx>(
+    cx: &LateContext<'tcx>,
+    start: &Expr<'_>,
+    end: &Expr<'_>,
+    limits: ast::RangeLimits,
+    dst_var: FixedOffsetVar<'_>,
+    src_var: FixedOffsetVar<'_>,
+) -> String {
+    fn print_sum(arg1: &str, arg2: &Offset) -> String {
+        match (arg1, &arg2.value[..], arg2.sign) {
+            ("0", "0", _) => "0".into(),
+            ("0", x, OffsetSign::Positive) | (x, "0", _) => x.into(),
+            ("0", x, OffsetSign::Negative) => format!("-{}", x),
+            (x, y, OffsetSign::Positive) => format!("({} + {})", x, y),
+            (x, y, OffsetSign::Negative) => {
+                if x == y {
+                    "0".into()
+                } else {
+                    format!("({} - {})", x, y)
+                }
+            },
+        }
+    }
+
+    fn print_offset(start_str: &str, inline_offset: &Offset) -> String {
+        let offset = print_sum(start_str, inline_offset);
+        if offset.as_str() == "0" {
+            "".into()
+        } else {
+            offset
+        }
+    }
+
+    let print_limit = |end: &Expr<'_>, offset: Offset, var: &Expr<'_>| {
+        if_chain! {
+            if let ExprKind::MethodCall(method, _, len_args, _) = end.kind;
+            if method.ident.name == sym!(len);
+            if len_args.len() == 1;
+            if let Some(arg) = len_args.get(0);
+            if var_def_id(cx, arg) == var_def_id(cx, var);
+            then {
+                match offset.sign {
+                    OffsetSign::Negative => format!("({} - {})", snippet(cx, end.span, "<src>.len()"), offset.value),
+                    OffsetSign::Positive => "".into(),
+                }
+            } else {
+                let end_str = match limits {
+                    ast::RangeLimits::Closed => {
+                        let end = sugg::Sugg::hir(cx, end, "<count>");
+                        format!("{}", end + sugg::ONE)
+                    },
+                    ast::RangeLimits::HalfOpen => format!("{}", snippet(cx, end.span, "..")),
+                };
+
+                print_sum(&end_str, &offset)
+            }
+        }
+    };
+
+    let start_str = snippet(cx, start.span, "").to_string();
+    let dst_offset = print_offset(&start_str, &dst_var.offset);
+    let dst_limit = print_limit(end, dst_var.offset, dst_var.var);
+    let src_offset = print_offset(&start_str, &src_var.offset);
+    let src_limit = print_limit(end, src_var.offset, src_var.var);
+
+    let dst_var_name = snippet_opt(cx, dst_var.var.span).unwrap_or_else(|| "???".into());
+    let src_var_name = snippet_opt(cx, src_var.var.span).unwrap_or_else(|| "???".into());
+
+    let dst = if dst_offset == "" && dst_limit == "" {
+        dst_var_name
+    } else {
+        format!("{}[{}..{}]", dst_var_name, dst_offset, dst_limit)
+    };
+
+    format!(
+        "{}.clone_from_slice(&{}[{}..{}])",
+        dst, src_var_name, src_offset, src_limit
+    )
+}
 /// Checks for for loops that sequentially copy items from one slice-like
 /// object to another.
-fn detect_manual_memcpy<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
+fn detect_manual_memcpy<'tcx>(
+    cx: &LateContext<'tcx>,
     pat: &'tcx Pat<'_>,
     arg: &'tcx Expr<'_>,
     body: &'tcx Expr<'_>,
@@ -951,93 +970,43 @@ fn detect_manual_memcpy<'a, 'tcx>(
 ) {
     if let Some(higher::Range {
         start: Some(start),
-        ref end,
+        end: Some(end),
         limits,
     }) = higher::range(cx, arg)
     {
         // the var must be a single name
         if let PatKind::Binding(_, canonical_id, _, _) = pat.kind {
-            let print_sum = |arg1: &Offset, arg2: &Offset| -> String {
-                match (&arg1.value[..], arg1.negate, &arg2.value[..], arg2.negate) {
-                    ("0", _, "0", _) => "".into(),
-                    ("0", _, x, false) | (x, false, "0", false) => x.into(),
-                    ("0", _, x, true) | (x, false, "0", true) => format!("-{}", x),
-                    (x, false, y, false) => format!("({} + {})", x, y),
-                    (x, false, y, true) => {
-                        if x == y {
-                            "0".into()
-                        } else {
-                            format!("({} - {})", x, y)
-                        }
-                    },
-                    (x, true, y, false) => {
-                        if x == y {
-                            "0".into()
-                        } else {
-                            format!("({} - {})", y, x)
-                        }
-                    },
-                    (x, true, y, true) => format!("-({} + {})", x, y),
-                }
-            };
-
-            let print_limit = |end: &Option<&Expr<'_>>, offset: Offset, var_name: &str| {
-                if let Some(end) = *end {
-                    if_chain! {
-                        if let ExprKind::MethodCall(ref method, _, ref len_args) = end.kind;
-                        if method.ident.name == sym!(len);
-                        if len_args.len() == 1;
-                        if let Some(arg) = len_args.get(0);
-                        if snippet(cx, arg.span, "??") == var_name;
-                        then {
-                            return if offset.negate {
-                                format!("({} - {})", snippet(cx, end.span, "<src>.len()"), offset.value)
-                            } else {
-                                String::new()
-                            };
-                        }
-                    }
-
-                    let end_str = match limits {
-                        ast::RangeLimits::Closed => {
-                            let end = sugg::Sugg::hir(cx, end, "<count>");
-                            format!("{}", end + sugg::ONE)
-                        },
-                        ast::RangeLimits::HalfOpen => format!("{}", snippet(cx, end.span, "..")),
-                    };
-
-                    print_sum(&Offset::positive(end_str), &offset)
-                } else {
-                    "..".into()
-                }
-            };
-
             // The only statements in the for loops can be indexed assignments from
             // indexed retrievals.
-            let manual_copies = get_indexed_assignments(cx, body, canonical_id);
+            let big_sugg = get_assignments(body)
+                .map(|o| {
+                    o.and_then(|(lhs, rhs)| {
+                        let rhs = fetch_cloned_expr(rhs);
+                        if_chain! {
+                            if let ExprKind::Index(seqexpr_left, idx_left) = lhs.kind;
+                            if let ExprKind::Index(seqexpr_right, idx_right) = rhs.kind;
+                            if is_slice_like(cx, cx.tables().expr_ty(seqexpr_left))
+                                && is_slice_like(cx, cx.tables().expr_ty(seqexpr_right));
+                            if let Some(offset_left) = get_offset(cx, &idx_left, canonical_id);
+                            if let Some(offset_right) = get_offset(cx, &idx_right, canonical_id);
 
-            let big_sugg = manual_copies
-                .into_iter()
-                .map(|(dst_var, src_var)| {
-                    let start_str = Offset::positive(snippet(cx, start.span, "").to_string());
-                    let dst_offset = print_sum(&start_str, &dst_var.offset);
-                    let dst_limit = print_limit(end, dst_var.offset, &dst_var.var_name);
-                    let src_offset = print_sum(&start_str, &src_var.offset);
-                    let src_limit = print_limit(end, src_var.offset, &src_var.var_name);
-                    let dst = if dst_offset == "" && dst_limit == "" {
-                        dst_var.var_name
-                    } else {
-                        format!("{}[{}..{}]", dst_var.var_name, dst_offset, dst_limit)
-                    };
-
-                    format!(
-                        "{}.clone_from_slice(&{}[{}..{}])",
-                        dst, src_var.var_name, src_offset, src_limit
-                    )
+                            // Source and destination must be different
+                            if var_def_id(cx, seqexpr_left) != var_def_id(cx, seqexpr_right);
+                            then {
+                                Some((FixedOffsetVar { var: seqexpr_left, offset: offset_left },
+                                    FixedOffsetVar { var: seqexpr_right, offset: offset_right }))
+                            } else {
+                                None
+                            }
+                        }
+                    })
                 })
-                .join("\n    ");
+                .map(|o| o.map(|(dst, src)| build_manual_memcpy_suggestion(cx, start, end, limits, dst, src)))
+                .collect::<Option<Vec<_>>>()
+                .filter(|v| !v.is_empty())
+                .map(|v| v.join("\n    "));
 
-            if !big_sugg.is_empty() {
+            if let Some(big_sugg) = big_sugg {
                 span_lint_and_sugg(
                     cx,
                     MANUAL_MEMCPY,
@@ -1055,8 +1024,8 @@ fn detect_manual_memcpy<'a, 'tcx>(
 /// Checks for looping over a range and then indexing a sequence with it.
 /// The iteratee must be a range literal.
 #[allow(clippy::too_many_lines)]
-fn check_for_loop_range<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
+fn check_for_loop_range<'tcx>(
+    cx: &LateContext<'tcx>,
     pat: &'tcx Pat<'_>,
     arg: &'tcx Expr<'_>,
     body: &'tcx Expr<'_>,
@@ -1179,7 +1148,7 @@ fn check_for_loop_range<'a, 'tcx>(
                         |diag| {
                             multispan_sugg(
                                 diag,
-                                "consider using an iterator".to_string(),
+                                "consider using an iterator",
                                 vec![
                                     (pat.span, format!("({}, <item>)", ident.name)),
                                     (
@@ -1208,7 +1177,7 @@ fn check_for_loop_range<'a, 'tcx>(
                         |diag| {
                             multispan_sugg(
                                 diag,
-                                "consider using an iterator".to_string(),
+                                "consider using an iterator",
                                 vec![(pat.span, "<item>".to_string()), (arg.span, repl)],
                             );
                         },
@@ -1221,7 +1190,7 @@ fn check_for_loop_range<'a, 'tcx>(
 
 fn is_len_call(expr: &Expr<'_>, var: Name) -> bool {
     if_chain! {
-        if let ExprKind::MethodCall(ref method, _, ref len_args) = expr.kind;
+        if let ExprKind::MethodCall(ref method, _, ref len_args, _) = expr.kind;
         if len_args.len() == 1;
         if method.ident.name == sym!(len);
         if let ExprKind::Path(QPath::Resolved(_, ref path)) = len_args[0].kind;
@@ -1236,7 +1205,7 @@ fn is_len_call(expr: &Expr<'_>, var: Name) -> bool {
 }
 
 fn is_end_eq_array_len<'tcx>(
-    cx: &LateContext<'_, 'tcx>,
+    cx: &LateContext<'tcx>,
     end: &Expr<'_>,
     limits: ast::RangeLimits,
     indexed_ty: Ty<'tcx>,
@@ -1257,79 +1226,7 @@ fn is_end_eq_array_len<'tcx>(
     false
 }
 
-fn check_for_loop_reverse_range<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arg: &'tcx Expr<'_>, expr: &'tcx Expr<'_>) {
-    // if this for loop is iterating over a two-sided range...
-    if let Some(higher::Range {
-        start: Some(start),
-        end: Some(end),
-        limits,
-    }) = higher::range(cx, arg)
-    {
-        // ...and both sides are compile-time constant integers...
-        if let Some((start_idx, _)) = constant(cx, cx.tables, start) {
-            if let Some((end_idx, _)) = constant(cx, cx.tables, end) {
-                // ...and the start index is greater than the end index,
-                // this loop will never run. This is often confusing for developers
-                // who think that this will iterate from the larger value to the
-                // smaller value.
-                let ty = cx.tables.expr_ty(start);
-                let (sup, eq) = match (start_idx, end_idx) {
-                    (Constant::Int(start_idx), Constant::Int(end_idx)) => (
-                        match ty.kind {
-                            ty::Int(ity) => sext(cx.tcx, start_idx, ity) > sext(cx.tcx, end_idx, ity),
-                            ty::Uint(_) => start_idx > end_idx,
-                            _ => false,
-                        },
-                        start_idx == end_idx,
-                    ),
-                    _ => (false, false),
-                };
-
-                if sup {
-                    let start_snippet = snippet(cx, start.span, "_");
-                    let end_snippet = snippet(cx, end.span, "_");
-                    let dots = if limits == ast::RangeLimits::Closed {
-                        "..="
-                    } else {
-                        ".."
-                    };
-
-                    span_lint_and_then(
-                        cx,
-                        REVERSE_RANGE_LOOP,
-                        expr.span,
-                        "this range is empty so this for loop will never run",
-                        |diag| {
-                            diag.span_suggestion(
-                                arg.span,
-                                "consider using the following if you are attempting to iterate over this \
-                                 range in reverse",
-                                format!(
-                                    "({end}{dots}{start}).rev()",
-                                    end = end_snippet,
-                                    dots = dots,
-                                    start = start_snippet
-                                ),
-                                Applicability::MaybeIncorrect,
-                            );
-                        },
-                    );
-                } else if eq && limits != ast::RangeLimits::Closed {
-                    // if they are equal, it's also problematic - this loop
-                    // will never run.
-                    span_lint(
-                        cx,
-                        REVERSE_RANGE_LOOP,
-                        expr.span,
-                        "this range is empty so this for loop will never run",
-                    );
-                }
-            }
-        }
-    }
-}
-
-fn lint_iter_method(cx: &LateContext<'_, '_>, args: &[Expr<'_>], arg: &Expr<'_>, method_name: &str) {
+fn lint_iter_method(cx: &LateContext<'_>, args: &[Expr<'_>], arg: &Expr<'_>, method_name: &str) {
     let mut applicability = Applicability::MachineApplicable;
     let object = snippet_with_applicability(cx, args[0].span, "_", &mut applicability);
     let muta = if method_name == "iter_mut" { "mut " } else { "" };
@@ -1345,9 +1242,9 @@ fn lint_iter_method(cx: &LateContext<'_, '_>, args: &[Expr<'_>], arg: &Expr<'_>,
     )
 }
 
-fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, expr: &Expr<'_>) {
+fn check_for_loop_arg(cx: &LateContext<'_>, pat: &Pat<'_>, arg: &Expr<'_>, expr: &Expr<'_>) {
     let mut next_loop_linted = false; // whether or not ITER_NEXT_LOOP lint was used
-    if let ExprKind::MethodCall(ref method, _, ref args) = arg.kind {
+    if let ExprKind::MethodCall(ref method, _, ref args, _) = arg.kind {
         // just the receiver, no arguments
         if args.len() == 1 {
             let method_name = &*method.ident.as_str();
@@ -1357,9 +1254,9 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, e
                     lint_iter_method(cx, args, arg, method_name);
                 }
             } else if method_name == "into_iter" && match_trait_method(cx, arg, &paths::INTO_ITERATOR) {
-                let receiver_ty = cx.tables.expr_ty(&args[0]);
-                let receiver_ty_adjusted = cx.tables.expr_ty_adjusted(&args[0]);
-                if same_tys(cx, receiver_ty, receiver_ty_adjusted) {
+                let receiver_ty = cx.tables().expr_ty(&args[0]);
+                let receiver_ty_adjusted = cx.tables().expr_ty_adjusted(&args[0]);
+                if TyS::same_type(receiver_ty, receiver_ty_adjusted) {
                     let mut applicability = Applicability::MachineApplicable;
                     let object = snippet_with_applicability(cx, args[0].span, "_", &mut applicability);
                     span_lint_and_sugg(
@@ -1380,7 +1277,7 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, e
                             mutbl: Mutability::Not,
                         },
                     );
-                    if same_tys(cx, receiver_ty_adjusted, ref_receiver_ty) {
+                    if TyS::same_type(receiver_ty_adjusted, ref_receiver_ty) {
                         lint_iter_method(cx, args, arg, method_name)
                     }
                 }
@@ -1390,7 +1287,7 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, e
                     ITER_NEXT_LOOP,
                     expr.span,
                     "you are iterating over `Iterator::next()` which is an Option; this will compile but is \
-                     probably not what you want",
+                    probably not what you want",
                 );
                 next_loop_linted = true;
             }
@@ -1402,16 +1299,16 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, e
 }
 
 /// Checks for `for` loops over `Option`s and `Result`s.
-fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
-    let ty = cx.tables.expr_ty(arg);
+fn check_arg_type(cx: &LateContext<'_>, pat: &Pat<'_>, arg: &Expr<'_>) {
+    let ty = cx.tables().expr_ty(arg);
     if is_type_diagnostic_item(cx, ty, sym!(option_type)) {
         span_lint_and_help(
             cx,
-            FOR_LOOP_OVER_OPTION,
+            FOR_LOOPS_OVER_FALLIBLES,
             arg.span,
             &format!(
                 "for loop over `{0}`, which is an `Option`. This is more readably written as an \
-                 `if let` statement.",
+                `if let` statement.",
                 snippet(cx, arg.span, "_")
             ),
             None,
@@ -1424,11 +1321,11 @@ fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
     } else if is_type_diagnostic_item(cx, ty, sym!(result_type)) {
         span_lint_and_help(
             cx,
-            FOR_LOOP_OVER_RESULT,
+            FOR_LOOPS_OVER_FALLIBLES,
             arg.span,
             &format!(
                 "for loop over `{0}`, which is a `Result`. This is more readably written as an \
-                 `if let` statement.",
+                `if let` statement.",
                 snippet(cx, arg.span, "_")
             ),
             None,
@@ -1441,8 +1338,8 @@ fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
     }
 }
 
-fn check_for_loop_explicit_counter<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
+fn check_for_loop_explicit_counter<'tcx>(
+    cx: &LateContext<'tcx>,
     pat: &'tcx Pat<'_>,
     arg: &'tcx Expr<'_>,
     body: &'tcx Expr<'_>,
@@ -1506,9 +1403,9 @@ fn check_for_loop_explicit_counter<'a, 'tcx>(
 
 /// If `arg` was the argument to a `for` loop, return the "cleanest" way of writing the
 /// actual `Iterator` that the loop uses.
-fn make_iterator_snippet(cx: &LateContext<'_, '_>, arg: &Expr<'_>, applic_ref: &mut Applicability) -> String {
+fn make_iterator_snippet(cx: &LateContext<'_>, arg: &Expr<'_>, applic_ref: &mut Applicability) -> String {
     let impls_iterator = get_trait_def_id(cx, &paths::ITERATOR)
-        .map_or(false, |id| implements_trait(cx, cx.tables.expr_ty(arg), id, &[]));
+        .map_or(false, |id| implements_trait(cx, cx.tables().expr_ty(arg), id, &[]));
     if impls_iterator {
         format!(
             "{}",
@@ -1519,7 +1416,7 @@ fn make_iterator_snippet(cx: &LateContext<'_, '_>, arg: &Expr<'_>, applic_ref: &
         // (&mut x).into_iter() ==> x.iter_mut()
         match &arg.kind {
             ExprKind::AddrOf(BorrowKind::Ref, mutability, arg_inner)
-                if has_iter_method(cx, cx.tables.expr_ty(&arg_inner)).is_some() =>
+                if has_iter_method(cx, cx.tables().expr_ty(&arg_inner)).is_some() =>
             {
                 let meth_name = match mutability {
                     Mutability::Mut => "iter_mut",
@@ -1540,8 +1437,8 @@ fn make_iterator_snippet(cx: &LateContext<'_, '_>, arg: &Expr<'_>, applic_ref: &
 }
 
 /// Checks for the `FOR_KV_MAP` lint.
-fn check_for_loop_over_map_kv<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
+fn check_for_loop_over_map_kv<'tcx>(
+    cx: &LateContext<'tcx>,
     pat: &'tcx Pat<'_>,
     arg: &'tcx Expr<'_>,
     body: &'tcx Expr<'_>,
@@ -1552,7 +1449,7 @@ fn check_for_loop_over_map_kv<'a, 'tcx>(
     if let PatKind::Tuple(ref pat, _) = pat.kind {
         if pat.len() == 2 {
             let arg_span = arg.span;
-            let (new_pat_span, kind, ty, mutbl) = match cx.tables.expr_ty(arg).kind {
+            let (new_pat_span, kind, ty, mutbl) = match cx.tables().expr_ty(arg).kind {
                 ty::Ref(_, ty, mutbl) => match (&pat[0].kind, &pat[1].kind) {
                     (key, _) if pat_is_wild(key, body) => (pat[1].span, "value", ty, mutbl),
                     (_, value) if pat_is_wild(value, body) => (pat[0].span, "key", ty, Mutability::Not),
@@ -1579,7 +1476,7 @@ fn check_for_loop_over_map_kv<'a, 'tcx>(
                         let map = sugg::Sugg::hir(cx, arg, "map");
                         multispan_sugg(
                             diag,
-                            "use the corresponding method".into(),
+                            "use the corresponding method",
                             vec![
                                 (pat_span, snippet(cx, new_pat_span, kind).into_owned()),
                                 (arg_span, format!("{}.{}s{}()", map.maybe_par(), kind, mutbl)),
@@ -1592,48 +1489,49 @@ fn check_for_loop_over_map_kv<'a, 'tcx>(
     }
 }
 
-struct MutatePairDelegate {
+struct MutatePairDelegate<'a, 'tcx> {
+    cx: &'a LateContext<'tcx>,
     hir_id_low: Option<HirId>,
     hir_id_high: Option<HirId>,
     span_low: Option<Span>,
     span_high: Option<Span>,
 }
 
-impl<'tcx> Delegate<'tcx> for MutatePairDelegate {
-    fn consume(&mut self, _: &Place<'tcx>, _: ConsumeMode) {}
+impl<'tcx> Delegate<'tcx> for MutatePairDelegate<'_, 'tcx> {
+    fn consume(&mut self, _: &PlaceWithHirId<'tcx>, _: ConsumeMode) {}
 
-    fn borrow(&mut self, cmt: &Place<'tcx>, bk: ty::BorrowKind) {
+    fn borrow(&mut self, cmt: &PlaceWithHirId<'tcx>, bk: ty::BorrowKind) {
         if let ty::BorrowKind::MutBorrow = bk {
-            if let PlaceBase::Local(id) = cmt.base {
+            if let PlaceBase::Local(id) = cmt.place.base {
                 if Some(id) == self.hir_id_low {
-                    self.span_low = Some(cmt.span)
+                    self.span_low = Some(self.cx.tcx.hir().span(cmt.hir_id))
                 }
                 if Some(id) == self.hir_id_high {
-                    self.span_high = Some(cmt.span)
+                    self.span_high = Some(self.cx.tcx.hir().span(cmt.hir_id))
                 }
             }
         }
     }
 
-    fn mutate(&mut self, cmt: &Place<'tcx>) {
-        if let PlaceBase::Local(id) = cmt.base {
+    fn mutate(&mut self, cmt: &PlaceWithHirId<'tcx>) {
+        if let PlaceBase::Local(id) = cmt.place.base {
             if Some(id) == self.hir_id_low {
-                self.span_low = Some(cmt.span)
+                self.span_low = Some(self.cx.tcx.hir().span(cmt.hir_id))
             }
             if Some(id) == self.hir_id_high {
-                self.span_high = Some(cmt.span)
+                self.span_high = Some(self.cx.tcx.hir().span(cmt.hir_id))
             }
         }
     }
 }
 
-impl<'tcx> MutatePairDelegate {
+impl MutatePairDelegate<'_, '_> {
     fn mutation_span(&self) -> (Option<Span>, Option<Span>) {
         (self.span_low, self.span_high)
     }
 }
 
-fn check_for_mut_range_bound(cx: &LateContext<'_, '_>, arg: &Expr<'_>, body: &Expr<'_>) {
+fn check_for_mut_range_bound(cx: &LateContext<'_>, arg: &Expr<'_>, body: &Expr<'_>) {
     if let Some(higher::Range {
         start: Some(start),
         end: Some(end),
@@ -1649,7 +1547,7 @@ fn check_for_mut_range_bound(cx: &LateContext<'_, '_>, arg: &Expr<'_>, body: &Ex
     }
 }
 
-fn mut_warn_with_span(cx: &LateContext<'_, '_>, span: Option<Span>) {
+fn mut_warn_with_span(cx: &LateContext<'_>, span: Option<Span>) {
     if let Some(sp) = span {
         span_lint(
             cx,
@@ -1660,7 +1558,7 @@ fn mut_warn_with_span(cx: &LateContext<'_, '_>, span: Option<Span>) {
     }
 }
 
-fn check_for_mutability(cx: &LateContext<'_, '_>, bound: &Expr<'_>) -> Option<HirId> {
+fn check_for_mutability(cx: &LateContext<'_>, bound: &Expr<'_>) -> Option<HirId> {
     if_chain! {
         if let ExprKind::Path(ref qpath) = bound.kind;
         if let QPath::Resolved(None, _) = *qpath;
@@ -1682,12 +1580,13 @@ fn check_for_mutability(cx: &LateContext<'_, '_>, bound: &Expr<'_>) -> Option<Hi
     None
 }
 
-fn check_for_mutation(
-    cx: &LateContext<'_, '_>,
+fn check_for_mutation<'tcx>(
+    cx: &LateContext<'tcx>,
     body: &Expr<'_>,
     bound_ids: &[Option<HirId>],
 ) -> (Option<Span>, Option<Span>) {
     let mut delegate = MutatePairDelegate {
+        cx,
         hir_id_low: bound_ids[0],
         hir_id_high: bound_ids[1],
         span_low: None,
@@ -1695,7 +1594,7 @@ fn check_for_mutation(
     };
     let def_id = body.hir_id.owner.to_def_id();
     cx.tcx.infer_ctxt().enter(|infcx| {
-        ExprUseVisitor::new(&mut delegate, &infcx, def_id.expect_local(), cx.param_env, cx.tables).walk_expr(body);
+        ExprUseVisitor::new(&mut delegate, &infcx, def_id.expect_local(), cx.param_env, cx.tables()).walk_expr(body);
     });
     delegate.mutation_span()
 }
@@ -1710,7 +1609,7 @@ fn pat_is_wild<'tcx>(pat: &'tcx PatKind<'_>, body: &'tcx Expr<'_>) -> bool {
 }
 
 struct LocalUsedVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
+    cx: &'a LateContext<'tcx>,
     local: HirId,
     used: bool,
 }
@@ -1733,7 +1632,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LocalUsedVisitor<'a, 'tcx> {
 
 struct VarVisitor<'a, 'tcx> {
     /// context reference
-    cx: &'a LateContext<'a, 'tcx>,
+    cx: &'a LateContext<'tcx>,
     /// var name to look for as index
     var: HirId,
     /// indexed variables that are used mutably
@@ -1789,7 +1688,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                             if index_used_directly {
                                 self.indexed_directly.insert(
                                     seqvar.segments[0].ident.name,
-                                    (Some(extent), self.cx.tables.node_type(seqexpr.hir_id)),
+                                    (Some(extent), self.cx.tables().node_type(seqexpr.hir_id)),
                                 );
                             }
                             return false;  // no need to walk further *on the variable*
@@ -1801,7 +1700,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                             if index_used_directly {
                                 self.indexed_directly.insert(
                                     seqvar.segments[0].ident.name,
-                                    (None, self.cx.tables.node_type(seqexpr.hir_id)),
+                                    (None, self.cx.tables().node_type(seqexpr.hir_id)),
                                 );
                             }
                             return false;  // no need to walk further *on the variable*
@@ -1821,7 +1720,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         if_chain! {
             // a range index op
-            if let ExprKind::MethodCall(ref meth, _, ref args) = expr.kind;
+            if let ExprKind::MethodCall(ref meth, _, ref args, _) = expr.kind;
             if (meth.ident.name == sym!(index) && match_trait_method(self.cx, expr, &paths::INDEX))
                 || (meth.ident.name == sym!(index_mut) && match_trait_method(self.cx, expr, &paths::INDEX_MUT));
             if !self.check(&args[1], &args[0], expr);
@@ -1869,7 +1768,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
             ExprKind::Call(ref f, args) => {
                 self.visit_expr(f);
                 for expr in args {
-                    let ty = self.cx.tables.expr_ty_adjusted(expr);
+                    let ty = self.cx.tables().expr_ty_adjusted(expr);
                     self.prefer_mutable = false;
                     if let ty::Ref(_, _, mutbl) = ty.kind {
                         if mutbl == Mutability::Mut {
@@ -1879,8 +1778,8 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
                     self.visit_expr(expr);
                 }
             },
-            ExprKind::MethodCall(_, _, args) => {
-                let def_id = self.cx.tables.type_dependent_def_id(expr.hir_id).unwrap();
+            ExprKind::MethodCall(_, _, args, _) => {
+                let def_id = self.cx.tables().type_dependent_def_id(expr.hir_id).unwrap();
                 for (ty, expr) in self.cx.tcx.fn_sig(def_id).inputs().skip_binder().iter().zip(args) {
                     self.prefer_mutable = false;
                     if let ty::Ref(_, _, mutbl) = ty.kind {
@@ -1904,7 +1803,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
     }
 }
 
-fn is_used_inside<'a, 'tcx>(cx: &'a LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>, container: &'tcx Expr<'_>) -> bool {
+fn is_used_inside<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>, container: &'tcx Expr<'_>) -> bool {
     let def_id = match var_def_id(cx, expr) {
         Some(id) => id,
         None => return false,
@@ -1917,7 +1816,7 @@ fn is_used_inside<'a, 'tcx>(cx: &'a LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>,
     false
 }
 
-fn is_iterator_used_after_while_let<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, iter_expr: &'tcx Expr<'_>) -> bool {
+fn is_iterator_used_after_while_let<'tcx>(cx: &LateContext<'tcx>, iter_expr: &'tcx Expr<'_>) -> bool {
     let def_id = match var_def_id(cx, iter_expr) {
         Some(id) => id,
         None => return false,
@@ -1936,7 +1835,7 @@ fn is_iterator_used_after_while_let<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, iter_e
 }
 
 struct VarUsedAfterLoopVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
+    cx: &'a LateContext<'tcx>,
     def_id: HirId,
     iter_expr_id: HirId,
     past_while_let: bool,
@@ -1964,10 +1863,10 @@ impl<'a, 'tcx> Visitor<'tcx> for VarUsedAfterLoopVisitor<'a, 'tcx> {
 /// Returns `true` if the type of expr is one that provides `IntoIterator` impls
 /// for `&T` and `&mut T`, such as `Vec`.
 #[rustfmt::skip]
-fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr<'_>) -> bool {
+fn is_ref_iterable_type(cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
     // no walk_ptrs_ty: calling iter() on a reference can make sense because it
     // will allow further borrows afterwards
-    let ty = cx.tables.expr_ty(e);
+    let ty = cx.tables().expr_ty(e);
     is_iterable_array(ty, cx) ||
     is_type_diagnostic_item(cx, ty, sym!(vec_type)) ||
     match_type(cx, ty, &paths::LINKED_LIST) ||
@@ -1979,7 +1878,7 @@ fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr<'_>) -> bool {
     match_type(cx, ty, &paths::BTREESET)
 }
 
-fn is_iterable_array<'tcx>(ty: Ty<'tcx>, cx: &LateContext<'_, 'tcx>) -> bool {
+fn is_iterable_array<'tcx>(ty: Ty<'tcx>, cx: &LateContext<'tcx>) -> bool {
     // IntoIterator is currently only implemented for array sizes <= 32 in rustc
     match ty.kind {
         ty::Array(_, n) => {
@@ -2047,7 +1946,7 @@ enum VarState {
 
 /// Scan a for loop for variables that are incremented exactly once.
 struct IncrementVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,      // context reference
+    cx: &'a LateContext<'tcx>,          // context reference
     states: FxHashMap<HirId, VarState>, // incremented variables
     depth: u32,                         // depth of conditional expressions
     done: bool,
@@ -2105,8 +2004,8 @@ impl<'a, 'tcx> Visitor<'tcx> for IncrementVisitor<'a, 'tcx> {
 
 /// Checks whether a variable is initialized to zero at the start of a loop.
 struct InitializeVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>, // context reference
-    end_expr: &'tcx Expr<'tcx>,    // the for loop. Stop scanning here.
+    cx: &'a LateContext<'tcx>,  // context reference
+    end_expr: &'tcx Expr<'tcx>, // the for loop. Stop scanning here.
     var_id: HirId,
     state: VarState,
     name: Option<Name>,
@@ -2143,7 +2042,7 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
         if self.state == VarState::DontWarn {
             return;
         }
-        if SpanlessEq::new(self.cx).eq_expr(&expr, self.end_expr) {
+        if expr.hir_id == self.end_expr.hir_id {
             self.past_loop = true;
             return;
         }
@@ -2195,7 +2094,7 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
     }
 }
 
-fn var_def_id(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> Option<HirId> {
+fn var_def_id(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<HirId> {
     if let ExprKind::Path(ref qpath) = expr.kind {
         let path_res = qpath_res(cx, qpath, expr.hir_id);
         if let Res::Local(hir_id) = path_res {
@@ -2219,7 +2118,7 @@ fn is_conditional(expr: &Expr<'_>) -> bool {
     }
 }
 
-fn is_nested(cx: &LateContext<'_, '_>, match_expr: &Expr<'_>, iter_expr: &Expr<'_>) -> bool {
+fn is_nested(cx: &LateContext<'_>, match_expr: &Expr<'_>, iter_expr: &Expr<'_>) -> bool {
     if_chain! {
         if let Some(loop_block) = get_enclosing_block(cx, match_expr.hir_id);
         let parent_node = cx.tcx.hir().get_parent_node(loop_block.hir_id);
@@ -2231,7 +2130,7 @@ fn is_nested(cx: &LateContext<'_, '_>, match_expr: &Expr<'_>, iter_expr: &Expr<'
     false
 }
 
-fn is_loop_nested(cx: &LateContext<'_, '_>, loop_expr: &Expr<'_>, iter_expr: &Expr<'_>) -> bool {
+fn is_loop_nested(cx: &LateContext<'_>, loop_expr: &Expr<'_>, iter_expr: &Expr<'_>) -> bool {
     let mut id = loop_expr.hir_id;
     let iter_name = if let Some(name) = path_name(iter_expr) {
         name
@@ -2341,8 +2240,8 @@ fn path_name(e: &Expr<'_>) -> Option<Name> {
     None
 }
 
-fn check_infinite_loop<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, cond: &'tcx Expr<'_>, expr: &'tcx Expr<'_>) {
-    if constant(cx, cx.tables, cond).is_some() {
+fn check_infinite_loop<'tcx>(cx: &LateContext<'tcx>, cond: &'tcx Expr<'_>, expr: &'tcx Expr<'_>) {
+    if constant(cx, cx.tables(), cond).is_some() {
         // A pure constant condition (e.g., `while false`) is not linted.
         return;
     }
@@ -2393,7 +2292,7 @@ struct HasBreakOrReturnVisitor {
     has_break_or_return: bool,
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for HasBreakOrReturnVisitor {
+impl<'tcx> Visitor<'tcx> for HasBreakOrReturnVisitor {
     type Map = Map<'tcx>;
 
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
@@ -2422,7 +2321,7 @@ impl<'a, 'tcx> Visitor<'tcx> for HasBreakOrReturnVisitor {
 /// Note: In some cases such as `self`, there are no mutable annotation,
 /// All variables definition IDs are collected
 struct VarCollectorVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
+    cx: &'a LateContext<'tcx>,
     ids: FxHashSet<HirId>,
     def_ids: FxHashMap<def_id::DefId, bool>,
     skip: bool,
@@ -2470,46 +2369,46 @@ impl<'a, 'tcx> Visitor<'tcx> for VarCollectorVisitor<'a, 'tcx> {
 
 const NEEDLESS_COLLECT_MSG: &str = "avoid using `collect()` when not needed";
 
-fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'a, 'tcx>) {
+fn check_needless_collect<'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'tcx>) {
     if_chain! {
-        if let ExprKind::MethodCall(ref method, _, ref args) = expr.kind;
-        if let ExprKind::MethodCall(ref chain_method, _, _) = args[0].kind;
+        if let ExprKind::MethodCall(ref method, _, ref args, _) = expr.kind;
+        if let ExprKind::MethodCall(ref chain_method, _, _, _) = args[0].kind;
         if chain_method.ident.name == sym!(collect) && match_trait_method(cx, &args[0], &paths::ITERATOR);
         if let Some(ref generic_args) = chain_method.args;
         if let Some(GenericArg::Type(ref ty)) = generic_args.args.get(0);
         then {
-            let ty = cx.tables.node_type(ty.hir_id);
+            let ty = cx.tables().node_type(ty.hir_id);
             if is_type_diagnostic_item(cx, ty, sym!(vec_type)) ||
                 is_type_diagnostic_item(cx, ty, sym!(vecdeque_type)) ||
                 match_type(cx, ty, &paths::BTREEMAP) ||
                 is_type_diagnostic_item(cx, ty, sym!(hashmap_type)) {
                 if method.ident.name == sym!(len) {
-                    let span = shorten_needless_collect_span(expr);
+                    let span = shorten_span(expr, sym!(collect));
                     span_lint_and_sugg(
                         cx,
                         NEEDLESS_COLLECT,
                         span,
                         NEEDLESS_COLLECT_MSG,
                         "replace with",
-                        ".count()".to_string(),
+                        "count()".to_string(),
                         Applicability::MachineApplicable,
                     );
                 }
                 if method.ident.name == sym!(is_empty) {
-                    let span = shorten_needless_collect_span(expr);
+                    let span = shorten_span(expr, sym!(iter));
                     span_lint_and_sugg(
                         cx,
                         NEEDLESS_COLLECT,
                         span,
                         NEEDLESS_COLLECT_MSG,
                         "replace with",
-                        ".next().is_none()".to_string(),
+                        "get(0).is_none()".to_string(),
                         Applicability::MachineApplicable,
                     );
                 }
                 if method.ident.name == sym!(contains) {
                     let contains_arg = snippet(cx, args[1].span, "??");
-                    let span = shorten_needless_collect_span(expr);
+                    let span = shorten_span(expr, sym!(collect));
                     span_lint_and_then(
                         cx,
                         NEEDLESS_COLLECT,
@@ -2525,7 +2424,7 @@ fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'a, '
                                 span,
                                 "replace with",
                                 format!(
-                                    ".any(|{}| x == {})",
+                                    "any(|{}| x == {})",
                                     arg, pred
                                 ),
                                 Applicability::MachineApplicable,
@@ -2538,13 +2437,13 @@ fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'a, '
     }
 }
 
-fn shorten_needless_collect_span(expr: &Expr<'_>) -> Span {
-    if_chain! {
-        if let ExprKind::MethodCall(_, _, ref args) = expr.kind;
-        if let ExprKind::MethodCall(_, ref span, _) = args[0].kind;
-        then {
-            return expr.span.with_lo(span.lo() - BytePos(1));
+fn shorten_span(expr: &Expr<'_>, target_fn_name: Symbol) -> Span {
+    let mut current_expr = expr;
+    while let ExprKind::MethodCall(ref path, ref span, ref args, _) = current_expr.kind {
+        if path.ident.name == target_fn_name {
+            return expr.span.with_lo(span.lo());
         }
+        current_expr = &args[0];
     }
     unreachable!()
 }

@@ -6,12 +6,13 @@ use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, DefKind, Res};
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::Mutability;
 use rustc_metadata::creader::LoadedMacro;
 use rustc_middle::ty;
 use rustc_mir::const_eval::is_min_const_fn;
 use rustc_span::hygiene::MacroKind;
+use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 
 use crate::clean::{self, GetDefId, ToSource, TypeKind};
@@ -37,7 +38,7 @@ type Attrs<'hir> = rustc_middle::ty::Attributes<'hir>;
 pub fn try_inline(
     cx: &DocContext<'_>,
     res: Res,
-    name: ast::Name,
+    name: Symbol,
     attrs: Option<Attrs<'_>>,
     visited: &mut FxHashSet<DefId>,
 ) -> Option<Vec<clean::Item>> {
@@ -277,7 +278,7 @@ fn build_type_alias_type(cx: &DocContext<'_>, did: DefId) -> Option<clean::Type>
     type_.def_id().and_then(|did| build_ty(cx, did))
 }
 
-pub fn build_ty(cx: &DocContext, did: DefId) -> Option<clean::Type> {
+pub fn build_ty(cx: &DocContext<'_>, did: DefId) -> Option<clean::Type> {
     match cx.tcx.def_kind(did) {
         DefKind::Struct | DefKind::Union | DefKind::Enum | DefKind::Const | DefKind::Static => {
             Some(cx.tcx.type_of(did).clean(cx))
@@ -453,11 +454,7 @@ fn build_module(cx: &DocContext<'_>, did: DefId, visited: &mut FxHashSet<DefId>)
                         name: None,
                         attrs: clean::Attributes::default(),
                         source: clean::Span::empty(),
-                        def_id: cx
-                            .tcx
-                            .hir()
-                            .local_def_id_from_node_id(ast::CRATE_NODE_ID)
-                            .to_def_id(),
+                        def_id: DefId::local(CRATE_DEF_INDEX),
                         visibility: clean::Public,
                         stability: None,
                         deprecation: None,
@@ -515,7 +512,7 @@ fn build_static(cx: &DocContext<'_>, did: DefId, mutable: bool) -> clean::Static
     }
 }
 
-fn build_macro(cx: &DocContext<'_>, did: DefId, name: ast::Name) -> clean::ItemEnum {
+fn build_macro(cx: &DocContext<'_>, did: DefId, name: Symbol) -> clean::ItemEnum {
     let imported_from = cx.tcx.original_crate_name(did.krate);
     match cx.enter_resolver(|r| r.cstore().load_macro_untracked(did, cx.sess())) {
         LoadedMacro::MacroDef(def, _) => {

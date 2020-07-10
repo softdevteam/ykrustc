@@ -279,13 +279,13 @@ impl EarlyLintPass for Write {
             if let (Some(fmt_str), expr) = self.check_tts(cx, &mac.args.inner_tokens(), true) {
                 if fmt_str.symbol == Symbol::intern("") {
                     let mut applicability = Applicability::MachineApplicable;
-                    let suggestion = expr.map_or_else(
-                        move || {
+                    let suggestion = match expr {
+                        Some(expr) => snippet_with_applicability(cx, expr.span, "v", &mut applicability),
+                        None => {
                             applicability = Applicability::HasPlaceholders;
                             Cow::Borrowed("v")
                         },
-                        move |expr| snippet_with_applicability(cx, expr.span, "v", &mut applicability),
-                    );
+                    };
 
                     span_lint_and_sugg(
                         cx,
@@ -352,8 +352,9 @@ impl Write {
         tts: &TokenStream,
         is_write: bool,
     ) -> (Option<StrLit>, Option<Expr>) {
-        use fmt_macros::{
-            AlignUnknown, ArgumentImplicitlyIs, ArgumentIs, ArgumentNamed, CountImplied, FormatSpec, Parser, Piece,
+        use rustc_parse_format::{
+            AlignUnknown, ArgumentImplicitlyIs, ArgumentIs, ArgumentNamed, CountImplied, FormatSpec, ParseMode, Parser,
+            Piece,
         };
         let tts = tts.clone();
 
@@ -376,7 +377,7 @@ impl Write {
         };
         let tmp = fmtstr.symbol.as_str();
         let mut args = vec![];
-        let mut fmt_parser = Parser::new(&tmp, None, Vec::new(), false);
+        let mut fmt_parser = Parser::new(&tmp, None, None, false, ParseMode::Format);
         while let Some(piece) = fmt_parser.next() {
             if !fmt_parser.errors.is_empty() {
                 return (None, expr);
@@ -483,8 +484,8 @@ fn check_newlines(fmtstr: &StrLit) -> bool {
     };
 
     match fmtstr.style {
-        StrStyle::Cooked => unescape::unescape_str(contents, &mut cb),
-        StrStyle::Raw(_) => unescape::unescape_raw_str(contents, &mut cb),
+        StrStyle::Cooked => unescape::unescape_literal(contents, unescape::Mode::Str, &mut cb),
+        StrStyle::Raw(_) => unescape::unescape_literal(contents, unescape::Mode::RawStr, &mut cb),
     }
 
     should_lint

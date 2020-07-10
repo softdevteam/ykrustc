@@ -100,10 +100,12 @@ impl<'tcx, T> UndoLogs<T> for InferCtxtUndoLogs<'tcx>
 where
     UndoLog<'tcx>: From<T>,
 {
+    #[inline]
     fn num_open_snapshots(&self) -> usize {
         self.num_open_snapshots
     }
 
+    #[inline]
     fn push(&mut self, undo: T) {
         if self.in_snapshot() {
             self.logs.push(undo.into())
@@ -195,10 +197,6 @@ impl<'tcx> InferCtxtUndoLogs<'tcx> {
         // Failures here may indicate a failure to follow a stack discipline.
         assert!(self.logs.len() >= snapshot.undo_len);
         assert!(self.num_open_snapshots > 0);
-    }
-
-    pub(crate) fn iter(&self) -> std::slice::Iter<'_, UndoLog<'tcx>> {
-        self.logs.iter()
     }
 }
 

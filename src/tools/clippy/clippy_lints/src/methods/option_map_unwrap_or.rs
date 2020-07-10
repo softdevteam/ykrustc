@@ -9,19 +9,19 @@ use rustc_middle::hir::map::Map;
 use rustc_span::source_map::Span;
 use rustc_span::symbol::Symbol;
 
-use super::OPTION_MAP_UNWRAP_OR;
+use super::MAP_UNWRAP_OR;
 
 /// lint use of `map().unwrap_or()` for `Option`s
-pub(super) fn lint<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
+pub(super) fn lint<'tcx>(
+    cx: &LateContext<'tcx>,
     expr: &rustc_hir::Expr<'_>,
     map_args: &'tcx [rustc_hir::Expr<'_>],
     unwrap_args: &'tcx [rustc_hir::Expr<'_>],
     map_span: Span,
 ) {
     // lint if the caller of `map()` is an `Option`
-    if is_type_diagnostic_item(cx, cx.tables.expr_ty(&map_args[0]), sym!(option_type)) {
-        if !is_copy(cx, cx.tables.expr_ty(&unwrap_args[1])) {
+    if is_type_diagnostic_item(cx, cx.tables().expr_ty(&map_args[0]), sym!(option_type)) {
+        if !is_copy(cx, cx.tables().expr_ty(&unwrap_args[1])) {
             // Do not lint if the `map` argument uses identifiers in the `map`
             // argument that are also used in the `unwrap_or` argument
 
@@ -62,11 +62,11 @@ pub(super) fn lint<'a, 'tcx>(
         };
         let msg = &format!(
             "called `map(f).unwrap_or({})` on an `Option` value. \
-             This can be done more directly by calling `{}` instead",
+            This can be done more directly by calling `{}` instead",
             arg, suggest
         );
 
-        span_lint_and_then(cx, OPTION_MAP_UNWRAP_OR, expr.span, msg, |diag| {
+        span_lint_and_then(cx, MAP_UNWRAP_OR, expr.span, msg, |diag| {
             let map_arg_span = map_args[1].span;
 
             let mut suggestion = vec![
@@ -87,7 +87,7 @@ pub(super) fn lint<'a, 'tcx>(
 }
 
 struct UnwrapVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
+    cx: &'a LateContext<'tcx>,
     identifiers: FxHashSet<Symbol>,
 }
 
@@ -105,7 +105,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UnwrapVisitor<'a, 'tcx> {
 }
 
 struct MapExprVisitor<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
+    cx: &'a LateContext<'tcx>,
     identifiers: FxHashSet<Symbol>,
     found_identifier: bool,
 }

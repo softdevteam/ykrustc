@@ -3,12 +3,13 @@ use crate::utils::{
     span_lint_and_sugg, walk_ptrs_ty,
 };
 use if_chain::if_chain;
-use rustc_ast::ast::{Name, UintTy};
+use rustc_ast::ast::UintTy;
 use rustc_errors::Applicability;
 use rustc_hir::{BinOpKind, BorrowKind, Expr, ExprKind, UnOp};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::Symbol;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for naive byte counts
@@ -34,13 +35,13 @@ declare_clippy_lint! {
 
 declare_lint_pass!(ByteCount => [NAIVE_BYTECOUNT]);
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ByteCount {
-    fn check_expr(&mut self, cx: &LateContext<'_, '_>, expr: &Expr<'_>) {
+impl<'tcx> LateLintPass<'tcx> for ByteCount {
+    fn check_expr(&mut self, cx: &LateContext<'_>, expr: &Expr<'_>) {
         if_chain! {
-            if let ExprKind::MethodCall(ref count, _, ref count_args) = expr.kind;
+            if let ExprKind::MethodCall(ref count, _, ref count_args, _) = expr.kind;
             if count.ident.name == sym!(count);
             if count_args.len() == 1;
-            if let ExprKind::MethodCall(ref filter, _, ref filter_args) = count_args[0].kind;
+            if let ExprKind::MethodCall(ref filter, _, ref filter_args, _) = count_args[0].kind;
             if filter.ident.name == sym!(filter);
             if filter_args.len() == 2;
             if let ExprKind::Closure(_, _, body_id, _, _) = filter_args[1].kind;
@@ -52,7 +53,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ByteCount {
                     if let ExprKind::Binary(ref op, ref l, ref r) = body.value.kind;
                     if op.node == BinOpKind::Eq;
                     if match_type(cx,
-                               walk_ptrs_ty(cx.tables.expr_ty(&filter_args[0])),
+                               walk_ptrs_ty(cx.tables().expr_ty(&filter_args[0])),
                                &paths::SLICE_ITER);
                     then {
                         let needle = match get_path_name(l) {
@@ -62,10 +63,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ByteCount {
                                 _ => { return; }
                             }
                         };
-                        if ty::Uint(UintTy::U8) != walk_ptrs_ty(cx.tables.expr_ty(needle)).kind {
+                        if ty::Uint(UintTy::U8) != walk_ptrs_ty(cx.tables().expr_ty(needle)).kind {
                             return;
                         }
-                        let haystack = if let ExprKind::MethodCall(ref path, _, ref args) =
+                        let haystack = if let ExprKind::MethodCall(ref path, _, ref args, _) =
                                 filter_args[0].kind {
                             let p = path.ident.name;
                             if (p == sym!(iter) || p == sym!(iter_mut)) && args.len() == 1 {
@@ -95,11 +96,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ByteCount {
     }
 }
 
-fn check_arg(name: Name, arg: Name, needle: &Expr<'_>) -> bool {
+fn check_arg(name: Symbol, arg: Symbol, needle: &Expr<'_>) -> bool {
     name == arg && !contains_name(name, needle)
 }
 
-fn get_path_name(expr: &Expr<'_>) -> Option<Name> {
+fn get_path_name(expr: &Expr<'_>) -> Option<Symbol> {
     match expr.kind {
         ExprKind::Box(ref e) | ExprKind::AddrOf(BorrowKind::Ref, _, ref e) | ExprKind::Unary(UnOp::UnDeref, ref e) => {
             get_path_name(e)

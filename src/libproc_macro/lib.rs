@@ -39,6 +39,7 @@ mod diagnostic;
 #[unstable(feature = "proc_macro_diagnostic", issue = "54140")]
 pub use diagnostic::{Diagnostic, Level, MultiSpan};
 
+use std::cmp::Ordering;
 use std::ops::{Bound, RangeBounds};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -155,6 +156,13 @@ impl fmt::Debug for TokenStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("TokenStream ")?;
         f.debug_list().entries(self.clone()).finish()
+    }
+}
+
+#[stable(feature = "proc_macro_token_stream_default", since = "1.45.0")]
+impl Default for TokenStream {
+    fn default() -> Self {
+        TokenStream::new()
     }
 }
 
@@ -412,6 +420,20 @@ pub struct LineColumn {
 impl !Send for LineColumn {}
 #[unstable(feature = "proc_macro_span", issue = "54725")]
 impl !Sync for LineColumn {}
+
+#[unstable(feature = "proc_macro_span", issue = "54725")]
+impl Ord for LineColumn {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.line.cmp(&other.line).then(self.column.cmp(&other.column))
+    }
+}
+
+#[unstable(feature = "proc_macro_span", issue = "54725")]
+impl PartialOrd for LineColumn {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// The source file of a given `Span`.
 #[unstable(feature = "proc_macro_span", issue = "54725")]
@@ -1134,7 +1156,6 @@ impl fmt::Display for Literal {
 #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
 impl fmt::Debug for Literal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // FIXME(eddyb) `Literal` should not expose internal `Debug` impls.
         self.0.fmt(f)
     }
 }
