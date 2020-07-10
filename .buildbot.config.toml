@@ -7,7 +7,7 @@ debug-assertions = true     # Turn on assertions in rustc.
 [build]
 docs = false
 extended = true
-tools = ["cargo", "rustfmt", "rustdoc"]
+tools = ["cargo", "rustdoc"]
 
 [llvm]
 assertions = true           # Turn on assertions in LLVM.
