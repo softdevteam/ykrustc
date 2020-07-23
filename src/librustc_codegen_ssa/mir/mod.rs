@@ -257,15 +257,6 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             .collect()
     };
 
-    // Serialise monomorphised local declarations to SIR.
-    if fx.sir_func_cx.is_some() {
-        let mut decls: Vec<ykpack::LocalDecl> = Vec::new();
-        for l in &fx.locals {
-            decls.push(sir::lower_local_ref(cx.tcx(), &bx, l));
-        }
-        fx.sir_func_cx.as_mut().unwrap().func.local_decls.extend(decls);
-    }
-
     // Apply debuginfo to the newly allocated locals.
     fx.debug_introduce_locals(&mut bx);
 
@@ -281,6 +272,18 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     for (bb, _) in rpo {
         visited.insert(bb.index());
         fx.codegen_block(bb);
+    }
+
+    // Serialise monomorphised local declarations to SIR.
+    // This has to happen after the blocks have been codegenned so that all of the
+    // `LocalRef::Operand`s have been fully resolved: they start `None` and are patched up during
+    // `codegen_rvalue_operand`.
+    if fx.sir_func_cx.is_some() {
+        let mut decls: Vec<ykpack::LocalDecl> = Vec::new();
+        for l in &fx.locals {
+            decls.push(sir::lower_local_ref(cx.tcx(), &bx, l));
+        }
+        fx.sir_func_cx.as_mut().unwrap().func.local_decls.extend(decls);
     }
 
     // Remove blocks that haven't been visited, or have no
