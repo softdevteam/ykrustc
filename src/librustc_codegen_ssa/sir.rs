@@ -1,4 +1,4 @@
-use crate::mir::{FunctionCx, LocalRef};
+use crate::mir::LocalRef;
 use crate::traits::BuilderMethods;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::AdtDef;
@@ -10,7 +10,6 @@ use std::convert::TryFrom;
 pub(crate) fn lower_local_ref<'a, 'l, 'tcx, Bx: BuilderMethods<'a, 'tcx>, V>(
     tcx: TyCtxt<'tcx>,
     bx: &Bx,
-    fx: &FunctionCx<'a, 'tcx, Bx>,
     decl: &'l LocalRef<'tcx, V>,
 ) -> ykpack::LocalDecl {
     let ty_layout = match decl {
@@ -39,17 +38,16 @@ pub(crate) fn lower_local_ref<'a, 'l, 'tcx, Bx: BuilderMethods<'a, 'tcx>, V>(
         }
     };
 
-    ykpack::LocalDecl { ty: lower_ty_and_layout(tcx, bx, fx, &ty_layout) }
+    ykpack::LocalDecl { ty: lower_ty_and_layout(tcx, bx, &ty_layout) }
 }
 
 fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     tcx: TyCtxt<'tcx>,
     bx: &Bx,
-    fx: &FunctionCx<'a, 'tcx, Bx>,
     ty_layout: &TyAndLayout<'tcx>,
 ) -> ykpack::TypeId {
     let sir_ty = match ty_layout.ty.kind {
-        ty::Adt(adt_def, ..) => lower_adt(tcx, bx, fx, adt_def, &ty_layout),
+        ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
         _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
     };
 
@@ -59,7 +57,6 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     tcx: TyCtxt<'tcx>,
     bx: &Bx,
-    fx: &FunctionCx<'a, 'tcx, Bx>,
     adt_def: &AdtDef,
     ty_layout: &TyAndLayout<'tcx>,
 ) -> ykpack::Ty {
@@ -75,7 +72,7 @@ fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                 let mut sir_offsets = Vec::new();
                 let mut sir_tys = Vec::new();
                 for (idx, offs) in offsets.iter().enumerate() {
-                    sir_tys.push(lower_ty_and_layout(tcx, bx, fx, &struct_layout.field(bx, idx)));
+                    sir_tys.push(lower_ty_and_layout(tcx, bx, &struct_layout.field(bx, idx)));
                     sir_offsets.push(offs.bytes());
                 }
 

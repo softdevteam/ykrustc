@@ -261,7 +261,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     if fx.sir_func_cx.is_some() {
         let mut decls: Vec<ykpack::LocalDecl> = Vec::new();
         for l in &fx.locals {
-            decls.push(sir::lower_local_ref(cx.tcx(), &bx, &fx, l));
+            decls.push(sir::lower_local_ref(cx.tcx(), &bx, l));
         }
         fx.sir_func_cx.as_mut().unwrap().func.local_decls.extend(decls);
     }
