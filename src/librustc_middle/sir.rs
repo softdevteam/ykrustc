@@ -5,13 +5,16 @@
 
 use crate::mir;
 use crate::ty::{self, Instance, Ty, TyCtxt};
+use indexmap::IndexMap;
 use rustc_ast::ast;
+use rustc_data_structures::fx::FxHasher;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_session::config::OutputType;
 use rustc_span::sym;
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::default::Default;
+use std::hash::BuildHasherDefault;
 use std::io;
 use ykpack;
 
@@ -76,12 +79,7 @@ pub struct SirFuncCx<'tcx> {
 }
 
 impl SirFuncCx<'tcx> {
-    pub fn new(
-        tcx: TyCtxt<'tcx>,
-        instance: &Instance<'tcx>,
-        num_blocks: usize,
-        num_locals: usize,
-    ) -> Self {
+    pub fn new(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>, mir: &mir::Body<'_>) -> Self {
         let mut flags = 0;
         for attr in tcx.get_attrs(instance.def_id()).iter() {
             if attr.check_name(sym::trace_head) {
@@ -98,17 +96,28 @@ impl SirFuncCx<'tcx> {
                 stmts: Default::default(),
                 term: ykpack::Terminator::Unreachable,
             };
-            num_blocks
+            mir.basic_blocks().len()
         ];
 
         let trace_inputs_defid = tcx
             .get_lang_items(LOCAL_CRATE)
             .yk_trace_inputs()
-            .expect("couldn't find software trace recorder function");
+            .expect("couldn't find trace inputs lang item");
+
+        // FIXME get rid of the num_locals field.
+        let num_locals = mir.local_decls.len();
+        let local_decls = Vec::with_capacity(num_locals);
 
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name.as_str());
         Self {
-            func: ykpack::Body { symbol_name, blocks, flags, num_locals, trace_inputs_local: None },
+            func: ykpack::Body {
+                symbol_name,
+                blocks,
+                flags,
+                num_locals,
+                trace_inputs_local: None,
+                local_decls,
+            },
             tcx,
             trace_inputs_defid,
         }
@@ -322,5 +331,29 @@ impl SirFuncCx<'tcx> {
             Ok(val) => ykpack::Constant::Bool(val),
             Err(e) => panic!("Could not lower scalar (bool) to u8: {}", e),
         }
+    }
+}
+
+#[derive(Default)]
+pub struct SirTypes {
+    /// Maps types to their index. Ordered by insertion via `IndexMap`.
+    pub map: IndexMap<ykpack::Ty, ykpack::TyIndex, BuildHasherDefault<FxHasher>>,
+    /// The next available type index.
+    next_idx: ykpack::TyIndex,
+}
+
+impl SirTypes {
+    /// Get the index of a type. If this is the first time we have seen this type, a new index is
+    /// allocated and returned.
+    ///
+    /// Note that the index is only unique within the scope of the crate currently being compiled.
+    /// To make a globally unique type index, pair the index with crate hash.
+    pub fn index(&mut self, t: ykpack::Ty) -> ykpack::TyIndex {
+        let next_idx = &mut self.next_idx;
+        *self.map.entry(t).or_insert_with(|| {
+            let idx = *next_idx;
+            *next_idx += 1;
+            idx
+        })
     }
 }
