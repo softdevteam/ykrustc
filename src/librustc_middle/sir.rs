@@ -139,7 +139,7 @@ impl SirFuncCx<'tcx> {
     }
 
     /// Converts a MIR statement to SIR, appending the result to `bb`.
-    pub fn codegen_statement(&mut self, bb: ykpack::BasicBlockIndex, stmt: &mir::Statement<'_>) {
+    pub fn lower_statement(&mut self, bb: ykpack::BasicBlockIndex, stmt: &mir::Statement<'_>) {
         match stmt.kind {
             mir::StatementKind::Assign(box (ref place, ref rvalue)) => {
                 let assign = self.lower_assign_stmt(place, rvalue);
