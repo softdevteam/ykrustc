@@ -1,5 +1,6 @@
 use crate::mir::LocalRef;
 use crate::traits::BuilderMethods;
+use rustc_ast::ast::{IntTy, UintTy};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::AdtDef;
 use rustc_middle::ty::{self, layout::TyAndLayout, TyCtxt};
@@ -47,11 +48,35 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     ty_layout: &TyAndLayout<'tcx>,
 ) -> ykpack::TypeId {
     let sir_ty = match ty_layout.ty.kind {
+        ty::Int(si) => lower_signed_int(si),
+        ty::Uint(ui) => lower_unsigned_int(ui),
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
         _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
     };
 
     (tcx.crate_hash(LOCAL_CRATE).as_u64(), tcx.sir_types.borrow_mut().index(sir_ty))
+}
+
+fn lower_signed_int(si: IntTy) -> ykpack::Ty {
+    match si {
+        IntTy::Isize => ykpack::Ty::SignedInt(ykpack::SignedIntTy::Isize),
+        IntTy::I8 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I8),
+        IntTy::I16 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I16),
+        IntTy::I32 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I32),
+        IntTy::I64 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I64),
+        IntTy::I128 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I128),
+    }
+}
+
+fn lower_unsigned_int(ui: UintTy) -> ykpack::Ty {
+    match ui {
+        UintTy::Usize => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::Usize),
+        UintTy::U8 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U8),
+        UintTy::U16 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U16),
+        UintTy::U32 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U32),
+        UintTy::U64 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U64),
+        UintTy::U128 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U128),
+    }
 }
 
 fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
