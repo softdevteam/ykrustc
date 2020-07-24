@@ -322,9 +322,9 @@
 #![feature(unsafe_block_in_unsafe_fn)]
 #![feature(untagged_unions)]
 #![feature(unwind_attributes)]
-#![feature(yk_swt)]
 #![feature(vec_into_raw_parts)]
 #![feature(wake_trait)]
+#![feature(yk)]
 // NB: the above list is sorted to minimize merge conflicts.
 #![default_lib_allocator]
 
