@@ -181,6 +181,7 @@ impl SirFuncCx<'tcx> {
             mir::Rvalue::CheckedBinaryOp(op, opnd1, opnd2) => {
                 self.lower_binop(*op, opnd1, opnd2, true)
             }
+            mir::Rvalue::Ref(_, _, place) => self.lower_ref(place),
             _ => ykpack::Rvalue::Unimplemented(format!("unimplemented rvalue: {:?}", rvalue)),
         }
     }
@@ -196,6 +197,7 @@ impl SirFuncCx<'tcx> {
     pub fn lower_projection(&self, pe: &mir::PlaceElem<'_>) -> ykpack::Projection {
         match pe {
             mir::ProjectionElem::Field(field, ..) => ykpack::Projection::Field(field.as_u32()),
+            mir::ProjectionElem::Deref => ykpack::Projection::Deref,
             _ => ykpack::Projection::Unimplemented(format!("{:?}", pe)),
         }
     }
@@ -328,6 +330,11 @@ impl SirFuncCx<'tcx> {
             Ok(val) => ykpack::Constant::Bool(val),
             Err(e) => panic!("Could not lower scalar (bool) to u8: {}", e),
         }
+    }
+
+    fn lower_ref(&self, place: &mir::Place<'_>) -> ykpack::Rvalue {
+        let sir_place = self.lower_place(place);
+        ykpack::Rvalue::Ref(sir_place)
     }
 }
 
