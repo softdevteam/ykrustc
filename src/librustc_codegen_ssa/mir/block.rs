@@ -1040,7 +1040,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             bx = self.codegen_statement(bx, bb, statement);
 
             if let Some(fcx) = self.sir_func_cx.as_mut() {
-                fcx.codegen_statement(bb.as_u32(), statement);
+                fcx.lower_statement(bb.as_u32(), statement);
             }
         }
 

@@ -104,17 +104,14 @@ impl SirFuncCx<'tcx> {
             .yk_trace_inputs()
             .expect("couldn't find trace inputs lang item");
 
-        // FIXME get rid of the num_locals field.
-        let num_locals = mir.local_decls.len();
-        let local_decls = Vec::with_capacity(num_locals);
-
+        let local_decls = Vec::with_capacity(mir.local_decls.len());
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name.as_str());
+
         Self {
             func: ykpack::Body {
                 symbol_name,
                 blocks,
                 flags,
-                num_locals,
                 trace_inputs_local: None,
                 local_decls,
             },
@@ -142,7 +139,7 @@ impl SirFuncCx<'tcx> {
     }
 
     /// Converts a MIR statement to SIR, appending the result to `bb`.
-    pub fn codegen_statement(&mut self, bb: ykpack::BasicBlockIndex, stmt: &mir::Statement<'_>) {
+    pub fn lower_statement(&mut self, bb: ykpack::BasicBlockIndex, stmt: &mir::Statement<'_>) {
         match stmt.kind {
             mir::StatementKind::Assign(box (ref place, ref rvalue)) => {
                 let assign = self.lower_assign_stmt(place, rvalue);
