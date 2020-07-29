@@ -13,7 +13,7 @@ use rustc_middle::ty::adjustment::{
 };
 use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
-use rustc_span::symbol::Ident;
+use rustc_span::symbol::{sym, Ident};
 use rustc_span::Span;
 use rustc_target::spec::abi;
 use rustc_trait_selection::autoderef::Autoderef;
@@ -192,9 +192,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) -> Option<(Option<Adjustment<'tcx>>, MethodCallee<'tcx>)> {
         // Try the options that are least restrictive on the caller first.
         for &(opt_trait_def_id, method_name, borrow) in &[
-            (self.tcx.lang_items().fn_trait(), Ident::from_str("call"), true),
-            (self.tcx.lang_items().fn_mut_trait(), Ident::from_str("call_mut"), true),
-            (self.tcx.lang_items().fn_once_trait(), Ident::from_str("call_once"), false),
+            (self.tcx.lang_items().fn_trait(), Ident::with_dummy_span(sym::call), true),
+            (self.tcx.lang_items().fn_mut_trait(), Ident::with_dummy_span(sym::call_mut), true),
+            (self.tcx.lang_items().fn_once_trait(), Ident::with_dummy_span(sym::call_once), false),
         ] {
             let trait_def_id = match opt_trait_def_id {
                 Some(def_id) => def_id,
@@ -337,7 +337,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let mut inner_callee_path = None;
                     let def = match callee.kind {
                         hir::ExprKind::Path(ref qpath) => {
-                            self.tables.borrow().qpath_res(qpath, callee.hir_id)
+                            self.typeck_results.borrow().qpath_res(qpath, callee.hir_id)
                         }
                         hir::ExprKind::Call(ref inner_callee, _) => {
                             // If the call spans more than one line and the callee kind is
@@ -355,7 +355,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             }
                             if let hir::ExprKind::Path(ref inner_qpath) = inner_callee.kind {
                                 inner_callee_path = Some(inner_qpath);
-                                self.tables.borrow().qpath_res(inner_qpath, inner_callee.hir_id)
+                                self.typeck_results
+                                    .borrow()
+                                    .qpath_res(inner_qpath, inner_callee.hir_id)
                             } else {
                                 Res::Err
                             }

@@ -1,8 +1,10 @@
 use super::ty::AllowPlus;
 use super::{BlockMode, Parser, PathStyle, SemiColonMode, SeqSep, TokenExpectType, TokenType};
 
-use rustc_ast::ast::{self, BinOpKind, BindingMode, BlockCheckMode, Expr, ExprKind, Item, Param};
-use rustc_ast::ast::{AttrVec, ItemKind, Mutability, Pat, PatKind, PathSegment, QSelf, Ty, TyKind};
+use rustc_ast::ast::{
+    self, AngleBracketedArgs, AttrVec, BinOpKind, BindingMode, BlockCheckMode, Expr, ExprKind,
+    Item, ItemKind, Mutability, Param, Pat, PatKind, PathSegment, QSelf, Ty, TyKind,
+};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Lit, LitKind, TokenKind};
 use rustc_ast::util::parser::AssocOp;
@@ -346,13 +348,16 @@ impl<'a> Parser<'a> {
             if allow_unstable {
                 // Give extra information about type ascription only if it's a nightly compiler.
                 err.note(
-                    "`#![feature(type_ascription)]` lets you annotate an expression with a \
-                          type: `<expr>: <type>`",
+                    "`#![feature(type_ascription)]` lets you annotate an expression with a type: \
+                     `<expr>: <type>`",
                 );
-                err.note(
-                    "see issue #23416 <https://github.com/rust-lang/rust/issues/23416> \
-                     for more information",
-                );
+                if !likely_path {
+                    // Avoid giving too much info when it was likely an unrelated typo.
+                    err.note(
+                        "see issue #23416 <https://github.com/rust-lang/rust/issues/23416> \
+                        for more information",
+                    );
+                }
             }
         }
     }
@@ -483,6 +488,57 @@ impl<'a> Parser<'a> {
             return true;
         }
         false
+    }
+
+    /// Check if a method call with an intended turbofish has been written without surrounding
+    /// angle brackets.
+    pub(super) fn check_turbofish_missing_angle_brackets(&mut self, segment: &mut PathSegment) {
+        if token::ModSep == self.token.kind && segment.args.is_none() {
+            let snapshot = self.clone();
+            self.bump();
+            let lo = self.token.span;
+            match self.parse_angle_args() {
+                Ok(args) => {
+                    let span = lo.to(self.prev_token.span);
+                    // Detect trailing `>` like in `x.collect::Vec<_>>()`.
+                    let mut trailing_span = self.prev_token.span.shrink_to_hi();
+                    while self.token.kind == token::BinOp(token::Shr)
+                        || self.token.kind == token::Gt
+                    {
+                        trailing_span = trailing_span.to(self.token.span);
+                        self.bump();
+                    }
+                    if self.token.kind == token::OpenDelim(token::Paren) {
+                        // Recover from bad turbofish: `foo.collect::Vec<_>()`.
+                        let args = AngleBracketedArgs { args, span }.into();
+                        segment.args = args;
+
+                        self.struct_span_err(
+                            span,
+                            "generic parameters without surrounding angle brackets",
+                        )
+                        .multipart_suggestion(
+                            "surround the type parameters with angle brackets",
+                            vec![
+                                (span.shrink_to_lo(), "<".to_string()),
+                                (trailing_span, ">".to_string()),
+                            ],
+                            Applicability::MachineApplicable,
+                        )
+                        .emit();
+                    } else {
+                        // This doesn't look like an invalid turbofish, can't recover parse state.
+                        *self = snapshot;
+                    }
+                }
+                Err(mut err) => {
+                    // We could't parse generic parameters, unlikely to be a turbofish. Rely on
+                    // generic parse error instead.
+                    err.cancel();
+                    *self = snapshot;
+                }
+            }
+        }
     }
 
     /// Check to see if a pair of chained operators looks like an attempt at chained comparison,
@@ -1161,8 +1217,10 @@ impl<'a> Parser<'a> {
             } &&
             !self.token.is_reserved_ident() &&           // v `foo:bar(baz)`
             self.look_ahead(1, |t| t == &token::OpenDelim(token::Paren))
-            || self.look_ahead(1, |t| t == &token::Lt) &&     // `foo:bar<baz`
-            self.look_ahead(2, |t| t.is_ident())
+            || self.look_ahead(1, |t| t == &token::OpenDelim(token::Brace)) // `foo:bar {`
+            || self.look_ahead(1, |t| t == &token::Colon) &&     // `foo:bar::<baz`
+            self.look_ahead(2, |t| t == &token::Lt) &&
+            self.look_ahead(3, |t| t.is_ident())
             || self.look_ahead(1, |t| t == &token::Colon) &&  // `foo:bar:baz`
             self.look_ahead(2, |t| t.is_ident())
             || self.look_ahead(1, |t| t == &token::ModSep)

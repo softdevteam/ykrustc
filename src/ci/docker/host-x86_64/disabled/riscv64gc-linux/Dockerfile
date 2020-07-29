@@ -40,9 +40,9 @@ RUN curl https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.6.16.tar.xz | tar 
     cp linux.config linux-5.6.16/.config && \
     cd /build/linux-5.6.16 && \
     make olddefconfig && \
-    make -j$(nproc) vmlinux
-RUN cp linux-5.6.16/vmlinux /tmp
-RUN rm -rf linux-5.6.16
+    make -j$(nproc) vmlinux && \
+    cp vmlinux /tmp && \
+    rm -rf linux-5.6.16
 
 # Compile an instance of busybox as this provides a lightweight system and init
 # binary which we will boot into. Only trick here is configuring busybox to
@@ -97,6 +97,6 @@ COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh
 
 ENV RUST_CONFIGURE_ARGS --qemu-riscv64-rootfs=/tmp/rootfs
-ENV SCRIPT python3 ../x.py test --target riscv64gc-unknown-linux-gnu
+ENV SCRIPT python3 ../x.py --stage 2 test --target riscv64gc-unknown-linux-gnu
 
 ENV NO_CHANGE_USER=1

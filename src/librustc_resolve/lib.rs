@@ -193,11 +193,11 @@ enum ResolutionError<'a> {
     /// Error E0409: variable `{}` is bound in inconsistent ways within the same match arm.
     VariableBoundWithDifferentMode(Symbol, Span),
     /// Error E0415: identifier is bound more than once in this parameter list.
-    IdentifierBoundMoreThanOnceInParameterList(&'a str),
+    IdentifierBoundMoreThanOnceInParameterList(Symbol),
     /// Error E0416: identifier is bound more than once in the same pattern.
-    IdentifierBoundMoreThanOnceInSamePattern(&'a str),
+    IdentifierBoundMoreThanOnceInSamePattern(Symbol),
     /// Error E0426: use of undeclared label.
-    UndeclaredLabel { name: &'a str, suggestion: Option<LabelSuggestion> },
+    UndeclaredLabel { name: Symbol, suggestion: Option<LabelSuggestion> },
     /// Error E0429: `self` imports are only allowed within a `{ }` list.
     SelfImportsOnlyAllowedWithin { root: bool, span_with_rename: Span },
     /// Error E0430: `self` import can only appear once in the list.
@@ -211,13 +211,17 @@ enum ResolutionError<'a> {
     /// Error E0435: attempt to use a non-constant value in a constant.
     AttemptToUseNonConstantValueInConstant,
     /// Error E0530: `X` bindings cannot shadow `Y`s.
-    BindingShadowsSomethingUnacceptable(&'a str, Symbol, &'a NameBinding<'a>),
+    BindingShadowsSomethingUnacceptable(&'static str, Symbol, &'a NameBinding<'a>),
     /// Error E0128: type parameters with a default cannot use forward-declared identifiers.
     ForwardDeclaredTyParam, // FIXME(const_generics:defaults)
+    /// ERROR E0770: the type of const parameters must not depend on other generic parameters.
+    ParamInTyOfConstParam(Symbol),
+    /// constant values inside of type parameter defaults must not depend on generic parameters.
+    ParamInAnonConstInTyDefault(Symbol),
     /// Error E0735: type parameters with a default cannot use `Self`
     SelfInTyParamDefault,
     /// Error E0767: use of unreachable label
-    UnreachableLabel { name: &'a str, definition_span: Span, suggestion: Option<LabelSuggestion> },
+    UnreachableLabel { name: Symbol, definition_span: Span, suggestion: Option<LabelSuggestion> },
 }
 
 enum VisResolutionError<'a> {
@@ -432,7 +436,7 @@ impl ModuleKind {
 ///
 /// Multiple bindings in the same module can have the same key (in a valid
 /// program) if all but one of them come from glob imports.
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 struct BindingKey {
     /// The identifier for the binding, aways the `normalize_to_macros_2_0` version of the
     /// identifier.
@@ -867,7 +871,7 @@ pub struct Resolver<'a> {
     last_import_segment: bool,
     /// This binding should be ignored during in-module resolution, so that we don't get
     /// "self-confirming" import resolutions during import validation.
-    blacklisted_binding: Option<&'a NameBinding<'a>>,
+    unusable_binding: Option<&'a NameBinding<'a>>,
 
     /// The idents for the primitive types.
     primitive_type_table: PrimitiveTypeTable,
@@ -1266,7 +1270,7 @@ impl<'a> Resolver<'a> {
             indeterminate_imports: Vec::new(),
 
             last_import_segment: false,
-            blacklisted_binding: None,
+            unusable_binding: None,
 
             primitive_type_table: PrimitiveTypeTable::new(),
 
@@ -1986,6 +1990,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_crate_root(&mut self, ident: Ident) -> Module<'a> {
+        debug!("resolve_crate_root({:?})", ident);
         let mut ctxt = ident.span.ctxt();
         let mark = if ident.name == kw::DollarCrate {
             // When resolving `$crate` from a `macro_rules!` invoked in a `macro`,
@@ -1995,6 +2000,10 @@ impl<'a> Resolver<'a> {
             // definitions actually produced by `macro` and `macro` definitions produced by
             // `macro_rules!`, but at least such configurations are not stable yet.
             ctxt = ctxt.normalize_to_macro_rules();
+            debug!(
+                "resolve_crate_root: marks={:?}",
+                ctxt.marks().into_iter().map(|(i, t)| (i.expn_data(), t)).collect::<Vec<_>>()
+            );
             let mut iter = ctxt.marks().into_iter().rev().peekable();
             let mut result = None;
             // Find the last opaque mark from the end if it exists.
@@ -2006,6 +2015,11 @@ impl<'a> Resolver<'a> {
                     break;
                 }
             }
+            debug!(
+                "resolve_crate_root: found opaque mark {:?} {:?}",
+                result,
+                result.map(|r| r.expn_data())
+            );
             // Then find the last semi-transparent mark from the end if it exists.
             for (mark, transparency) in iter {
                 if transparency == Transparency::SemiTransparent {
@@ -2014,16 +2028,36 @@ impl<'a> Resolver<'a> {
                     break;
                 }
             }
+            debug!(
+                "resolve_crate_root: found semi-transparent mark {:?} {:?}",
+                result,
+                result.map(|r| r.expn_data())
+            );
             result
         } else {
+            debug!("resolve_crate_root: not DollarCrate");
             ctxt = ctxt.normalize_to_macros_2_0();
             ctxt.adjust(ExpnId::root())
         };
         let module = match mark {
             Some(def) => self.macro_def_scope(def),
-            None => return self.graph_root,
+            None => {
+                debug!(
+                    "resolve_crate_root({:?}): found no mark (ident.span = {:?})",
+                    ident, ident.span
+                );
+                return self.graph_root;
+            }
         };
-        self.get_module(DefId { index: CRATE_DEF_INDEX, ..module.normal_ancestor_id })
+        let module = self.get_module(DefId { index: CRATE_DEF_INDEX, ..module.normal_ancestor_id });
+        debug!(
+            "resolve_crate_root({:?}): got module {:?} ({:?}) (ident.span = {:?})",
+            ident,
+            module,
+            module.kind.name(),
+            ident.span
+        );
+        module
     }
 
     fn resolve_self(&mut self, ctxt: &mut SyntaxContext, module: Module<'a>) -> Module<'a> {
@@ -2480,6 +2514,12 @@ impl<'a> Resolver<'a> {
                             }
                             return Res::Err;
                         }
+                        ConstParamTyRibKind => {
+                            if record_used {
+                                self.report_error(span, ParamInTyOfConstParam(rib_ident.name));
+                            }
+                            return Res::Err;
+                        }
                     }
                 }
                 if let Some(res_err) = res_err {
@@ -2488,21 +2528,52 @@ impl<'a> Resolver<'a> {
                 }
             }
             Res::Def(DefKind::TyParam, _) | Res::SelfTy(..) => {
+                let mut in_ty_param_default = false;
                 for rib in ribs {
                     let has_generic_params = match rib.kind {
                         NormalRibKind
                         | ClosureOrAsyncRibKind
                         | AssocItemRibKind
                         | ModuleRibKind(..)
-                        | MacroDefinition(..)
-                        | ForwardTyParamBanRibKind
-                        | ConstantItemRibKind => {
+                        | MacroDefinition(..) => {
                             // Nothing to do. Continue.
                             continue;
                         }
+
+                        // We only forbid constant items if we are inside of type defaults,
+                        // for example `struct Foo<T, U = [u8; std::mem::size_of::<T>()]>`
+                        ForwardTyParamBanRibKind => {
+                            in_ty_param_default = true;
+                            continue;
+                        }
+                        ConstantItemRibKind => {
+                            if in_ty_param_default {
+                                if record_used {
+                                    self.report_error(
+                                        span,
+                                        ResolutionError::ParamInAnonConstInTyDefault(
+                                            rib_ident.name,
+                                        ),
+                                    );
+                                }
+                                return Res::Err;
+                            } else {
+                                continue;
+                            }
+                        }
+
                         // This was an attempt to use a type parameter outside its scope.
                         ItemRibKind(has_generic_params) => has_generic_params,
                         FnItemRibKind => HasGenericParams::Yes,
+                        ConstParamTyRibKind => {
+                            if record_used {
+                                self.report_error(
+                                    span,
+                                    ResolutionError::ParamInTyOfConstParam(rib_ident.name),
+                                );
+                            }
+                            return Res::Err;
+                        }
                     };
 
                     if record_used {
@@ -2525,11 +2596,49 @@ impl<'a> Resolver<'a> {
                     // (spuriously) conflicting with the const param.
                     ribs.next();
                 }
+
+                let mut in_ty_param_default = false;
                 for rib in ribs {
                     let has_generic_params = match rib.kind {
+                        NormalRibKind
+                        | ClosureOrAsyncRibKind
+                        | AssocItemRibKind
+                        | ModuleRibKind(..)
+                        | MacroDefinition(..) => continue,
+
+                        // We only forbid constant items if we are inside of type defaults,
+                        // for example `struct Foo<T, U = [u8; std::mem::size_of::<T>()]>`
+                        ForwardTyParamBanRibKind => {
+                            in_ty_param_default = true;
+                            continue;
+                        }
+                        ConstantItemRibKind => {
+                            if in_ty_param_default {
+                                if record_used {
+                                    self.report_error(
+                                        span,
+                                        ResolutionError::ParamInAnonConstInTyDefault(
+                                            rib_ident.name,
+                                        ),
+                                    );
+                                }
+                                return Res::Err;
+                            } else {
+                                continue;
+                            }
+                        }
+
                         ItemRibKind(has_generic_params) => has_generic_params,
                         FnItemRibKind => HasGenericParams::Yes,
-                        _ => continue,
+                        ConstParamTyRibKind => {
+                            if record_used {
+                                self.report_error(
+                                    span,
+                                    ResolutionError::ParamInTyOfConstParam(rib_ident.name),
+                                );
+                            }
+                            return Res::Err;
+                        }
                     };
 
                     // This was an attempt to use a const parameter outside its scope.
@@ -2925,7 +3034,7 @@ impl<'a> Resolver<'a> {
                 let crate_id = if !speculative {
                     self.crate_loader.process_path_extern(ident.name, ident.span)
                 } else {
-                    self.crate_loader.maybe_process_path_extern(ident.name, ident.span)?
+                    self.crate_loader.maybe_process_path_extern(ident.name)?
                 };
                 let crate_root = self.get_module(DefId { krate: crate_id, index: CRATE_DEF_INDEX });
                 Some(
@@ -2946,7 +3055,7 @@ impl<'a> Resolver<'a> {
         span: Span,
         path_str: &str,
         ns: Namespace,
-        module_id: LocalDefId,
+        module_id: DefId,
     ) -> Result<(ast::Path, Res), ()> {
         let path = if path_str.starts_with("::") {
             ast::Path {
@@ -2966,7 +3075,7 @@ impl<'a> Resolver<'a> {
                     .collect(),
             }
         };
-        let module = self.module_map.get(&module_id).copied().unwrap_or(self.graph_root);
+        let module = self.get_module(module_id);
         let parent_scope = &ParentScope::module(module);
         let res = self.resolve_ast_path(&path, ns, parent_scope).map_err(|_| ())?;
         Ok((path, res))
@@ -3102,6 +3211,6 @@ impl CrateLint {
     }
 }
 
-pub fn provide(providers: &mut Providers<'_>) {
+pub fn provide(providers: &mut Providers) {
     late::lifetimes::provide(providers);
 }

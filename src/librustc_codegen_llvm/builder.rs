@@ -155,7 +155,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         }
     }
 
-    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName, bbidx: usize) {
+    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName<'_>, bbidx: usize) {
         if !self.tcx.sess.opts.cg.tracer.sir_labels() {
             // We are not in hardware tracing mode.
             return;
@@ -171,8 +171,8 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         if self.tcx.sess.opts.test {
             let entry_fn = self.tcx.entry_fn(LOCAL_CRATE).unwrap().0.to_def_id();
             let entry_inst = Instance::mono(self.tcx, entry_fn);
-            let entry_sym = &*self.tcx.symbol_name(entry_inst).name.as_str();
-            if sym.name.as_str() == entry_sym {
+            let entry_sym = &*self.tcx.symbol_name(entry_inst).name;
+            if sym.name == entry_sym {
                 return;
             }
         }
@@ -180,7 +180,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         if fname == "core::intrinsics::drop_in_place"
             || fname == "std::intrinsics::drop_in_place"
             || fname == "ptr::drop_in_place"
-            || sym.name.as_str() == "main"
+            || sym.name == "main"
         {
             // Generating labels for these functions results in segfaults.
             return;
@@ -717,7 +717,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         // `nontrapping-fptoint` target feature is activated. We'll use those if
         // they are available.
         if self.sess().target.target.arch == "wasm32"
-            && self.sess().target_features.contains(&sym::nontrapping_fptoint)
+            && self.sess().target_features.contains(&sym::nontrapping_dash_fptoint)
         {
             let src_ty = self.cx.val_ty(val);
             let float_width = self.cx.float_width(src_ty);
@@ -742,7 +742,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         // `nontrapping-fptoint` target feature is activated. We'll use those if
         // they are available.
         if self.sess().target.target.arch == "wasm32"
-            && self.sess().target_features.contains(&sym::nontrapping_fptoint)
+            && self.sess().target_features.contains(&sym::nontrapping_dash_fptoint)
         {
             let src_ty = self.cx.val_ty(val);
             let float_width = self.cx.float_width(src_ty);
@@ -1119,7 +1119,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
             fn_name, hash, num_counters, index
         );
 
-        let llfn = unsafe { llvm::LLVMRustGetInstrprofIncrementIntrinsic(self.cx().llmod) };
+        let llfn = unsafe { llvm::LLVMRustGetInstrProfIncrementIntrinsic(self.cx().llmod) };
         let args = &[fn_name, hash, num_counters, index];
         let args = self.check_call("call", llfn, args);
 
@@ -1389,7 +1389,12 @@ impl Builder<'a, 'll, 'tcx> {
         self.call(lifetime_intrinsic, &[self.cx.const_u64(size), ptr], None);
     }
 
-    fn phi(&mut self, ty: &'ll Type, vals: &[&'ll Value], bbs: &[&'ll BasicBlock]) -> &'ll Value {
+    pub(crate) fn phi(
+        &mut self,
+        ty: &'ll Type,
+        vals: &[&'ll Value],
+        bbs: &[&'ll BasicBlock],
+    ) -> &'ll Value {
         assert_eq!(vals.len(), bbs.len());
         let phi = unsafe { llvm::LLVMBuildPhi(self.llbuilder, ty, UNNAMED) };
         unsafe {

@@ -173,6 +173,8 @@ crate struct LifetimeContext<'a, 'tcx> {
     /// Used to disallow the use of in-band lifetimes in `fn` or `Fn` syntax.
     is_in_fn_syntax: bool,
 
+    is_in_const_generic: bool,
+
     /// List of labels in the function/method currently under analysis.
     labels_in_fn: Vec<Ident>,
 
@@ -278,7 +280,7 @@ type ScopeRef<'a> = &'a Scope<'a>;
 
 const ROOT_SCOPE: ScopeRef<'static> = &Scope::Root;
 
-pub fn provide(providers: &mut ty::query::Providers<'_>) {
+pub fn provide(providers: &mut ty::query::Providers) {
     *providers = ty::query::Providers {
         resolve_lifetimes,
 
@@ -333,6 +335,7 @@ fn krate(tcx: TyCtxt<'_>) -> NamedRegionMap {
             scope: ROOT_SCOPE,
             trait_ref_hack: false,
             is_in_fn_syntax: false,
+            is_in_const_generic: false,
             labels_in_fn: vec![],
             xcrate_object_lifetime_defaults: Default::default(),
             lifetime_uses: &mut Default::default(),
@@ -828,6 +831,10 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
             self.insert_lifetime(lifetime_ref, Region::Static);
             return;
         }
+        if self.is_in_const_generic && lifetime_ref.name != LifetimeName::Error {
+            self.emit_non_static_lt_in_const_generic_error(lifetime_ref);
+            return;
+        }
         self.resolve_lifetime_ref(lifetime_ref);
     }
 
@@ -860,8 +867,11 @@ impl<'a, 'tcx> Visitor<'tcx> for LifetimeContext<'a, 'tcx> {
                     }
                 }
                 GenericParamKind::Const { ref ty, .. } => {
+                    let was_in_const_generic = self.is_in_const_generic;
+                    self.is_in_const_generic = true;
                     walk_list!(self, visit_param_bound, param.bounds);
                     self.visit_ty(&ty);
+                    self.is_in_const_generic = was_in_const_generic;
                 }
             }
         }
@@ -1288,7 +1298,10 @@ fn object_lifetime_defaults_for_item(
             }
             GenericParamKind::Const { .. } => {
                 // Generic consts don't impose any constraints.
-                None
+                //
+                // We still store a dummy value here to allow generic parameters
+                // in an arbitrary order.
+                Some(Set1::Empty)
             }
         })
         .collect()
@@ -1317,6 +1330,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
             scope: &wrap_scope,
             trait_ref_hack: self.trait_ref_hack,
             is_in_fn_syntax: self.is_in_fn_syntax,
+            is_in_const_generic: self.is_in_const_generic,
             labels_in_fn,
             xcrate_object_lifetime_defaults,
             lifetime_uses,
@@ -2122,7 +2136,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
                         self.impl_self
                     {
                         match path.res {
-                            // Whitelist the types that unambiguously always
+                            // Permit the types that unambiguously always
                             // result in the same type constructor being used
                             // (it can't differ between `Self` and `self`).
                             Res::Def(DefKind::Struct | DefKind::Union | DefKind::Enum, _)
@@ -2364,7 +2378,7 @@ impl<'a, 'tcx> LifetimeContext<'a, 'tcx> {
         if let Some(params) = error {
             // If there's no lifetime available, suggest `'static`.
             if self.report_elision_failure(&mut err, params) && lifetime_names.is_empty() {
-                lifetime_names.insert(Ident::from_str("'static"));
+                lifetime_names.insert(Ident::with_dummy_span(kw::StaticLifetime));
             }
         }
         self.add_missing_lifetime_specifiers_label(

@@ -168,7 +168,7 @@ fn report_bin_hex_error(
             repr_str, val, t, actually, t
         ));
         if let Some(sugg_ty) =
-            get_type_suggestion(&cx.tables().node_type(expr.hir_id), val, negative)
+            get_type_suggestion(&cx.typeck_results().node_type(expr.hir_id), val, negative)
         {
             if let Some(pos) = repr_str.chars().position(|c| c == 'i' || c == 'u') {
                 let (sans_suffix, _) = repr_str.split_at(pos);
@@ -302,7 +302,7 @@ fn lint_uint_literal<'tcx>(
         if let Node::Expr(par_e) = cx.tcx.hir().get(parent_id) {
             match par_e.kind {
                 hir::ExprKind::Cast(..) => {
-                    if let ty::Char = cx.tables().expr_ty(par_e).kind {
+                    if let ty::Char = cx.typeck_results().expr_ty(par_e).kind {
                         cx.struct_span_lint(OVERFLOWING_LITERALS, par_e.span, |lint| {
                             lint.build("only `u8` can be cast into `char`")
                                 .span_suggestion(
@@ -353,7 +353,7 @@ fn lint_literal<'tcx>(
     e: &'tcx hir::Expr<'tcx>,
     lit: &hir::Lit,
 ) {
-    match cx.tables().node_type(e.hir_id).kind {
+    match cx.typeck_results().node_type(e.hir_id).kind {
         ty::Int(t) => {
             match lit.node {
                 ast::LitKind::Int(v, ast::LitIntType::Signed(_) | ast::LitIntType::Unsuffixed) => {
@@ -449,7 +449,7 @@ impl<'tcx> LateLintPass<'tcx> for TypeLimits {
             // Normalize the binop so that the literal is always on the RHS in
             // the comparison
             let norm_binop = if swap { rev_binop(binop) } else { binop };
-            match cx.tables().node_type(expr.hir_id).kind {
+            match cx.typeck_results().node_type(expr.hir_id).kind {
                 ty::Int(int_ty) => {
                     let (min, max) = int_ty_range(int_ty);
                     let lit_val: i128 = match lit.kind {
@@ -531,23 +531,28 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
         match ty.kind {
             ty::FnPtr(_) => true,
             ty::Ref(..) => true,
-            ty::Adt(field_def, substs) if field_def.repr.transparent() && !field_def.is_union() => {
-                for field in field_def.all_fields() {
-                    let field_ty = self.cx.tcx.normalize_erasing_regions(
-                        self.cx.param_env,
-                        field.ty(self.cx.tcx, substs),
-                    );
-                    if field_ty.is_zst(self.cx.tcx, field.did) {
-                        continue;
-                    }
+            ty::Adt(def, _)
+                if def.is_box() && matches!(self.mode, ImproperCTypesMode::Definitions) =>
+            {
+                true
+            }
+            ty::Adt(def, substs) if def.repr.transparent() && !def.is_union() => {
+                let guaranteed_nonnull_optimization = self
+                    .cx
+                    .tcx
+                    .get_attrs(def.did)
+                    .iter()
+                    .any(|a| a.check_name(sym::rustc_nonnull_optimization_guaranteed));
 
-                    let attrs = self.cx.tcx.get_attrs(field_def.did);
-                    if attrs
-                        .iter()
-                        .any(|a| a.check_name(sym::rustc_nonnull_optimization_guaranteed))
-                        || self.ty_is_known_nonnull(field_ty)
-                    {
-                        return true;
+                if guaranteed_nonnull_optimization {
+                    return true;
+                }
+
+                for variant in &def.variants {
+                    if let Some(field) = variant.transparent_newtype_field(self.cx.tcx) {
+                        if self.ty_is_known_nonnull(field.ty(self.cx.tcx, substs)) {
+                            return true;
+                        }
                     }
                 }
 
@@ -558,7 +563,7 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
     }
 
     /// Check if this enum can be safely exported based on the "nullable pointer optimization".
-    /// Currently restricted to function pointers, references, `core::num::NonZero*`,
+    /// Currently restricted to function pointers, boxes, references, `core::num::NonZero*`,
     /// `core::ptr::NonNull`, and `#[repr(transparent)]` newtypes.
     fn is_repr_nullable_ptr(
         &self,
@@ -692,6 +697,12 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
         }
 
         match ty.kind {
+            ty::Adt(def, _)
+                if def.is_box() && matches!(self.mode, ImproperCTypesMode::Definitions) =>
+            {
+                FfiSafe
+            }
+
             ty::Adt(def, substs) => {
                 if def.is_phantom_data() {
                     return FfiPhantom(ty);

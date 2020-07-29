@@ -89,6 +89,29 @@ rustc_queries! {
             desc { |tcx| "HIR owner items in `{}`", tcx.def_path_str(key.to_def_id()) }
         }
 
+        /// Computes the `DefId` of the corresponding const parameter in case the `key` is a
+        /// const argument and returns `None` otherwise.
+        ///
+        /// ```rust
+        /// let a = foo::<7>();
+        /// //            ^ Calling `opt_const_param_of` for this argument,
+        ///
+        /// fn foo<const N: usize>()
+        /// //           ^ returns this `DefId`.
+        ///
+        /// fn bar() {
+        /// // ^ While calling `opt_const_param_of` for other bodies returns `None`.
+        /// }
+        /// ```
+        // It looks like caching this query on disk actually slightly
+        // worsened performance in #74376.
+        //
+        // Once const generics are more prevalently used, we might want to
+        // consider only caching calls returning `Some`.
+        query opt_const_param_of(key: LocalDefId) -> Option<DefId> {
+            desc { |tcx| "computing the optional const parameter of `{}`", tcx.def_path_str(key.to_def_id()) }
+        }
+
         /// Records the type of every item.
         query type_of(key: DefId) -> Ty<'tcx> {
             desc { |tcx| "computing type of `{}`", tcx.def_path_str(key) }
@@ -189,46 +212,65 @@ rustc_queries! {
             desc { |tcx| "const checking `{}`", tcx.def_path_str(key) }
             cache_on_disk_if { key.is_local() }
         }
+        query mir_const_qualif_const_arg(
+            key: (LocalDefId, DefId)
+        ) -> mir::ConstQualifs {
+            desc {
+                |tcx| "const checking the const argument `{}`",
+                tcx.def_path_str(key.0.to_def_id())
+            }
+        }
 
         /// Fetch the MIR for a given `DefId` right after it's built - this includes
         /// unreachable code.
-        query mir_built(key: LocalDefId) -> Steal<mir::Body<'tcx>> {
-            storage(ArenaCacheSelector<'tcx>)
-            desc { |tcx| "building MIR for `{}`", tcx.def_path_str(key.to_def_id()) }
+        query mir_built(key: ty::WithOptConstParam<LocalDefId>) -> &'tcx Steal<mir::Body<'tcx>> {
+            desc { |tcx| "building MIR for `{}`", tcx.def_path_str(key.did.to_def_id()) }
         }
 
         /// Fetch the MIR for a given `DefId` up till the point where it is
         /// ready for const qualification.
         ///
         /// See the README for the `mir` module for details.
-        query mir_const(key: DefId) -> Steal<mir::Body<'tcx>> {
-            desc { |tcx| "processing MIR for `{}`", tcx.def_path_str(key)  }
-            storage(ArenaCacheSelector<'tcx>)
+        query mir_const(key: ty::WithOptConstParam<LocalDefId>) -> &'tcx Steal<mir::Body<'tcx>> {
+            desc {
+                |tcx| "processing MIR for {}`{}`",
+                if key.const_param_did.is_some() { "the const argument " } else { "" },
+                tcx.def_path_str(key.did.to_def_id()),
+            }
             no_hash
         }
 
-        query mir_drops_elaborated_and_const_checked(key: LocalDefId) -> Steal<mir::Body<'tcx>> {
-            storage(ArenaCacheSelector<'tcx>)
+        query mir_drops_elaborated_and_const_checked(
+            key: ty::WithOptConstParam<LocalDefId>
+        ) -> &'tcx Steal<mir::Body<'tcx>> {
             no_hash
-            desc { |tcx| "elaborating drops for `{}`", tcx.def_path_str(key.to_def_id()) }
+            desc { |tcx| "elaborating drops for `{}`", tcx.def_path_str(key.did.to_def_id()) }
         }
 
-        query mir_validated(key: LocalDefId) ->
+        query mir_validated(key: ty::WithOptConstParam<LocalDefId>) ->
             (
-                Steal<mir::Body<'tcx>>,
-                Steal<IndexVec<mir::Promoted, mir::Body<'tcx>>>
+                &'tcx Steal<mir::Body<'tcx>>,
+                &'tcx Steal<IndexVec<mir::Promoted, mir::Body<'tcx>>>
             ) {
-            storage(ArenaCacheSelector<'tcx>)
             no_hash
-            desc { |tcx| "processing `{}`", tcx.def_path_str(key.to_def_id()) }
+            desc {
+                |tcx| "processing {}`{}`",
+                if key.const_param_did.is_some() { "the const argument " } else { "" },
+                tcx.def_path_str(key.did.to_def_id()),
+            }
         }
 
         /// MIR after our optimization passes have run. This is MIR that is ready
         /// for codegen. This is also the only query that can fetch non-local MIR, at present.
-        query optimized_mir(key: DefId) -> mir::Body<'tcx> {
+        query optimized_mir(key: DefId) -> &'tcx mir::Body<'tcx> {
             desc { |tcx| "optimizing MIR for `{}`", tcx.def_path_str(key) }
-            storage(ArenaCacheSelector<'tcx>)
             cache_on_disk_if { key.is_local() }
+        }
+        query optimized_mir_of_const_arg(key: (LocalDefId, DefId)) -> &'tcx mir::Body<'tcx> {
+            desc {
+                |tcx| "optimizing MIR for the const argument `{}`",
+                tcx.def_path_str(key.0.to_def_id())
+            }
         }
 
         /// Returns coverage summary info for a function, after executing the `InstrumentCoverage`
@@ -239,10 +281,17 @@ rustc_queries! {
             cache_on_disk_if { key.is_local() }
         }
 
-        query promoted_mir(key: DefId) -> IndexVec<mir::Promoted, mir::Body<'tcx>> {
+        query promoted_mir(key: DefId) -> &'tcx IndexVec<mir::Promoted, mir::Body<'tcx>> {
             desc { |tcx| "optimizing promoted MIR for `{}`", tcx.def_path_str(key) }
-            storage(ArenaCacheSelector<'tcx>)
             cache_on_disk_if { key.is_local() }
+        }
+        query promoted_mir_of_const_arg(
+            key: (LocalDefId, DefId)
+        ) -> &'tcx IndexVec<mir::Promoted, mir::Body<'tcx>> {
+            desc {
+                |tcx| "optimizing promoted MIR for the const argument `{}`",
+                tcx.def_path_str(key.0.to_def_id()),
+            }
         }
     }
 
@@ -451,11 +500,16 @@ rustc_queries! {
     }
 
     TypeChecking {
-        /// The result of unsafety-checking this `DefId`.
-        query unsafety_check_result(key: LocalDefId) -> mir::UnsafetyCheckResult {
+        /// The result of unsafety-checking this `LocalDefId`.
+        query unsafety_check_result(key: LocalDefId) -> &'tcx mir::UnsafetyCheckResult {
             desc { |tcx| "unsafety-checking `{}`", tcx.def_path_str(key.to_def_id()) }
             cache_on_disk_if { true }
-            storage(ArenaCacheSelector<'tcx>)
+        }
+        query unsafety_check_result_for_const_arg(key: (LocalDefId, DefId)) -> &'tcx mir::UnsafetyCheckResult {
+            desc {
+                |tcx| "unsafety-checking the const argument `{}`",
+                tcx.def_path_str(key.0.to_def_id())
+            }
         }
 
         /// HACK: when evaluated, this reports a "unsafe derive on repr(packed)" error.
@@ -533,19 +587,27 @@ rustc_queries! {
             desc { "type-checking all item bodies" }
         }
 
-        query typeck_tables_of(key: LocalDefId) -> &'tcx ty::TypeckTables<'tcx> {
+        query typeck(key: LocalDefId) -> &'tcx ty::TypeckResults<'tcx> {
             desc { |tcx| "type-checking `{}`", tcx.def_path_str(key.to_def_id()) }
             cache_on_disk_if { true }
         }
-        query diagnostic_only_typeck_tables_of(key: LocalDefId) -> &'tcx ty::TypeckTables<'tcx> {
+        query typeck_const_arg(
+            key: (LocalDefId, DefId)
+        ) -> &'tcx ty::TypeckResults<'tcx> {
+            desc {
+                |tcx| "type-checking the const argument `{}`",
+                tcx.def_path_str(key.0.to_def_id()),
+            }
+        }
+        query diagnostic_only_typeck(key: LocalDefId) -> &'tcx ty::TypeckResults<'tcx> {
             desc { |tcx| "type-checking `{}`", tcx.def_path_str(key.to_def_id()) }
             cache_on_disk_if { true }
             load_cached(tcx, id) {
-                let typeck_tables: Option<ty::TypeckTables<'tcx>> = tcx
+                let typeck_results: Option<ty::TypeckResults<'tcx>> = tcx
                     .queries.on_disk_cache
                     .try_load_query_result(tcx, id);
 
-                typeck_tables.map(|x| &*tcx.arena.alloc(x))
+                typeck_results.map(|x| &*tcx.arena.alloc(x))
             }
         }
     }
@@ -558,7 +620,7 @@ rustc_queries! {
     }
 
     TypeChecking {
-        query has_typeck_tables(def_id: DefId) -> bool {
+        query has_typeck_results(def_id: DefId) -> bool {
             desc { |tcx| "checking whether `{}` has a body", tcx.def_path_str(def_id) }
         }
 
@@ -570,12 +632,17 @@ rustc_queries! {
     BorrowChecking {
         /// Borrow-checks the function body. If this is a closure, returns
         /// additional requirements that the closure's creator must verify.
-        query mir_borrowck(key: LocalDefId) -> mir::BorrowCheckResult<'tcx> {
-            storage(ArenaCacheSelector<'tcx>)
+        query mir_borrowck(key: LocalDefId) -> &'tcx mir::BorrowCheckResult<'tcx> {
             desc { |tcx| "borrow-checking `{}`", tcx.def_path_str(key.to_def_id()) }
             cache_on_disk_if(tcx, opt_result) {
                 tcx.is_closure(key.to_def_id())
                     || opt_result.map_or(false, |r| !r.concrete_opaque_types.is_empty())
+            }
+        }
+        query mir_borrowck_const_arg(key: (LocalDefId, DefId)) -> &'tcx mir::BorrowCheckResult<'tcx> {
+            desc {
+                |tcx| "borrow-checking the const argument`{}`",
+                tcx.def_path_str(key.0.to_def_id())
             }
         }
     }
@@ -691,7 +758,7 @@ rustc_queries! {
         /// The `symbol_name` query provides the symbol name for calling a
         /// given instance from the local crate. In particular, it will also
         /// look up the correct symbol name of instances from upstream crates.
-        query symbol_name(key: ty::Instance<'tcx>) -> ty::SymbolName {
+        query symbol_name(key: ty::Instance<'tcx>) -> ty::SymbolName<'tcx> {
             desc { "computing the symbol for `{}`", key }
             cache_on_disk_if { true }
         }
@@ -1246,6 +1313,13 @@ rustc_queries! {
         query codegen_unit(_: Symbol) -> &'tcx CodegenUnit<'tcx> {
             desc { "codegen_unit" }
         }
+        query unused_generic_params(key: DefId) -> FiniteBitSet<u64> {
+            cache_on_disk_if { key.is_local() }
+            desc {
+                |tcx| "determining which generic parameters are unused by `{}`",
+                    tcx.def_path_str(key)
+            }
+        }
         query backend_optimization_level(_: CrateNum) -> OptLevel {
             desc { "optimization level used by backend" }
         }
@@ -1398,9 +1472,9 @@ rustc_queries! {
             desc { "normalizing `{:?}`", goal }
         }
 
-        query substitute_normalize_and_test_predicates(key: (DefId, SubstsRef<'tcx>)) -> bool {
+        query subst_and_check_impossible_predicates(key: (DefId, SubstsRef<'tcx>)) -> bool {
             desc { |tcx|
-                "testing substituted normalized predicates:`{}`",
+                "impossible substituted predicates:`{}`",
                 tcx.def_path_str(key.0)
             }
         }
@@ -1413,10 +1487,10 @@ rustc_queries! {
     }
 
     Other {
-        query target_features_whitelist(_: CrateNum) -> FxHashMap<String, Option<Symbol>> {
+        query supported_target_features(_: CrateNum) -> FxHashMap<String, Option<Symbol>> {
             storage(ArenaCacheSelector<'tcx>)
             eval_always
-            desc { "looking up the whitelist of target features" }
+            desc { "looking up supported target features" }
         }
 
         // Get an estimate of the size of an InstanceDef based on its MIR for CGU partitioning.
@@ -1443,6 +1517,15 @@ rustc_queries! {
             key: ty::ParamEnvAnd<'tcx, (DefId, SubstsRef<'tcx>)>
         ) -> Result<Option<ty::Instance<'tcx>>, ErrorReported> {
             desc { "resolving instance `{}`", ty::Instance::new(key.value.0, key.value.1) }
+        }
+
+        query resolve_instance_of_const_arg(
+            key: ty::ParamEnvAnd<'tcx, (LocalDefId, DefId, SubstsRef<'tcx>)>
+        ) -> Result<Option<ty::Instance<'tcx>>, ErrorReported> {
+            desc {
+                "resolving instance of the const argument `{}`",
+                ty::Instance::new(key.value.0.to_def_id(), key.value.2),
+            }
         }
     }
 }

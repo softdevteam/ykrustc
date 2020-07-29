@@ -56,8 +56,8 @@ pub trait CodegenBackend {
     fn print_version(&self) {}
 
     fn metadata_loader(&self) -> Box<MetadataLoaderDyn>;
-    fn provide(&self, _providers: &mut Providers<'_>);
-    fn provide_extern(&self, _providers: &mut Providers<'_>);
+    fn provide(&self, _providers: &mut Providers);
+    fn provide_extern(&self, _providers: &mut Providers);
     fn codegen_crate<'tcx>(
         &self,
         tcx: TyCtxt<'tcx>,

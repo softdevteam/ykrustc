@@ -23,11 +23,12 @@ use crate::traits::error_reporting::InferCtxtExt;
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::ErrorReported;
 use rustc_hir::def_id::DefId;
-use rustc_hir::lang_items::{FnOnceOutputLangItem, FnOnceTraitLangItem, GeneratorTraitLangItem};
+use rustc_hir::lang_items::{
+    DiscriminantTypeLangItem, FnOnceOutputLangItem, FnOnceTraitLangItem, GeneratorTraitLangItem,
+};
 use rustc_infer::infer::resolve::OpportunisticRegionResolver;
 use rustc_middle::ty::fold::{TypeFoldable, TypeFolder};
 use rustc_middle::ty::subst::Subst;
-use rustc_middle::ty::util::IntTypeExt;
 use rustc_middle::ty::{self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, WithConstness};
 use rustc_span::symbol::sym;
 use rustc_span::DUMMY_SP;
@@ -663,23 +664,25 @@ fn prune_cache_value_obligations<'a, 'tcx>(
     let mut obligations: Vec<_> = result
         .obligations
         .iter()
-        .filter(|obligation| match obligation.predicate.kind() {
-            // We found a `T: Foo<X = U>` predicate, let's check
-            // if `U` references any unresolved type
-            // variables. In principle, we only care if this
-            // projection can help resolve any of the type
-            // variables found in `result.value` -- but we just
-            // check for any type variables here, for fear of
-            // indirect obligations (e.g., we project to `?0`,
-            // but we have `T: Foo<X = ?1>` and `?1: Bar<X =
-            // ?0>`).
-            ty::PredicateKind::Projection(ref data) => {
-                infcx.unresolved_type_vars(&data.ty()).is_some()
-            }
+        .filter(|obligation| {
+            match obligation.predicate.skip_binders() {
+                // We found a `T: Foo<X = U>` predicate, let's check
+                // if `U` references any unresolved type
+                // variables. In principle, we only care if this
+                // projection can help resolve any of the type
+                // variables found in `result.value` -- but we just
+                // check for any type variables here, for fear of
+                // indirect obligations (e.g., we project to `?0`,
+                // but we have `T: Foo<X = ?1>` and `?1: Bar<X =
+                // ?0>`).
+                ty::PredicateAtom::Projection(data) => {
+                    infcx.unresolved_type_vars(&ty::Binder::bind(data.ty)).is_some()
+                }
 
-            // We are only interested in `T: Foo<X = U>` predicates, whre
-            // `U` references one of `unresolved_type_vars`. =)
-            _ => false,
+                // We are only interested in `T: Foo<X = U>` predicates, whre
+                // `U` references one of `unresolved_type_vars`. =)
+                _ => false,
+            }
         })
         .cloned()
         .collect();
@@ -930,7 +933,8 @@ fn assemble_candidates_from_predicates<'cx, 'tcx>(
     let infcx = selcx.infcx();
     for predicate in env_predicates {
         debug!("assemble_candidates_from_predicates: predicate={:?}", predicate);
-        if let &ty::PredicateKind::Projection(data) = predicate.kind() {
+        if let ty::PredicateAtom::Projection(data) = predicate.skip_binders() {
+            let data = ty::Binder::bind(data);
             let same_def_id = data.projection_def_id() == obligation.predicate.item_def_id;
 
             let is_match = same_def_id
@@ -1220,11 +1224,12 @@ fn confirm_object_candidate<'cx, 'tcx>(
 
         // select only those projections that are actually projecting an
         // item with the correct name
-        let env_predicates = env_predicates.filter_map(|o| match o.predicate.kind() {
-            &ty::PredicateKind::Projection(data)
-                if data.projection_def_id() == obligation.predicate.item_def_id =>
+
+        let env_predicates = env_predicates.filter_map(|o| match o.predicate.skip_binders() {
+            ty::PredicateAtom::Projection(data)
+                if data.projection_ty.item_def_id == obligation.predicate.item_def_id =>
             {
-                Some(data)
+                Some(ty::Binder::bind(data))
             }
             _ => None,
         });
@@ -1324,22 +1329,11 @@ fn confirm_discriminant_kind_candidate<'cx, 'tcx>(
     let self_ty = selcx.infcx().shallow_resolve(obligation.predicate.self_ty());
     let substs = tcx.mk_substs([self_ty.into()].iter());
 
-    let assoc_items = tcx.associated_items(tcx.lang_items().discriminant_kind_trait().unwrap());
-    // FIXME: emit an error if the trait definition is wrong
-    let discriminant_def_id = assoc_items.in_definition_order().next().unwrap().def_id;
-
-    let discriminant_ty = match self_ty.kind {
-        // Use the discriminant type for enums.
-        ty::Adt(adt, _) if adt.is_enum() => adt.repr.discr_type().to_ty(tcx),
-        // Default to `i32` for generators.
-        ty::Generator(..) => tcx.types.i32,
-        // Use `u8` for all other types.
-        _ => tcx.types.u8,
-    };
+    let discriminant_def_id = tcx.require_lang_item(DiscriminantTypeLangItem, None);
 
     let predicate = ty::ProjectionPredicate {
         projection_ty: ty::ProjectionTy { substs, item_def_id: discriminant_def_id },
-        ty: discriminant_ty,
+        ty: self_ty.discriminant_ty(tcx),
     };
 
     confirm_param_env_candidate(selcx, obligation, ty::Binder::bind(predicate))

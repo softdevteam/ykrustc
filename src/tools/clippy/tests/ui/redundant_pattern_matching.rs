@@ -2,9 +2,18 @@
 
 #![warn(clippy::all)]
 #![warn(clippy::redundant_pattern_matching)]
-#![allow(clippy::unit_arg, unused_must_use, clippy::needless_bool, deprecated)]
+#![allow(
+    clippy::unit_arg,
+    unused_must_use,
+    clippy::needless_bool,
+    clippy::match_like_matches_macro,
+    deprecated
+)]
 
 fn main() {
+    let result: Result<usize, usize> = Err(5);
+    if let Ok(_) = &result {}
+
     if let Ok(_) = Ok::<i32, i32>(42) {}
 
     if let Err(_) = Err::<i32, i32>(42) {}

@@ -383,6 +383,7 @@ E0669: include_str!("./error_codes/E0669.md"),
 E0670: include_str!("./error_codes/E0670.md"),
 E0671: include_str!("./error_codes/E0671.md"),
 E0687: include_str!("./error_codes/E0687.md"),
+E0688: include_str!("./error_codes/E0688.md"),
 E0689: include_str!("./error_codes/E0689.md"),
 E0690: include_str!("./error_codes/E0690.md"),
 E0691: include_str!("./error_codes/E0691.md"),
@@ -450,6 +451,9 @@ E0765: include_str!("./error_codes/E0765.md"),
 E0766: include_str!("./error_codes/E0766.md"),
 E0767: include_str!("./error_codes/E0767.md"),
 E0768: include_str!("./error_codes/E0768.md"),
+E0769: include_str!("./error_codes/E0769.md"),
+E0770: include_str!("./error_codes/E0770.md"),
+E0771: include_str!("./error_codes/E0771.md"),
 ;
 //  E0006, // merged with E0005
 //  E0008, // cannot bind by-move into a pattern guard
@@ -551,7 +555,7 @@ E0768: include_str!("./error_codes/E0768.md"),
 //  E0420, merged into 532
 //  E0421, merged into 531
 //  E0427, merged into 530
-    E0456, // plugin `..` is not available for triple `..`
+//  E0456, // plugin `..` is not available for triple `..`
     E0457, // plugin `..` only found in rlib format, but must be available...
     E0460, // found possibly newer version of crate `..`
     E0461, // couldn't find crate `..` with expected target triple ..
@@ -585,7 +589,7 @@ E0768: include_str!("./error_codes/E0768.md"),
     E0521, // borrowed data escapes outside of closure
     E0523,
 //  E0526, // shuffle indices are not constant
-    E0540, // multiple rustc_deprecated attributes
+//  E0540, // multiple rustc_deprecated attributes
     E0542, // missing 'since'
     E0543, // missing 'reason'
     E0544, // multiple stability levels
@@ -616,7 +620,6 @@ E0768: include_str!("./error_codes/E0768.md"),
     E0640, // infer outlives requirements
 //  E0645, // trait aliases not finished
     E0667, // `impl Trait` in projections
-    E0688, // in-band lifetimes cannot be mixed with explicit lifetime binders
 //  E0694, // an unknown tool name found in scoped attributes
 //  E0702, // replaced with a generic attribute input check
 //  E0707, // multiple elided lifetimes used in arguments of `async fn`
@@ -630,4 +633,5 @@ E0768: include_str!("./error_codes/E0768.md"),
     E0755, // `#[ffi_pure]` is only allowed on foreign functions
     E0756, // `#[ffi_const]` is only allowed on foreign functions
     E0757, // `#[ffi_const]` functions cannot be `#[ffi_pure]`
+    E0772, // `'static' obligation coming from `impl dyn Trait {}` or `impl Foo for dyn Bar {}`.
 }

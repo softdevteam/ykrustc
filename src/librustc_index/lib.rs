@@ -1,5 +1,5 @@
 #![feature(allow_internal_unstable)]
-#![cfg_attr(bootstrap, feature(const_if_match))]
+#![feature(bool_to_option)]
 #![feature(const_fn)]
 #![feature(const_panic)]
 #![feature(extend_one)]

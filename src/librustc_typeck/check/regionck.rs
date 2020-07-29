@@ -82,6 +82,7 @@ use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::PatKind;
 use rustc_infer::infer::outlives::env::OutlivesEnvironment;
 use rustc_infer::infer::{self, RegionObligation, RegionckMode};
+use rustc_middle::hir::place::{PlaceBase, PlaceWithHirId};
 use rustc_middle::ty::adjustment;
 use rustc_middle::ty::{self, Ty};
 use rustc_span::Span;
@@ -263,7 +264,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
         self.body_owner = self.tcx.hir().body_owner_def_id(body_id);
 
         let fn_sig = {
-            match self.tables.borrow().liberated_fn_sigs().get(id) {
+            match self.typeck_results.borrow().liberated_fn_sigs().get(id) {
                 Some(f) => *f,
                 None => {
                     bug!("No fn-sig entry for id={:?}", id);
@@ -308,7 +309,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
     fn resolve_regions_and_report_errors(&self, mode: RegionckMode) {
         self.infcx.process_registered_region_obligations(
             self.outlives_environment.region_bound_pairs_map(),
-            self.implicit_region_bound,
+            Some(self.tcx.lifetimes.re_root_empty),
             self.param_env,
         );
 
@@ -433,7 +434,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
             &self.infcx,
             self.outlives_environment.param_env,
             self.body_owner,
-            &self.tables.borrow(),
+            &self.typeck_results.borrow(),
         ))
     }
 
@@ -442,13 +443,13 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
     fn constrain_adjustments(
         &mut self,
         expr: &hir::Expr<'_>,
-    ) -> mc::McResult<mc::PlaceWithHirId<'tcx>> {
+    ) -> mc::McResult<PlaceWithHirId<'tcx>> {
         debug!("constrain_adjustments(expr={:?})", expr);
 
         let mut place = self.with_mc(|mc| mc.cat_expr_unadjusted(expr))?;
 
-        let tables = self.tables.borrow();
-        let adjustments = tables.expr_adjustments(&expr);
+        let typeck_results = self.typeck_results.borrow();
+        let adjustments = typeck_results.expr_adjustments(&expr);
         if adjustments.is_empty() {
             return Ok(place);
         }
@@ -483,10 +484,10 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
 
     fn check_safety_of_rvalue_destructor_if_necessary(
         &mut self,
-        place_with_id: &mc::PlaceWithHirId<'tcx>,
+        place_with_id: &PlaceWithHirId<'tcx>,
         span: Span,
     ) {
-        if let mc::PlaceBase::Rvalue = place_with_id.place.base {
+        if let PlaceBase::Rvalue = place_with_id.place.base {
             if place_with_id.place.projections.is_empty() {
                 let typ = self.resolve_type(place_with_id.place.ty());
                 let body_id = self.body_id;
@@ -573,14 +574,14 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
 
     /// Link lifetimes of any ref bindings in `root_pat` to the pointers found
     /// in the discriminant, if needed.
-    fn link_pattern(&self, discr_cmt: mc::PlaceWithHirId<'tcx>, root_pat: &hir::Pat<'_>) {
+    fn link_pattern(&self, discr_cmt: PlaceWithHirId<'tcx>, root_pat: &hir::Pat<'_>) {
         debug!("link_pattern(discr_cmt={:?}, root_pat={:?})", discr_cmt, root_pat);
         ignore_err!(self.with_mc(|mc| {
             mc.cat_pattern(discr_cmt, root_pat, |sub_cmt, hir::Pat { kind, span, hir_id }| {
                 // `ref x` pattern
                 if let PatKind::Binding(..) = kind {
                     if let Some(ty::BindByReference(mutbl)) =
-                        mc.tables.extract_binding_mode(self.tcx.sess, *hir_id, *span)
+                        mc.typeck_results.extract_binding_mode(self.tcx.sess, *hir_id, *span)
                     {
                         self.link_region_from_node_type(*span, *hir_id, mutbl, &sub_cmt);
                     }
@@ -594,7 +595,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
     fn link_autoref(
         &self,
         expr: &hir::Expr<'_>,
-        expr_cmt: &mc::PlaceWithHirId<'tcx>,
+        expr_cmt: &PlaceWithHirId<'tcx>,
         autoref: &adjustment::AutoBorrow<'tcx>,
     ) {
         debug!("link_autoref(autoref={:?}, expr_cmt={:?})", autoref, expr_cmt);
@@ -615,7 +616,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
         span: Span,
         id: hir::HirId,
         mutbl: hir::Mutability,
-        cmt_borrowed: &mc::PlaceWithHirId<'tcx>,
+        cmt_borrowed: &PlaceWithHirId<'tcx>,
     ) {
         debug!(
             "link_region_from_node_type(id={:?}, mutbl={:?}, cmt_borrowed={:?})",
@@ -638,7 +639,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
         span: Span,
         borrow_region: ty::Region<'tcx>,
         borrow_kind: ty::BorrowKind,
-        borrow_place: &mc::PlaceWithHirId<'tcx>,
+        borrow_place: &PlaceWithHirId<'tcx>,
     ) {
         let origin = infer::DataBorrowed(borrow_place.place.ty(), span);
         self.type_must_outlive(origin, borrow_place.place.ty(), borrow_region);
@@ -659,7 +660,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
                 _ => assert!(pointer_ty.is_box(), "unexpected built-in deref type {}", pointer_ty),
             }
         }
-        if let mc::PlaceBase::Upvar(upvar_id) = borrow_place.place.base {
+        if let PlaceBase::Upvar(upvar_id) = borrow_place.place.base {
             self.link_upvar_region(span, borrow_region, upvar_id);
         }
     }
@@ -773,7 +774,7 @@ impl<'a, 'tcx> RegionCtxt<'a, 'tcx> {
         debug!("link_upvar_region(borrorw_region={:?}, upvar_id={:?}", borrow_region, upvar_id);
         // A by-reference upvar can't be borrowed for longer than the
         // upvar is borrowed from the environment.
-        match self.tables.borrow().upvar_capture(upvar_id) {
+        match self.typeck_results.borrow().upvar_capture(upvar_id) {
             ty::UpvarCapture::ByRef(upvar_borrow) => {
                 self.sub_regions(
                     infer::ReborrowUpvar(span, upvar_id),

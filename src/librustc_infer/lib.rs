@@ -13,11 +13,11 @@
 //! This API is completely unstable and subject to change.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![feature(bindings_after_at)]
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(const_fn)]
-#![cfg_attr(bootstrap, feature(const_if_match))]
 #![feature(const_panic)]
 #![feature(extend_one)]
 #![feature(never_type)]

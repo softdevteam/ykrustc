@@ -170,6 +170,13 @@ impl<'tcx> ObligationCause<'tcx> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UnifyReceiverContext<'tcx> {
+    pub assoc_item: ty::AssocItem,
+    pub param_env: ty::ParamEnv<'tcx>,
+    pub substs: SubstsRef<'tcx>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObligationCauseCode<'tcx> {
     /// Not well classified or should be obvious from the span.
     MiscObligation,
@@ -215,7 +222,7 @@ pub enum ObligationCauseCode<'tcx> {
     /// Type of each variable must be `Sized`.
     VariableType(hir::HirId),
     /// Argument type must be `Sized`.
-    SizedArgumentType,
+    SizedArgumentType(Option<Span>),
     /// Return type must be `Sized`.
     SizedReturnType,
     /// Yield type must be `Sized`.
@@ -229,6 +236,7 @@ pub enum ObligationCauseCode<'tcx> {
     /// Types of fields (other than the last, except for packed structs) in a struct must be sized.
     FieldSized {
         adt_kind: AdtKind,
+        span: Span,
         last: bool,
     },
 
@@ -298,6 +306,8 @@ pub enum ObligationCauseCode<'tcx> {
 
     /// Method receiver
     MethodReceiver,
+
+    UnifyReceiver(Box<UnifyReceiverContext<'tcx>>),
 
     /// `return` with no expression
     ReturnNoExpression,

@@ -387,6 +387,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
                             // Check for infer types because cases like `Option<{integer}>` would
                             // panic otherwise.
                             if !expr_ty.has_infer_types()
+                                && !ty.has_infer_types()
                                 && fcx.tcx.type_implements_trait((
                                     from_trait,
                                     ty,
@@ -565,7 +566,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
                 Ok(()) => {
                     self.trivial_cast_lint(fcx);
                     debug!(" -> CoercionCast");
-                    fcx.tables.borrow_mut().set_coercion_cast(self.expr.hir_id.local_id);
+                    fcx.typeck_results.borrow_mut().set_coercion_cast(self.expr.hir_id.local_id);
                 }
                 Err(ty::error::TypeError::ObjectUnsafeCoercion(did)) => {
                     self.report_object_unsafe_cast(&fcx, did);

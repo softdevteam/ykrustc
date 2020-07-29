@@ -103,7 +103,6 @@ impl<'tcx> CtxtInterners<'tcx> {
             projs: Default::default(),
             place_elems: Default::default(),
             const_: Default::default(),
-
             chalk_environment_clause_list: Default::default(),
         }
     }
@@ -194,17 +193,17 @@ pub struct LocalTableInContext<'a, V> {
 }
 
 /// Validate that the given HirId (respectively its `local_id` part) can be
-/// safely used as a key in the tables of a TypeckTable. For that to be
+/// safely used as a key in the maps of a TypeckResults. For that to be
 /// the case, the HirId must have the same `owner` as all the other IDs in
 /// this table (signified by `hir_owner`). Otherwise the HirId
 /// would be in a different frame of reference and using its `local_id`
 /// would result in lookup errors, or worse, in silently wrong data being
 /// stored/returned.
-fn validate_hir_id_for_typeck_tables(hir_owner: LocalDefId, hir_id: hir::HirId) {
+fn validate_hir_id_for_typeck_results(hir_owner: LocalDefId, hir_id: hir::HirId) {
     if hir_id.owner != hir_owner {
         ty::tls::with(|tcx| {
             bug!(
-                "node {} with HirId::owner {:?} cannot be placed in TypeckTables with hir_owner {:?}",
+                "node {} with HirId::owner {:?} cannot be placed in TypeckResults with hir_owner {:?}",
                 tcx.hir().node_to_string(hir_id),
                 hir_id.owner,
                 hir_owner
@@ -215,12 +214,12 @@ fn validate_hir_id_for_typeck_tables(hir_owner: LocalDefId, hir_id: hir::HirId) 
 
 impl<'a, V> LocalTableInContext<'a, V> {
     pub fn contains_key(&self, id: hir::HirId) -> bool {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.contains_key(&id.local_id)
     }
 
     pub fn get(&self, id: hir::HirId) -> Option<&V> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.get(&id.local_id)
     }
 
@@ -244,22 +243,22 @@ pub struct LocalTableInContextMut<'a, V> {
 
 impl<'a, V> LocalTableInContextMut<'a, V> {
     pub fn get_mut(&mut self, id: hir::HirId) -> Option<&mut V> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.get_mut(&id.local_id)
     }
 
     pub fn entry(&mut self, id: hir::HirId) -> Entry<'_, hir::ItemLocalId, V> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.entry(id.local_id)
     }
 
     pub fn insert(&mut self, id: hir::HirId, val: V) -> Option<V> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.insert(id.local_id, val)
     }
 
     pub fn remove(&mut self, id: hir::HirId) -> Option<V> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.data.remove(&id.local_id)
     }
 }
@@ -308,7 +307,7 @@ pub struct GeneratorInteriorTypeCause<'tcx> {
 }
 
 #[derive(RustcEncodable, RustcDecodable, Debug)]
-pub struct TypeckTables<'tcx> {
+pub struct TypeckResults<'tcx> {
     /// The `HirId::owner` all `ItemLocalId`s in this table are relative to.
     pub hir_owner: LocalDefId,
 
@@ -417,9 +416,9 @@ pub struct TypeckTables<'tcx> {
     pub generator_interior_types: Vec<GeneratorInteriorTypeCause<'tcx>>,
 }
 
-impl<'tcx> TypeckTables<'tcx> {
-    pub fn new(hir_owner: LocalDefId) -> TypeckTables<'tcx> {
-        TypeckTables {
+impl<'tcx> TypeckResults<'tcx> {
+    pub fn new(hir_owner: LocalDefId) -> TypeckResults<'tcx> {
+        TypeckResults {
             hir_owner,
             type_dependent_defs: Default::default(),
             field_indices: Default::default(),
@@ -460,7 +459,7 @@ impl<'tcx> TypeckTables<'tcx> {
     }
 
     pub fn type_dependent_def(&self, id: HirId) -> Option<(DefKind, DefId)> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.type_dependent_defs.get(&id.local_id).cloned().and_then(|r| r.ok())
     }
 
@@ -507,7 +506,7 @@ impl<'tcx> TypeckTables<'tcx> {
     }
 
     pub fn node_type_opt(&self, id: hir::HirId) -> Option<Ty<'tcx>> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.node_types.get(&id.local_id).cloned()
     }
 
@@ -516,12 +515,12 @@ impl<'tcx> TypeckTables<'tcx> {
     }
 
     pub fn node_substs(&self, id: hir::HirId) -> SubstsRef<'tcx> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.node_substs.get(&id.local_id).cloned().unwrap_or_else(|| InternalSubsts::empty())
     }
 
     pub fn node_substs_opt(&self, id: hir::HirId) -> Option<SubstsRef<'tcx>> {
-        validate_hir_id_for_typeck_tables(self.hir_owner, id);
+        validate_hir_id_for_typeck_results(self.hir_owner, id);
         self.node_substs.get(&id.local_id).cloned()
     }
 
@@ -564,7 +563,7 @@ impl<'tcx> TypeckTables<'tcx> {
     }
 
     pub fn expr_adjustments(&self, expr: &hir::Expr<'_>) -> &[ty::adjustment::Adjustment<'tcx>] {
-        validate_hir_id_for_typeck_tables(self.hir_owner, expr.hir_id);
+        validate_hir_id_for_typeck_results(self.hir_owner, expr.hir_id);
         self.adjustments.get(&expr.hir_id.local_id).map_or(&[], |a| &a[..])
     }
 
@@ -643,7 +642,7 @@ impl<'tcx> TypeckTables<'tcx> {
     }
 
     pub fn is_coercion_cast(&self, hir_id: hir::HirId) -> bool {
-        validate_hir_id_for_typeck_tables(self.hir_owner, hir_id);
+        validate_hir_id_for_typeck_results(self.hir_owner, hir_id);
         self.coercion_casts.contains(&hir_id.local_id)
     }
 
@@ -656,9 +655,9 @@ impl<'tcx> TypeckTables<'tcx> {
     }
 }
 
-impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckTables<'tcx> {
+impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckResults<'tcx> {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
-        let ty::TypeckTables {
+        let ty::TypeckResults {
             hir_owner,
             ref type_dependent_defs,
             ref field_indices,
@@ -985,15 +984,26 @@ pub struct GlobalCtxt<'tcx> {
 }
 
 impl<'tcx> TyCtxt<'tcx> {
-    pub fn alloc_steal_mir(self, mir: Body<'tcx>) -> Steal<Body<'tcx>> {
-        Steal::new(mir)
+    pub fn typeck_opt_const_arg(
+        self,
+        def: ty::WithOptConstParam<LocalDefId>,
+    ) -> &'tcx TypeckResults<'tcx> {
+        if let Some(param_did) = def.const_param_did {
+            self.typeck_const_arg((def.did, param_did))
+        } else {
+            self.typeck(def.did)
+        }
+    }
+
+    pub fn alloc_steal_mir(self, mir: Body<'tcx>) -> &'tcx Steal<Body<'tcx>> {
+        self.arena.alloc(Steal::new(mir))
     }
 
     pub fn alloc_steal_promoted(
         self,
         promoted: IndexVec<Promoted, Body<'tcx>>,
-    ) -> Steal<IndexVec<Promoted, Body<'tcx>>> {
-        Steal::new(promoted)
+    ) -> &'tcx Steal<IndexVec<Promoted, Body<'tcx>>> {
+        self.arena.alloc(Steal::new(promoted))
     }
 
     pub fn alloc_adt_def(
@@ -1065,8 +1075,8 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn create_global_ctxt(
         s: &'tcx Session,
         lint_store: Lrc<dyn Any + sync::Send + sync::Sync>,
-        local_providers: ty::query::Providers<'tcx>,
-        extern_providers: ty::query::Providers<'tcx>,
+        local_providers: ty::query::Providers,
+        extern_providers: ty::query::Providers,
         arena: &'tcx WorkerLocal<Arena<'tcx>>,
         resolutions: ty::ResolverOutputs,
         krate: &'tcx hir::Crate<'tcx>,
@@ -2124,14 +2134,23 @@ impl<'tcx> TyCtxt<'tcx> {
 
     #[allow(rustc::usage_of_ty_tykind)]
     #[inline]
-    pub fn mk_ty(&self, st: TyKind<'tcx>) -> Ty<'tcx> {
+    pub fn mk_ty(self, st: TyKind<'tcx>) -> Ty<'tcx> {
         self.interners.intern_ty(st)
     }
 
     #[inline]
-    pub fn mk_predicate(&self, kind: PredicateKind<'tcx>) -> Predicate<'tcx> {
+    pub fn mk_predicate(self, kind: PredicateKind<'tcx>) -> Predicate<'tcx> {
         let inner = self.interners.intern_predicate(kind);
         Predicate { inner }
+    }
+
+    #[inline]
+    pub fn reuse_or_mk_predicate(
+        self,
+        pred: Predicate<'tcx>,
+        kind: PredicateKind<'tcx>,
+    ) -> Predicate<'tcx> {
+        if *pred.kind() != kind { self.mk_predicate(kind) } else { pred }
     }
 
     pub fn mk_mach_int(self, tm: ast::IntTy) -> Ty<'tcx> {
@@ -2706,7 +2725,7 @@ fn ptr_eq<T, U>(t: *const T, u: *const U) -> bool {
     t as *const () == u as *const ()
 }
 
-pub fn provide(providers: &mut ty::query::Providers<'_>) {
+pub fn provide(providers: &mut ty::query::Providers) {
     providers.in_scope_traits_map = |tcx, id| tcx.gcx.trait_map.get(&id);
     providers.module_exports = |tcx, id| tcx.gcx.export_map.get(&id).map(|v| &v[..]);
     providers.crate_name = |tcx, id| {

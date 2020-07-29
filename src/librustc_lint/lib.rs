@@ -34,7 +34,6 @@
 #![feature(never_type)]
 #![feature(nll)]
 #![feature(or_patterns)]
-#![cfg_attr(bootstrap, feature(track_caller))]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -88,7 +87,7 @@ pub use rustc_session::lint::Level::{self, *};
 pub use rustc_session::lint::{BufferedEarlyLint, FutureIncompatibleInfo, Lint, LintId};
 pub use rustc_session::lint::{LintArray, LintPass};
 
-pub fn provide(providers: &mut Providers<'_>) {
+pub fn provide(providers: &mut Providers) {
     levels::provide(providers);
     *providers = Providers { lint_mod, ..*providers };
 }

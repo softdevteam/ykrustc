@@ -11,7 +11,7 @@ use rustc_ast::ast::LitKind;
 use rustc_hir as hir;
 
 declare_clippy_lint! {
-    /// **What it does:** Finds occurences of `Vec::resize(0, an_int)`
+    /// **What it does:** Finds occurrences of `Vec::resize(0, an_int)`
     ///
     /// **Why is this bad?** This is probably an argument inversion mistake.
     ///
@@ -32,7 +32,7 @@ impl<'tcx> LateLintPass<'tcx> for VecResizeToZero {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let hir::ExprKind::MethodCall(path_segment, _, ref args, _) = expr.kind;
-            if let Some(method_def_id) = cx.tables().type_dependent_def_id(expr.hir_id);
+            if let Some(method_def_id) = cx.typeck_results().type_dependent_def_id(expr.hir_id);
             if match_def_path(cx, method_def_id, &paths::VEC_RESIZE) && args.len() == 3;
             if let ExprKind::Lit(Spanned { node: LitKind::Int(0, _), .. }) = args[1].kind;
             if let ExprKind::Lit(Spanned { node: LitKind::Int(..), .. }) = args[2].kind;
