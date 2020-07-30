@@ -273,19 +273,6 @@ pub fn std_cargo(builder: &Builder<'_>, target: TargetSelection, stage: u32, car
                 cargo.rustflag("-L").rustflag(&root);
             }
         }
-
-        // We have to build a standard library for the kind of Yorick tracer we want to use.
-        // Why? Because to trace through std and core, we need:
-        //  * For the software tracer, code with calls to the trace recorder.
-        //  * For the hardware tracer, DILabels to help mapping back to SIR.
-        if stage != 0 {
-            match env::var("STD_TRACER_MODE") {
-                Err(_) => panic!("STD_TRACER_MODE must be set"),
-                Ok(val) => {
-                    cargo.env("RUSTFLAGS", format!("-C tracer={}", val));
-                }
-            }
-        }
     }
 
     // By default, rustc uses `-Cembed-bitcode=yes`, and Cargo overrides that

@@ -35,11 +35,7 @@ pub fn tsa<A: ToSocketAddrs>(a: A) -> Result<Vec<SocketAddr>, String> {
 // all want to use ports. This function figures out which workspace
 // it is running in and assigns a port range based on it.
 fn base_port() -> u16 {
-    let tracer_mode = env::var("STD_TRACER_MODE");
-    let cwd = if tracer_mode.is_ok() {
-        // This caters for ykrustc builds running in parallel.
-        format!("yk_{}", tracer_mode.unwrap())
-    } else if cfg!(target_env = "sgx") {
+    let cwd = if cfg!(target_env = "sgx") {
         String::from("sgx")
     } else {
         env::current_dir().unwrap().into_os_string().into_string().unwrap()
@@ -57,7 +53,6 @@ fn base_port() -> u16 {
         "snap3",
         "dist",
         "sgx",
-        "yk_hw",
     ];
     dirs.iter().enumerate().find(|&(_, dir)| cwd.contains(dir)).map(|p| p.0).unwrap_or(0) as u16
         * 1000

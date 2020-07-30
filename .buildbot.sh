@@ -4,12 +4,6 @@
 
 set -e
 
-case ${STD_TRACER_MODE} in
-    "sw" | "hw") true;;
-    *) echo "STD_TRACER_MODE must be set to either 'hw' or 'sw'"
-       exit 1;;
-esac
-
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
 
 TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest
