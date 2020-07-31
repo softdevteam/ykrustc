@@ -17,7 +17,7 @@ use rustc_middle::ty::print::with_crate_prefix;
 use rustc_middle::ty::{
     self, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness,
 };
-use rustc_span::symbol::{kw, Ident};
+use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::{source_map, FileName, Span};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_trait_selection::traits::Obligation;
@@ -570,12 +570,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     };
                     let mut type_params = FxHashMap::default();
                     let mut bound_spans = vec![];
+
                     let mut collect_type_param_suggestions =
-                        |self_ty: Ty<'_>, parent_pred: &ty::Predicate<'_>, obligation: &str| {
-                            if let (ty::Param(_), ty::PredicateKind::Trait(p, _)) =
-                                (&self_ty.kind, parent_pred.kind())
+                        |self_ty: Ty<'tcx>, parent_pred: &ty::Predicate<'tcx>, obligation: &str| {
+                            // We don't care about regions here, so it's fine to skip the binder here.
+                            if let (ty::Param(_), ty::PredicateAtom::Trait(p, _)) =
+                                (&self_ty.kind, parent_pred.skip_binders())
                             {
-                                if let ty::Adt(def, _) = p.skip_binder().trait_ref.self_ty().kind {
+                                if let ty::Adt(def, _) = p.trait_ref.self_ty().kind {
                                     let node = def.did.as_local().map(|def_id| {
                                         self.tcx.hir().get(self.tcx.hir().as_local_hir_id(def_id))
                                     });
@@ -625,8 +627,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         }
                     };
                     let mut format_pred = |pred: ty::Predicate<'tcx>| {
-                        match pred.kind() {
-                            ty::PredicateKind::Projection(pred) => {
+                        match pred.skip_binders() {
+                            ty::PredicateAtom::Projection(pred) => {
+                                let pred = ty::Binder::bind(pred);
                                 // `<Foo as Iterator>::Item = String`.
                                 let trait_ref =
                                     pred.skip_binder().projection_ty.trait_ref(self.tcx);
@@ -644,7 +647,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 bound_span_label(trait_ref.self_ty(), &obligation, &quiet);
                                 Some((obligation, trait_ref.self_ty()))
                             }
-                            ty::PredicateKind::Trait(poly_trait_ref, _) => {
+                            ty::PredicateAtom::Trait(poly_trait_ref, _) => {
+                                let poly_trait_ref = ty::Binder::bind(poly_trait_ref);
                                 let p = poly_trait_ref.skip_binder().trait_ref;
                                 let self_ty = p.self_ty();
                                 let path = p.print_only_trait_path();
@@ -729,7 +733,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let adt_def = actual.ty_adt_def().expect("enum is not an ADT");
                     if let Some(suggestion) = lev_distance::find_best_match_for_name(
                         adt_def.variants.iter().map(|s| &s.ident.name),
-                        &item_name.as_str(),
+                        item_name.name,
                         None,
                     ) {
                         err.span_suggestion(
@@ -743,7 +747,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 let mut fallback_span = true;
                 let msg = "remove this method call";
-                if item_name.as_str() == "as_str" && actual.peel_refs().is_str() {
+                if item_name.name == sym::as_str && actual.peel_refs().is_str() {
                     if let SelfSource::MethodCall(expr) = source {
                         let call_expr =
                             self.tcx.hir().expect_expr(self.tcx.hir().get_parent_node(expr.hir_id));
@@ -937,6 +941,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // legal to implement.
         let mut candidates = all_traits(self.tcx)
             .into_iter()
+            // Don't issue suggestions for unstable traits since they're
+            // unlikely to be implementable anyway
+            .filter(|info| match self.tcx.lookup_stability(info.def_id) {
+                Some(attr) => attr.level.is_stable(),
+                None => true,
+            })
             .filter(|info| {
                 // We approximate the coherence rules to only suggest
                 // traits that are legal to implement by requiring that
@@ -944,12 +954,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // this isn't perfect (that is, there are cases when
                 // implementing a trait would be legal but is rejected
                 // here).
-                unsatisfied_predicates.iter().all(|(p, _)| match p.kind() {
-                    // Hide traits if they are present in predicates as they can be fixed without
-                    // having to implement them.
-                    ty::PredicateKind::Trait(t, _) => t.def_id() == info.def_id,
-                    ty::PredicateKind::Projection(p) => p.item_def_id() == info.def_id,
-                    _ => false,
+                unsatisfied_predicates.iter().all(|(p, _)| {
+                    match p.skip_binders() {
+                        // Hide traits if they are present in predicates as they can be fixed without
+                        // having to implement them.
+                        ty::PredicateAtom::Trait(t, _) => t.def_id() == info.def_id,
+                        ty::PredicateAtom::Projection(p) => {
+                            p.projection_ty.item_def_id == info.def_id
+                        }
+                        _ => false,
+                    }
                 }) && (type_is_local || info.def_id.is_local())
                     && self
                         .associated_item(info.def_id, item_name, Namespace::ValueNS)
@@ -1037,7 +1051,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             };
             // Obtain the span for `param` and use it for a structured suggestion.
             let mut suggested = false;
-            if let (Some(ref param), Some(ref table)) = (param_type, self.in_progress_tables) {
+            if let (Some(ref param), Some(ref table)) =
+                (param_type, self.in_progress_typeck_results)
+            {
                 let table_owner = table.borrow().hir_owner;
                 let generics = self.tcx.generics_of(table_owner.to_def_id());
                 let type_param = generics.type_param(param, self.tcx);
@@ -1292,7 +1308,7 @@ fn compute_all_traits(tcx: TyCtxt<'_>) -> Vec<DefId> {
     traits
 }
 
-pub fn provide(providers: &mut ty::query::Providers<'_>) {
+pub fn provide(providers: &mut ty::query::Providers) {
     providers.all_traits = |tcx, cnum| {
         assert_eq!(cnum, LOCAL_CRATE);
         &tcx.arena.alloc(compute_all_traits(tcx))[..]

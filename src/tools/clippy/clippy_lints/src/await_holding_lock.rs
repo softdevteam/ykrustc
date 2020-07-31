@@ -11,7 +11,7 @@ declare_clippy_lint! {
     /// non-async-aware MutexGuard.
     ///
     /// **Why is this bad?** The Mutex types found in syd::sync and parking_lot
-    /// are not designed to operator in an async context across await points.
+    /// are not designed to operate in an async context across await points.
     ///
     /// There are two potential solutions. One is to use an asynx-aware Mutex
     /// type. Many asynchronous foundation crates provide such a Mutex type. The
@@ -59,8 +59,8 @@ impl LateLintPass<'_> for AwaitHoldingLock {
                 hir_id: body.value.hir_id,
             };
             let def_id = cx.tcx.hir().body_owner_def_id(body_id);
-            let tables = cx.tcx.typeck_tables_of(def_id);
-            check_interior_types(cx, &tables.generator_interior_types, body.value.span);
+            let typeck_results = cx.tcx.typeck(def_id);
+            check_interior_types(cx, &typeck_results.generator_interior_types, body.value.span);
         }
     }
 }

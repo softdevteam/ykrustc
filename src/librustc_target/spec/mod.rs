@@ -574,6 +574,7 @@ supported_targets! {
     ("i686-unknown-haiku", i686_unknown_haiku),
     ("x86_64-unknown-haiku", x86_64_unknown_haiku),
 
+    ("aarch64-apple-darwin", aarch64_apple_darwin),
     ("x86_64-apple-darwin", x86_64_apple_darwin),
     ("i686-apple-darwin", i686_apple_darwin),
 
@@ -676,6 +677,7 @@ supported_targets! {
     ("powerpc64-wrs-vxworks", powerpc64_wrs_vxworks),
 
     ("mipsel-sony-psp", mipsel_sony_psp),
+    ("thumbv4t-none-eabi", thumbv4t_none_eabi),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -902,9 +904,10 @@ pub struct TargetOptions {
     /// Panic strategy: "unwind" or "abort"
     pub panic_strategy: PanicStrategy,
 
-    /// A blacklist of ABIs unsupported by the current target. Note that generic
-    /// ABIs are considered to be supported on all platforms and cannot be blacklisted.
-    pub abi_blacklist: Vec<Abi>,
+    /// A list of ABIs unsupported by the current target. Note that generic ABIs
+    /// are considered to be supported on all platforms and cannot be marked
+    /// unsupported.
+    pub unsupported_abis: Vec<Abi>,
 
     /// Whether or not linking dylibs to a static CRT is allowed.
     pub crt_static_allows_dylibs: bool,
@@ -936,9 +939,6 @@ pub struct TargetOptions {
     /// Whether library functions call lowering/optimization is disabled in LLVM
     /// for this target unconditionally.
     pub no_builtins: bool,
-
-    /// The codegen backend to use for this target, typically "llvm"
-    pub codegen_backend: String,
 
     /// The default visibility for symbols in this target should be "hidden"
     /// rather than "default"
@@ -988,6 +988,11 @@ pub struct TargetOptions {
     /// Whether to use legacy .ctors initialization hooks rather than .init_array. Defaults
     /// to false (uses .init_array).
     pub use_ctors_section: bool,
+
+    /// Whether the linker is instructed to add a `GNU_EH_FRAME` ELF header
+    /// used to locate unwinding information is passed
+    /// (only has effect if the linker is `ld`-like).
+    pub eh_frame_header: bool,
 }
 
 impl Default for TargetOptions {
@@ -1056,7 +1061,7 @@ impl Default for TargetOptions {
             max_atomic_width: None,
             atomic_cas: true,
             panic_strategy: PanicStrategy::Unwind,
-            abi_blacklist: vec![],
+            unsupported_abis: vec![],
             crt_static_allows_dylibs: false,
             crt_static_default: false,
             crt_static_respected: false,
@@ -1067,7 +1072,6 @@ impl Default for TargetOptions {
             requires_lto: false,
             singlethread: false,
             no_builtins: false,
-            codegen_backend: "llvm".to_string(),
             default_hidden_visibility: false,
             emit_debug_gdb_scripts: true,
             requires_uwtable: false,
@@ -1080,6 +1084,7 @@ impl Default for TargetOptions {
             relax_elf_relocations: false,
             llvm_args: vec![],
             use_ctors_section: false,
+            eh_frame_header: true,
         }
     }
 }
@@ -1125,7 +1130,7 @@ impl Target {
     }
 
     pub fn is_abi_supported(&self, abi: Abi) -> bool {
-        abi.generic() || !self.options.abi_blacklist.contains(&abi)
+        abi.generic() || !self.options.unsupported_abis.contains(&abi)
     }
 
     /// Loads a target descriptor from a JSON object.
@@ -1460,7 +1465,6 @@ impl Target {
         key!(requires_lto, bool);
         key!(singlethread, bool);
         key!(no_builtins, bool);
-        key!(codegen_backend);
         key!(default_hidden_visibility, bool);
         key!(emit_debug_gdb_scripts, bool);
         key!(requires_uwtable, bool);
@@ -1473,23 +1477,31 @@ impl Target {
         key!(relax_elf_relocations, bool);
         key!(llvm_args, list);
         key!(use_ctors_section, bool);
+        key!(eh_frame_header, bool);
 
-        if let Some(array) = obj.find("abi-blacklist").and_then(Json::as_array) {
-            for name in array.iter().filter_map(|abi| abi.as_string()) {
-                match lookup_abi(name) {
-                    Some(abi) => {
-                        if abi.generic() {
+        // NB: The old name is deprecated, but support for it is retained for
+        // compatibility.
+        for name in ["abi-blacklist", "unsupported-abis"].iter() {
+            if let Some(array) = obj.find(name).and_then(Json::as_array) {
+                for name in array.iter().filter_map(|abi| abi.as_string()) {
+                    match lookup_abi(name) {
+                        Some(abi) => {
+                            if abi.generic() {
+                                return Err(format!(
+                                    "The ABI \"{}\" is considered to be supported on all \
+                                    targets and cannot be marked unsupported",
+                                    abi
+                                ));
+                            }
+
+                            base.options.unsupported_abis.push(abi)
+                        }
+                        None => {
                             return Err(format!(
-                                "The ABI \"{}\" is considered to be supported on \
-                                                all targets and cannot be blacklisted",
-                                abi
+                                "Unknown ABI \"{}\" in target specification",
+                                name
                             ));
                         }
-
-                        base.options.abi_blacklist.push(abi)
-                    }
-                    None => {
-                        return Err(format!("Unknown ABI \"{}\" in target specification", name));
                     }
                 }
             }
@@ -1691,7 +1703,6 @@ impl ToJson for Target {
         target_option_val!(requires_lto);
         target_option_val!(singlethread);
         target_option_val!(no_builtins);
-        target_option_val!(codegen_backend);
         target_option_val!(default_hidden_visibility);
         target_option_val!(emit_debug_gdb_scripts);
         target_option_val!(requires_uwtable);
@@ -1704,12 +1715,13 @@ impl ToJson for Target {
         target_option_val!(relax_elf_relocations);
         target_option_val!(llvm_args);
         target_option_val!(use_ctors_section);
+        target_option_val!(eh_frame_header);
 
-        if default.abi_blacklist != self.options.abi_blacklist {
+        if default.unsupported_abis != self.options.unsupported_abis {
             d.insert(
-                "abi-blacklist".to_string(),
+                "unsupported-abis".to_string(),
                 self.options
-                    .abi_blacklist
+                    .unsupported_abis
                     .iter()
                     .map(|&name| Abi::name(name).to_json())
                     .collect::<Vec<_>>()

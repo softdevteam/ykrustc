@@ -32,18 +32,21 @@ use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_middle::util::common::record_time;
 use rustc_serialize::{opaque, Decodable, Decoder, SpecializedDecoder, UseSpecializedDecodable};
 use rustc_session::Session;
+use rustc_span::hygiene::ExpnDataDecodeMode;
 use rustc_span::source_map::{respan, Spanned};
 use rustc_span::symbol::{sym, Ident, Symbol};
-use rustc_span::{self, hygiene::MacroKind, BytePos, Pos, Span, DUMMY_SP};
+use rustc_span::{self, hygiene::MacroKind, BytePos, ExpnId, Pos, Span, SyntaxContext, DUMMY_SP};
 
 use log::debug;
 use proc_macro::bridge::client::ProcMacro;
+use std::cell::Cell;
 use std::io;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::path::Path;
 
 pub use cstore_impl::{provide, provide_extern};
+use rustc_span::hygiene::HygieneDecodeContext;
 
 mod cstore_impl;
 
@@ -105,6 +108,13 @@ crate struct CrateMetadata {
     private_dep: bool,
     /// The hash for the host proc macro. Used to support `-Z dual-proc-macro`.
     host_hash: Option<Svh>,
+
+    /// Additional data used for decoding `HygieneData` (e.g. `SyntaxContext`
+    /// and `ExpnId`).
+    /// Note that we store a `HygieneDecodeContext` for each `CrateMetadat`. This is
+    /// because `SyntaxContext` ids are not globally unique, so we need
+    /// to track which ids we've decoded on a per-crate basis.
+    hygiene_context: HygieneDecodeContext,
 
     // --- Data used only for improving diagnostics ---
     /// Information about the `extern crate` item or path that caused this crate to be loaded.
@@ -411,6 +421,7 @@ impl<'a, 'tcx> SpecializedDecoder<Span> for DecodeContext<'a, 'tcx> {
 
         let lo = BytePos::decode(self)?;
         let len = BytePos::decode(self)?;
+        let ctxt = SyntaxContext::decode(self)?;
         let hi = lo + len;
 
         let sess = if let Some(sess) = self.sess {
@@ -524,7 +535,7 @@ impl<'a, 'tcx> SpecializedDecoder<Span> for DecodeContext<'a, 'tcx> {
         let hi =
             (hi + source_file.translated_source_file.start_pos) - source_file.original_start_pos;
 
-        Ok(Span::with_root_ctxt(lo, hi))
+        Ok(Span::new(lo, hi, ctxt))
     }
 }
 
@@ -769,7 +780,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
 
     fn get_variant(
         &self,
-        tcx: TyCtxt<'tcx>,
         kind: &EntryKind,
         index: DefIndex,
         parent_did: DefId,
@@ -794,7 +804,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         let ctor_did = data.ctor.map(|index| self.local_def_id(index));
 
         ty::VariantDef::new(
-            tcx,
             self.item_ident(index, sess),
             variant_did,
             ctor_did,
@@ -815,6 +824,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             adt_kind,
             parent_did,
             false,
+            data.is_non_exhaustive,
         )
     }
 
@@ -836,10 +846,10 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                 .get(self, item_id)
                 .unwrap_or(Lazy::empty())
                 .decode(self)
-                .map(|index| self.get_variant(tcx, &self.kind(index), index, did, tcx.sess))
+                .map(|index| self.get_variant(&self.kind(index), index, did, tcx.sess))
                 .collect()
         } else {
-            std::iter::once(self.get_variant(tcx, &kind, item_id, did, tcx.sess)).collect()
+            std::iter::once(self.get_variant(&kind, item_id, did, tcx.sess)).collect()
         };
 
         tcx.alloc_adt_def(did, adt_kind, variants, repr)
@@ -1120,6 +1130,14 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         !self.is_proc_macro(id) && self.root.tables.mir.get(self, id).is_some()
     }
 
+    fn module_expansion(&self, id: DefIndex, sess: &Session) -> ExpnId {
+        if let EntryKind::Mod(m) = self.kind(id) {
+            m.decode((self, sess)).expansion
+        } else {
+            panic!("Expected module, found {:?}", self.local_def_id(id))
+        }
+    }
+
     fn get_optimized_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> Body<'tcx> {
         self.root
             .tables
@@ -1130,6 +1148,16 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                 bug!("get_optimized_mir: missing MIR for `{:?}`", self.local_def_id(id))
             })
             .decode((self, tcx))
+    }
+
+    fn get_unused_generic_params(&self, id: DefIndex) -> FiniteBitSet<u64> {
+        self.root
+            .tables
+            .unused_generic_params
+            .get(self, id)
+            .filter(|_| !self.is_proc_macro(id))
+            .map(|params| params.decode(self))
+            .unwrap_or_default()
     }
 
     fn get_promoted_mir(&self, tcx: TyCtxt<'tcx>, id: DefIndex) -> IndexVec<Promoted, Body<'tcx>> {
@@ -1386,9 +1414,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         let constness = match self.kind(id) {
             EntryKind::AssocFn(data) => data.decode(self).fn_data.constness,
             EntryKind::Fn(data) => data.decode(self).constness,
-            // Some intrinsics can be const fn. While we could recompute this (at least until we
-            // stop having hardcoded whitelists and move to stability attributes), it seems cleaner
-            // to treat all const fns equally.
             EntryKind::ForeignFn(data) => data.decode(self).constness,
             EntryKind::Variant(..) | EntryKind::Struct(..) => hir::Constness::Const,
             _ => hir::Constness::NotConst,
@@ -1477,6 +1502,9 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     fn imported_source_files(&self, sess: &Session) -> &'a [ImportedSourceFile] {
         // Translate the virtual `/rustc/$hash` prefix back to a real directory
         // that should hold actual sources, where possible.
+        //
+        // NOTE: if you update this, you might need to also update bootstrap's code for generating
+        // the `rust-src` component in `Src::run` in `src/bootstrap/dist.rs`.
         let virtual_rust_source_base_dir = option_env!("CFG_VIRTUAL_RUST_SOURCE_BASE_DIR")
             .map(Path::new)
             .filter(|_| {
@@ -1502,7 +1530,36 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                         if let rustc_span::RealFileName::Named(one_path) = old_name {
                             if let Ok(rest) = one_path.strip_prefix(virtual_dir) {
                                 let virtual_name = one_path.clone();
-                                let new_path = real_dir.join(rest);
+
+                                // The std library crates are in
+                                // `$sysroot/lib/rustlib/src/rust/library`, whereas other crates
+                                // may be in `$sysroot/lib/rustlib/src/rust/` directly. So we
+                                // detect crates from the std libs and handle them specially.
+                                const STD_LIBS: &[&str] = &[
+                                    "core",
+                                    "alloc",
+                                    "std",
+                                    "test",
+                                    "term",
+                                    "unwind",
+                                    "proc_macro",
+                                    "panic_abort",
+                                    "panic_unwind",
+                                    "profiler_builtins",
+                                    "rtstartup",
+                                    "rustc-std-workspace-core",
+                                    "rustc-std-workspace-alloc",
+                                    "rustc-std-workspace-std",
+                                    "backtrace",
+                                ];
+                                let is_std_lib = STD_LIBS.iter().any(|l| rest.starts_with(l));
+
+                                let new_path = if is_std_lib {
+                                    real_dir.join("library").join(rest)
+                                } else {
+                                    real_dir.join(rest)
+                                };
+
                                 debug!(
                                     "try_to_translate_virtual_to_real: `{}` -> `{}`",
                                     virtual_name.display(),
@@ -1645,6 +1702,7 @@ impl CrateMetadata {
             private_dep,
             host_hash,
             extern_crate: Lock::new(None),
+            hygiene_context: Default::default(),
         }
     }
 
@@ -1775,5 +1833,59 @@ fn macro_kind(raw: &ProcMacro) -> MacroKind {
         ProcMacro::CustomDerive { .. } => MacroKind::Derive,
         ProcMacro::Attr { .. } => MacroKind::Attr,
         ProcMacro::Bang { .. } => MacroKind::Bang,
+    }
+}
+
+impl<'a, 'tcx> SpecializedDecoder<SyntaxContext> for DecodeContext<'a, 'tcx> {
+    fn specialized_decode(&mut self) -> Result<SyntaxContext, Self::Error> {
+        let cdata = self.cdata();
+        let sess = self.sess.unwrap();
+        let cname = cdata.root.name;
+        rustc_span::hygiene::decode_syntax_context(self, &cdata.hygiene_context, |_, id| {
+            debug!("SpecializedDecoder<SyntaxContext>: decoding {}", id);
+            Ok(cdata
+                .root
+                .syntax_contexts
+                .get(&cdata, id)
+                .unwrap_or_else(|| panic!("Missing SyntaxContext {:?} for crate {:?}", id, cname))
+                .decode((&cdata, sess)))
+        })
+    }
+}
+
+impl<'a, 'tcx> SpecializedDecoder<ExpnId> for DecodeContext<'a, 'tcx> {
+    fn specialized_decode(&mut self) -> Result<ExpnId, Self::Error> {
+        let local_cdata = self.cdata();
+        let sess = self.sess.unwrap();
+        let expn_cnum = Cell::new(None);
+        let get_ctxt = |cnum| {
+            expn_cnum.set(Some(cnum));
+            if cnum == LOCAL_CRATE {
+                &local_cdata.hygiene_context
+            } else {
+                &local_cdata.cstore.get_crate_data(cnum).cdata.hygiene_context
+            }
+        };
+
+        rustc_span::hygiene::decode_expn_id(
+            self,
+            ExpnDataDecodeMode::Metadata(get_ctxt),
+            |_this, index| {
+                let cnum = expn_cnum.get().unwrap();
+                // Lookup local `ExpnData`s in our own crate data. Foreign `ExpnData`s
+                // are stored in the owning crate, to avoid duplication.
+                let crate_data = if cnum == LOCAL_CRATE {
+                    local_cdata
+                } else {
+                    local_cdata.cstore.get_crate_data(cnum)
+                };
+                Ok(crate_data
+                    .root
+                    .expn_data
+                    .get(&crate_data, index)
+                    .unwrap()
+                    .decode((&crate_data, sess)))
+            },
+        )
     }
 }

@@ -3,6 +3,7 @@ use crate::proc_macro_decls;
 use crate::util;
 
 use log::{info, log_enabled, warn};
+use once_cell::sync::Lazy;
 use rustc_ast::mut_visit::MutVisitor;
 use rustc_ast::{self, ast, visit};
 use rustc_codegen_ssa::back::link::emit_metadata;
@@ -20,6 +21,7 @@ use rustc_middle::dep_graph::DepGraph;
 use rustc_middle::middle;
 use rustc_middle::middle::cstore::{CrateStore, MetadataLoader, MetadataLoaderDyn};
 use rustc_middle::sir::Sir;
+use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::steal::Steal;
 use rustc_middle::ty::{self, GlobalCtxt, ResolverOutputs, TyCtxt};
 use rustc_mir as mir;
@@ -353,13 +355,7 @@ fn configure_and_expand_inner<'a>(
         )
     });
 
-    // If we're actually rustdoc then there's no need to actually compile
-    // anything, so switch everything to just looping
-    let mut should_loop = sess.opts.actually_rustdoc;
     if let Some(PpMode::PpmSource(PpSourceMode::PpmEveryBodyLoops)) = sess.opts.pretty {
-        should_loop |= true;
-    }
-    if should_loop {
         log::debug!("replacing bodies with loop {{}}");
         util::ReplaceBodyWithLoop::new(&mut resolver).visit_crate(&mut krate);
     }
@@ -720,7 +716,8 @@ pub fn prepare_outputs(
     Ok(outputs)
 }
 
-pub fn default_provide(providers: &mut ty::query::Providers<'_>) {
+pub static DEFAULT_QUERY_PROVIDERS: Lazy<Providers> = Lazy::new(|| {
+    let providers = &mut Providers::default();
     providers.analysis = analysis;
     proc_macro_decls::provide(providers);
     plugin::build::provide(providers);
@@ -739,12 +736,15 @@ pub fn default_provide(providers: &mut ty::query::Providers<'_>) {
     rustc_lint::provide(providers);
     rustc_symbol_mangling::provide(providers);
     rustc_codegen_ssa::provide(providers);
-}
+    *providers
+});
 
-pub fn default_provide_extern(providers: &mut ty::query::Providers<'_>) {
-    rustc_metadata::provide_extern(providers);
-    rustc_codegen_ssa::provide_extern(providers);
-}
+pub static DEFAULT_EXTERN_QUERY_PROVIDERS: Lazy<Providers> = Lazy::new(|| {
+    let mut extern_providers = *DEFAULT_QUERY_PROVIDERS;
+    rustc_metadata::provide_extern(&mut extern_providers);
+    rustc_codegen_ssa::provide_extern(&mut extern_providers);
+    extern_providers
+});
 
 pub struct QueryContext<'tcx>(&'tcx GlobalCtxt<'tcx>);
 
@@ -781,12 +781,11 @@ pub fn create_global_ctxt<'tcx>(
     let query_result_on_disk_cache = rustc_incremental::load_query_result_cache(sess);
 
     let codegen_backend = compiler.codegen_backend();
-    let mut local_providers = ty::query::Providers::default();
-    default_provide(&mut local_providers);
+    let mut local_providers = *DEFAULT_QUERY_PROVIDERS;
     codegen_backend.provide(&mut local_providers);
 
-    let mut extern_providers = local_providers;
-    default_provide_extern(&mut extern_providers);
+    let mut extern_providers = *DEFAULT_EXTERN_QUERY_PROVIDERS;
+    codegen_backend.provide(&mut extern_providers);
     codegen_backend.provide_extern(&mut extern_providers);
 
     if let Some(callback) = compiler.override_queries {
@@ -892,7 +891,8 @@ fn analysis(tcx: TyCtxt<'_>, cnum: CrateNum) -> Result<()> {
             mir::transform::check_unsafety::check_unsafety(tcx, def_id);
 
             if tcx.hir().body_const_context(def_id).is_some() {
-                tcx.ensure().mir_drops_elaborated_and_const_checked(def_id);
+                tcx.ensure()
+                    .mir_drops_elaborated_and_const_checked(ty::WithOptConstParam::unknown(def_id));
             }
         }
     });

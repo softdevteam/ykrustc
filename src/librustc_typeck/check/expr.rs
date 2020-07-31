@@ -19,6 +19,7 @@ use crate::type_error_struct;
 use rustc_ast::ast;
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::ErrorReported;
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder, DiagnosticId};
 use rustc_hir as hir;
@@ -68,7 +69,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // coercions from ! to `expected`.
         if ty.is_never() {
             assert!(
-                !self.tables.borrow().adjustments().contains_key(expr.hir_id),
+                !self.typeck_results.borrow().adjustments().contains_key(expr.hir_id),
                 "expression with never type wound up being adjusted"
             );
             let adj_ty = self.next_diverging_ty_var(TypeVariableOrigin {
@@ -177,7 +178,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let old_diverges = self.diverges.replace(Diverges::Maybe);
         let old_has_errors = self.has_errors.replace(false);
 
-        let ty = self.check_expr_kind(expr, expected);
+        let ty = ensure_sufficient_stack(|| self.check_expr_kind(expr, expected));
 
         // Warn for non-block expressions with diverging children.
         match expr.kind {
@@ -430,7 +431,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // This is maybe too permissive, since it allows
             // `let u = &raw const Box::new((1,)).0`, which creates an
             // immediately dangling raw pointer.
-            self.tables.borrow().adjustments().get(base.hir_id).map_or(false, |x| {
+            self.typeck_results.borrow().adjustments().get(base.hir_id).map_or(false, |x| {
                 x.iter().any(|adj| if let Adjust::Deref(_) = adj.kind { true } else { false })
             })
         });
@@ -487,7 +488,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     self.require_type_is_sized_deferred(
                         input,
                         expr.span,
-                        traits::SizedArgumentType,
+                        traits::SizedArgumentType(None),
                     );
                 }
             }
@@ -509,7 +510,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // We always require that the type provided as the value for
         // a type parameter outlives the moment of instantiation.
-        let substs = self.tables.borrow().node_substs(expr.hir_id);
+        let substs = self.typeck_results.borrow().node_substs(expr.hir_id);
         self.add_wf_bounds(substs, expr);
 
         ty
@@ -913,7 +914,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if let ty::Adt(..) = rcvr_t.kind {
                 // Try alternative arbitrary self types that could fulfill this call.
                 // FIXME: probe for all types that *could* be arbitrary self-types, not
-                // just this whitelist.
+                // just this list.
                 try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, lang_items::OwnedBoxLangItem));
                 try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, lang_items::PinTypeLangItem));
                 try_alt_rcvr(&mut err, self.tcx.mk_diagnostic_item(rcvr_t, sym::Arc));
@@ -1123,7 +1124,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             })
                             .collect();
 
-                        self.tables
+                        self.typeck_results
                             .borrow_mut()
                             .fru_field_types_mut()
                             .insert(expr.hir_id, fru_field_types);
@@ -1336,7 +1337,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // prevent all specified fields from being suggested
                 let skip_fields = skip_fields.iter().map(|ref x| x.ident.name);
                 if let Some(field_name) =
-                    Self::suggest_field_name(variant, &field.ident.as_str(), skip_fields.collect())
+                    Self::suggest_field_name(variant, field.ident.name, skip_fields.collect())
                 {
                     err.span_suggestion(
                         field.ident.span,
@@ -1377,7 +1378,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     // Return an hint about the closest match in field names
     fn suggest_field_name(
         variant: &'tcx ty::VariantDef,
-        field: &str,
+        field: Symbol,
         skip: Vec<Symbol>,
     ) -> Option<Symbol> {
         let names = variant.fields.iter().filter_map(|field| {
@@ -1621,7 +1622,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         field: Ident,
     ) {
         if let Some(suggested_field_name) =
-            Self::suggest_field_name(def.non_enum_variant(), &field.as_str(), vec![])
+            Self::suggest_field_name(def.non_enum_variant(), field.name, vec![])
         {
             err.span_suggestion(
                 field.span,
@@ -1806,7 +1807,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // If this is an input value, we require its type to be fully resolved
         // at this point. This allows us to provide helpful coercions which help
-        // pass the type whitelist in a later pass.
+        // pass the type candidate list in a later pass.
         //
         // We don't require output types to be resolved at this point, which
         // allows them to be inferred based on how they are used later in the

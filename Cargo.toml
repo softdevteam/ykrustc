@@ -2,9 +2,9 @@
 members = [
   "src/bootstrap",
   "src/rustc",
-  "src/libstd",
-  "src/libtest",
   "src/librustc_codegen_llvm",
+  "library/std",
+  "library/test",
   "src/tools/cargotest",
   "src/tools/clippy",
   "src/tools/compiletest",
@@ -17,6 +17,7 @@ members = [
   "src/tools/remote-test-client",
   "src/tools/remote-test-server",
   "src/tools/rust-installer",
+  "src/tools/rust-demangler",
   "src/tools/cargo",
   "src/tools/rustdoc",
   "src/tools/rls",
@@ -73,11 +74,11 @@ rustfmt-nightly = { path = "src/tools/rustfmt" }
 # here
 rustc-workspace-hack = { path = 'src/tools/rustc-workspace-hack' }
 
-# See comments in `tools/rustc-std-workspace-core/README.md` for what's going on
+# See comments in `library/rustc-std-workspace-core/README.md` for what's going on
 # here
-rustc-std-workspace-core = { path = 'src/tools/rustc-std-workspace-core' }
-rustc-std-workspace-alloc = { path = 'src/tools/rustc-std-workspace-alloc' }
-rustc-std-workspace-std = { path = 'src/tools/rustc-std-workspace-std' }
+rustc-std-workspace-core = { path = 'library/rustc-std-workspace-core' }
+rustc-std-workspace-alloc = { path = 'library/rustc-std-workspace-alloc' }
+rustc-std-workspace-std = { path = 'library/rustc-std-workspace-std' }
 
 [patch."https://github.com/rust-lang/rust-clippy"]
 clippy_lints = { path = "src/tools/clippy/clippy_lints" }
@@ -85,5 +86,5 @@ clippy_lints = { path = "src/tools/clippy/clippy_lints" }
 # When developing Yorick, you may find that you need to override ykpack. You
 # can do it once here, instead of all over the place, by uncommenting the
 # following two lines.
-[patch."https://github.com/softdevteam/yk"]
-ykpack = { git = "https://github.com/ptersilie/yk", branch="compilerefs" }
+#[patch."https://github.com/softdevteam/yk"]
+#ykpack = { path = "../yk/ykpack" }

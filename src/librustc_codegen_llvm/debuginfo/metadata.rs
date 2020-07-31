@@ -19,6 +19,7 @@ use crate::llvm::debuginfo::{
 use crate::value::Value;
 
 use log::debug;
+use rustc_ast::ast;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::const_cstr;
 use rustc_data_structures::fingerprint::Fingerprint;
@@ -699,6 +700,8 @@ pub fn type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>, usage_site_span: Sp
             prepare_tuple_metadata(cx, t, &tys, unique_type_id, usage_site_span, NO_SCOPE_METADATA)
                 .finalize(cx)
         }
+        // Type parameters from polymorphized functions.
+        ty::Param(_) => MetadataCreationResult::new(param_type_metadata(cx, t), false),
         _ => bug!("debuginfo: unexpected type in type_metadata: {:?}", t),
     };
 
@@ -827,14 +830,60 @@ fn file_metadata_raw(
     }
 }
 
+trait MsvcBasicName {
+    fn msvc_basic_name(self) -> &'static str;
+}
+
+impl MsvcBasicName for ast::IntTy {
+    fn msvc_basic_name(self) -> &'static str {
+        match self {
+            ast::IntTy::Isize => "ptrdiff_t",
+            ast::IntTy::I8 => "__int8",
+            ast::IntTy::I16 => "__int16",
+            ast::IntTy::I32 => "__int32",
+            ast::IntTy::I64 => "__int64",
+            ast::IntTy::I128 => "__int128",
+        }
+    }
+}
+
+impl MsvcBasicName for ast::UintTy {
+    fn msvc_basic_name(self) -> &'static str {
+        match self {
+            ast::UintTy::Usize => "size_t",
+            ast::UintTy::U8 => "unsigned __int8",
+            ast::UintTy::U16 => "unsigned __int16",
+            ast::UintTy::U32 => "unsigned __int32",
+            ast::UintTy::U64 => "unsigned __int64",
+            ast::UintTy::U128 => "unsigned __int128",
+        }
+    }
+}
+
+impl MsvcBasicName for ast::FloatTy {
+    fn msvc_basic_name(self) -> &'static str {
+        match self {
+            ast::FloatTy::F32 => "float",
+            ast::FloatTy::F64 => "double",
+        }
+    }
+}
+
 fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
     debug!("basic_type_metadata: {:?}", t);
+
+    // When targeting MSVC, emit MSVC style type names for compatibility with
+    // .natvis visualizers (and perhaps other existing native debuggers?)
+    let msvc_like_names = cx.tcx.sess.target.target.options.is_like_msvc;
 
     let (name, encoding) = match t.kind {
         ty::Never => ("!", DW_ATE_unsigned),
         ty::Tuple(ref elements) if elements.is_empty() => ("()", DW_ATE_unsigned),
         ty::Bool => ("bool", DW_ATE_boolean),
         ty::Char => ("char", DW_ATE_unsigned_char),
+        ty::Int(int_ty) if msvc_like_names => (int_ty.msvc_basic_name(), DW_ATE_signed),
+        ty::Uint(uint_ty) if msvc_like_names => (uint_ty.msvc_basic_name(), DW_ATE_unsigned),
+        ty::Float(float_ty) if msvc_like_names => (float_ty.msvc_basic_name(), DW_ATE_float),
         ty::Int(int_ty) => (int_ty.name_str(), DW_ATE_signed),
         ty::Uint(uint_ty) => (uint_ty.name_str(), DW_ATE_unsigned),
         ty::Float(float_ty) => (float_ty.name_str(), DW_ATE_float),
@@ -851,7 +900,30 @@ fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
         )
     };
 
-    ty_metadata
+    if !msvc_like_names {
+        return ty_metadata;
+    }
+
+    let typedef_name = match t.kind {
+        ty::Int(int_ty) => int_ty.name_str(),
+        ty::Uint(uint_ty) => uint_ty.name_str(),
+        ty::Float(float_ty) => float_ty.name_str(),
+        _ => return ty_metadata,
+    };
+
+    let typedef_metadata = unsafe {
+        llvm::LLVMRustDIBuilderCreateTypedef(
+            DIB(cx),
+            ty_metadata,
+            typedef_name.as_ptr().cast(),
+            typedef_name.len(),
+            unknown_file_metadata(cx),
+            0,
+            None,
+        )
+    };
+
+    typedef_metadata
 }
 
 fn foreign_type_metadata(
@@ -883,6 +955,20 @@ fn pointer_type_metadata(
             name.len(),
         )
     }
+}
+
+fn param_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
+    debug!("param_type_metadata: {:?}", t);
+    let name = format!("{:?}", t);
+    return unsafe {
+        llvm::LLVMRustDIBuilderCreateBasicType(
+            DIB(cx),
+            name.as_ptr().cast(),
+            name.len(),
+            Size::ZERO.bits(),
+            DW_ATE_unsigned,
+        )
+    };
 }
 
 pub fn compile_unit_metadata(
@@ -2395,11 +2481,10 @@ pub fn create_global_var_metadata(cx: &CodegenCx<'ll, '_>, def_id: DefId, global
     };
 
     let is_local_to_unit = is_node_local_to_unit(cx, def_id);
-    let variable_type = Instance::mono(cx.tcx, def_id).monomorphic_ty(cx.tcx);
+    let variable_type = Instance::mono(cx.tcx, def_id).ty(cx.tcx, ty::ParamEnv::reveal_all());
     let type_metadata = type_metadata(cx, variable_type, span);
     let var_name = tcx.item_name(def_id).as_str();
-    let linkage_name: &str =
-        &mangled_name_of_instance(cx, Instance::mono(tcx, def_id)).name.as_str();
+    let linkage_name = mangled_name_of_instance(cx, Instance::mono(tcx, def_id)).name;
     // When empty, linkage_name field is omitted,
     // which is what we want for no_mangle statics
     let linkage_name = if var_name == linkage_name { "" } else { linkage_name };

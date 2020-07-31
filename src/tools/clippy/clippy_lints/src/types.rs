@@ -17,7 +17,7 @@ use rustc_hir::{
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
-use rustc_middle::ty::{self, InferTy, Ty, TyCtxt, TyS, TypeckTables};
+use rustc_middle::ty::{self, InferTy, Ty, TyCtxt, TyS, TypeckResults};
 use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::hygiene::{ExpnKind, MacroKind};
 use rustc_span::source_map::Span;
@@ -595,7 +595,7 @@ declare_lint_pass!(LetUnitValue => [LET_UNIT_VALUE]);
 impl<'tcx> LateLintPass<'tcx> for LetUnitValue {
     fn check_stmt(&mut self, cx: &LateContext<'tcx>, stmt: &'tcx Stmt<'_>) {
         if let StmtKind::Local(ref local) = stmt.kind {
-            if is_unit(cx.tables().pat_ty(&local.pat)) {
+            if is_unit(cx.typeck_results().pat_ty(&local.pat)) {
                 if in_external_macro(cx.sess(), stmt.span) || local.pat.span.from_expansion() {
                     return;
                 }
@@ -680,7 +680,7 @@ impl<'tcx> LateLintPass<'tcx> for UnitCmp {
                 if let ExpnKind::Macro(MacroKind::Bang, symbol) = callee.kind {
                     if let ExprKind::Binary(ref cmp, ref left, _) = expr.kind {
                         let op = cmp.node;
-                        if op.is_comparison() && is_unit(cx.tables().expr_ty(left)) {
+                        if op.is_comparison() && is_unit(cx.typeck_results().expr_ty(left)) {
                             let result = match &*symbol.as_str() {
                                 "assert_eq" | "debug_assert_eq" => "succeed",
                                 "assert_ne" | "debug_assert_ne" => "fail",
@@ -704,7 +704,7 @@ impl<'tcx> LateLintPass<'tcx> for UnitCmp {
         }
         if let ExprKind::Binary(ref cmp, ref left, _) = expr.kind {
             let op = cmp.node;
-            if op.is_comparison() && is_unit(cx.tables().expr_ty(left)) {
+            if op.is_comparison() && is_unit(cx.typeck_results().expr_ty(left)) {
                 let result = match op {
                     BinOpKind::Eq | BinOpKind::Le | BinOpKind::Ge => "true",
                     _ => "false",
@@ -774,12 +774,8 @@ impl<'tcx> LateLintPass<'tcx> for UnitArg {
                 let args_to_recover = args
                     .iter()
                     .filter(|arg| {
-                        if is_unit(cx.tables().expr_ty(arg)) && !is_unit_literal(arg) {
-                            if let ExprKind::Match(.., MatchSource::TryDesugar) = &arg.kind {
-                                false
-                            } else {
-                                true
-                            }
+                        if is_unit(cx.typeck_results().expr_ty(arg)) && !is_unit_literal(arg) {
+                            !matches!(&arg.kind, ExprKind::Match(.., MatchSource::TryDesugar))
                         } else {
                             false
                         }
@@ -899,17 +895,11 @@ fn is_questionmark_desugar_marked_call(expr: &Expr<'_>) -> bool {
 }
 
 fn is_unit(ty: Ty<'_>) -> bool {
-    match ty.kind {
-        ty::Tuple(slice) if slice.is_empty() => true,
-        _ => false,
-    }
+    matches!(ty.kind, ty::Tuple(slice) if slice.is_empty())
 }
 
 fn is_unit_literal(expr: &Expr<'_>) -> bool {
-    match expr.kind {
-        ExprKind::Tup(ref slice) if slice.is_empty() => true,
-        _ => false,
-    }
+    matches!(expr.kind, ExprKind::Tup(ref slice) if slice.is_empty())
 }
 
 declare_clippy_lint! {
@@ -1154,10 +1144,7 @@ fn int_ty_to_nbits(typ: Ty<'_>, tcx: TyCtxt<'_>) -> u64 {
 }
 
 fn is_isize_or_usize(typ: Ty<'_>) -> bool {
-    match typ.kind {
-        ty::Int(IntTy::Isize) | ty::Uint(UintTy::Usize) => true,
-        _ => false,
-    }
+    matches!(typ.kind, ty::Int(IntTy::Isize) | ty::Uint(UintTy::Usize))
 }
 
 fn span_precision_loss_lint(cx: &LateContext<'_>, expr: &Expr<'_>, cast_from: Ty<'_>, cast_to_f64: bool) {
@@ -1205,16 +1192,19 @@ fn span_lossless_lint(cx: &LateContext<'_>, expr: &Expr<'_>, op: &Expr<'_>, cast
     // has parens on the outside, they are no longer needed.
     let mut applicability = Applicability::MachineApplicable;
     let opt = snippet_opt(cx, op.span);
-    let sugg = if let Some(ref snip) = opt {
-        if should_strip_parens(op, snip) {
-            &snip[1..snip.len() - 1]
-        } else {
-            snip.as_str()
-        }
-    } else {
-        applicability = Applicability::HasPlaceholders;
-        ".."
-    };
+    let sugg = opt.as_ref().map_or_else(
+        || {
+            applicability = Applicability::HasPlaceholders;
+            ".."
+        },
+        |snip| {
+            if should_strip_parens(op, snip) {
+                &snip[1..snip.len() - 1]
+            } else {
+                snip.as_str()
+            }
+        },
+    );
 
     span_lint_and_sugg(
         cx,
@@ -1242,7 +1232,7 @@ fn check_loss_of_sign(cx: &LateContext<'_>, expr: &Expr<'_>, op: &Expr<'_>, cast
     }
 
     // don't lint for positive constants
-    let const_val = constant(cx, &cx.tables(), op);
+    let const_val = constant(cx, &cx.typeck_results(), op);
     if_chain! {
         if let Some((const_val, _)) = const_val;
         if let Constant::Int(n) = const_val;
@@ -1256,7 +1246,7 @@ fn check_loss_of_sign(cx: &LateContext<'_>, expr: &Expr<'_>, op: &Expr<'_>, cast
     // don't lint for the result of methods that always return non-negative values
     if let ExprKind::MethodCall(ref path, _, _, _) = op.kind {
         let mut method_name = path.ident.name.as_str();
-        let whitelisted_methods = ["abs", "checked_abs", "rem_euclid", "checked_rem_euclid"];
+        let allowed_methods = ["abs", "checked_abs", "rem_euclid", "checked_rem_euclid"];
 
         if_chain! {
             if method_name == "unwrap";
@@ -1267,7 +1257,7 @@ fn check_loss_of_sign(cx: &LateContext<'_>, expr: &Expr<'_>, op: &Expr<'_>, cast
             }
         }
 
-        if whitelisted_methods.iter().any(|&name| method_name == name) {
+        if allowed_methods.iter().any(|&name| method_name == name) {
             return;
         }
     }
@@ -1408,7 +1398,7 @@ impl<'tcx> LateLintPass<'tcx> for Casts {
             return;
         }
         if let ExprKind::Cast(ref ex, _) = expr.kind {
-            let (cast_from, cast_to) = (cx.tables().expr_ty(ex), cx.tables().expr_ty(expr));
+            let (cast_from, cast_to) = (cx.typeck_results().expr_ty(ex), cx.typeck_results().expr_ty(expr));
             lint_fn_to_numeric_cast(cx, expr, ex, cast_from, cast_to);
             if let ExprKind::Lit(ref lit) = ex.kind {
                 if_chain! {
@@ -1734,10 +1724,10 @@ impl<'tcx> Visitor<'tcx> for TypeComplexityVisitor {
 
             TyKind::TraitObject(ref param_bounds, _) => {
                 let has_lifetime_parameters = param_bounds.iter().any(|bound| {
-                    bound.bound_generic_params.iter().any(|gen| match gen.kind {
-                        GenericParamKind::Lifetime { .. } => true,
-                        _ => false,
-                    })
+                    bound
+                        .bound_generic_params
+                        .iter()
+                        .any(|gen| matches!(gen.kind, GenericParamKind::Lifetime { .. }))
                 });
                 if has_lifetime_parameters {
                     // complex trait bounds like A<'a, 'b>
@@ -1796,7 +1786,7 @@ impl<'tcx> LateLintPass<'tcx> for CharLitAsU8 {
             if let ExprKind::Cast(e, _) = &expr.kind;
             if let ExprKind::Lit(l) = &e.kind;
             if let LitKind::Char(c) = l.node;
-            if ty::Uint(UintTy::U8) == cx.tables().expr_ty(expr).kind;
+            if ty::Uint(UintTy::U8) == cx.typeck_results().expr_ty(expr).kind;
             then {
                 let mut applicability = Applicability::MachineApplicable;
                 let snippet = snippet_with_applicability(cx, e.span, "'x'", &mut applicability);
@@ -1872,8 +1862,8 @@ enum AbsurdComparisonResult {
 
 fn is_cast_between_fixed_and_target<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>) -> bool {
     if let ExprKind::Cast(ref cast_exp, _) = expr.kind {
-        let precast_ty = cx.tables().expr_ty(cast_exp);
-        let cast_ty = cx.tables().expr_ty(expr);
+        let precast_ty = cx.typeck_results().expr_ty(cast_exp);
+        let cast_ty = cx.typeck_results().expr_ty(expr);
 
         return is_isize_or_usize(precast_ty) != is_isize_or_usize(cast_ty);
     }
@@ -1893,7 +1883,7 @@ fn detect_absurd_comparison<'tcx>(
 
     // absurd comparison only makes sense on primitive types
     // primitive types don't implement comparison operators with each other
-    if cx.tables().expr_ty(lhs) != cx.tables().expr_ty(rhs) {
+    if cx.typeck_results().expr_ty(lhs) != cx.typeck_results().expr_ty(rhs) {
         return None;
     }
 
@@ -1931,9 +1921,9 @@ fn detect_absurd_comparison<'tcx>(
 fn detect_extreme_expr<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<ExtremeExpr<'tcx>> {
     use crate::types::ExtremeType::{Maximum, Minimum};
 
-    let ty = cx.tables().expr_ty(expr);
+    let ty = cx.typeck_results().expr_ty(expr);
 
-    let cv = constant(cx, cx.tables(), expr)?.0;
+    let cv = constant(cx, cx.typeck_results(), expr)?.0;
 
     let which = match (&ty.kind, cv) {
         (&ty::Bool, Constant::Bool(false)) | (&ty::Uint(_), Constant::Int(0)) => Minimum,
@@ -2063,8 +2053,8 @@ impl Ord for FullInt {
 
 fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_>, expr: &'a Expr<'_>) -> Option<(FullInt, FullInt)> {
     if let ExprKind::Cast(ref cast_exp, _) = expr.kind {
-        let pre_cast_ty = cx.tables().expr_ty(cast_exp);
-        let cast_ty = cx.tables().expr_ty(expr);
+        let pre_cast_ty = cx.typeck_results().expr_ty(cast_exp);
+        let cast_ty = cx.typeck_results().expr_ty(expr);
         // if it's a cast from i32 to u32 wrapping will invalidate all these checks
         if cx.layout_of(pre_cast_ty).ok().map(|l| l.size) == cx.layout_of(cast_ty).ok().map(|l| l.size) {
             return None;
@@ -2094,9 +2084,9 @@ fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_>, expr: &'a Expr<'_>) -> 
 }
 
 fn node_as_const_fullint<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<FullInt> {
-    let val = constant(cx, cx.tables(), expr)?.0;
+    let val = constant(cx, cx.typeck_results(), expr)?.0;
     if let Constant::Int(const_int) = val {
-        match cx.tables().expr_ty(expr).kind {
+        match cx.typeck_results().expr_ty(expr).kind {
             ty::Int(ity) => Some(FullInt::S(sext(cx.tcx, const_int, ity))),
             ty::Uint(_) => Some(FullInt::U(const_int)),
             _ => None,
@@ -2482,7 +2472,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ImplicitHasherTypeVisitor<'a, 'tcx> {
 /// Looks for default-hasher-dependent constructors like `HashMap::new`.
 struct ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
     cx: &'a LateContext<'tcx>,
-    maybe_typeck_tables: Option<&'tcx TypeckTables<'tcx>>,
+    maybe_typeck_results: Option<&'tcx TypeckResults<'tcx>>,
     target: &'b ImplicitHasherType<'tcx>,
     suggestions: BTreeMap<Span, String>,
 }
@@ -2491,7 +2481,7 @@ impl<'a, 'b, 'tcx> ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
     fn new(cx: &'a LateContext<'tcx>, target: &'b ImplicitHasherType<'tcx>) -> Self {
         Self {
             cx,
-            maybe_typeck_tables: cx.maybe_typeck_tables(),
+            maybe_typeck_results: cx.maybe_typeck_results(),
             target,
             suggestions: BTreeMap::new(),
         }
@@ -2502,9 +2492,9 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 't
     type Map = Map<'tcx>;
 
     fn visit_body(&mut self, body: &'tcx Body<'_>) {
-        let old_maybe_typeck_tables = self.maybe_typeck_tables.replace(self.cx.tcx.body_tables(body.id()));
+        let old_maybe_typeck_results = self.maybe_typeck_results.replace(self.cx.tcx.typeck_body(body.id()));
         walk_body(self, body);
-        self.maybe_typeck_tables = old_maybe_typeck_tables;
+        self.maybe_typeck_results = old_maybe_typeck_results;
     }
 
     fn visit_expr(&mut self, e: &'tcx Expr<'_>) {
@@ -2513,7 +2503,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 't
             if let ExprKind::Path(QPath::TypeRelative(ref ty, ref method)) = fun.kind;
             if let TyKind::Path(QPath::Resolved(None, ty_path)) = ty.kind;
             then {
-                if !TyS::same_type(self.target.ty(), self.maybe_typeck_tables.unwrap().expr_ty(e)) {
+                if !TyS::same_type(self.target.ty(), self.maybe_typeck_results.unwrap().expr_ty(e)) {
                     return;
                 }
 
@@ -2599,7 +2589,7 @@ impl<'tcx> LateLintPass<'tcx> for RefToMut {
             if let TyKind::Ptr(MutTy { mutbl: Mutability::Mut, .. }) = t.kind;
             if let ExprKind::Cast(e, t) = &e.kind;
             if let TyKind::Ptr(MutTy { mutbl: Mutability::Not, .. }) = t.kind;
-            if let ty::Ref(..) = cx.tables().node_type(e.hir_id).kind;
+            if let ty::Ref(..) = cx.typeck_results().node_type(e.hir_id).kind;
             then {
                 span_lint(
                     cx,

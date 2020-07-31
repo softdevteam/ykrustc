@@ -191,14 +191,19 @@ pub unsafe fn create_module(
         llvm::LLVMRustAddModuleFlag(llmod, avoid_plt, 1);
     }
 
-    // Set module flags to enable Windows Control Flow Guard (/guard:cf) metadata
-    // only (`cfguard=1`) or metadata and checks (`cfguard=2`).
-    match sess.opts.debugging_opts.control_flow_guard {
-        CFGuard::Disabled => {}
-        CFGuard::NoChecks => {
-            llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 1)
+    // Control Flow Guard is currently only supported by the MSVC linker on Windows.
+    if sess.target.target.options.is_like_msvc {
+        match sess.opts.cg.control_flow_guard {
+            CFGuard::Disabled => {}
+            CFGuard::NoChecks => {
+                // Set `cfguard=1` module flag to emit metadata only.
+                llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 1)
+            }
+            CFGuard::Checks => {
+                // Set `cfguard=2` module flag to emit metadata and checks.
+                llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 2)
+            }
         }
-        CFGuard::Checks => llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 2),
     }
 
     llmod
@@ -520,6 +525,14 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.wasm.trunc.saturate.signed.i32.f64", fn(t_f64) -> t_i32);
         ifn!("llvm.wasm.trunc.saturate.signed.i64.f32", fn(t_f32) -> t_i64);
         ifn!("llvm.wasm.trunc.saturate.signed.i64.f64", fn(t_f64) -> t_i64);
+        ifn!("llvm.wasm.trunc.unsigned.i32.f32", fn(t_f32) -> t_i32);
+        ifn!("llvm.wasm.trunc.unsigned.i32.f64", fn(t_f64) -> t_i32);
+        ifn!("llvm.wasm.trunc.unsigned.i64.f32", fn(t_f32) -> t_i64);
+        ifn!("llvm.wasm.trunc.unsigned.i64.f64", fn(t_f64) -> t_i64);
+        ifn!("llvm.wasm.trunc.signed.i32.f32", fn(t_f32) -> t_i32);
+        ifn!("llvm.wasm.trunc.signed.i32.f64", fn(t_f64) -> t_i32);
+        ifn!("llvm.wasm.trunc.signed.i64.f32", fn(t_f32) -> t_i64);
+        ifn!("llvm.wasm.trunc.signed.i64.f64", fn(t_f64) -> t_i64);
 
         ifn!("llvm.trap", fn() -> void);
         ifn!("llvm.debugtrap", fn() -> void);

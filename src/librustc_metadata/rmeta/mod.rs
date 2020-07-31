@@ -9,7 +9,7 @@ use rustc_hir as hir;
 use rustc_hir::def::CtorKind;
 use rustc_hir::def_id::{DefId, DefIndex};
 use rustc_hir::lang_items;
-use rustc_index::vec::IndexVec;
+use rustc_index::{bit_set::FiniteBitSet, vec::IndexVec};
 use rustc_middle::hir::exports::Export;
 use rustc_middle::middle::cstore::{DepKind, ForeignModule, LinkagePreference, NativeLib};
 use rustc_middle::middle::exported_symbols::{ExportedSymbol, SymbolExportLevel};
@@ -20,7 +20,7 @@ use rustc_session::config::SymbolManglingVersion;
 use rustc_session::CrateDisambiguator;
 use rustc_span::edition::Edition;
 use rustc_span::symbol::{Ident, Symbol};
-use rustc_span::{self, Span};
+use rustc_span::{self, ExpnData, ExpnId, Span};
 use rustc_target::spec::{PanicStrategy, TargetTriple};
 
 use std::marker::PhantomData;
@@ -28,6 +28,7 @@ use std::num::NonZeroUsize;
 
 pub use decoder::{provide, provide_extern};
 crate use decoder::{CrateMetadata, CrateNumMap, MetadataBlob};
+use rustc_span::hygiene::SyntaxContextData;
 
 mod decoder;
 mod encoder;
@@ -168,6 +169,9 @@ macro_rules! Lazy {
     ($T:ty) => {Lazy<$T, ()>};
 }
 
+type SyntaxContextTable = Lazy<Table<u32, Lazy<SyntaxContextData>>>;
+type ExpnDataTable = Lazy<Table<u32, Lazy<ExpnData>>>;
+
 #[derive(RustcEncodable, RustcDecodable)]
 crate struct CrateRoot<'tcx> {
     name: Symbol,
@@ -202,6 +206,10 @@ crate struct CrateRoot<'tcx> {
     proc_macro_data: Option<Lazy<[DefIndex]>>,
 
     exported_symbols: Lazy!([(ExportedSymbol<'tcx>, SymbolExportLevel)]),
+
+    syntax_contexts: SyntaxContextTable,
+    expn_data: ExpnDataTable,
+
     source_map: Lazy<[rustc_span::SourceFile]>,
 
     compiler_builtins: bool,
@@ -277,6 +285,7 @@ define_tables! {
     super_predicates: Table<DefIndex, Lazy!(ty::GenericPredicates<'tcx>)>,
     mir: Table<DefIndex, Lazy!(mir::Body<'tcx>)>,
     promoted_mir: Table<DefIndex, Lazy!(IndexVec<mir::Promoted, mir::Body<'tcx>>)>,
+    unused_generic_params: Table<DefIndex, Lazy<FiniteBitSet<u64>>>,
 }
 
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable)]
@@ -321,6 +330,7 @@ struct RenderedConst(String);
 #[derive(RustcEncodable, RustcDecodable)]
 struct ModData {
     reexports: Lazy<[Export<hir::HirId>]>,
+    expansion: ExpnId,
 }
 
 #[derive(RustcEncodable, RustcDecodable)]
@@ -336,6 +346,7 @@ struct VariantData {
     discr: ty::VariantDiscr,
     /// If this is unit or tuple-variant/struct, then this is the index of the ctor id.
     ctor: Option<DefIndex>,
+    is_non_exhaustive: bool,
 }
 
 #[derive(RustcEncodable, RustcDecodable)]

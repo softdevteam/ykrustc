@@ -75,7 +75,7 @@ impl<'a> SourceCollector<'a> {
             return Ok(());
         }
 
-        let contents = match fs::read_to_string(&p) {
+        let mut contents = match fs::read_to_string(&p) {
             Ok(contents) => contents,
             Err(e) => {
                 return Err(Error::new(e, &p));
@@ -83,8 +83,9 @@ impl<'a> SourceCollector<'a> {
         };
 
         // Remove the utf-8 BOM if any
-        let contents =
-            if contents.starts_with("\u{feff}") { &contents[3..] } else { &contents[..] };
+        if contents.starts_with("\u{feff}") {
+            contents.drain(..3);
+        }
 
         // Create the intermediate directories
         let mut cur = self.dst.clone();
@@ -122,8 +123,8 @@ impl<'a> SourceCollector<'a> {
             &self.scx.layout,
             &page,
             "",
-            |buf: &mut _| print_src(buf, &contents),
-            &self.scx.themes,
+            |buf: &mut _| print_src(buf, contents),
+            &self.scx.style_files,
         );
         self.scx.fs.write(&cur, v.as_bytes())?;
         self.scx.local_sources.insert(p, href);
@@ -160,7 +161,7 @@ where
 
 /// Wrapper struct to render the source code of a file. This will do things like
 /// adding line numbers to the left-hand side.
-fn print_src(buf: &mut Buffer, s: &str) {
+fn print_src(buf: &mut Buffer, s: String) {
     let lines = s.lines().count();
     let mut cols = 0;
     let mut tmp = lines;

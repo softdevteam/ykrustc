@@ -13,7 +13,7 @@ use rustc_data_structures::sync::{self, Lrc};
 use rustc_errors::{DiagnosticBuilder, ErrorReported};
 use rustc_parse::{self, nt_to_tokenstream, parser, MACRO_ARGUMENTS};
 use rustc_session::{parse::ParseSess, Limit};
-use rustc_span::def_id::DefId;
+use rustc_span::def_id::{DefId, LOCAL_CRATE};
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{AstPass, ExpnData, ExpnId, ExpnKind};
 use rustc_span::source_map::SourceMap;
@@ -735,7 +735,7 @@ pub struct SyntaxExtension {
     pub kind: SyntaxExtensionKind,
     /// Span of the macro definition.
     pub span: Span,
-    /// Whitelist of unstable features that are treated as stable inside this macro.
+    /// List of unstable features that are treated as stable inside this macro.
     pub allow_internal_unstable: Option<Lrc<[Symbol]>>,
     /// Suppresses the `unsafe_code` lint for code produced by this macro.
     pub allow_internal_unsafe: bool,
@@ -873,6 +873,8 @@ impl SyntaxExtension {
             local_inner_macros: self.local_inner_macros,
             edition: self.edition,
             macro_def_id,
+            krate: LOCAL_CRATE,
+            orig_id: None,
         }
     }
 }
@@ -1060,9 +1062,6 @@ impl<'a> ExtCtxt<'a> {
     }
     pub fn set_trace_macros(&mut self, x: bool) {
         self.ecfg.trace_mac = x
-    }
-    pub fn ident_of(&self, st: &str, sp: Span) -> Ident {
-        Ident::from_str_and_span(st, sp)
     }
     pub fn std_path(&self, components: &[Symbol]) -> Vec<Ident> {
         let def_site = self.with_def_site_ctxt(DUMMY_SP);

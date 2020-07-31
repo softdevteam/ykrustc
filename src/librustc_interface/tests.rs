@@ -73,7 +73,7 @@ fn mk_map<K: Ord, V>(entries: Vec<(K, V)>) -> BTreeMap<K, V> {
 // When the user supplies --test we should implicitly supply --cfg test
 #[test]
 fn test_switch_implies_cfg_test() {
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["--test".to_string()]).unwrap();
         let (sess, cfg) = mk_session(matches);
         let cfg = build_configuration(&sess, to_crate_config(cfg));
@@ -84,7 +84,7 @@ fn test_switch_implies_cfg_test() {
 // When the user supplies --test and --cfg test, don't implicitly add another --cfg test
 #[test]
 fn test_switch_implies_cfg_test_unless_cfg_test() {
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["--test".to_string(), "--cfg=test".to_string()]).unwrap();
         let (sess, cfg) = mk_session(matches);
         let cfg = build_configuration(&sess, to_crate_config(cfg));
@@ -96,20 +96,20 @@ fn test_switch_implies_cfg_test_unless_cfg_test() {
 
 #[test]
 fn test_can_print_warnings() {
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["-Awarnings".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(!sess.diagnostic().can_emit_warnings());
     });
 
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches =
             optgroups().parse(&["-Awarnings".to_string(), "-Dwarnings".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(sess.diagnostic().can_emit_warnings());
     });
 
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["-Adead_code".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(sess.diagnostic().can_emit_warnings());
@@ -401,7 +401,7 @@ fn test_codegen_options_tracking_hash() {
     untracked!(incremental, Some(String::from("abc")));
     // `link_arg` is omitted because it just forwards to `link_args`.
     untracked!(link_args, vec![String::from("abc"), String::from("def")]);
-    untracked!(link_dead_code, true);
+    untracked!(link_dead_code, Some(true));
     untracked!(linker, Some(PathBuf::from("linker")));
     untracked!(linker_flavor, Some(LinkerFlavor::Gcc));
     untracked!(no_stack_check, true);
@@ -420,6 +420,7 @@ fn test_codegen_options_tracking_hash() {
     // Make sure that changing a [TRACKED] option changes the hash.
     // This list is in alphabetical order.
     tracked!(code_model, Some(CodeModel::Large));
+    tracked!(control_flow_guard, CFGuard::Checks);
     tracked!(debug_assertions, Some(true));
     tracked!(debuginfo, 0xdeadbeef);
     tracked!(embed_bitcode, false);
@@ -538,7 +539,6 @@ fn test_debugging_options_tracking_hash() {
     tracked!(binary_dep_depinfo, true);
     tracked!(chalk, true);
     tracked!(codegen_backend, Some("abc".to_string()));
-    tracked!(control_flow_guard, CFGuard::Checks);
     tracked!(crate_attr, vec!["abc".to_string()]);
     tracked!(debug_macros, true);
     tracked!(dep_info_omit_d_target, true);

@@ -763,6 +763,14 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateBasicType(
   return wrap(Builder->createBasicType(StringRef(Name, NameLen), SizeInBits, Encoding));
 }
 
+extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateTypedef(
+    LLVMRustDIBuilderRef Builder, LLVMMetadataRef Type, const char *Name, size_t NameLen,
+    LLVMMetadataRef File, unsigned LineNo, LLVMMetadataRef Scope) {
+  return wrap(Builder->createTypedef(
+    unwrap<DIType>(Type), StringRef(Name, NameLen), unwrap<DIFile>(File),
+    LineNo, unwrap<DIScope>(Scope)));
+}
+
 extern "C" LLVMMetadataRef LLVMRustDIBuilderCreatePointerType(
     LLVMRustDIBuilderRef Builder, LLVMMetadataRef PointeeTy,
     uint64_t SizeInBits, uint32_t AlignInBits, unsigned AddressSpace,
@@ -1428,7 +1436,7 @@ extern "C" LLVMValueRef LLVMRustBuildCall(LLVMBuilderRef B, LLVMValueRef Fn,
       FTy, Callee, makeArrayRef(unwrap(Args), NumArgs), Bundles));
 }
 
-extern "C" LLVMValueRef LLVMRustGetInstrprofIncrementIntrinsic(LLVMModuleRef M) {
+extern "C" LLVMValueRef LLVMRustGetInstrProfIncrementIntrinsic(LLVMModuleRef M) {
   return wrap(llvm::Intrinsic::getDeclaration(unwrap(M),
               (llvm::Intrinsic::ID)llvm::Intrinsic::instrprof_increment));
 }

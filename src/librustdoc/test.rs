@@ -1,5 +1,4 @@
 use rustc_ast::ast;
-use rustc_ast::with_globals;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::ErrorReported;
 use rustc_feature::UnstableFeatures;
@@ -46,14 +45,14 @@ pub struct TestOptions {
 pub fn run(options: Options) -> Result<(), String> {
     let input = config::Input::File(options.input.clone());
 
-    let invalid_codeblock_attribute_name = rustc_lint::builtin::INVALID_CODEBLOCK_ATTRIBUTES.name;
+    let invalid_codeblock_attributes_name = rustc_lint::builtin::INVALID_CODEBLOCK_ATTRIBUTES.name;
 
-    // In addition to those specific lints, we also need to whitelist those given through
+    // In addition to those specific lints, we also need to allow those given through
     // command line, otherwise they'll get ignored and we don't want that.
-    let whitelisted_lints = vec![invalid_codeblock_attribute_name.to_owned()];
+    let allowed_lints = vec![invalid_codeblock_attributes_name.to_owned()];
 
-    let (lint_opts, lint_caps) = init_lints(whitelisted_lints, options.lint_opts.clone(), |lint| {
-        if lint.name == invalid_codeblock_attribute_name {
+    let (lint_opts, lint_caps) = init_lints(allowed_lints, options.lint_opts.clone(), |lint| {
+        if lint.name == invalid_codeblock_attributes_name {
             None
         } else {
             Some((lint.name_lower(), lint::Allow))
@@ -399,7 +398,7 @@ pub fn make_test(
     // Uses librustc_ast to parse the doctest and find if there's a main fn and the extern
     // crate already is included.
     let result = rustc_driver::catch_fatal_errors(|| {
-        with_globals(edition, || {
+        rustc_ast::with_session_globals(edition, || {
             use rustc_errors::emitter::EmitterWriter;
             use rustc_errors::Handler;
             use rustc_parse::maybe_new_parser_from_source_str;

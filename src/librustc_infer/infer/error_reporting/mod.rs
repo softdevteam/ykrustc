@@ -624,8 +624,9 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                         let scrut_expr = self.tcx.hir().expect_expr(scrut_hir_id);
                         let scrut_ty = if let hir::ExprKind::Call(_, args) = &scrut_expr.kind {
                             let arg_expr = args.first().expect("try desugaring call w/out arg");
-                            self.in_progress_tables
-                                .and_then(|tables| tables.borrow().expr_ty_opt(arg_expr))
+                            self.in_progress_typeck_results.and_then(|typeck_results| {
+                                typeck_results.borrow().expr_ty_opt(arg_expr)
+                            })
                         } else {
                             bug!("try desugaring w/out call expr as scrutinee");
                         };
@@ -1401,8 +1402,12 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         }
 
         debug!("note_type_err(diag={:?})", diag);
+        enum Mismatch<'a> {
+            Variable(ty::error::ExpectedFound<Ty<'a>>),
+            Fixed(&'static str),
+        }
         let (expected_found, exp_found, is_simple_error) = match values {
-            None => (None, None, false),
+            None => (None, Mismatch::Fixed("type"), false),
             Some(values) => {
                 let (is_simple_error, exp_found) = match values {
                     ValuePairs::Types(exp_found) => {
@@ -1416,9 +1421,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                         )
                         .report(diag);
 
-                        (is_simple_err, Some(exp_found))
+                        (is_simple_err, Mismatch::Variable(exp_found))
                     }
-                    _ => (false, None),
+                    ValuePairs::TraitRefs(_) => (false, Mismatch::Fixed("trait")),
+                    _ => (false, Mismatch::Fixed("type")),
                 };
                 let vals = match self.values_str(&values) {
                     Some((expected, found)) => Some((expected, found)),
@@ -1444,8 +1450,18 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             }
         };
         if let Some((expected, found)) = expected_found {
-            let expected_label = exp_found.map_or("type".into(), |ef| ef.expected.prefix_string());
-            let found_label = exp_found.map_or("type".into(), |ef| ef.found.prefix_string());
+            let expected_label = match exp_found {
+                Mismatch::Variable(ef) => ef.expected.prefix_string(),
+                Mismatch::Fixed(s) => s.into(),
+            };
+            let found_label = match exp_found {
+                Mismatch::Variable(ef) => ef.found.prefix_string(),
+                Mismatch::Fixed(s) => s.into(),
+            };
+            let exp_found = match exp_found {
+                Mismatch::Variable(exp_found) => Some(exp_found),
+                Mismatch::Fixed(_) => None,
+            };
             match (&terr, expected == found) {
                 (TypeError::Sorts(values), extra) => {
                     let sort_string = |ty: Ty<'tcx>| match (extra, &ty.kind) {
@@ -1498,6 +1514,10 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 }
             }
         }
+        let exp_found = match exp_found {
+            Mismatch::Variable(exp_found) => Some(exp_found),
+            Mismatch::Fixed(_) => None,
+        };
         if let Some(exp_found) = exp_found {
             self.suggest_as_ref_where_appropriate(span, &exp_found, diag);
         }
@@ -1683,9 +1703,11 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         let hir = &self.tcx.hir();
         // Attempt to obtain the span of the parameter so we can
         // suggest adding an explicit lifetime bound to it.
-        let generics =
-            self.in_progress_tables.map(|table| table.borrow().hir_owner).map(|table_owner| {
-                let hir_id = hir.as_local_hir_id(table_owner);
+        let generics = self
+            .in_progress_typeck_results
+            .map(|typeck_results| typeck_results.borrow().hir_owner)
+            .map(|owner| {
+                let hir_id = hir.as_local_hir_id(owner);
                 let parent_id = hir.get_parent_item(hir_id);
                 (
                     // Parent item could be a `mod`, so we check the HIR before calling:
@@ -1698,7 +1720,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                     } else {
                         None
                     },
-                    self.tcx.generics_of(table_owner.to_def_id()),
+                    self.tcx.generics_of(owner.to_def_id()),
                 )
             });
         let type_param_span = match (generics, bound_kind) {
@@ -2007,7 +2029,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             infer::MiscVariable(_) => String::new(),
             infer::PatternRegion(_) => " for pattern".to_string(),
             infer::AddrOfRegion(_) => " for borrow expression".to_string(),
-            infer::Autoref(_) => " for autoref".to_string(),
+            infer::Autoref(_, _) => " for autoref".to_string(),
             infer::Coercion(_) => " for automatic coercion".to_string(),
             infer::LateBoundRegion(_, br, infer::FnCall) => {
                 format!(" for lifetime parameter {}in function call", br_string(br))

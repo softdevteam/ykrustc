@@ -84,7 +84,7 @@ impl<'tcx> LateLintPass<'tcx> for BoxedLocal {
 
         let fn_def_id = cx.tcx.hir().local_def_id(hir_id);
         cx.tcx.infer_ctxt().enter(|infcx| {
-            ExprUseVisitor::new(&mut v, &infcx, fn_def_id, cx.param_env, cx.tables()).consume_body(body);
+            ExprUseVisitor::new(&mut v, &infcx, fn_def_id, cx.param_env, cx.typeck_results()).consume_body(body);
         });
 
         for node in v.set {
@@ -105,10 +105,7 @@ fn is_argument(map: rustc_middle::hir::map::Map<'_>, id: HirId) -> bool {
         _ => return false,
     }
 
-    match map.find(map.get_parent_node(id)) {
-        Some(Node::Param(_)) => true,
-        _ => false,
-    }
+    matches!(map.find(map.get_parent_node(id)), Some(Node::Param(_)))
 }
 
 impl<'a, 'tcx> Delegate<'tcx> for EscapeDelegate<'a, 'tcx> {

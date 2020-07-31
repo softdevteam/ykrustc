@@ -151,12 +151,14 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::VariableType(id) => Some(super::VariableType(id)),
             super::ReturnValue(id) => Some(super::ReturnValue(id)),
             super::ReturnType => Some(super::ReturnType),
-            super::SizedArgumentType => Some(super::SizedArgumentType),
+            super::SizedArgumentType(sp) => Some(super::SizedArgumentType(sp)),
             super::SizedReturnType => Some(super::SizedReturnType),
             super::SizedYieldType => Some(super::SizedYieldType),
             super::InlineAsmSized => Some(super::InlineAsmSized),
             super::RepeatVec(suggest_flag) => Some(super::RepeatVec(suggest_flag)),
-            super::FieldSized { adt_kind, last } => Some(super::FieldSized { adt_kind, last }),
+            super::FieldSized { adt_kind, span, last } => {
+                Some(super::FieldSized { adt_kind, span, last })
+            }
             super::ConstSized => Some(super::ConstSized),
             super::ConstPatternStructural => Some(super::ConstPatternStructural),
             super::SharedStatic => Some(super::SharedStatic),
@@ -211,9 +213,23 @@ impl<'a, 'tcx> Lift<'tcx> for traits::ObligationCauseCode<'a> {
             super::StartFunctionType => Some(super::StartFunctionType),
             super::IntrinsicType => Some(super::IntrinsicType),
             super::MethodReceiver => Some(super::MethodReceiver),
+            super::UnifyReceiver(ref ctxt) => tcx.lift(ctxt).map(|ctxt| super::UnifyReceiver(ctxt)),
             super::BlockTailExpression(id) => Some(super::BlockTailExpression(id)),
             super::TrivialBound => Some(super::TrivialBound),
         }
+    }
+}
+
+impl<'a, 'tcx> Lift<'tcx> for traits::UnifyReceiverContext<'a> {
+    type Lifted = traits::UnifyReceiverContext<'tcx>;
+    fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+        tcx.lift(&self.param_env).and_then(|param_env| {
+            tcx.lift(&self.substs).map(|substs| traits::UnifyReceiverContext {
+                assoc_item: self.assoc_item,
+                param_env,
+                substs,
+            })
+        })
     }
 }
 

@@ -206,11 +206,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     obligation.predicate
                 );
 
-                if let &ty::PredicateKind::Projection(proj_predicate) = obligation.predicate.kind()
+                if let ty::PredicateAtom::Projection(proj_predicate) =
+                    obligation.predicate.skip_binders()
                 {
                     // Given a Projection predicate, we can potentially infer
                     // the complete signature.
-                    self.deduce_sig_from_projection(Some(obligation.cause.span), proj_predicate)
+                    self.deduce_sig_from_projection(
+                        Some(obligation.cause.span),
+                        ty::Binder::bind(proj_predicate),
+                    )
                 } else {
                     None
                 }
@@ -416,7 +420,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // Up till this point, we have ignored the annotations that the user
         // gave. This function will check that they unify successfully.
         // Along the way, it also writes out entries for types that the user
-        // wrote into our tables, which are then later used by the privacy
+        // wrote into our typeck results, which are then later used by the privacy
         // check.
         match self.check_supplied_sig_against_expectation(expr_def_id, decl, body, &closure_sigs) {
             Ok(infer_ok) => self.register_infer_ok_obligations(infer_ok),
@@ -588,7 +592,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         debug!("supplied_sig_of_closure: result={:?}", result);
 
         let c_result = self.inh.infcx.canonicalize_response(&result);
-        self.tables.borrow_mut().user_provided_sigs.insert(expr_def_id, c_result);
+        self.typeck_results.borrow_mut().user_provided_sigs.insert(expr_def_id, c_result);
 
         result
     }
@@ -627,8 +631,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // where R is the return type we are expecting. This type `T`
         // will be our output.
         let output_ty = self.obligations_for_self_ty(ret_vid).find_map(|(_, obligation)| {
-            if let &ty::PredicateKind::Projection(proj_predicate) = obligation.predicate.kind() {
-                self.deduce_future_output_from_projection(obligation.cause.span, proj_predicate)
+            if let ty::PredicateAtom::Projection(proj_predicate) =
+                obligation.predicate.skip_binders()
+            {
+                self.deduce_future_output_from_projection(
+                    obligation.cause.span,
+                    ty::Binder::bind(proj_predicate),
+                )
             } else {
                 None
             }

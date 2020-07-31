@@ -15,7 +15,7 @@ use rustc_middle::ty::{
     self, AdtKind, GenericParamDefKind, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness,
 };
 use rustc_session::parse::feature_err;
-use rustc_span::symbol::{sym, Symbol};
+use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
 use rustc_trait_selection::opaque_types::may_define_opaque_type;
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
@@ -142,8 +142,8 @@ pub fn check_item_well_formed(tcx: TyCtxt<'_>, def_id: LocalDefId) {
                 _ => unreachable!(),
             }
         }
-        hir::ItemKind::Fn(..) => {
-            check_item_fn(tcx, item);
+        hir::ItemKind::Fn(ref sig, ..) => {
+            check_item_fn(tcx, item.hir_id, item.ident, item.span, sig.decl);
         }
         hir::ItemKind::Static(ref ty, ..) => {
             check_item_type(tcx, item.hir_id, ty.span, false);
@@ -153,8 +153,14 @@ pub fn check_item_well_formed(tcx: TyCtxt<'_>, def_id: LocalDefId) {
         }
         hir::ItemKind::ForeignMod(ref module) => {
             for it in module.items.iter() {
-                if let hir::ForeignItemKind::Static(ref ty, ..) = it.kind {
-                    check_item_type(tcx, it.hir_id, ty.span, true);
+                match it.kind {
+                    hir::ForeignItemKind::Fn(ref decl, ..) => {
+                        check_item_fn(tcx, it.hir_id, it.ident, it.span, decl)
+                    }
+                    hir::ForeignItemKind::Static(ref ty, ..) => {
+                        check_item_type(tcx, it.hir_id, ty.span, true)
+                    }
+                    hir::ForeignItemKind::Type => (),
                 }
             }
         }
@@ -303,7 +309,7 @@ fn check_associated_item(
                     fcx,
                     item.ident.span,
                     sig,
-                    hir_sig,
+                    hir_sig.decl,
                     item.def_id,
                     &mut implied_bounds,
                 );
@@ -394,6 +400,7 @@ fn check_type_defn<'tcx, F>(
                                 Some(i) => i,
                                 None => bug!(),
                             },
+                            span: field.span,
                             last,
                         },
                     ),
@@ -422,8 +429,11 @@ fn check_type_defn<'tcx, F>(
                 fcx.register_predicate(traits::Obligation::new(
                     cause,
                     fcx.param_env,
-                    ty::PredicateKind::ConstEvaluatable(discr_def_id.to_def_id(), discr_substs)
-                        .to_predicate(fcx.tcx),
+                    ty::PredicateAtom::ConstEvaluatable(
+                        ty::WithOptConstParam::unknown(discr_def_id.to_def_id()),
+                        discr_substs,
+                    )
+                    .to_predicate(fcx.tcx),
                 ));
             }
         }
@@ -560,22 +570,24 @@ fn check_associated_type_defaults(fcx: &FnCtxt<'_, '_>, trait_def_id: DefId) {
     }
 }
 
-fn check_item_fn(tcx: TyCtxt<'_>, item: &hir::Item<'_>) {
-    for_item(tcx, item).with_fcx(|fcx, tcx| {
-        let def_id = fcx.tcx.hir().local_def_id(item.hir_id);
+fn check_item_fn(
+    tcx: TyCtxt<'_>,
+    item_id: hir::HirId,
+    ident: Ident,
+    span: Span,
+    decl: &hir::FnDecl<'_>,
+) {
+    for_id(tcx, item_id, span).with_fcx(|fcx, tcx| {
+        let def_id = fcx.tcx.hir().local_def_id(item_id);
         let sig = fcx.tcx.fn_sig(def_id);
-        let sig = fcx.normalize_associated_types_in(item.span, &sig);
+        let sig = fcx.normalize_associated_types_in(span, &sig);
         let mut implied_bounds = vec![];
-        let hir_sig = match &item.kind {
-            ItemKind::Fn(sig, ..) => sig,
-            _ => bug!("expected `ItemKind::Fn`, found `{:?}`", item.kind),
-        };
         check_fn_or_method(
             tcx,
             fcx,
-            item.ident.span,
+            ident.span,
             sig,
-            hir_sig,
+            decl,
             def_id.to_def_id(),
             &mut implied_bounds,
         );
@@ -831,28 +843,28 @@ fn check_fn_or_method<'fcx, 'tcx>(
     fcx: &FnCtxt<'fcx, 'tcx>,
     span: Span,
     sig: ty::PolyFnSig<'tcx>,
-    hir_sig: &hir::FnSig<'_>,
+    hir_decl: &hir::FnDecl<'_>,
     def_id: DefId,
     implied_bounds: &mut Vec<Ty<'tcx>>,
 ) {
     let sig = fcx.normalize_associated_types_in(span, &sig);
     let sig = fcx.tcx.liberate_late_bound_regions(def_id, &sig);
 
-    for (&input_ty, span) in sig.inputs().iter().zip(hir_sig.decl.inputs.iter().map(|t| t.span)) {
+    for (&input_ty, span) in sig.inputs().iter().zip(hir_decl.inputs.iter().map(|t| t.span)) {
         fcx.register_wf_obligation(input_ty.into(), span, ObligationCauseCode::MiscObligation);
     }
     implied_bounds.extend(sig.inputs());
 
     fcx.register_wf_obligation(
         sig.output().into(),
-        hir_sig.decl.output.span(),
+        hir_decl.output.span(),
         ObligationCauseCode::ReturnType,
     );
 
     // FIXME(#25759) return types should not be implied bounds
     implied_bounds.push(sig.output());
 
-    check_where_clauses(tcx, fcx, span, def_id, Some((sig.output(), hir_sig.decl.output.span())));
+    check_where_clauses(tcx, fcx, span, def_id, Some((sig.output(), hir_decl.output.span())));
 }
 
 /// Checks "defining uses" of opaque `impl Trait` types to ensure that they meet the restrictions
@@ -1326,10 +1338,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             .iter()
             .map(|field| {
                 let field_ty = self.tcx.type_of(self.tcx.hir().local_def_id(field.hir_id));
-                let field_ty = self.normalize_associated_types_in(field.span, &field_ty);
+                let field_ty = self.normalize_associated_types_in(field.ty.span, &field_ty);
                 let field_ty = self.resolve_vars_if_possible(&field_ty);
                 debug!("non_enum_variant: type of field {:?} is {:?}", field, field_ty);
-                AdtField { ty: field_ty, span: field.span }
+                AdtField { ty: field_ty, span: field.ty.span }
             })
             .collect();
         AdtVariant { fields, explicit_discr: None }

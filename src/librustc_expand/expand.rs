@@ -1,7 +1,7 @@
 use crate::base::*;
 use crate::config::StripUnconfigured;
 use crate::configure;
-use crate::hygiene::{ExpnData, ExpnId, ExpnKind, SyntaxContext};
+use crate::hygiene::{ExpnData, ExpnKind, SyntaxContext};
 use crate::mbe::macro_rules::annotate_err_with_kind;
 use crate::module::{parse_external_mod, push_directory, Directory, DirectoryOwnership};
 use crate::placeholders::{placeholder, PlaceholderExpander};
@@ -17,6 +17,7 @@ use rustc_ast::visit::{self, AssocCtxt, Visitor};
 use rustc_ast_pretty::pprust;
 use rustc_attr::{self as attr, is_builtin_attr, HasAttrs};
 use rustc_data_structures::map_in_place::MapInPlace;
+use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::{Applicability, PResult};
 use rustc_feature::Features;
 use rustc_parse::parser::Parser;
@@ -27,7 +28,7 @@ use rustc_session::parse::{feature_err, ParseSess};
 use rustc_session::Limit;
 use rustc_span::source_map::respan;
 use rustc_span::symbol::{sym, Ident, Symbol};
-use rustc_span::{FileName, Span, DUMMY_SP};
+use rustc_span::{ExpnId, FileName, Span, DUMMY_SP};
 
 use smallvec::{smallvec, SmallVec};
 use std::io::ErrorKind;
@@ -1165,7 +1166,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                 self.check_attributes(&expr.attrs);
                 self.collect_bang(mac, expr.span, AstFragmentKind::Expr).make_expr().into_inner()
             } else {
-                noop_visit_expr(&mut expr, self);
+                ensure_sufficient_stack(|| noop_visit_expr(&mut expr, self));
                 expr
             }
         });

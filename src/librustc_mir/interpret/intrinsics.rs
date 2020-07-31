@@ -12,7 +12,7 @@ use rustc_middle::mir::{
 };
 use rustc_middle::ty;
 use rustc_middle::ty::subst::SubstsRef;
-use rustc_middle::ty::{Ty, TyCtxt};
+use rustc_middle::ty::{Ty, TyCtxt, TypeFoldable};
 use rustc_span::symbol::{sym, Symbol};
 use rustc_target::abi::{Abi, LayoutOf as _, Primitive, Size};
 
@@ -54,6 +54,9 @@ crate fn eval_nullary_intrinsic<'tcx>(
     let name = tcx.item_name(def_id);
     Ok(match name {
         sym::type_name => {
+            if tp_ty.needs_subst() {
+                throw_inval!(TooGeneric);
+            }
             let alloc = type_name::alloc_type_name(tcx, tp_ty);
             ConstValue::Slice { data: alloc, start: 0, end: alloc.len() }
         }
@@ -68,7 +71,12 @@ crate fn eval_nullary_intrinsic<'tcx>(
             };
             ConstValue::from_machine_usize(n, &tcx)
         }
-        sym::type_id => ConstValue::from_u64(tcx.type_id_hash(tp_ty)),
+        sym::type_id => {
+            if tp_ty.needs_subst() {
+                throw_inval!(TooGeneric);
+            }
+            ConstValue::from_u64(tcx.type_id_hash(tp_ty))
+        }
         sym::variant_count => {
             if let ty::Adt(ref adt, _) = tp_ty.kind {
                 ConstValue::from_machine_usize(adt.variants.len() as u64, &tcx)
@@ -95,6 +103,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         let (dest, ret) = match ret {
             None => match intrinsic_name {
                 sym::transmute => throw_ub_format!("transmuting to uninhabited type"),
+                sym::unreachable => throw_ub!(Unreachable),
                 sym::abort => M::abort(self)?,
                 // Unsupported diverging intrinsic.
                 _ => return Ok(false),
@@ -141,7 +150,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             | sym::bitreverse => {
                 let ty = substs.type_at(0);
                 let layout_of = self.layout_of(ty)?;
-                let val = self.read_scalar(args[0])?.not_undef()?;
+                let val = self.read_scalar(args[0])?.check_init()?;
                 let bits = self.force_bits(val, layout_of.size)?;
                 let kind = match layout_of.abi {
                     Abi::Scalar(ref scalar) => scalar.value,
@@ -272,9 +281,9 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 // rotate_left: (X << (S % BW)) | (X >> ((BW - S) % BW))
                 // rotate_right: (X << ((BW - S) % BW)) | (X >> (S % BW))
                 let layout = self.layout_of(substs.type_at(0))?;
-                let val = self.read_scalar(args[0])?.not_undef()?;
+                let val = self.read_scalar(args[0])?.check_init()?;
                 let val_bits = self.force_bits(val, layout.size)?;
-                let raw_shift = self.read_scalar(args[1])?.not_undef()?;
+                let raw_shift = self.read_scalar(args[1])?.check_init()?;
                 let raw_shift_bits = self.force_bits(raw_shift, layout.size)?;
                 let width_bits = u128::from(layout.size.bits());
                 let shift_bits = raw_shift_bits % width_bits;
@@ -289,7 +298,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.write_scalar(result, dest)?;
             }
             sym::offset => {
-                let ptr = self.read_scalar(args[0])?.not_undef()?;
+                let ptr = self.read_scalar(args[0])?.check_init()?;
                 let offset_count = self.read_scalar(args[1])?.to_machine_isize(self)?;
                 let pointee_ty = substs.type_at(0);
 
@@ -297,7 +306,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.write_scalar(offset_ptr, dest)?;
             }
             sym::arith_offset => {
-                let ptr = self.read_scalar(args[0])?.not_undef()?;
+                let ptr = self.read_scalar(args[0])?.check_init()?;
                 let offset_count = self.read_scalar(args[1])?.to_machine_isize(self)?;
                 let pointee_ty = substs.type_at(0);
 

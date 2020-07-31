@@ -450,9 +450,20 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
     fn print_comment(&mut self, cmnt: &comments::Comment) {
         match cmnt.style {
             comments::Mixed => {
-                assert_eq!(cmnt.lines.len(), 1);
                 self.zerobreak();
-                self.word(cmnt.lines[0].clone());
+                if let Some((last, lines)) = cmnt.lines.split_last() {
+                    self.ibox(0);
+
+                    for line in lines {
+                        self.word(line.clone());
+                        self.hardbreak()
+                    }
+
+                    self.word(last.clone());
+                    self.space();
+
+                    self.end();
+                }
                 self.zerobreak()
             }
             comments::Isolated => {
@@ -520,6 +531,10 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
             }
         };
         self.word(st)
+    }
+
+    fn print_symbol(&mut self, sym: Symbol, style: ast::StrStyle) {
+        self.print_string(&sym.as_str(), style);
     }
 
     fn print_inner_attributes(&mut self, attrs: &[ast::Attribute]) {
@@ -2050,7 +2065,7 @@ impl<'a> State<'a> {
                         let print_reg_or_class = |s: &mut Self, r: &InlineAsmRegOrRegClass| match r
                         {
                             InlineAsmRegOrRegClass::Reg(r) => {
-                                s.print_string(&r.as_str(), ast::StrStyle::Cooked)
+                                s.print_symbol(*r, ast::StrStyle::Cooked)
                             }
                             InlineAsmRegOrRegClass::RegClass(r) => s.word(r.to_string()),
                         };
@@ -2144,7 +2159,7 @@ impl<'a> State<'a> {
             ast::ExprKind::LlvmInlineAsm(ref a) => {
                 self.s.word("llvm_asm!");
                 self.popen();
-                self.print_string(&a.asm.as_str(), a.asm_str_style);
+                self.print_symbol(a.asm, a.asm_str_style);
                 self.word_space(":");
 
                 self.commasep(Inconsistent, &a.outputs, |s, out| {
@@ -2164,7 +2179,7 @@ impl<'a> State<'a> {
                 self.word_space(":");
 
                 self.commasep(Inconsistent, &a.inputs, |s, &(co, ref o)| {
-                    s.print_string(&co.as_str(), ast::StrStyle::Cooked);
+                    s.print_symbol(co, ast::StrStyle::Cooked);
                     s.popen();
                     s.print_expr(o);
                     s.pclose();
@@ -2172,8 +2187,8 @@ impl<'a> State<'a> {
                 self.s.space();
                 self.word_space(":");
 
-                self.commasep(Inconsistent, &a.clobbers, |s, co| {
-                    s.print_string(&co.as_str(), ast::StrStyle::Cooked);
+                self.commasep(Inconsistent, &a.clobbers, |s, &co| {
+                    s.print_symbol(co, ast::StrStyle::Cooked);
                 });
 
                 let mut options = vec![];

@@ -47,7 +47,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn llbb(&self) -> Self::BasicBlock;
 
     fn first_instruction(&mut self, llbb: Self::BasicBlock) -> Option<Self::Value>;
-    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName, bbidx: usize);
+    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName<'_>, bbidx: usize);
     fn position_before(&mut self, instr: Self::Value);
     fn position_at_end(&mut self, llbb: Self::BasicBlock);
     fn ret_void(&mut self);

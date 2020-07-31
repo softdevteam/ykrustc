@@ -626,7 +626,7 @@ impl<'test> TestCx<'test> {
             .arg("-L")
             .arg(&aux_dir)
             .args(&self.props.compile_flags)
-            .envs(self.props.exec_env.clone());
+            .envs(self.props.rustc_env.clone());
         self.maybe_add_external_args(
             &mut rustc,
             self.split_maybe_args(&self.config.target_rustcflags),
@@ -2749,6 +2749,10 @@ impl<'test> TestCx<'test> {
             cmd.env("RUSTDOC", cwd.join(rustdoc));
         }
 
+        if let Some(ref rust_demangler) = self.config.rust_demangler_path {
+            cmd.env("RUST_DEMANGLER", cwd.join(rust_demangler));
+        }
+
         if let Some(ref node) = self.config.nodejs {
             cmd.env("NODE", node);
         }
@@ -3141,14 +3145,47 @@ impl<'test> TestCx<'test> {
         }
         for l in test_file_contents.lines() {
             if l.starts_with("// EMIT_MIR ") {
-                let test_name = l.trim_start_matches("// EMIT_MIR ");
-                let expected_file = test_dir.join(test_name);
+                let test_name = l.trim_start_matches("// EMIT_MIR ").trim();
+                let mut test_names = test_name.split(' ');
+                // sometimes we specify two files so that we get a diff between the two files
+                let test_name = test_names.next().unwrap();
+                let expected_file;
+                let from_file;
+                let to_file;
 
-                let dumped_string = if test_name.ends_with(".diff") {
-                    let test_name = test_name.trim_end_matches(".diff");
-                    let before = format!("{}.before.mir", test_name);
-                    let after = format!("{}.after.mir", test_name);
-                    let before = self.get_mir_dump_dir().join(before);
+                if test_name.ends_with(".diff") {
+                    let trimmed = test_name.trim_end_matches(".diff");
+                    let test_against = format!("{}.after.mir", trimmed);
+                    from_file = format!("{}.before.mir", trimmed);
+                    expected_file = test_name.to_string();
+                    assert!(
+                        test_names.next().is_none(),
+                        "two mir pass names specified for MIR diff"
+                    );
+                    to_file = Some(test_against);
+                } else if let Some(first_pass) = test_names.next() {
+                    let second_pass = test_names.next().unwrap();
+                    assert!(
+                        test_names.next().is_none(),
+                        "three mir pass names specified for MIR diff"
+                    );
+                    expected_file = format!("{}.{}-{}.diff", test_name, first_pass, second_pass);
+                    let second_file = format!("{}.{}.mir", test_name, second_pass);
+                    from_file = format!("{}.{}.mir", test_name, first_pass);
+                    to_file = Some(second_file);
+                } else {
+                    expected_file = test_name.to_string();
+                    from_file = test_name.to_string();
+                    assert!(
+                        test_names.next().is_none(),
+                        "two mir pass names specified for MIR dump"
+                    );
+                    to_file = None;
+                };
+                let expected_file = test_dir.join(expected_file);
+
+                let dumped_string = if let Some(after) = to_file {
+                    let before = self.get_mir_dump_dir().join(from_file);
                     let after = self.get_mir_dump_dir().join(after);
                     debug!(
                         "comparing the contents of: {} with {}",
@@ -3172,7 +3209,7 @@ impl<'test> TestCx<'test> {
                 } else {
                     let mut output_file = PathBuf::new();
                     output_file.push(self.get_mir_dump_dir());
-                    output_file.push(test_name);
+                    output_file.push(&from_file);
                     debug!(
                         "comparing the contents of: {} with {}",
                         output_file.display(),
@@ -3185,7 +3222,7 @@ impl<'test> TestCx<'test> {
                             output_file.parent().unwrap().display()
                         );
                     }
-                    self.check_mir_test_timestamp(test_name, &output_file);
+                    self.check_mir_test_timestamp(&from_file, &output_file);
                     let dumped_string = fs::read_to_string(&output_file).unwrap();
                     self.normalize_output(&dumped_string, &[])
                 };
@@ -3259,8 +3296,17 @@ impl<'test> TestCx<'test> {
         normalize_path(parent_dir, "$DIR");
 
         // Paths into the libstd/libcore
-        let src_dir = self.config.src_base.parent().unwrap().parent().unwrap();
-        normalize_path(src_dir, "$SRC_DIR");
+        let src_dir = self
+            .config
+            .src_base
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("library");
+        normalize_path(&src_dir, "$SRC_DIR");
 
         // Paths into the build directory
         let test_build_dir = &self.config.build_base;

@@ -48,116 +48,22 @@
 //! result of `*x'`, effectively, where `x'` is a `Categorization::Upvar` reference
 //! tied to `x`. The type of `x'` will be a borrowed pointer.
 
+use rustc_middle::hir::place::*;
 use rustc_middle::ty::adjustment;
 use rustc_middle::ty::fold::TypeFoldable;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_hir as hir;
-use rustc_hir::def::{DefKind, Res};
+use rustc_hir::def::{CtorOf, DefKind, Res};
 use rustc_hir::def_id::LocalDefId;
+use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::PatKind;
+use rustc_index::vec::Idx;
 use rustc_infer::infer::InferCtxt;
 use rustc_span::Span;
+use rustc_target::abi::VariantIdx;
 use rustc_trait_selection::infer::InferCtxtExt;
-
-#[derive(Clone, Debug)]
-pub enum PlaceBase {
-    /// A temporary variable
-    Rvalue,
-    /// A named `static` item
-    StaticItem,
-    /// A named local variable
-    Local(hir::HirId),
-    /// An upvar referenced by closure env
-    Upvar(ty::UpvarId),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProjectionKind {
-    /// A dereference of a pointer, reference or `Box<T>` of the given type
-    Deref,
-    /// An index or a field
-    Other,
-}
-
-#[derive(Clone, Debug)]
-pub struct Projection<'tcx> {
-    // Type after the projection is being applied.
-    ty: Ty<'tcx>,
-
-    /// Defines the type of access
-    kind: ProjectionKind,
-}
-
-/// A `Place` represents how a value is located in memory.
-///
-/// This is an HIR version of `mir::Place`
-#[derive(Clone, Debug)]
-pub struct Place<'tcx> {
-    /// The type of the `PlaceBase`
-    pub base_ty: Ty<'tcx>,
-    /// The "outermost" place that holds this value.
-    pub base: PlaceBase,
-    /// How this place is derived from the base place.
-    pub projections: Vec<Projection<'tcx>>,
-}
-
-/// A `PlaceWithHirId` represents how a value is located in memory.
-///
-/// This is an HIR version of `mir::Place`
-#[derive(Clone, Debug)]
-pub struct PlaceWithHirId<'tcx> {
-    /// `HirId` of the expression or pattern producing this value.
-    pub hir_id: hir::HirId,
-
-    /// Information about the `Place`
-    pub place: Place<'tcx>,
-}
-
-impl<'tcx> PlaceWithHirId<'tcx> {
-    crate fn new(
-        hir_id: hir::HirId,
-        base_ty: Ty<'tcx>,
-        base: PlaceBase,
-        projections: Vec<Projection<'tcx>>,
-    ) -> PlaceWithHirId<'tcx> {
-        PlaceWithHirId {
-            hir_id: hir_id,
-            place: Place { base_ty: base_ty, base: base, projections: projections },
-        }
-    }
-}
-
-impl<'tcx> Place<'tcx> {
-    /// Returns an iterator of the types that have to be dereferenced to access
-    /// the `Place`.
-    ///
-    /// The types are in the reverse order that they are applied. So if
-    /// `x: &*const u32` and the `Place` is `**x`, then the types returned are
-    ///`*const u32` then `&*const u32`.
-    crate fn deref_tys(&self) -> impl Iterator<Item = Ty<'tcx>> + '_ {
-        self.projections.iter().enumerate().rev().filter_map(move |(index, proj)| {
-            if ProjectionKind::Deref == proj.kind {
-                Some(self.ty_before_projection(index))
-            } else {
-                None
-            }
-        })
-    }
-
-    // Returns the type of this `Place` after all projections have been applied.
-    pub fn ty(&self) -> Ty<'tcx> {
-        self.projections.last().map_or_else(|| self.base_ty, |proj| proj.ty)
-    }
-
-    // Returns the type of this `Place` immediately before `projection_index`th projection
-    // is applied.
-    crate fn ty_before_projection(&self, projection_index: usize) -> Ty<'tcx> {
-        assert!(projection_index < self.projections.len());
-        if projection_index == 0 { self.base_ty } else { self.projections[projection_index - 1].ty }
-    }
-}
 
 crate trait HirNode {
     fn hir_id(&self) -> hir::HirId;
@@ -184,7 +90,7 @@ impl HirNode for hir::Pat<'_> {
 
 #[derive(Clone)]
 crate struct MemCategorizationContext<'a, 'tcx> {
-    crate tables: &'a ty::TypeckTables<'tcx>,
+    crate typeck_results: &'a ty::TypeckResults<'tcx>,
     infcx: &'a InferCtxt<'a, 'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     body_owner: LocalDefId,
@@ -199,10 +105,10 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         infcx: &'a InferCtxt<'a, 'tcx>,
         param_env: ty::ParamEnv<'tcx>,
         body_owner: LocalDefId,
-        tables: &'a ty::TypeckTables<'tcx>,
+        typeck_results: &'a ty::TypeckResults<'tcx>,
     ) -> MemCategorizationContext<'a, 'tcx> {
         MemCategorizationContext {
-            tables,
+            typeck_results,
             infcx,
             param_env,
             body_owner,
@@ -257,15 +163,15 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
     }
 
     crate fn node_ty(&self, hir_id: hir::HirId) -> McResult<Ty<'tcx>> {
-        self.resolve_type_vars_or_error(hir_id, self.tables.node_type_opt(hir_id))
+        self.resolve_type_vars_or_error(hir_id, self.typeck_results.node_type_opt(hir_id))
     }
 
     fn expr_ty(&self, expr: &hir::Expr<'_>) -> McResult<Ty<'tcx>> {
-        self.resolve_type_vars_or_error(expr.hir_id, self.tables.expr_ty_opt(expr))
+        self.resolve_type_vars_or_error(expr.hir_id, self.typeck_results.expr_ty_opt(expr))
     }
 
     crate fn expr_ty_adjusted(&self, expr: &hir::Expr<'_>) -> McResult<Ty<'tcx>> {
-        self.resolve_type_vars_or_error(expr.hir_id, self.tables.expr_ty_adjusted_opt(expr))
+        self.resolve_type_vars_or_error(expr.hir_id, self.typeck_results.expr_ty_adjusted_opt(expr))
     }
 
     /// Returns the type of value that this pattern matches against.
@@ -283,7 +189,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         // that these are never attached to binding patterns, so
         // actually this is somewhat "disjoint" from the code below
         // that aims to account for `ref x`.
-        if let Some(vec) = self.tables.pat_adjustments().get(pat.hir_id) {
+        if let Some(vec) = self.typeck_results.pat_adjustments().get(pat.hir_id) {
             if let Some(first_ty) = vec.first() {
                 debug!("pat_ty(pat={:?}) found adjusted ty `{:?}`", pat, first_ty);
                 return Ok(first_ty);
@@ -302,8 +208,11 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         // and if so, figures out what the type *being borrowed* is.
         let ret_ty = match pat.kind {
             PatKind::Binding(..) => {
-                let bm =
-                    *self.tables.pat_binding_modes().get(pat.hir_id).expect("missing binding mode");
+                let bm = *self
+                    .typeck_results
+                    .pat_binding_modes()
+                    .get(pat.hir_id)
+                    .expect("missing binding mode");
 
                 if let ty::BindByReference(_) = bm {
                     // a bind-by-ref means that the base_ty will be the type of the ident itself,
@@ -343,7 +252,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             }
         }
 
-        helper(self, expr, self.tables.expr_adjustments(expr))
+        helper(self, expr, self.typeck_results.expr_adjustments(expr))
     }
 
     crate fn cat_expr_adjusted(
@@ -395,7 +304,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         let expr_ty = self.expr_ty(expr)?;
         match expr.kind {
             hir::ExprKind::Unary(hir::UnOp::UnDeref, ref e_base) => {
-                if self.tables.is_method_call(expr) {
+                if self.typeck_results.is_method_call(expr) {
                     self.cat_overloaded_place(expr, e_base)
                 } else {
                     let base = self.cat_expr(&e_base)?;
@@ -406,11 +315,24 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             hir::ExprKind::Field(ref base, _) => {
                 let base = self.cat_expr(&base)?;
                 debug!("cat_expr(cat_field): id={} expr={:?} base={:?}", expr.hir_id, expr, base);
-                Ok(self.cat_projection(expr, base, expr_ty))
+
+                let field_idx = self
+                    .typeck_results
+                    .field_indices()
+                    .get(expr.hir_id)
+                    .cloned()
+                    .expect("Field index not found");
+
+                Ok(self.cat_projection(
+                    expr,
+                    base,
+                    expr_ty,
+                    ProjectionKind::Field(field_idx as u32, VariantIdx::new(0)),
+                ))
             }
 
             hir::ExprKind::Index(ref base, _) => {
-                if self.tables.is_method_call(expr) {
+                if self.typeck_results.is_method_call(expr) {
                     // If this is an index implemented by a method call, then it
                     // will include an implicit deref of the result.
                     // The call to index() returns a `&T` value, which
@@ -419,12 +341,12 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
                     self.cat_overloaded_place(expr, base)
                 } else {
                     let base = self.cat_expr(&base)?;
-                    Ok(self.cat_projection(expr, base, expr_ty))
+                    Ok(self.cat_projection(expr, base, expr_ty, ProjectionKind::Index))
                 }
             }
 
             hir::ExprKind::Path(ref qpath) => {
-                let res = self.tables.qpath_res(qpath, expr.hir_id);
+                let res = self.typeck_results.qpath_res(qpath, expr.hir_id);
                 self.cat_res(expr.hir_id, expr.span, expr_ty, res)
             }
 
@@ -533,9 +455,10 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         node: &N,
         base_place: PlaceWithHirId<'tcx>,
         ty: Ty<'tcx>,
+        kind: ProjectionKind,
     ) -> PlaceWithHirId<'tcx> {
         let mut projections = base_place.place.projections;
-        projections.push(Projection { kind: ProjectionKind::Other, ty: ty });
+        projections.push(Projection { kind: kind, ty: ty });
         let ret = PlaceWithHirId::new(
             node.hir_id(),
             base_place.place.base_ty,
@@ -609,6 +532,75 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         self.cat_pattern_(place, pat, &mut op)
     }
 
+    /// Returns the variant index for an ADT used within a Struct or TupleStruct pattern
+    /// Here `pat_hir_id` is the HirId of the pattern itself.
+    fn variant_index_for_adt(
+        &self,
+        qpath: &hir::QPath<'_>,
+        pat_hir_id: hir::HirId,
+        span: Span,
+    ) -> McResult<VariantIdx> {
+        let res = self.typeck_results.qpath_res(qpath, pat_hir_id);
+        let ty = self.typeck_results.node_type(pat_hir_id);
+        let adt_def = match ty.kind {
+            ty::Adt(adt_def, _) => adt_def,
+            _ => {
+                self.tcx()
+                    .sess
+                    .delay_span_bug(span, "struct or tuple struct pattern not applied to an ADT");
+                return Err(());
+            }
+        };
+
+        match res {
+            Res::Def(DefKind::Variant, variant_id) => Ok(adt_def.variant_index_with_id(variant_id)),
+            Res::Def(DefKind::Ctor(CtorOf::Variant, ..), variant_ctor_id) => {
+                Ok(adt_def.variant_index_with_ctor_id(variant_ctor_id))
+            }
+            Res::Def(DefKind::Ctor(CtorOf::Struct, ..), _)
+            | Res::Def(DefKind::Struct | DefKind::Union | DefKind::TyAlias | DefKind::AssocTy, _)
+            | Res::SelfCtor(..)
+            | Res::SelfTy(..) => {
+                // Structs and Unions have only have one variant.
+                Ok(VariantIdx::new(0))
+            }
+            _ => bug!("expected ADT path, found={:?}", res),
+        }
+    }
+
+    /// Returns the total number of fields in an ADT variant used within a pattern.
+    /// Here `pat_hir_id` is the HirId of the pattern itself.
+    fn total_fields_in_adt_variant(
+        &self,
+        pat_hir_id: hir::HirId,
+        variant_index: VariantIdx,
+        span: Span,
+    ) -> McResult<usize> {
+        let ty = self.typeck_results.node_type(pat_hir_id);
+        match ty.kind {
+            ty::Adt(adt_def, _) => Ok(adt_def.variants[variant_index].fields.len()),
+            _ => {
+                self.tcx()
+                    .sess
+                    .delay_span_bug(span, "struct or tuple struct pattern not applied to an ADT");
+                return Err(());
+            }
+        }
+    }
+
+    /// Returns the total number of fields in a tuple used within a Tuple pattern.
+    /// Here `pat_hir_id` is the HirId of the pattern itself.
+    fn total_fields_in_tuple(&self, pat_hir_id: hir::HirId, span: Span) -> McResult<usize> {
+        let ty = self.typeck_results.node_type(pat_hir_id);
+        match ty.kind {
+            ty::Tuple(substs) => Ok(substs.len()),
+            _ => {
+                self.tcx().sess.delay_span_bug(span, "tuple pattern not applied to a tuple");
+                return Err(());
+            }
+        }
+    }
+
     // FIXME(#19596) This is a workaround, but there should be a better way to do this
     fn cat_pattern_<F>(
         &self,
@@ -660,7 +652,9 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         // Then we see that to get the same result, we must start with
         // `deref { deref { place_foo }}` instead of `place_foo` since the pattern is now `Some(x,)`
         // and not `&&Some(x,)`, even though its assigned type is that of `&&Some(x,)`.
-        for _ in 0..self.tables.pat_adjustments().get(pat.hir_id).map(|v| v.len()).unwrap_or(0) {
+        for _ in
+            0..self.typeck_results.pat_adjustments().get(pat.hir_id).map(|v| v.len()).unwrap_or(0)
+        {
             debug!("cat_pattern: applying adjustment to place_with_id={:?}", place_with_id);
             place_with_id = self.cat_deref(pat, place_with_id)?;
         }
@@ -679,20 +673,54 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         op(&place_with_id, pat);
 
         match pat.kind {
-            PatKind::TupleStruct(_, ref subpats, _) | PatKind::Tuple(ref subpats, _) => {
-                // S(p1, ..., pN) or (p1, ..., pN)
-                for subpat in subpats.iter() {
+            PatKind::Tuple(ref subpats, dots_pos) => {
+                // (p1, ..., pN)
+                let total_fields = self.total_fields_in_tuple(pat.hir_id, pat.span)?;
+
+                for (i, subpat) in subpats.iter().enumerate_and_adjust(total_fields, dots_pos) {
                     let subpat_ty = self.pat_ty_adjusted(&subpat)?;
-                    let sub_place = self.cat_projection(pat, place_with_id.clone(), subpat_ty);
+                    let projection_kind = ProjectionKind::Field(i as u32, VariantIdx::new(0));
+                    let sub_place =
+                        self.cat_projection(pat, place_with_id.clone(), subpat_ty, projection_kind);
                     self.cat_pattern_(sub_place, &subpat, op)?;
                 }
             }
 
-            PatKind::Struct(_, field_pats, _) => {
+            PatKind::TupleStruct(ref qpath, ref subpats, dots_pos) => {
+                // S(p1, ..., pN)
+                let variant_index = self.variant_index_for_adt(qpath, pat.hir_id, pat.span)?;
+                let total_fields =
+                    self.total_fields_in_adt_variant(pat.hir_id, variant_index, pat.span)?;
+
+                for (i, subpat) in subpats.iter().enumerate_and_adjust(total_fields, dots_pos) {
+                    let subpat_ty = self.pat_ty_adjusted(&subpat)?;
+                    let projection_kind = ProjectionKind::Field(i as u32, variant_index);
+                    let sub_place =
+                        self.cat_projection(pat, place_with_id.clone(), subpat_ty, projection_kind);
+                    self.cat_pattern_(sub_place, &subpat, op)?;
+                }
+            }
+
+            PatKind::Struct(ref qpath, field_pats, _) => {
                 // S { f1: p1, ..., fN: pN }
+
+                let variant_index = self.variant_index_for_adt(qpath, pat.hir_id, pat.span)?;
+
                 for fp in field_pats {
                     let field_ty = self.pat_ty_adjusted(&fp.pat)?;
-                    let field_place = self.cat_projection(pat, place_with_id.clone(), field_ty);
+                    let field_index = self
+                        .typeck_results
+                        .field_indices()
+                        .get(fp.hir_id)
+                        .cloned()
+                        .expect("no index for a field");
+
+                    let field_place = self.cat_projection(
+                        pat,
+                        place_with_id.clone(),
+                        field_ty,
+                        ProjectionKind::Field(field_index as u32, variant_index),
+                    );
                     self.cat_pattern_(field_place, &fp.pat, op)?;
                 }
             }
@@ -723,13 +751,23 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
                         return Err(());
                     }
                 };
-                let elt_place = self.cat_projection(pat, place_with_id.clone(), element_ty);
+                let elt_place = self.cat_projection(
+                    pat,
+                    place_with_id.clone(),
+                    element_ty,
+                    ProjectionKind::Index,
+                );
                 for before_pat in before {
                     self.cat_pattern_(elt_place.clone(), &before_pat, op)?;
                 }
                 if let Some(ref slice_pat) = *slice {
                     let slice_pat_ty = self.pat_ty_adjusted(&slice_pat)?;
-                    let slice_place = self.cat_projection(pat, place_with_id, slice_pat_ty);
+                    let slice_place = self.cat_projection(
+                        pat,
+                        place_with_id,
+                        slice_pat_ty,
+                        ProjectionKind::Subslice,
+                    );
                     self.cat_pattern_(slice_place, &slice_pat, op)?;
                 }
                 for after_pat in after {

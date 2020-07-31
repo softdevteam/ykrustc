@@ -164,15 +164,8 @@ fn check_local<'tcx>(cx: &LateContext<'tcx>, local: &'tcx Local<'_>, bindings: &
 }
 
 fn is_binding(cx: &LateContext<'_>, pat_id: HirId) -> bool {
-    let var_ty = cx.tables().node_type_opt(pat_id);
-    if let Some(var_ty) = var_ty {
-        match var_ty.kind {
-            ty::Adt(..) => false,
-            _ => true,
-        }
-    } else {
-        false
-    }
+    let var_ty = cx.typeck_results().node_type_opt(pat_id);
+    var_ty.map_or(false, |var_ty| !matches!(var_ty.kind, ty::Adt(..)))
 }
 
 fn check_pat<'tcx>(
@@ -302,11 +295,7 @@ fn lint_shadow<'tcx>(
                 cx,
                 SHADOW_UNRELATED,
                 pattern_span,
-                &format!(
-                    "`{}` is shadowed by `{}`",
-                    snippet(cx, pattern_span, "_"),
-                    snippet(cx, expr.span, "..")
-                ),
+                &format!("`{}` is being shadowed", snippet(cx, pattern_span, "_")),
                 |diag| {
                     diag.span_note(expr.span, "initialization happens here");
                     diag.span_note(prev_span, "previous binding is here");

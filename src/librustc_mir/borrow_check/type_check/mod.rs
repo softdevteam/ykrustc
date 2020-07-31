@@ -27,8 +27,8 @@ use rustc_middle::ty::cast::CastTy;
 use rustc_middle::ty::fold::TypeFoldable;
 use rustc_middle::ty::subst::{GenericArgKind, Subst, SubstsRef, UserSubsts};
 use rustc_middle::ty::{
-    self, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, RegionVid, ToPolyTraitRef,
-    ToPredicate, Ty, TyCtxt, UserType, UserTypeAnnotationIndex,
+    self, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, RegionVid, ToPredicate, Ty,
+    TyCtxt, UserType, UserTypeAnnotationIndex, WithConstness,
 };
 use rustc_span::{Span, DUMMY_SP};
 use rustc_target::abi::VariantIdx;
@@ -321,7 +321,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for TypeVerifier<'a, 'b, 'tcx> {
             }
         } else {
             let tcx = self.tcx();
-            if let ty::ConstKind::Unevaluated(def_id, substs, promoted) = constant.literal.val {
+            if let ty::ConstKind::Unevaluated(def, substs, promoted) = constant.literal.val {
                 if let Some(promoted) = promoted {
                     let check_err = |verifier: &mut TypeVerifier<'a, 'b, 'tcx>,
                                      promoted: &Body<'tcx>,
@@ -357,7 +357,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for TypeVerifier<'a, 'b, 'tcx> {
                         ConstraintCategory::Boring,
                         self.cx.param_env.and(type_op::ascribe_user_type::AscribeUserType::new(
                             constant.literal.ty,
-                            def_id,
+                            def.did,
                             UserSubsts { substs, user_self_ty: None },
                         )),
                     ) {
@@ -1021,7 +1021,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     }
 
                     self.prove_predicate(
-                        ty::PredicateKind::WellFormed(inferred_ty.into()).to_predicate(self.tcx()),
+                        ty::PredicateAtom::WellFormed(inferred_ty.into()).to_predicate(self.tcx()),
                         Locations::All(span),
                         ConstraintCategory::TypeAnnotation,
                     );
@@ -1239,7 +1239,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         let tcx = infcx.tcx;
         let param_env = self.param_env;
         let body = self.body;
-        let concrete_opaque_types = &tcx.typeck_tables_of(anon_owner_def_id).concrete_opaque_types;
+        let concrete_opaque_types = &tcx.typeck(anon_owner_def_id).concrete_opaque_types;
         let mut opaque_type_values = Vec::new();
 
         debug!("eq_opaque_type_and_type: mir_def_id={:?}", self.mir_def_id);
@@ -1273,7 +1273,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     obligations.obligations.push(traits::Obligation::new(
                         ObligationCause::dummy(),
                         param_env,
-                        ty::PredicateKind::WellFormed(revealed_ty.into()).to_predicate(infcx.tcx),
+                        ty::PredicateAtom::WellFormed(revealed_ty.into()).to_predicate(infcx.tcx),
                     ));
                     obligations.add(
                         infcx
@@ -1617,7 +1617,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 self.check_call_dest(body, term, &sig, destination, term_location);
 
                 self.prove_predicates(
-                    sig.inputs_and_output.iter().map(|ty| ty::PredicateKind::WellFormed(ty.into())),
+                    sig.inputs_and_output.iter().map(|ty| ty::PredicateAtom::WellFormed(ty.into())),
                     term_location.to_locations(),
                     ConstraintCategory::Boring,
                 );
@@ -2022,18 +2022,14 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                                         traits::ObligationCauseCode::RepeatVec(should_suggest),
                                     ),
                                     self.param_env,
-                                    ty::PredicateKind::Trait(
-                                        ty::Binder::bind(ty::TraitPredicate {
-                                            trait_ref: ty::TraitRef::new(
-                                                self.tcx().require_lang_item(
-                                                    CopyTraitLangItem,
-                                                    Some(self.last_span),
-                                                ),
-                                                tcx.mk_substs_trait(ty, &[]),
-                                            ),
-                                        }),
-                                        hir::Constness::NotConst,
-                                    )
+                                    ty::Binder::bind(ty::TraitRef::new(
+                                        self.tcx().require_lang_item(
+                                            CopyTraitLangItem,
+                                            Some(self.last_span),
+                                        ),
+                                        tcx.mk_substs_trait(ty, &[]),
+                                    ))
+                                    .without_const()
                                     .to_predicate(self.tcx()),
                                 ),
                                 &traits::SelectionError::Unimplemented,
@@ -2706,8 +2702,8 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         category: ConstraintCategory,
     ) {
         self.prove_predicates(
-            Some(ty::PredicateKind::Trait(
-                trait_ref.to_poly_trait_ref().to_poly_trait_predicate(),
+            Some(ty::PredicateAtom::Trait(
+                ty::TraitPredicate { trait_ref },
                 hir::Constness::NotConst,
             )),
             locations,

@@ -318,7 +318,9 @@
 #codegen-units-std = 1
 
 # Whether or not debug assertions are enabled for the compiler and standard
-# library.
+# library. Debug assertions control the maximum log level used by rustc. When
+# enabled calls to `trace!` and `debug!` macros are preserved in the compiled
+# binary, otherwise they are omitted.
 #
 # Defaults to rust.debug value
 #debug-assertions = false
@@ -331,13 +333,18 @@
 
 # Debuginfo level for most of Rust code, corresponds to the `-C debuginfo=N` option of `rustc`.
 # `0` - no debug info
-# `1` - line tables only
+# `1` - line tables only - sufficient to generate backtraces that include line
+#       information and inlined functions, set breakpoints at source code
+#       locations, and step through execution in a debugger.
 # `2` - full debug info with variable and type information
 # Can be overridden for specific subsets of Rust code (rustc, std or tools).
 # Debuginfo for tests run with compiletest is not controlled by this option
 # and needs to be enabled separately with `debuginfo-level-tests`.
 #
-# Defaults to 2 if debug is true
+# Note that debuginfo-level = 2 generates several gigabytes of debuginfo
+# and will slow down the linking process significantly.
+#
+# Defaults to 1 if debug is true
 #debuginfo-level = 0
 
 # Debuginfo level for the compiler.
@@ -387,8 +394,7 @@
 # desired in distributions, for example.
 #rpath = true
 
-# Emits extraneous output from tests to ensure that failures of the test
-# harness are debuggable just from logfiles.
+# Emits extra output from tests so test failures are debuggable just from logfiles.
 #verbose-tests = false
 
 # Flag indicating whether tests are compiled with optimizations (the -O flag).
@@ -450,8 +456,7 @@
 # instead of LLVM's default of 100.
 #thin-lto-import-instr-limit = 100
 
-# Map all debuginfo paths for libstd and crates to `/rust/$sha/$crate/...`,
-# generally only set for releases
+# Map debuginfo paths to `/rust/$sha/...`, generally only set for releases
 #remap-debuginfo = false
 
 # Link the compiler against `jemalloc`, where on Linux and OSX it should

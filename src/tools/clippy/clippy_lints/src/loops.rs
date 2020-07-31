@@ -535,7 +535,7 @@ impl<'tcx> LateLintPass<'tcx> for Loops {
                 if_chain! {
                     if let ExprKind::MethodCall(..) | ExprKind::Call(..) = iter_expr.kind;
                     if let Some(iter_def_id) = get_trait_def_id(cx, &paths::ITERATOR);
-                    if implements_trait(cx, cx.tables().expr_ty(iter_expr), iter_def_id, &[]);
+                    if implements_trait(cx, cx.typeck_results().expr_ty(iter_expr), iter_def_id, &[]);
                     then {
                         return;
                     }
@@ -686,13 +686,9 @@ fn never_loop_expr(expr: &Expr<'_>, main_loop_id: HirId) -> NeverLoopResult {
                 NeverLoopResult::AlwaysBreak
             }
         },
-        ExprKind::Break(_, ref e) | ExprKind::Ret(ref e) => {
-            if let Some(ref e) = *e {
-                combine_seq(never_loop_expr(e, main_loop_id), NeverLoopResult::AlwaysBreak)
-            } else {
-                NeverLoopResult::AlwaysBreak
-            }
-        },
+        ExprKind::Break(_, ref e) | ExprKind::Ret(ref e) => e.as_ref().map_or(NeverLoopResult::AlwaysBreak, |e| {
+            combine_seq(never_loop_expr(e, main_loop_id), NeverLoopResult::AlwaysBreak)
+        }),
         ExprKind::InlineAsm(ref asm) => asm
             .operands
             .iter()
@@ -985,8 +981,8 @@ fn detect_manual_memcpy<'tcx>(
                         if_chain! {
                             if let ExprKind::Index(seqexpr_left, idx_left) = lhs.kind;
                             if let ExprKind::Index(seqexpr_right, idx_right) = rhs.kind;
-                            if is_slice_like(cx, cx.tables().expr_ty(seqexpr_left))
-                                && is_slice_like(cx, cx.tables().expr_ty(seqexpr_right));
+                            if is_slice_like(cx, cx.typeck_results().expr_ty(seqexpr_left))
+                                && is_slice_like(cx, cx.typeck_results().expr_ty(seqexpr_right));
                             if let Some(offset_left) = get_offset(cx, &idx_left, canonical_id);
                             if let Some(offset_right) = get_offset(cx, &idx_right, canonical_id);
 
@@ -1254,8 +1250,8 @@ fn check_for_loop_arg(cx: &LateContext<'_>, pat: &Pat<'_>, arg: &Expr<'_>, expr:
                     lint_iter_method(cx, args, arg, method_name);
                 }
             } else if method_name == "into_iter" && match_trait_method(cx, arg, &paths::INTO_ITERATOR) {
-                let receiver_ty = cx.tables().expr_ty(&args[0]);
-                let receiver_ty_adjusted = cx.tables().expr_ty_adjusted(&args[0]);
+                let receiver_ty = cx.typeck_results().expr_ty(&args[0]);
+                let receiver_ty_adjusted = cx.typeck_results().expr_ty_adjusted(&args[0]);
                 if TyS::same_type(receiver_ty, receiver_ty_adjusted) {
                     let mut applicability = Applicability::MachineApplicable;
                     let object = snippet_with_applicability(cx, args[0].span, "_", &mut applicability);
@@ -1300,7 +1296,7 @@ fn check_for_loop_arg(cx: &LateContext<'_>, pat: &Pat<'_>, arg: &Expr<'_>, expr:
 
 /// Checks for `for` loops over `Option`s and `Result`s.
 fn check_arg_type(cx: &LateContext<'_>, pat: &Pat<'_>, arg: &Expr<'_>) {
-    let ty = cx.tables().expr_ty(arg);
+    let ty = cx.typeck_results().expr_ty(arg);
     if is_type_diagnostic_item(cx, ty, sym!(option_type)) {
         span_lint_and_help(
             cx,
@@ -1404,8 +1400,9 @@ fn check_for_loop_explicit_counter<'tcx>(
 /// If `arg` was the argument to a `for` loop, return the "cleanest" way of writing the
 /// actual `Iterator` that the loop uses.
 fn make_iterator_snippet(cx: &LateContext<'_>, arg: &Expr<'_>, applic_ref: &mut Applicability) -> String {
-    let impls_iterator = get_trait_def_id(cx, &paths::ITERATOR)
-        .map_or(false, |id| implements_trait(cx, cx.tables().expr_ty(arg), id, &[]));
+    let impls_iterator = get_trait_def_id(cx, &paths::ITERATOR).map_or(false, |id| {
+        implements_trait(cx, cx.typeck_results().expr_ty(arg), id, &[])
+    });
     if impls_iterator {
         format!(
             "{}",
@@ -1416,7 +1413,7 @@ fn make_iterator_snippet(cx: &LateContext<'_>, arg: &Expr<'_>, applic_ref: &mut 
         // (&mut x).into_iter() ==> x.iter_mut()
         match &arg.kind {
             ExprKind::AddrOf(BorrowKind::Ref, mutability, arg_inner)
-                if has_iter_method(cx, cx.tables().expr_ty(&arg_inner)).is_some() =>
+                if has_iter_method(cx, cx.typeck_results().expr_ty(&arg_inner)).is_some() =>
             {
                 let meth_name = match mutability {
                     Mutability::Mut => "iter_mut",
@@ -1449,7 +1446,7 @@ fn check_for_loop_over_map_kv<'tcx>(
     if let PatKind::Tuple(ref pat, _) = pat.kind {
         if pat.len() == 2 {
             let arg_span = arg.span;
-            let (new_pat_span, kind, ty, mutbl) = match cx.tables().expr_ty(arg).kind {
+            let (new_pat_span, kind, ty, mutbl) = match cx.typeck_results().expr_ty(arg).kind {
                 ty::Ref(_, ty, mutbl) => match (&pat[0].kind, &pat[1].kind) {
                     (key, _) if pat_is_wild(key, body) => (pat[1].span, "value", ty, mutbl),
                     (_, value) if pat_is_wild(value, body) => (pat[0].span, "key", ty, Mutability::Not),
@@ -1594,7 +1591,14 @@ fn check_for_mutation<'tcx>(
     };
     let def_id = body.hir_id.owner.to_def_id();
     cx.tcx.infer_ctxt().enter(|infcx| {
-        ExprUseVisitor::new(&mut delegate, &infcx, def_id.expect_local(), cx.param_env, cx.tables()).walk_expr(body);
+        ExprUseVisitor::new(
+            &mut delegate,
+            &infcx,
+            def_id.expect_local(),
+            cx.param_env,
+            cx.typeck_results(),
+        )
+        .walk_expr(body);
     });
     delegate.mutation_span()
 }
@@ -1688,7 +1692,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                             if index_used_directly {
                                 self.indexed_directly.insert(
                                     seqvar.segments[0].ident.name,
-                                    (Some(extent), self.cx.tables().node_type(seqexpr.hir_id)),
+                                    (Some(extent), self.cx.typeck_results().node_type(seqexpr.hir_id)),
                                 );
                             }
                             return false;  // no need to walk further *on the variable*
@@ -1700,7 +1704,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                             if index_used_directly {
                                 self.indexed_directly.insert(
                                     seqvar.segments[0].ident.name,
-                                    (None, self.cx.tables().node_type(seqexpr.hir_id)),
+                                    (None, self.cx.typeck_results().node_type(seqexpr.hir_id)),
                                 );
                             }
                             return false;  // no need to walk further *on the variable*
@@ -1768,7 +1772,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
             ExprKind::Call(ref f, args) => {
                 self.visit_expr(f);
                 for expr in args {
-                    let ty = self.cx.tables().expr_ty_adjusted(expr);
+                    let ty = self.cx.typeck_results().expr_ty_adjusted(expr);
                     self.prefer_mutable = false;
                     if let ty::Ref(_, _, mutbl) = ty.kind {
                         if mutbl == Mutability::Mut {
@@ -1779,7 +1783,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
                 }
             },
             ExprKind::MethodCall(_, _, args, _) => {
-                let def_id = self.cx.tables().type_dependent_def_id(expr.hir_id).unwrap();
+                let def_id = self.cx.typeck_results().type_dependent_def_id(expr.hir_id).unwrap();
                 for (ty, expr) in self.cx.tcx.fn_sig(def_id).inputs().skip_binder().iter().zip(args) {
                     self.prefer_mutable = false;
                     if let ty::Ref(_, _, mutbl) = ty.kind {
@@ -1866,7 +1870,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarUsedAfterLoopVisitor<'a, 'tcx> {
 fn is_ref_iterable_type(cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
     // no walk_ptrs_ty: calling iter() on a reference can make sense because it
     // will allow further borrows afterwards
-    let ty = cx.tables().expr_ty(e);
+    let ty = cx.typeck_results().expr_ty(e);
     is_iterable_array(ty, cx) ||
     is_type_diagnostic_item(cx, ty, sym!(vec_type)) ||
     match_type(cx, ty, &paths::LINKED_LIST) ||
@@ -1881,13 +1885,9 @@ fn is_ref_iterable_type(cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
 fn is_iterable_array<'tcx>(ty: Ty<'tcx>, cx: &LateContext<'tcx>) -> bool {
     // IntoIterator is currently only implemented for array sizes <= 32 in rustc
     match ty.kind {
-        ty::Array(_, n) => {
-            if let Some(val) = n.try_eval_usize(cx.tcx, cx.param_env) {
-                (0..=32).contains(&val)
-            } else {
-                false
-            }
-        },
+        ty::Array(_, n) => n
+            .try_eval_usize(cx.tcx, cx.param_env)
+            .map_or(false, |val| (0..=32).contains(&val)),
         _ => false,
     }
 }
@@ -1899,11 +1899,7 @@ fn extract_expr_from_first_stmt<'tcx>(block: &Block<'tcx>) -> Option<&'tcx Expr<
         return None;
     }
     if let StmtKind::Local(ref local) = block.stmts[0].kind {
-        if let Some(expr) = local.init {
-            Some(expr)
-        } else {
-            None
-        }
+        local.init //.map(|expr| expr)
     } else {
         None
     }
@@ -2023,15 +2019,13 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
                 if let PatKind::Binding(.., ident, _) = local.pat.kind {
                     self.name = Some(ident.name);
 
-                    self.state = if let Some(ref init) = local.init {
+                    self.state = local.init.as_ref().map_or(VarState::Declared, |init| {
                         if is_integer_const(&self.cx, init, 0) {
                             VarState::Warn
                         } else {
                             VarState::Declared
                         }
-                    } else {
-                        VarState::Declared
-                    }
+                    })
                 }
             }
         }
@@ -2105,17 +2099,11 @@ fn var_def_id(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<HirId> {
 }
 
 fn is_loop(expr: &Expr<'_>) -> bool {
-    match expr.kind {
-        ExprKind::Loop(..) => true,
-        _ => false,
-    }
+    matches!(expr.kind, ExprKind::Loop(..))
 }
 
 fn is_conditional(expr: &Expr<'_>) -> bool {
-    match expr.kind {
-        ExprKind::Match(..) => true,
-        _ => false,
-    }
+    matches!(expr.kind, ExprKind::Match(..))
 }
 
 fn is_nested(cx: &LateContext<'_>, match_expr: &Expr<'_>, iter_expr: &Expr<'_>) -> bool {
@@ -2241,7 +2229,7 @@ fn path_name(e: &Expr<'_>) -> Option<Name> {
 }
 
 fn check_infinite_loop<'tcx>(cx: &LateContext<'tcx>, cond: &'tcx Expr<'_>, expr: &'tcx Expr<'_>) {
-    if constant(cx, cx.tables(), cond).is_some() {
+    if constant(cx, cx.typeck_results(), cond).is_some() {
         // A pure constant condition (e.g., `while false`) is not linted.
         return;
     }
@@ -2377,7 +2365,7 @@ fn check_needless_collect<'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'tcx>) {
         if let Some(ref generic_args) = chain_method.args;
         if let Some(GenericArg::Type(ref ty)) = generic_args.args.get(0);
         then {
-            let ty = cx.tables().node_type(ty.hir_id);
+            let ty = cx.typeck_results().node_type(ty.hir_id);
             if is_type_diagnostic_item(cx, ty, sym!(vec_type)) ||
                 is_type_diagnostic_item(cx, ty, sym!(vecdeque_type)) ||
                 match_type(cx, ty, &paths::BTREEMAP) ||

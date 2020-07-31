@@ -46,7 +46,7 @@ impl<'tcx> LateLintPass<'tcx> for UnusedResults {
             return;
         }
 
-        let ty = cx.tables().expr_ty(&expr);
+        let ty = cx.typeck_results().expr_ty(&expr);
         let type_permits_lack_of_use = check_must_use_ty(cx, ty, &expr, s.span, "", "", 1);
 
         let mut fn_warned = false;
@@ -65,7 +65,7 @@ impl<'tcx> LateLintPass<'tcx> for UnusedResults {
                     _ => None,
                 }
             }
-            hir::ExprKind::MethodCall(..) => cx.tables().type_dependent_def_id(expr.hir_id),
+            hir::ExprKind::MethodCall(..) => cx.typeck_results().type_dependent_def_id(expr.hir_id),
             _ => None,
         };
         if let Some(def_id) = maybe_def_id {
@@ -146,11 +146,11 @@ impl<'tcx> LateLintPass<'tcx> for UnusedResults {
                 ty::Opaque(def, _) => {
                     let mut has_emitted = false;
                     for (predicate, _) in cx.tcx.predicates_of(def).predicates {
-                        if let ty::PredicateKind::Trait(ref poly_trait_predicate, _) =
-                            predicate.kind()
+                        // We only look at the `DefId`, so it is safe to skip the binder here.
+                        if let ty::PredicateAtom::Trait(ref poly_trait_predicate, _) =
+                            predicate.skip_binders()
                         {
-                            let trait_ref = poly_trait_predicate.skip_binder().trait_ref;
-                            let def_id = trait_ref.def_id;
+                            let def_id = poly_trait_predicate.trait_ref.def_id;
                             let descr_pre =
                                 &format!("{}implementer{} of ", descr_pre, plural_suffix,);
                             if check_must_use_def(cx, def_id, span, descr_pre, descr_post) {
@@ -287,8 +287,8 @@ impl<'tcx> LateLintPass<'tcx> for UnusedAttributes {
         let attr_info = attr.ident().and_then(|ident| self.builtin_attributes.get(&ident.name));
 
         if let Some(&&(name, ty, ..)) = attr_info {
-            if let AttributeType::Whitelisted = ty {
-                debug!("{:?} is Whitelisted", name);
+            if let AttributeType::AssumedUsed = ty {
+                debug!("{:?} is AssumedUsed", name);
                 return;
             }
         }
@@ -950,7 +950,7 @@ impl<'tcx> LateLintPass<'tcx> for UnusedAllocation {
             _ => return,
         }
 
-        for adj in cx.tables().expr_adjustments(e) {
+        for adj in cx.typeck_results().expr_adjustments(e) {
             if let adjustment::Adjust::Borrow(adjustment::AutoBorrow::Ref(_, m)) = adj.kind {
                 cx.struct_span_lint(UNUSED_ALLOCATION, e.span, |lint| {
                     let msg = match m {
