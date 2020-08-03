@@ -53,6 +53,7 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
         ty::Ref(_, typ, _) => ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
         ty::Bool => ykpack::Ty::Bool,
+        ty::Tuple(..) => lower_tuple(tcx, bx, ty_layout),
         _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
     };
 
@@ -81,6 +82,32 @@ fn lower_unsigned_int(ui: UintTy) -> ykpack::Ty {
     }
 }
 
+fn lower_tuple<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
+    tcx: TyCtxt<'tcx>,
+    bx: &Bx,
+    ty_layout: &TyAndLayout<'tcx>,
+) -> ykpack::Ty {
+    let align = i32::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
+    let size = i32::try_from(ty_layout.layout.size.bytes()).unwrap();
+
+    match &ty_layout.fields {
+        FieldsShape::Arbitrary { offsets, .. } => {
+            let mut sir_offsets = Vec::new();
+            let mut sir_tys = Vec::new();
+            for (idx, offs) in offsets.iter().enumerate() {
+                sir_tys.push(lower_ty_and_layout(tcx, bx, &ty_layout.field(bx, idx)));
+                sir_offsets.push(offs.bytes());
+            }
+
+            ykpack::Ty::Tuple(ykpack::TupleTy {
+                fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
+                size_align: ykpack::SizeAndAlign { size, align },
+            })
+        }
+        _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
+    }
+}
+
 fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     tcx: TyCtxt<'tcx>,
     bx: &Bx,
@@ -104,10 +131,8 @@ fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                 }
 
                 ykpack::Ty::Struct(ykpack::StructTy {
-                    offsets: sir_offsets,
-                    align,
-                    size,
-                    tys: sir_tys,
+                    fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
+                    size_align: ykpack::SizeAndAlign { align, size },
                 })
             }
             _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
