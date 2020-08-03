@@ -51,6 +51,8 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         ty::Int(si) => lower_signed_int(si),
         ty::Uint(ui) => lower_unsigned_int(ui),
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
+        ty::Ref(_, typ, _) => ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
+        ty::Bool => ykpack::Ty::Bool,
         _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
     };
 
