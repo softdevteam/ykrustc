@@ -86,6 +86,8 @@ impl SirFuncCx<'tcx> {
                 flags |= ykpack::bodyflags::TRACE_HEAD;
             } else if tcx.sess.check_name(attr, sym::trace_tail) {
                 flags |= ykpack::bodyflags::TRACE_TAIL;
+            } else if tcx.sess.check_name(attr, sym::do_not_trace) {
+                flags |= ykpack::bodyflags::DO_NOT_TRACE;
             }
         }
 
