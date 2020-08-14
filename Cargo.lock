@@ -5306,7 +5306,7 @@ dependencies = [
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#52fa6c5dfe4fd1c099acc0370f2f42fa09cd8a2b"
+source = "git+https://github.com/softdevteam/yk#2a79979e2c4537be1d824bbac1bd03c6ec185c4c"
 dependencies = [
  "fallible-iterator",
  "rmp-serde",
