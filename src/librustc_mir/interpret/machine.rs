@@ -122,6 +122,10 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// Whether memory accesses should be alignment-checked.
     fn enforce_alignment(memory_extra: &Self::MemoryExtra) -> bool;
 
+    /// Whether, when checking alignment, we should `force_int` and thus support
+    /// custom alignment logic based on whatever the integer address happens to be.
+    fn force_int_for_alignment_check(memory_extra: &Self::MemoryExtra) -> bool;
+
     /// Whether to enforce the validity invariant
     fn enforce_validity(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool;
 
@@ -376,6 +380,12 @@ pub macro compile_time_machine(<$mir: lifetime, $tcx: lifetime>) {
     }
 
     #[inline(always)]
+    fn force_int_for_alignment_check(_memory_extra: &Self::MemoryExtra) -> bool {
+        // We do not support `force_int`.
+        false
+    }
+
+    #[inline(always)]
     fn enforce_validity(_ecx: &InterpCx<$mir, $tcx, Self>) -> bool {
         false // for now, we don't enforce validity
     }
@@ -408,13 +418,5 @@ pub macro compile_time_machine(<$mir: lifetime, $tcx: lifetime>) {
         _id: AllocId,
     ) -> Self::PointerTag {
         ()
-    }
-
-    #[inline(always)]
-    fn init_frame_extra(
-        _ecx: &mut InterpCx<$mir, $tcx, Self>,
-        frame: Frame<$mir, $tcx>,
-    ) -> InterpResult<$tcx, Frame<$mir, $tcx>> {
-        Ok(frame)
     }
 }

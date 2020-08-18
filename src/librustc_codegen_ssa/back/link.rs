@@ -1,4 +1,5 @@
 use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::temp_dir::MaybeTempDir;
 use rustc_fs_util::fix_windows_verbatim_for_gcc;
 use rustc_hir::def_id::CrateNum;
 use rustc_middle::middle::cstore::{EncodedMetadata, LibSource, NativeLib};
@@ -24,7 +25,7 @@ use crate::SIR_FILENAME;
 use crate::{looks_like_rust_object_file, CodegenResults, CrateInfo, METADATA_FILENAME};
 
 use cc::windows_registry;
-use tempfile::{Builder as TempFileBuilder, TempDir};
+use tempfile::Builder as TempFileBuilder;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -71,27 +72,21 @@ pub fn link_binary<'a, B: ArchiveBuilder<'a>>(
             }
         });
 
-        let tmpdir = TempFileBuilder::new()
-            .prefix("rustc")
-            .tempdir()
-            .unwrap_or_else(|err| sess.fatal(&format!("couldn't create a temp dir: {}", err)));
-
         if outputs.outputs.should_codegen() {
+            let tmpdir = TempFileBuilder::new()
+                .prefix("rustc")
+                .tempdir()
+                .unwrap_or_else(|err| sess.fatal(&format!("couldn't create a temp dir: {}", err)));
+            let path = MaybeTempDir::new(tmpdir, sess.opts.cg.save_temps);
             let out_filename = out_filename(sess, crate_type, outputs, crate_name);
             match crate_type {
                 CrateType::Rlib => {
                     let _timer = sess.timer("link_rlib");
-                    link_rlib::<B>(
-                        sess,
-                        codegen_results,
-                        RlibFlavor::Normal,
-                        &out_filename,
-                        &tmpdir,
-                    )
-                    .build();
+                    link_rlib::<B>(sess, codegen_results, RlibFlavor::Normal, &out_filename, &path)
+                        .build();
                 }
                 CrateType::Staticlib => {
-                    link_staticlib::<B>(sess, codegen_results, &out_filename, &tmpdir);
+                    link_staticlib::<B>(sess, codegen_results, &out_filename, &path);
                 }
                 _ => {
                     link_natively::<B>(
@@ -99,7 +94,7 @@ pub fn link_binary<'a, B: ArchiveBuilder<'a>>(
                         crate_type,
                         &out_filename,
                         codegen_results,
-                        tmpdir.path(),
+                        path.as_ref(),
                         target_cpu,
                     );
                 }
@@ -107,10 +102,6 @@ pub fn link_binary<'a, B: ArchiveBuilder<'a>>(
             if sess.opts.json_artifact_notifications {
                 sess.parse_sess.span_diagnostic.emit_artifact_notification(&out_filename, "link");
             }
-        }
-
-        if sess.opts.cg.save_temps {
-            let _ = tmpdir.into_path();
         }
     }
 
@@ -280,8 +271,8 @@ pub fn each_linked_rlib(
 /// building an `.rlib` (stomping over one another), or writing an `.rmeta` into a
 /// directory being searched for `extern crate` (observing an incomplete file).
 /// The returned path is the temporary file containing the complete metadata.
-pub fn emit_metadata(sess: &Session, metadata: &EncodedMetadata, tmpdir: &TempDir) -> PathBuf {
-    let out_filename = tmpdir.path().join(METADATA_FILENAME);
+pub fn emit_metadata(sess: &Session, metadata: &EncodedMetadata, tmpdir: &MaybeTempDir) -> PathBuf {
+    let out_filename = tmpdir.as_ref().join(METADATA_FILENAME);
     let result = fs::write(&out_filename, &metadata.raw_data);
 
     if let Err(e) = result {
@@ -302,7 +293,7 @@ fn link_rlib<'a, B: ArchiveBuilder<'a>>(
     codegen_results: &CodegenResults,
     flavor: RlibFlavor,
     out_filename: &Path,
-    tmpdir: &TempDir,
+    tmpdir: &MaybeTempDir,
 ) -> B {
     info!("preparing rlib to {:?}", out_filename);
     let mut ab = <B as ArchiveBuilder>::new(sess, out_filename, None);
@@ -376,7 +367,7 @@ fn link_rlib<'a, B: ArchiveBuilder<'a>>(
             // We rename the object file to a well-known name so that we can find it later. See
             // link_sir() for more on this.
             if let Some(sir_mod) = codegen_results.sir_module.as_ref() {
-                let mut dest = PathBuf::from(tmpdir.path());
+                let mut dest = PathBuf::from(tmpdir.as_ref());
                 dest.push(SIR_FILENAME);
                 fs::rename(sir_mod.object.as_ref().unwrap(), &dest).unwrap();
                 ab.add_file(&dest);
@@ -417,7 +408,7 @@ fn link_staticlib<'a, B: ArchiveBuilder<'a>>(
     sess: &'a Session,
     codegen_results: &CodegenResults,
     out_filename: &Path,
-    tempdir: &TempDir,
+    tempdir: &MaybeTempDir,
 ) {
     let mut ab =
         link_rlib::<B>(sess, codegen_results, RlibFlavor::StaticlibBase, out_filename, tempdir);
@@ -802,9 +793,22 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
 }
 
 fn link_sanitizers(sess: &Session, crate_type: CrateType, linker: &mut dyn Linker) {
-    if crate_type != CrateType::Executable {
+    // On macOS the runtimes are distributed as dylibs which should be linked to
+    // both executables and dynamic shared objects. Everywhere else the runtimes
+    // are currently distributed as static liraries which should be linked to
+    // executables only.
+    let needs_runtime = match crate_type {
+        CrateType::Executable => true,
+        CrateType::Dylib | CrateType::Cdylib | CrateType::ProcMacro => {
+            sess.target.target.options.is_like_osx
+        }
+        CrateType::Rlib | CrateType::Staticlib => false,
+    };
+
+    if !needs_runtime {
         return;
     }
+
     let sanitizer = sess.opts.debugging_opts.sanitizer;
     if sanitizer.contains(SanitizerSet::ADDRESS) {
         link_sanitizer_runtime(sess, linker, "asan");
@@ -842,6 +846,7 @@ fn link_sanitizer_runtime(sess: &Session, linker: &mut dyn Linker, name: &str) {
         "aarch64-fuchsia"
         | "aarch64-unknown-linux-gnu"
         | "x86_64-fuchsia"
+        | "x86_64-unknown-freebsd"
         | "x86_64-unknown-linux-gnu" => {
             let filename = format!("librustc{}_rt.{}.a", channel, name);
             let path = default_tlib.join(&filename);
@@ -1319,7 +1324,9 @@ fn crt_objects_fallback(sess: &Session, crate_type: CrateType) -> bool {
         Some(CrtObjectsFallback::Musl) => sess.crt_static(Some(crate_type)),
         // FIXME: Find some heuristic for "native mingw toolchain is available",
         // likely based on `get_crt_libs_path` (https://github.com/rust-lang/rust/pull/67429).
-        Some(CrtObjectsFallback::Mingw) => sess.target.target.target_vendor != "uwp",
+        Some(CrtObjectsFallback::Mingw) => {
+            sess.host == sess.target.target && sess.target.target.target_vendor != "uwp"
+        }
         // FIXME: Figure out cases in which WASM needs to link with a native toolchain.
         Some(CrtObjectsFallback::Wasm) => true,
         None => false,

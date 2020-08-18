@@ -5,9 +5,8 @@
 use rustc_arena::DroplessArena;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher, ToStableHashKey};
-use rustc_macros::{symbols, HashStable_Generic};
+use rustc_macros::HashStable_Generic;
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
-use rustc_serialize::{UseSpecializedDecodable, UseSpecializedEncodable};
 
 use std::cmp::{Ord, PartialEq, PartialOrd};
 use std::fmt;
@@ -672,6 +671,7 @@ symbols! {
         min_align_of,
         min_align_of_val,
         min_const_fn,
+        min_const_generics,
         min_const_unsafe_fn,
         min_specialization,
         minnumf32,
@@ -706,6 +706,7 @@ symbols! {
         never_type,
         never_type_fallback,
         new,
+        new_unchecked,
         next,
         nll,
         no,
@@ -737,6 +738,7 @@ symbols! {
         not,
         note,
         object_safe_for_dispatch,
+        of,
         offset,
         omit_gdb_pretty_printer_section,
         on,
@@ -828,6 +830,7 @@ symbols! {
         quad_precision_float,
         question_mark,
         quote,
+        range_inclusive_new,
         raw_dylib,
         raw_identifiers,
         raw_ref_op,
@@ -1195,7 +1198,7 @@ symbols! {
     }
 }
 
-#[derive(Copy, Clone, Eq, HashStable_Generic)]
+#[derive(Copy, Clone, Eq, HashStable_Generic, Encodable, Decodable)]
 pub struct Ident {
     pub name: Symbol,
     pub span: Span,
@@ -1289,26 +1292,6 @@ impl fmt::Debug for Ident {
 impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&IdentPrinter::new(self.name, self.is_raw_guess(), None), f)
-    }
-}
-
-impl UseSpecializedEncodable for Ident {
-    fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_struct("Ident", 2, |s| {
-            s.emit_struct_field("name", 0, |s| self.name.encode(s))?;
-            s.emit_struct_field("span", 1, |s| self.span.encode(s))
-        })
-    }
-}
-
-impl UseSpecializedDecodable for Ident {
-    fn default_decode<D: Decoder>(d: &mut D) -> Result<Self, D::Error> {
-        d.read_struct("Ident", 2, |d| {
-            Ok(Ident {
-                name: d.read_struct_field("name", 0, Decodable::decode)?,
-                span: d.read_struct_field("span", 1, Decodable::decode)?,
-            })
-        })
     }
 }
 
@@ -1455,15 +1438,15 @@ impl fmt::Display for Symbol {
     }
 }
 
-impl Encodable for Symbol {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+impl<S: Encoder> Encodable<S> for Symbol {
+    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
         self.with(|string| s.emit_str(string))
     }
 }
 
-impl Decodable for Symbol {
+impl<D: Decoder> Decodable<D> for Symbol {
     #[inline]
-    fn decode<D: Decoder>(d: &mut D) -> Result<Symbol, D::Error> {
+    fn decode(d: &mut D) -> Result<Symbol, D::Error> {
         Ok(Symbol::intern(&d.read_str()?))
     }
 }
@@ -1485,6 +1468,10 @@ impl<CTX> ToStableHashKey<CTX> for Symbol {
 }
 
 // The `&'static str`s in this type actually point into the arena.
+//
+// The `FxHashMap`+`Vec` pair could be replaced by `FxIndexSet`, but #75278
+// found that to regress performance up to 2% in some cases. This might be
+// revisited after further improvements to `indexmap`.
 #[derive(Default)]
 pub struct Interner {
     arena: DroplessArena,
@@ -1548,7 +1535,7 @@ pub mod sym {
     use super::Symbol;
     use std::convert::TryInto;
 
-    symbols!();
+    define_symbols!();
 
     // Used from a macro in `librustc_feature/accepted.rs`
     pub use super::kw::MacroRules as macro_rules;

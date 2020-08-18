@@ -393,7 +393,7 @@ impl Step for Miri {
             cargo.arg("--").arg("miri").arg("setup");
 
             // Tell `cargo miri setup` where to find the sources.
-            cargo.env("XARGO_RUST_SRC", builder.src.join("src"));
+            cargo.env("XARGO_RUST_SRC", builder.src.join("library"));
             // Tell it where to find Miri.
             cargo.env("MIRI", &miri);
             // Debug things.
@@ -599,7 +599,6 @@ impl Step for RustdocTheme {
             .env("RUSTDOC_LIBDIR", builder.sysroot_libdir(self.compiler, self.compiler.host))
             .env("CFG_RELEASE_CHANNEL", &builder.config.channel)
             .env("RUSTDOC_REAL", builder.rustdoc(self.compiler))
-            .env("RUSTDOC_CRATE_VERSION", builder.rust_version())
             .env("RUSTC_BOOTSTRAP", "1");
         if let Some(linker) = builder.linker(self.compiler.host, true) {
             cmd.env("RUSTC_TARGET_LINKER", linker);
@@ -1160,13 +1159,19 @@ impl Step for Compiletest {
             cmd.arg("--quiet");
         }
 
+        let mut llvm_components_passed = false;
+        let mut copts_passed = false;
         if builder.config.llvm_enabled() {
             let llvm_config = builder.ensure(native::Llvm { target: builder.config.build });
             if !builder.config.dry_run {
                 let llvm_version = output(Command::new(&llvm_config).arg("--version"));
+                let llvm_components = output(Command::new(&llvm_config).arg("--components"));
                 // Remove trailing newline from llvm-config output.
-                let llvm_version = llvm_version.trim_end();
-                cmd.arg("--llvm-version").arg(llvm_version);
+                cmd.arg("--llvm-version")
+                    .arg(llvm_version.trim())
+                    .arg("--llvm-components")
+                    .arg(llvm_components.trim());
+                llvm_components_passed = true;
             }
             if !builder.is_rust_llvm(target) {
                 cmd.arg("--system-llvm");
@@ -1184,15 +1189,13 @@ impl Step for Compiletest {
             // Only pass correct values for these flags for the `run-make` suite as it
             // requires that a C++ compiler was configured which isn't always the case.
             if !builder.config.dry_run && suite == "run-make-fulldeps" {
-                let llvm_components = output(Command::new(&llvm_config).arg("--components"));
                 cmd.arg("--cc")
                     .arg(builder.cc(target))
                     .arg("--cxx")
                     .arg(builder.cxx(target).unwrap())
                     .arg("--cflags")
-                    .arg(builder.cflags(target, GitRepo::Rustc).join(" "))
-                    .arg("--llvm-components")
-                    .arg(llvm_components.trim());
+                    .arg(builder.cflags(target, GitRepo::Rustc).join(" "));
+                copts_passed = true;
                 if let Some(ar) = builder.ar(target) {
                     cmd.arg("--ar").arg(ar);
                 }
@@ -1222,15 +1225,11 @@ impl Step for Compiletest {
             }
         }
 
-        if suite != "run-make-fulldeps" {
-            cmd.arg("--cc")
-                .arg("")
-                .arg("--cxx")
-                .arg("")
-                .arg("--cflags")
-                .arg("")
-                .arg("--llvm-components")
-                .arg("");
+        if !llvm_components_passed {
+            cmd.arg("--llvm-components").arg("");
+        }
+        if !copts_passed {
+            cmd.arg("--cc").arg("").arg("--cxx").arg("").arg("--cflags").arg("");
         }
 
         if builder.remote_tested(target) {
@@ -2043,5 +2042,49 @@ impl Step for Bootstrap {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Bootstrap);
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TierCheck {
+    pub compiler: Compiler,
+    target: TargetSelection,
+}
+
+impl Step for TierCheck {
+    type Output = ();
+    const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/tier-check")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        let compiler = run.builder.compiler_for(run.builder.top_stage, run.host, run.host);
+        run.builder.ensure(TierCheck { compiler, target: run.host });
+    }
+
+    /// Tests the Platform Support page in the rustc book.
+    fn run(self, builder: &Builder<'_>) {
+        builder.ensure(compile::Std { compiler: self.compiler, target: self.target });
+        let mut cargo = tool::prepare_tool_cargo(
+            builder,
+            self.compiler,
+            Mode::ToolRustc,
+            self.target,
+            "run",
+            "src/tools/tier-check",
+            SourceType::InTree,
+            &[],
+        );
+        cargo.arg(builder.src.join("src/doc/rustc/src/platform-support.md"));
+        cargo.arg(&builder.rustc(self.compiler));
+        if builder.is_verbose() {
+            cargo.arg("--verbose");
+        }
+
+        builder.info("platform support check");
+        try_run(builder, &mut cargo.into());
     }
 }

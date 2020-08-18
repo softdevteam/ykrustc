@@ -4,7 +4,7 @@
 // and `#[unstable (..)]`), but are not declared in one single location
 // (unlike lang features), which means we need to collect them instead.
 
-use rustc_ast::ast::{Attribute, MetaItem, MetaItemKind};
+use rustc_ast::{Attribute, MetaItem, MetaItemKind};
 use rustc_errors::struct_span_err;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
@@ -34,7 +34,9 @@ impl LibFeatureCollector<'tcx> {
 
         // Find a stability attribute (i.e., `#[stable (..)]`, `#[unstable (..)]`,
         // `#[rustc_const_unstable (..)]`).
-        if let Some(stab_attr) = stab_attrs.iter().find(|stab_attr| attr.check_name(**stab_attr)) {
+        if let Some(stab_attr) =
+            stab_attrs.iter().find(|stab_attr| self.tcx.sess.check_name(attr, **stab_attr))
+        {
             let meta_item = attr.meta();
             if let Some(MetaItem { kind: MetaItemKind::List(ref metas), .. }) = meta_item {
                 let mut feature = None;

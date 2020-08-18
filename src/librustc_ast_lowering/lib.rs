@@ -35,14 +35,12 @@
 #![feature(or_patterns)]
 #![recursion_limit = "256"]
 
-use rustc_ast::ast;
-use rustc_ast::ast::*;
-use rustc_ast::attr;
 use rustc_ast::node_id::NodeMap;
 use rustc_ast::token::{self, DelimToken, Nonterminal, Token};
 use rustc_ast::tokenstream::{DelimSpan, TokenStream, TokenTree};
 use rustc_ast::visit::{self, AssocCtxt, Visitor};
 use rustc_ast::walk_list;
+use rustc_ast::{self as ast, *};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::FxHashSet;
@@ -64,10 +62,10 @@ use rustc_span::source_map::{respan, DesugaringKind, ExpnData, ExpnKind};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::Span;
 
-use log::{debug, trace};
 use smallvec::{smallvec, SmallVec};
 use std::collections::BTreeMap;
 use std::mem;
+use tracing::{debug, trace};
 
 macro_rules! arena_vec {
     ($this:expr; $($x:expr),*) => ({
@@ -86,8 +84,6 @@ const HIR_ID_COUNTER_LOCKED: u32 = 0xFFFFFFFF;
 rustc_hir::arena_types!(rustc_arena::declare_arena, [], 'tcx);
 
 struct LoweringContext<'a, 'hir: 'a> {
-    crate_root: Option<Symbol>,
-
     /// Used to assign IDs to HIR nodes that do not directly correspond to AST nodes.
     sess: &'a Session,
 
@@ -189,16 +185,6 @@ pub trait ResolverAstLowering {
     /// We must keep the set of definitions up to date as we add nodes that weren't in the AST.
     /// This should only return `None` during testing.
     fn definitions(&mut self) -> &mut Definitions;
-
-    /// Given suffix `["b", "c", "d"]`, creates an AST path for `[::crate_root]::b::c::d` and
-    /// resolves it based on `is_value`.
-    fn resolve_str_path(
-        &mut self,
-        span: Span,
-        crate_root: Option<Symbol>,
-        components: &[Symbol],
-        ns: Namespace,
-    ) -> (ast::Path, Res<NodeId>);
 
     fn lint_buffer(&mut self) -> &mut LintBuffer;
 
@@ -306,7 +292,6 @@ pub fn lower_crate<'a, 'hir>(
     let _prof_timer = sess.prof.verbose_generic_activity("hir_lowering");
 
     LoweringContext {
-        crate_root: sess.parse_sess.injected_crate_name.get().copied(),
         sess,
         resolver,
         nt_to_tokenstream,
@@ -574,7 +559,9 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             .resolver
             .trait_map()
             .iter()
-            .map(|(&k, v)| (self.node_id_to_hir_id[k].unwrap(), v.clone()))
+            .filter_map(|(&k, v)| {
+                self.node_id_to_hir_id.get(k).and_then(|id| id.as_ref()).map(|id| (*id, v.clone()))
+            })
             .collect();
 
         let mut def_id_to_hir_id = IndexVec::default();
@@ -981,7 +968,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 path: item.path.clone(),
                 args: self.lower_mac_args(&item.args),
             }),
-            AttrKind::DocComment(comment) => AttrKind::DocComment(comment),
+            AttrKind::DocComment(comment_kind, data) => AttrKind::DocComment(comment_kind, data),
         };
 
         Attribute { kind, id: attr.id, style: attr.style, span: attr.span }
@@ -2063,23 +2050,18 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         };
 
         // "<Output = T>"
-        let future_params = self.arena.alloc(hir::GenericArgs {
+        let future_args = self.arena.alloc(hir::GenericArgs {
             args: &[],
             bindings: arena_vec![self; self.output_ty_binding(span, output_ty)],
             parenthesized: false,
         });
 
-        // ::std::future::Future<future_params>
-        let future_path =
-            self.std_path(span, &[sym::future, sym::Future], Some(future_params), false);
-
-        hir::GenericBound::Trait(
-            hir::PolyTraitRef {
-                trait_ref: hir::TraitRef { path: future_path, hir_ref_id: self.next_id() },
-                bound_generic_params: &[],
-                span,
-            },
-            hir::TraitBoundModifier::None,
+        hir::GenericBound::LangItemTrait(
+            // ::std::future::Future<future_params>
+            hir::LangItem::FutureTraitLangItem,
+            span,
+            self.next_id(),
+            future_args,
         )
     }
 
@@ -2215,7 +2197,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     synthetic: param
                         .attrs
                         .iter()
-                        .filter(|attr| attr.check_name(sym::rustc_synthetic))
+                        .filter(|attr| self.sess.check_name(attr, sym::rustc_synthetic))
                         .map(|_| hir::SyntheticTyParamKind::ImplTrait)
                         .next(),
                 };
@@ -2236,7 +2218,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             hir_id: self.lower_node_id(param.id),
             name,
             span: param.ident.span,
-            pure_wrt_drop: attr::contains_name(&param.attrs, sym::may_dangle),
+            pure_wrt_drop: self.sess.contains_name(&param.attrs, sym::may_dangle),
             attrs: self.lower_attrs(&param.attrs),
             bounds: self.arena.alloc_from_iter(bounds),
             kind,
@@ -2479,35 +2461,47 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     }
 
     fn pat_ok(&mut self, span: Span, pat: &'hir hir::Pat<'hir>) -> &'hir hir::Pat<'hir> {
-        self.pat_std_enum(span, &[sym::result, sym::Result, sym::Ok], arena_vec![self; pat])
+        let field = self.single_pat_field(span, pat);
+        self.pat_lang_item_variant(span, hir::LangItem::ResultOk, field)
     }
 
     fn pat_err(&mut self, span: Span, pat: &'hir hir::Pat<'hir>) -> &'hir hir::Pat<'hir> {
-        self.pat_std_enum(span, &[sym::result, sym::Result, sym::Err], arena_vec![self; pat])
+        let field = self.single_pat_field(span, pat);
+        self.pat_lang_item_variant(span, hir::LangItem::ResultErr, field)
     }
 
     fn pat_some(&mut self, span: Span, pat: &'hir hir::Pat<'hir>) -> &'hir hir::Pat<'hir> {
-        self.pat_std_enum(span, &[sym::option, sym::Option, sym::Some], arena_vec![self; pat])
+        let field = self.single_pat_field(span, pat);
+        self.pat_lang_item_variant(span, hir::LangItem::OptionSome, field)
     }
 
     fn pat_none(&mut self, span: Span) -> &'hir hir::Pat<'hir> {
-        self.pat_std_enum(span, &[sym::option, sym::Option, sym::None], &[])
+        self.pat_lang_item_variant(span, hir::LangItem::OptionNone, &[])
     }
 
-    fn pat_std_enum(
+    fn single_pat_field(
         &mut self,
         span: Span,
-        components: &[Symbol],
-        subpats: &'hir [&'hir hir::Pat<'hir>],
-    ) -> &'hir hir::Pat<'hir> {
-        let path = self.std_path(span, components, None, true);
-        let qpath = hir::QPath::Resolved(None, path);
-        let pt = if subpats.is_empty() {
-            hir::PatKind::Path(qpath)
-        } else {
-            hir::PatKind::TupleStruct(qpath, subpats, None)
+        pat: &'hir hir::Pat<'hir>,
+    ) -> &'hir [hir::FieldPat<'hir>] {
+        let field = hir::FieldPat {
+            hir_id: self.next_id(),
+            ident: Ident::new(sym::integer(0), span),
+            is_shorthand: false,
+            pat,
+            span,
         };
-        self.pat(span, pt)
+        arena_vec![self; field]
+    }
+
+    fn pat_lang_item_variant(
+        &mut self,
+        span: Span,
+        lang_item: hir::LangItem,
+        fields: &'hir [hir::FieldPat<'hir>],
+    ) -> &'hir hir::Pat<'hir> {
+        let qpath = hir::QPath::LangItem(lang_item, span);
+        self.pat(span, hir::PatKind::Struct(qpath, fields, false))
     }
 
     fn pat_ident(&mut self, span: Span, ident: Ident) -> (&'hir hir::Pat<'hir>, hir::HirId) {
@@ -2538,42 +2532,6 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
 
     fn pat(&mut self, span: Span, kind: hir::PatKind<'hir>) -> &'hir hir::Pat<'hir> {
         self.arena.alloc(hir::Pat { hir_id: self.next_id(), kind, span })
-    }
-
-    /// Given a suffix `["b", "c", "d"]`, returns path `::std::b::c::d` when
-    /// `fld.cx.use_std`, and `::core::b::c::d` otherwise.
-    /// The path is also resolved according to `is_value`.
-    fn std_path(
-        &mut self,
-        span: Span,
-        components: &[Symbol],
-        params: Option<&'hir hir::GenericArgs<'hir>>,
-        is_value: bool,
-    ) -> &'hir hir::Path<'hir> {
-        let ns = if is_value { Namespace::ValueNS } else { Namespace::TypeNS };
-        let (path, res) = self.resolver.resolve_str_path(span, self.crate_root, components, ns);
-
-        let mut segments: Vec<_> = path
-            .segments
-            .iter()
-            .map(|segment| {
-                let res = self.expect_full_res(segment.id);
-                hir::PathSegment {
-                    ident: segment.ident,
-                    hir_id: Some(self.lower_node_id(segment.id)),
-                    res: Some(self.lower_res(res)),
-                    infer_args: true,
-                    args: None,
-                }
-            })
-            .collect();
-        segments.last_mut().unwrap().args = params;
-
-        self.arena.alloc(hir::Path {
-            span,
-            res: res.map_id(|_| panic!("unexpected `NodeId`")),
-            segments: self.arena.alloc_from_iter(segments),
-        })
     }
 
     fn ty_path(

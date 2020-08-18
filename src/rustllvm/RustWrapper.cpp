@@ -367,7 +367,6 @@ LLVMRustBuildAtomicCmpXchg(LLVMBuilderRef B, LLVMValueRef Target,
 }
 
 enum class LLVMRustSynchronizationScope {
-  Other,
   SingleThread,
   CrossThread,
 };
@@ -390,7 +389,6 @@ LLVMRustBuildAtomicFence(LLVMBuilderRef B, LLVMAtomicOrdering Order,
 }
 
 enum class LLVMRustAsmDialect {
-  Other,
   Att,
   Intel,
 };

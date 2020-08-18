@@ -2,10 +2,11 @@
 /// Ideally, this code would be in libtest but for efficiency and error messages it lives here.
 use crate::util::check_builtin_macro_attribute;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::attr;
 use rustc_ast_pretty::pprust;
 use rustc_expand::base::*;
+use rustc_session::Session;
 use rustc_span::source_map::respan;
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
@@ -87,7 +88,7 @@ pub fn expand_test_or_bench(
     };
 
     if let ast::ItemKind::MacCall(_) = item.kind {
-        cx.parse_sess.span_diagnostic.span_warn(
+        cx.sess.parse_sess.span_diagnostic.span_warn(
             item.span,
             "`#[test]` attribute should not be used on macros. Use `#[cfg(test)]` instead.",
         );
@@ -232,9 +233,15 @@ pub fn expand_test_or_bench(
                                         ),
                                     ),
                                     // ignore: true | false
-                                    field("ignore", cx.expr_bool(sp, should_ignore(&item))),
+                                    field(
+                                        "ignore",
+                                        cx.expr_bool(sp, should_ignore(&cx.sess, &item)),
+                                    ),
                                     // allow_fail: true | false
-                                    field("allow_fail", cx.expr_bool(sp, should_fail(&item))),
+                                    field(
+                                        "allow_fail",
+                                        cx.expr_bool(sp, should_fail(&cx.sess, &item)),
+                                    ),
                                     // should_panic: ...
                                     field(
                                         "should_panic",
@@ -292,7 +299,7 @@ pub fn expand_test_or_bench(
     // extern crate test
     let test_extern = cx.item(sp, test_id, vec![], ast::ItemKind::ExternCrate(None));
 
-    log::debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
+    tracing::debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
 
     vec![
         // Access to libtest under a hygienic name
@@ -318,25 +325,25 @@ enum ShouldPanic {
     Yes(Option<Symbol>),
 }
 
-fn should_ignore(i: &ast::Item) -> bool {
-    attr::contains_name(&i.attrs, sym::ignore)
+fn should_ignore(sess: &Session, i: &ast::Item) -> bool {
+    sess.contains_name(&i.attrs, sym::ignore)
 }
 
-fn should_fail(i: &ast::Item) -> bool {
-    attr::contains_name(&i.attrs, sym::allow_fail)
+fn should_fail(sess: &Session, i: &ast::Item) -> bool {
+    sess.contains_name(&i.attrs, sym::allow_fail)
 }
 
 fn should_panic(cx: &ExtCtxt<'_>, i: &ast::Item) -> ShouldPanic {
-    match attr::find_by_name(&i.attrs, sym::should_panic) {
+    match cx.sess.find_by_name(&i.attrs, sym::should_panic) {
         Some(attr) => {
-            let sd = &cx.parse_sess.span_diagnostic;
+            let sd = &cx.sess.parse_sess.span_diagnostic;
 
             match attr.meta_item_list() {
                 // Handle #[should_panic(expected = "foo")]
                 Some(list) => {
                     let msg = list
                         .iter()
-                        .find(|mi| mi.check_name(sym::expected))
+                        .find(|mi| mi.has_name(sym::expected))
                         .and_then(|mi| mi.meta_item())
                         .and_then(|mi| mi.value_str());
                     if list.len() != 1 || msg.is_none() {
@@ -393,8 +400,8 @@ fn test_type(cx: &ExtCtxt<'_>) -> TestType {
 }
 
 fn has_test_signature(cx: &ExtCtxt<'_>, i: &ast::Item) -> bool {
-    let has_should_panic_attr = attr::contains_name(&i.attrs, sym::should_panic);
-    let sd = &cx.parse_sess.span_diagnostic;
+    let has_should_panic_attr = cx.sess.contains_name(&i.attrs, sym::should_panic);
+    let sd = &cx.sess.parse_sess.span_diagnostic;
     if let ast::ItemKind::Fn(_, ref sig, ref generics, _) = i.kind {
         if let ast::Unsafe::Yes(span) = sig.header.unsafety {
             sd.struct_span_err(i.span, "unsafe functions cannot be used for tests")
@@ -453,7 +460,7 @@ fn has_bench_signature(cx: &ExtCtxt<'_>, i: &ast::Item) -> bool {
     };
 
     if !has_sig {
-        cx.parse_sess.span_diagnostic.span_err(
+        cx.sess.parse_sess.span_diagnostic.span_err(
             i.span,
             "functions used as benches must have \
             signature `fn(&mut Bencher) -> impl Termination`",

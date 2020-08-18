@@ -1,13 +1,13 @@
 use super::ty::AllowPlus;
 use super::{BlockMode, Parser, PathStyle, SemiColonMode, SeqSep, TokenExpectType, TokenType};
 
-use rustc_ast::ast::{
-    self, AngleBracketedArgs, AttrVec, BinOpKind, BindingMode, BlockCheckMode, Expr, ExprKind,
-    Item, ItemKind, Mutability, Param, Pat, PatKind, PathSegment, QSelf, Ty, TyKind,
-};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Lit, LitKind, TokenKind};
 use rustc_ast::util::parser::AssocOp;
+use rustc_ast::{
+    self as ast, AngleBracketedArgs, AttrVec, BinOpKind, BindingMode, BlockCheckMode, Expr,
+    ExprKind, Item, ItemKind, Mutability, Param, Pat, PatKind, PathSegment, QSelf, Ty, TyKind,
+};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{pluralize, struct_span_err};
@@ -16,7 +16,7 @@ use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{kw, Ident};
 use rustc_span::{MultiSpan, Span, SpanSnippetError, DUMMY_SP};
 
-use log::{debug, trace};
+use tracing::{debug, trace};
 
 const TURBOFISH: &str = "use `::<...>` instead of `<...>` to specify type arguments";
 
@@ -333,6 +333,7 @@ impl<'a> Parser<'a> {
                         Applicability::MachineApplicable
                     },
                 );
+                self.sess.type_ascription_path_suggestions.borrow_mut().insert(sp);
             } else if op_pos.line != next_pos.line && maybe_expected_semicolon {
                 err.span_suggestion(
                     sp,
@@ -1418,7 +1419,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn eat_incorrect_doc_comment_for_param_type(&mut self) {
-        if let token::DocComment(_) = self.token.kind {
+        if let token::DocComment(..) = self.token.kind {
             self.struct_span_err(
                 self.token.span,
                 "documentation comments cannot be applied to a function parameter's type",

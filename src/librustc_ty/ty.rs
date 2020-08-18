@@ -126,7 +126,7 @@ fn associated_item_from_impl_item_ref(
 }
 
 fn associated_item(tcx: TyCtxt<'_>, def_id: DefId) -> ty::AssocItem {
-    let id = tcx.hir().as_local_hir_id(def_id.expect_local());
+    let id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
     let parent_id = tcx.hir().get_parent_item(id);
     let parent_def_id = tcx.hir().local_def_id(parent_id);
     let parent_item = tcx.hir().expect_item(parent_id);
@@ -164,7 +164,7 @@ fn associated_item(tcx: TyCtxt<'_>, def_id: DefId) -> ty::AssocItem {
 }
 
 fn impl_defaultness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::Defaultness {
-    let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
+    let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
     let item = tcx.hir().expect_item(hir_id);
     if let hir::ItemKind::Impl { defaultness, .. } = item.kind {
         defaultness
@@ -198,7 +198,7 @@ fn adt_sized_constraint(tcx: TyCtxt<'_>, def_id: DefId) -> ty::AdtSizedConstrain
 }
 
 fn associated_item_def_ids(tcx: TyCtxt<'_>, def_id: DefId) -> &[DefId] {
-    let id = tcx.hir().as_local_hir_id(def_id.expect_local());
+    let id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
     let item = tcx.hir().expect_item(id);
     match item.kind {
         hir::ItemKind::Trait(.., ref trait_item_refs) => tcx.arena.alloc_from_iter(
@@ -268,12 +268,16 @@ fn param_env(tcx: TyCtxt<'_>, def_id: DefId) -> ty::ParamEnv<'_> {
 
     let body_id = def_id
         .as_local()
-        .map(|def_id| tcx.hir().as_local_hir_id(def_id))
+        .map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id))
         .map_or(hir::CRATE_HIR_ID, |id| {
             tcx.hir().maybe_body_owned_by(id).map_or(id, |body| body.hir_id)
         });
     let cause = traits::ObligationCause::misc(tcx.def_span(def_id), body_id);
     traits::normalize_param_env_or_error(tcx, def_id, unnormalized_env, cause)
+}
+
+fn param_env_reveal_all_normalized(tcx: TyCtxt<'_>, def_id: DefId) -> ty::ParamEnv<'_> {
+    tcx.param_env(def_id).with_reveal_all_normalized(tcx)
 }
 
 fn crate_disambiguator(tcx: TyCtxt<'_>, crate_num: CrateNum) -> CrateDisambiguator {
@@ -356,7 +360,7 @@ fn issue33140_self_ty(tcx: TyCtxt<'_>, def_id: DefId) -> Option<Ty<'_>> {
 
 /// Check if a function is async.
 fn asyncness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::IsAsync {
-    let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
+    let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
 
     let node = tcx.hir().get(hir_id);
 
@@ -439,7 +443,7 @@ fn opaque_type_projection_predicates(
 
     let bounds = tcx.predicates_of(def_id);
     let predicates =
-        util::elaborate_predicates(tcx, bounds.predicates.into_iter().map(|&(pred, _)| pred));
+        util::elaborate_predicates(tcx, bounds.predicates.iter().map(|&(pred, _)| pred));
 
     let filtered_predicates = predicates.filter_map(|obligation| {
         let pred = obligation.predicate;
@@ -502,6 +506,7 @@ pub fn provide(providers: &mut ty::query::Providers) {
         adt_sized_constraint,
         def_span,
         param_env,
+        param_env_reveal_all_normalized,
         trait_of_item,
         crate_disambiguator,
         original_crate_name,

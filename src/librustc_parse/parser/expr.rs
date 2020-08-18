@@ -4,20 +4,20 @@ use super::{BlockMode, Parser, PathStyle, Restrictions, TokenType};
 use super::{SemiColonMode, SeqSep, TokenExpectType};
 use crate::maybe_recover_from_interpolated_ty_qpath;
 
-use log::debug;
-use rustc_ast::ast::{self, AttrStyle, AttrVec, CaptureBy, Field, Lit, UnOp, DUMMY_NODE_ID};
-use rustc_ast::ast::{AnonConst, BinOp, BinOpKind, FnDecl, FnRetTy, MacCall, Param, Ty, TyKind};
-use rustc_ast::ast::{Arm, Async, BlockCheckMode, Expr, ExprKind, Label, Movability, RangeLimits};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Token, TokenKind};
 use rustc_ast::util::classify;
 use rustc_ast::util::literal::LitError;
 use rustc_ast::util::parser::{prec_let_scrutinee_needs_par, AssocOp, Fixity};
+use rustc_ast::{self as ast, AttrStyle, AttrVec, CaptureBy, Field, Lit, UnOp, DUMMY_NODE_ID};
+use rustc_ast::{AnonConst, BinOp, BinOpKind, FnDecl, FnRetTy, MacCall, Param, Ty, TyKind};
+use rustc_ast::{Arm, Async, BlockCheckMode, Expr, ExprKind, Label, Movability, RangeLimits};
 use rustc_ast_pretty::pprust;
 use rustc_errors::{Applicability, DiagnosticBuilder, PResult};
 use rustc_span::source_map::{self, Span, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use std::mem;
+use tracing::debug;
 
 /// Possibly accepts an `token::Interpolated` expression (a pre-parsed expression
 /// dropped into the token stream, which happens while parsing the result of
@@ -195,6 +195,29 @@ impl<'a> Parser<'a> {
                     return Ok(expr);
                 }
             }
+
+            if (op.node == AssocOp::Equal || op.node == AssocOp::NotEqual)
+                && self.token.kind == token::Eq
+                && self.prev_token.span.hi() == self.token.span.lo()
+            {
+                // Look for JS' `===` and `!==` and recover 😇
+                let sp = op.span.to(self.token.span);
+                let sugg = match op.node {
+                    AssocOp::Equal => "==",
+                    AssocOp::NotEqual => "!=",
+                    _ => unreachable!(),
+                };
+                self.struct_span_err(sp, &format!("invalid comparison operator `{}=`", sugg))
+                    .span_suggestion_short(
+                        sp,
+                        &format!("`{s}=` is not a valid comparison operator, use `{s}`", s = sugg),
+                        sugg.to_string(),
+                        Applicability::MachineApplicable,
+                    )
+                    .emit();
+                self.bump();
+            }
+
             let op = op.node;
             // Special cases:
             if op == AssocOp::As {
@@ -295,11 +318,18 @@ impl<'a> Parser<'a> {
             // want to keep their span info to improve diagnostics in these cases in a later stage.
             (true, Some(AssocOp::Multiply)) | // `{ 42 } *foo = bar;` or `{ 42 } * 3`
             (true, Some(AssocOp::Subtract)) | // `{ 42 } -5`
-            (true, Some(AssocOp::LAnd)) | // `{ 42 } &&x` (#61475)
             (true, Some(AssocOp::Add)) // `{ 42 } + 42
             // If the next token is a keyword, then the tokens above *are* unambiguously incorrect:
             // `if x { a } else { b } && if y { c } else { d }`
-            if !self.look_ahead(1, |t| t.is_reserved_ident()) => {
+            if !self.look_ahead(1, |t| t.is_used_keyword()) => {
+                // These cases are ambiguous and can't be identified in the parser alone.
+                let sp = self.sess.source_map().start_point(self.token.span);
+                self.sess.ambiguous_block_expr_parse.borrow_mut().insert(sp, lhs.span);
+                false
+            }
+            (true, Some(AssocOp::LAnd)) => {
+                // `{ 42 } &&x` (#61475) or `{ 42 } && if x { 1 } else { 0 }`. Separated from the
+                // above due to #74233.
                 // These cases are ambiguous and can't be identified in the parser alone.
                 let sp = self.sess.source_map().start_point(self.token.span);
                 self.sess.ambiguous_block_expr_parse.borrow_mut().insert(sp, lhs.span);
@@ -1450,7 +1480,7 @@ impl<'a> Parser<'a> {
 
     /// Matches `'-' lit | lit` (cf. `ast_validation::AstValidator::check_expr_within_pat`).
     /// Keep this in sync with `Token::can_begin_literal_maybe_minus`.
-    pub fn parse_literal_maybe_minus(&mut self) -> PResult<'a, P<Expr>> {
+    pub(super) fn parse_literal_maybe_minus(&mut self) -> PResult<'a, P<Expr>> {
         maybe_whole_expr!(self);
 
         let lo = self.token.span;
@@ -1733,13 +1763,20 @@ impl<'a> Parser<'a> {
         Ok(self.mk_expr(lo.to(self.prev_token.span), kind, attrs))
     }
 
-    fn error_missing_in_for_loop(&self) {
-        let in_span = self.prev_token.span.between(self.token.span);
-        self.struct_span_err(in_span, "missing `in` in `for` loop")
+    fn error_missing_in_for_loop(&mut self) {
+        let (span, msg, sugg) = if self.token.is_ident_named(sym::of) {
+            // Possibly using JS syntax (#75311).
+            let span = self.token.span;
+            self.bump();
+            (span, "try using `in` here instead", "in")
+        } else {
+            (self.prev_token.span.between(self.token.span), "try adding `in` here", " in ")
+        };
+        self.struct_span_err(span, "missing `in` in `for` loop")
             .span_suggestion_short(
-                in_span,
-                "try adding `in` here",
-                " in ".into(),
+                span,
+                msg,
+                sugg.into(),
                 // Has been misleading, at least in the past (closed Issue #48492).
                 Applicability::MaybeIncorrect,
             )

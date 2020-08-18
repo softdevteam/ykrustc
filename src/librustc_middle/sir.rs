@@ -82,9 +82,9 @@ impl SirFuncCx<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>, mir: &mir::Body<'_>) -> Self {
         let mut flags = 0;
         for attr in tcx.get_attrs(instance.def_id()).iter() {
-            if attr.check_name(sym::trace_head) {
+            if tcx.sess.check_name(attr, sym::trace_head) {
                 flags |= ykpack::bodyflags::TRACE_HEAD;
-            } else if attr.check_name(sym::trace_tail) {
+            } else if tcx.sess.check_name(attr, sym::trace_tail) {
                 flags |= ykpack::bodyflags::TRACE_TAIL;
             }
         }

@@ -1,4 +1,4 @@
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_expand::base::SyntaxExtensionKind;
 use rustc_feature::UnstableFeatures;
@@ -17,6 +17,7 @@ use rustc_span::symbol::Ident;
 use rustc_span::symbol::Symbol;
 use rustc_span::DUMMY_SP;
 
+use std::cell::Cell;
 use std::ops::Range;
 
 use crate::clean::*;
@@ -62,11 +63,15 @@ struct LinkCollector<'a, 'tcx> {
     cx: &'a DocContext<'tcx>,
     // NOTE: this may not necessarily be a module in the current crate
     mod_ids: Vec<DefId>,
+    /// This is used to store the kind of associated items,
+    /// because `clean` and the disambiguator code expect them to be different.
+    /// See the code for associated items on inherent impls for details.
+    kind_side_channel: Cell<Option<DefKind>>,
 }
 
 impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
     fn new(cx: &'a DocContext<'tcx>) -> Self {
-        LinkCollector { cx, mod_ids: Vec::new() }
+        LinkCollector { cx, mod_ids: Vec::new(), kind_side_channel: Cell::new(None) }
     }
 
     fn variant_field(
@@ -174,7 +179,7 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
     fn resolve(
         &self,
         path_str: &str,
-        disambiguator: Option<&str>,
+        disambiguator: Option<Disambiguator>,
         ns: Namespace,
         current_item: &Option<String>,
         parent_id: Option<DefId>,
@@ -212,9 +217,11 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                         return Ok((res, Some(path_str.to_owned())));
                     }
                     Res::Def(DefKind::Mod, _) => {
-                        // This resolved to a module, but if we were passed `type@`,
-                        // we want primitive types to take precedence instead.
-                        if disambiguator == Some("type") {
+                        // This resolved to a module, but we want primitive types to take precedence instead.
+                        if matches!(
+                            disambiguator,
+                            None | Some(Disambiguator::Namespace(Namespace::TypeNS))
+                        ) {
                             if let Some(prim) = is_primitive(path_str, ns) {
                                 if extra_fragment.is_some() {
                                     return Err(ErrorKind::AnchorFailure(AnchorFailure::Primitive));
@@ -347,6 +354,10 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                                 AnchorFailure::AssocConstant
                             }))
                         } else {
+                            // HACK(jynelson): `clean` expects the type, not the associated item.
+                            // but the disambiguator logic expects the associated item.
+                            // Store the kind in a side channel so that only the disambiguator logic looks at it.
+                            self.kind_side_channel.replace(Some(item.kind.as_def_kind()));
                             Ok((ty_res, Some(format!("{}.{}", out, item_name))))
                         }
                     } else {
@@ -415,7 +426,8 @@ impl<'a, 'tcx> LinkCollector<'a, 'tcx> {
                                 AnchorFailure::Method
                             }))
                         } else {
-                            Ok((ty_res, Some(format!("{}.{}", kind, item_name))))
+                            let res = Res::Def(item.kind.as_def_kind(), item.def_id);
+                            Ok((res, Some(format!("{}.{}", kind, item_name))))
                         }
                     } else {
                         self.variant_field(path_str, current_item, module_id)
@@ -574,46 +586,14 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
             };
             let resolved_self;
             let mut path_str;
+            let disambiguator;
             let (res, fragment) = {
-                let mut kind = None;
-                let mut disambiguator = None;
-                path_str = if let Some(prefix) =
-                    ["struct@", "enum@", "type@", "trait@", "union@", "module@", "mod@"]
-                        .iter()
-                        .find(|p| link.starts_with(**p))
-                {
-                    kind = Some(TypeNS);
-                    disambiguator = Some(&prefix[..prefix.len() - 1]);
-                    link.trim_start_matches(prefix)
-                } else if let Some(prefix) =
-                    ["const@", "static@", "value@", "function@", "fn@", "method@"]
-                        .iter()
-                        .find(|p| link.starts_with(**p))
-                {
-                    kind = Some(ValueNS);
-                    disambiguator = Some(&prefix[..prefix.len() - 1]);
-                    link.trim_start_matches(prefix)
-                } else if link.ends_with("!()") {
-                    kind = Some(MacroNS);
-                    link.trim_end_matches("!()")
-                } else if link.ends_with("()") {
-                    kind = Some(ValueNS);
-                    disambiguator = Some("fn");
-                    link.trim_end_matches("()")
-                } else if link.starts_with("macro@") {
-                    kind = Some(MacroNS);
-                    disambiguator = Some("macro");
-                    link.trim_start_matches("macro@")
-                } else if link.starts_with("derive@") {
-                    kind = Some(MacroNS);
-                    disambiguator = Some("derive");
-                    link.trim_start_matches("derive@")
-                } else if link.ends_with('!') {
-                    kind = Some(MacroNS);
-                    disambiguator = Some("macro");
-                    link.trim_end_matches('!')
+                path_str = if let Ok((d, path)) = Disambiguator::from_str(&link) {
+                    disambiguator = Some(d);
+                    path
                 } else {
-                    &link[..]
+                    disambiguator = None;
+                    &link
                 }
                 .trim();
 
@@ -646,7 +626,7 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
                     }
                 }
 
-                match kind {
+                match disambiguator.map(Disambiguator::ns) {
                     Some(ns @ ValueNS) => {
                         match self.resolve(
                             path_str,
@@ -789,6 +769,42 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
             } else {
                 debug!("intra-doc link to {} resolved to {:?}", path_str, res);
 
+                // Disallow e.g. linking to enums with `struct@`
+                if let Res::Def(kind, id) = res {
+                    debug!("saw kind {:?} with disambiguator {:?}", kind, disambiguator);
+                    match (self.kind_side_channel.take().unwrap_or(kind), disambiguator) {
+                        | (DefKind::Const | DefKind::ConstParam | DefKind::AssocConst | DefKind::AnonConst, Some(Disambiguator::Kind(DefKind::Const)))
+                        // NOTE: this allows 'method' to mean both normal functions and associated functions
+                        // This can't cause ambiguity because both are in the same namespace.
+                        | (DefKind::Fn | DefKind::AssocFn, Some(Disambiguator::Kind(DefKind::Fn)))
+                        // These are namespaces; allow anything in the namespace to match
+                        | (_, Some(Disambiguator::Namespace(_)))
+                        // If no disambiguator given, allow anything
+                        | (_, None)
+                        // All of these are valid, so do nothing
+                        => {}
+                        (actual, Some(Disambiguator::Kind(expected))) if actual == expected => {}
+                        (_, Some(Disambiguator::Kind(expected))) => {
+                            // The resolved item did not match the disambiguator; give a better error than 'not found'
+                            let msg = format!("incompatible link kind for `{}`", path_str);
+                            report_diagnostic(cx, &msg, &item, &dox, link_range, |diag, sp| {
+                                // HACK(jynelson): by looking at the source I saw the DefId we pass
+                                // for `expected.descr()` doesn't matter, since it's not a crate
+                                let note = format!("this link resolved to {} {}, which is not {} {}", kind.article(), kind.descr(id), expected.article(), expected.descr(id));
+                                let suggestion = Disambiguator::display_for(kind, path_str);
+                                let help_msg = format!("to link to the {}, use its disambiguator", kind.descr(id));
+                                diag.note(&note);
+                                if let Some(sp) = sp {
+                                    diag.span_suggestion(sp, &help_msg, suggestion, Applicability::MaybeIncorrect);
+                                } else {
+                                    diag.help(&format!("{}: {}", help_msg, suggestion));
+                                }
+                            });
+                            continue;
+                        }
+                    }
+                }
+
                 // item can be non-local e.g. when using #[doc(primitive = "pointer")]
                 if let Some((src_id, dst_id)) = res
                     .opt_def_id()
@@ -797,8 +813,8 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
                 {
                     use rustc_hir::def_id::LOCAL_CRATE;
 
-                    let hir_src = self.cx.tcx.hir().as_local_hir_id(src_id);
-                    let hir_dst = self.cx.tcx.hir().as_local_hir_id(dst_id);
+                    let hir_src = self.cx.tcx.hir().local_def_id_to_hir_id(src_id);
+                    let hir_dst = self.cx.tcx.hir().local_def_id_to_hir_id(dst_id);
 
                     if self.cx.tcx.privacy_access_levels(LOCAL_CRATE).is_exported(hir_src)
                         && !self.cx.tcx.privacy_access_levels(LOCAL_CRATE).is_exported(hir_dst)
@@ -837,6 +853,94 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Disambiguator {
+    Kind(DefKind),
+    Namespace(Namespace),
+}
+
+impl Disambiguator {
+    /// (disambiguator, path_str)
+    fn from_str(link: &str) -> Result<(Self, &str), ()> {
+        use Disambiguator::{Kind, Namespace as NS};
+
+        let find_suffix = || {
+            let suffixes = [
+                ("!()", DefKind::Macro(MacroKind::Bang)),
+                ("()", DefKind::Fn),
+                ("!", DefKind::Macro(MacroKind::Bang)),
+            ];
+            for &(suffix, kind) in &suffixes {
+                if link.ends_with(suffix) {
+                    return Ok((Kind(kind), link.trim_end_matches(suffix)));
+                }
+            }
+            Err(())
+        };
+
+        if let Some(idx) = link.find('@') {
+            let (prefix, rest) = link.split_at(idx);
+            let d = match prefix {
+                "struct" => Kind(DefKind::Struct),
+                "enum" => Kind(DefKind::Enum),
+                "trait" => Kind(DefKind::Trait),
+                "union" => Kind(DefKind::Union),
+                "module" | "mod" => Kind(DefKind::Mod),
+                "const" | "constant" => Kind(DefKind::Const),
+                "static" => Kind(DefKind::Static),
+                "function" | "fn" | "method" => Kind(DefKind::Fn),
+                "derive" => Kind(DefKind::Macro(MacroKind::Derive)),
+                "type" => NS(Namespace::TypeNS),
+                "value" => NS(Namespace::ValueNS),
+                "macro" => NS(Namespace::MacroNS),
+                _ => return find_suffix(),
+            };
+            Ok((d, &rest[1..]))
+        } else {
+            find_suffix()
+        }
+    }
+
+    fn display_for(kind: DefKind, path_str: &str) -> String {
+        if kind == DefKind::Macro(MacroKind::Bang) {
+            return format!("{}!", path_str);
+        } else if kind == DefKind::Fn || kind == DefKind::AssocFn {
+            return format!("{}()", path_str);
+        }
+        let prefix = match kind {
+            DefKind::Struct => "struct",
+            DefKind::Enum => "enum",
+            DefKind::Trait => "trait",
+            DefKind::Union => "union",
+            DefKind::Mod => "mod",
+            DefKind::Const | DefKind::ConstParam | DefKind::AssocConst | DefKind::AnonConst => {
+                "const"
+            }
+            DefKind::Static => "static",
+            DefKind::Macro(MacroKind::Derive) => "derive",
+            // Now handle things that don't have a specific disambiguator
+            _ => match kind
+                .ns()
+                .expect("tried to calculate a disambiguator for a def without a namespace?")
+            {
+                Namespace::TypeNS => "type",
+                Namespace::ValueNS => "value",
+                Namespace::MacroNS => "macro",
+            },
+        };
+        format!("{}@{}", prefix, path_str)
+    }
+
+    fn ns(self) -> Namespace {
+        match self {
+            Self::Namespace(n) => n,
+            Self::Kind(k) => {
+                k.ns().expect("only DefKinds with a valid namespace can be disambiguators")
+            }
+        }
+    }
+}
+
 /// Reports a diagnostic for an intra-doc link.
 ///
 /// If no link range is provided, or the source span of the link cannot be determined, the span of
@@ -867,46 +971,40 @@ fn report_diagnostic(
     let attrs = &item.attrs;
     let sp = span_of_attrs(attrs).unwrap_or(item.source.span());
 
-    cx.tcx.struct_span_lint_hir(
-        lint::builtin::INTRA_DOC_LINK_RESOLUTION_FAILURE,
-        hir_id,
-        sp,
-        |lint| {
-            let mut diag = lint.build(msg);
+    cx.tcx.struct_span_lint_hir(lint::builtin::BROKEN_INTRA_DOC_LINKS, hir_id, sp, |lint| {
+        let mut diag = lint.build(msg);
 
-            let span = link_range
-                .as_ref()
-                .and_then(|range| super::source_span_for_markdown_range(cx, dox, range, attrs));
+        let span = link_range
+            .as_ref()
+            .and_then(|range| super::source_span_for_markdown_range(cx, dox, range, attrs));
 
-            if let Some(link_range) = link_range {
-                if let Some(sp) = span {
-                    diag.set_span(sp);
-                } else {
-                    // blah blah blah\nblah\nblah [blah] blah blah\nblah blah
-                    //                       ^     ~~~~
-                    //                       |     link_range
-                    //                       last_new_line_offset
-                    let last_new_line_offset =
-                        dox[..link_range.start].rfind('\n').map_or(0, |n| n + 1);
-                    let line = dox[last_new_line_offset..].lines().next().unwrap_or("");
+        if let Some(link_range) = link_range {
+            if let Some(sp) = span {
+                diag.set_span(sp);
+            } else {
+                // blah blah blah\nblah\nblah [blah] blah blah\nblah blah
+                //                       ^     ~~~~
+                //                       |     link_range
+                //                       last_new_line_offset
+                let last_new_line_offset = dox[..link_range.start].rfind('\n').map_or(0, |n| n + 1);
+                let line = dox[last_new_line_offset..].lines().next().unwrap_or("");
 
-                    // Print the line containing the `link_range` and manually mark it with '^'s.
-                    diag.note(&format!(
-                        "the link appears in this line:\n\n{line}\n\
+                // Print the line containing the `link_range` and manually mark it with '^'s.
+                diag.note(&format!(
+                    "the link appears in this line:\n\n{line}\n\
                          {indicator: <before$}{indicator:^<found$}",
-                        line = line,
-                        indicator = "",
-                        before = link_range.start - last_new_line_offset,
-                        found = link_range.len(),
-                    ));
-                }
+                    line = line,
+                    indicator = "",
+                    before = link_range.start - last_new_line_offset,
+                    found = link_range.len(),
+                ));
             }
+        }
 
-            decorate(&mut diag, span);
+        decorate(&mut diag, span);
 
-            diag.emit();
-        },
-    );
+        diag.emit();
+    });
 }
 
 fn resolution_failure(
@@ -1106,20 +1204,20 @@ fn handle_variant(
 }
 
 const PRIMITIVES: &[(&str, Res)] = &[
-    ("u8", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::ast::UintTy::U8))),
-    ("u16", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::ast::UintTy::U16))),
-    ("u32", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::ast::UintTy::U32))),
-    ("u64", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::ast::UintTy::U64))),
-    ("u128", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::ast::UintTy::U128))),
-    ("usize", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::ast::UintTy::Usize))),
-    ("i8", Res::PrimTy(hir::PrimTy::Int(rustc_ast::ast::IntTy::I8))),
-    ("i16", Res::PrimTy(hir::PrimTy::Int(rustc_ast::ast::IntTy::I16))),
-    ("i32", Res::PrimTy(hir::PrimTy::Int(rustc_ast::ast::IntTy::I32))),
-    ("i64", Res::PrimTy(hir::PrimTy::Int(rustc_ast::ast::IntTy::I64))),
-    ("i128", Res::PrimTy(hir::PrimTy::Int(rustc_ast::ast::IntTy::I128))),
-    ("isize", Res::PrimTy(hir::PrimTy::Int(rustc_ast::ast::IntTy::Isize))),
-    ("f32", Res::PrimTy(hir::PrimTy::Float(rustc_ast::ast::FloatTy::F32))),
-    ("f64", Res::PrimTy(hir::PrimTy::Float(rustc_ast::ast::FloatTy::F64))),
+    ("u8", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::UintTy::U8))),
+    ("u16", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::UintTy::U16))),
+    ("u32", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::UintTy::U32))),
+    ("u64", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::UintTy::U64))),
+    ("u128", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::UintTy::U128))),
+    ("usize", Res::PrimTy(hir::PrimTy::Uint(rustc_ast::UintTy::Usize))),
+    ("i8", Res::PrimTy(hir::PrimTy::Int(rustc_ast::IntTy::I8))),
+    ("i16", Res::PrimTy(hir::PrimTy::Int(rustc_ast::IntTy::I16))),
+    ("i32", Res::PrimTy(hir::PrimTy::Int(rustc_ast::IntTy::I32))),
+    ("i64", Res::PrimTy(hir::PrimTy::Int(rustc_ast::IntTy::I64))),
+    ("i128", Res::PrimTy(hir::PrimTy::Int(rustc_ast::IntTy::I128))),
+    ("isize", Res::PrimTy(hir::PrimTy::Int(rustc_ast::IntTy::Isize))),
+    ("f32", Res::PrimTy(hir::PrimTy::Float(rustc_ast::FloatTy::F32))),
+    ("f64", Res::PrimTy(hir::PrimTy::Float(rustc_ast::FloatTy::F64))),
     ("str", Res::PrimTy(hir::PrimTy::Str)),
     ("bool", Res::PrimTy(hir::PrimTy::Bool)),
     ("char", Res::PrimTy(hir::PrimTy::Char)),

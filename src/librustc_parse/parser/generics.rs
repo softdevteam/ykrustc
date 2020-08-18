@@ -1,7 +1,9 @@
 use super::Parser;
 
-use rustc_ast::ast::{self, Attribute, GenericBounds, GenericParam, GenericParamKind, WhereClause};
 use rustc_ast::token;
+use rustc_ast::{
+    self as ast, Attribute, GenericBounds, GenericParam, GenericParamKind, WhereClause,
+};
 use rustc_errors::PResult;
 use rustc_span::symbol::{kw, sym};
 
@@ -54,7 +56,7 @@ impl<'a> Parser<'a> {
         self.expect(&token::Colon)?;
         let ty = self.parse_ty()?;
 
-        self.sess.gated_spans.gate(sym::const_generics, const_span.to(self.prev_token.span));
+        self.sess.gated_spans.gate(sym::min_const_generics, const_span.to(self.prev_token.span));
 
         Ok(GenericParam {
             ident,

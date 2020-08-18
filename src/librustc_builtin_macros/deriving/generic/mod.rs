@@ -181,9 +181,9 @@ use std::cell::RefCell;
 use std::iter;
 use std::vec;
 
-use rustc_ast::ast::{self, BinOpKind, EnumDef, Expr, Generics, PatKind};
-use rustc_ast::ast::{GenericArg, GenericParamKind, VariantData};
 use rustc_ast::ptr::P;
+use rustc_ast::{self as ast, BinOpKind, EnumDef, Expr, Generics, PatKind};
+use rustc_ast::{GenericArg, GenericParamKind, VariantData};
 use rustc_attr as attr;
 use rustc_data_structures::map_in_place::MapInPlace;
 use rustc_expand::base::{Annotatable, ExtCtxt};
@@ -392,7 +392,7 @@ impl<'a> TraitDef<'a> {
         match *item {
             Annotatable::Item(ref item) => {
                 let is_packed = item.attrs.iter().any(|attr| {
-                    for r in attr::find_repr_attrs(&cx.parse_sess, attr) {
+                    for r in attr::find_repr_attrs(&cx.sess, attr) {
                         if let attr::ReprPacked(_) = r {
                             return true;
                         }
@@ -677,7 +677,7 @@ impl<'a> TraitDef<'a> {
 
         let attr = cx.attribute(cx.meta_word(self.span, sym::automatically_derived));
         // Just mark it now since we know that it'll end up used downstream
-        attr::mark_used(&attr);
+        cx.sess.mark_attr_used(&attr);
         let opt_trait_ref = Some(trait_ref);
         let unused_qual = {
             let word = rustc_ast::attr::mk_nested_word_item(Ident::new(

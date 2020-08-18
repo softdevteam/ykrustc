@@ -10,7 +10,7 @@ use rustc_macros::HashStable;
 use rustc_target::abi::Size;
 
 /// Represents a constant in Rust.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, TyEncodable, TyDecodable, Hash)]
 #[derive(HashStable)]
 pub enum ConstKind<'tcx> {
     /// A const generic parameter.
@@ -34,7 +34,7 @@ pub enum ConstKind<'tcx> {
 
     /// A placeholder for a const which could not be computed; this is
     /// propagated to avoid useless error messages.
-    Error(ty::sty::DelaySpanBugEmitted),
+    Error(ty::DelaySpanBugEmitted),
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -68,7 +68,7 @@ impl<'tcx> ConstKind<'tcx> {
 }
 
 /// An inference variable for a const, for use in const generics.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, TyEncodable, TyDecodable, Hash)]
 #[derive(HashStable)]
 pub enum InferConst<'tcx> {
     /// Infer the value of the const.
@@ -96,12 +96,16 @@ impl<'tcx> ConstKind<'tcx> {
         if let ConstKind::Unevaluated(def, substs, promoted) = self {
             use crate::mir::interpret::ErrorHandled;
 
-            let param_env_and_substs = param_env.with_reveal_all().and(substs);
-
             // HACK(eddyb) this erases lifetimes even though `const_eval_resolve`
             // also does later, but we want to do it before checking for
             // inference variables.
-            let param_env_and_substs = tcx.erase_regions(&param_env_and_substs);
+            // Note that we erase regions *before* calling `with_reveal_all_normalized`,
+            // so that we don't try to invoke this query with
+            // any region variables.
+            let param_env_and_substs = tcx
+                .erase_regions(&param_env)
+                .with_reveal_all_normalized(tcx)
+                .and(tcx.erase_regions(&substs));
 
             // HACK(eddyb) when the query key would contain inference variables,
             // attempt using identity substs and `ParamEnv` instead, that will succeed

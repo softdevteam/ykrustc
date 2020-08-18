@@ -2,11 +2,10 @@ use super::{AnonymousLifetimeMode, LoweringContext, ParamMode};
 use super::{ImplTraitContext, ImplTraitPosition};
 use crate::Arena;
 
-use rustc_ast::ast::*;
-use rustc_ast::attr;
 use rustc_ast::node_id::NodeMap;
 use rustc_ast::ptr::P;
-use rustc_ast::visit::{self, AssocCtxt, Visitor};
+use rustc_ast::visit::{self, AssocCtxt, FnCtxt, FnKind, Visitor};
+use rustc_ast::*;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
@@ -17,9 +16,9 @@ use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::Span;
 use rustc_target::spec::abi;
 
-use log::debug;
 use smallvec::{smallvec, SmallVec};
 use std::collections::BTreeSet;
+use tracing::debug;
 
 pub(super) struct ItemLowerer<'a, 'lowering, 'hir> {
     pub(super) lctx: &'a mut LoweringContext<'lowering, 'hir>,
@@ -73,6 +72,18 @@ impl<'a> Visitor<'a> for ItemLowerer<'a, '_, '_> {
                     visit::walk_item(this, item);
                 }
             });
+        }
+    }
+
+    fn visit_fn(&mut self, fk: FnKind<'a>, sp: Span, _: NodeId) {
+        match fk {
+            FnKind::Fn(FnCtxt::Foreign, _, sig, _, _) => {
+                self.visit_fn_header(&sig.header);
+                visit::walk_fn_decl(self, &sig.decl);
+                // Don't visit the foreign function body even if it has one, since lowering the
+                // body would have no meaning and will have already been caught as a parse error.
+            }
+            _ => visit::walk_fn(self, fk, sp),
         }
     }
 
@@ -205,7 +216,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
         let attrs = self.lower_attrs(&i.attrs);
 
         if let ItemKind::MacroDef(MacroDef { ref body, macro_rules }) = i.kind {
-            if !macro_rules || attr::contains_name(&i.attrs, sym::macro_export) {
+            if !macro_rules || self.sess.contains_name(&i.attrs, sym::macro_export) {
                 let hir_id = self.lower_node_id(i.id);
                 let body = P(self.lower_mac_args(body));
                 self.exported_macros.push(hir::MacroDef {

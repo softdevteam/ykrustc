@@ -7,6 +7,8 @@ use std::mem;
 use std::ops::{BitAnd, BitAndAssign, BitOrAssign, Not, Range, Shl};
 use std::slice;
 
+use rustc_macros::{Decodable, Encodable};
+
 #[cfg(test)]
 mod tests;
 
@@ -26,7 +28,7 @@ pub const WORD_BITS: usize = WORD_BYTES * 8;
 /// will panic if the bitsets have differing domain sizes.
 ///
 /// [`GrowableBitSet`]: struct.GrowableBitSet.html
-#[derive(Clone, Eq, PartialEq, RustcDecodable, RustcEncodable)]
+#[derive(Clone, Eq, PartialEq, Decodable, Encodable)]
 pub struct BitSet<T: Idx> {
     domain_size: usize,
     words: Vec<Word>,
@@ -700,7 +702,7 @@ impl<T: Idx> GrowableBitSet<T> {
 ///
 /// All operations that involve a row and/or column index will panic if the
 /// index exceeds the relevant bound.
-#[derive(Clone, Eq, PartialEq, RustcDecodable, RustcEncodable)]
+#[derive(Clone, Eq, PartialEq, Decodable, Encodable)]
 pub struct BitMatrix<R: Idx, C: Idx> {
     num_rows: usize,
     num_columns: usize,
@@ -1034,6 +1036,30 @@ pub trait FiniteBitSetTy:
     fn checked_shr(self, rhs: u32) -> Option<Self>;
 }
 
+impl FiniteBitSetTy for u32 {
+    const DOMAIN_SIZE: u32 = 32;
+
+    const FILLED: Self = Self::MAX;
+    const EMPTY: Self = Self::MIN;
+
+    const ONE: Self = 1u32;
+    const ZERO: Self = 0u32;
+
+    fn checked_shl(self, rhs: u32) -> Option<Self> {
+        self.checked_shl(rhs)
+    }
+
+    fn checked_shr(self, rhs: u32) -> Option<Self> {
+        self.checked_shr(rhs)
+    }
+}
+
+impl std::fmt::Debug for FiniteBitSet<u32> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:032b}", self.0)
+    }
+}
+
 impl FiniteBitSetTy for u64 {
     const DOMAIN_SIZE: u32 = 64;
 
@@ -1084,7 +1110,7 @@ impl std::fmt::Debug for FiniteBitSet<u128> {
 
 /// A fixed-sized bitset type represented by an integer type. Indices outwith than the range
 /// representable by `T` are considered set.
-#[derive(Copy, Clone, Eq, PartialEq, RustcDecodable, RustcEncodable)]
+#[derive(Copy, Clone, Eq, PartialEq, Decodable, Encodable)]
 pub struct FiniteBitSet<T: FiniteBitSetTy>(pub T);
 
 impl<T: FiniteBitSetTy> FiniteBitSet<T> {

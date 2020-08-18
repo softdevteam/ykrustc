@@ -9,7 +9,7 @@ use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
 
-use rustc_ast::ast::Mutability;
+use rustc_ast::Mutability;
 use rustc_codegen_ssa::mir::place::PlaceRef;
 use rustc_codegen_ssa::traits::*;
 use rustc_middle::bug;
@@ -19,7 +19,7 @@ use rustc_span::symbol::Symbol;
 use rustc_target::abi::{self, AddressSpace, HasDataLayout, LayoutOf, Pointer, Size};
 
 use libc::{c_char, c_uint};
-use log::debug;
+use tracing::debug;
 
 /*
 * A note on nomenclature of linking: "extern", "foreign", and "upcall".

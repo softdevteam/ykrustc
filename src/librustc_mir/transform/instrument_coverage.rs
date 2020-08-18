@@ -5,19 +5,19 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::lang_items;
 use rustc_middle::hir;
 use rustc_middle::ich::StableHashingContext;
+use rustc_middle::mir;
 use rustc_middle::mir::coverage::*;
 use rustc_middle::mir::interpret::Scalar;
-use rustc_middle::mir::CoverageInfo;
+use rustc_middle::mir::traversal;
 use rustc_middle::mir::{
-    self, traversal, BasicBlock, BasicBlockData, Operand, Place, SourceInfo, StatementKind,
-    Terminator, TerminatorKind, START_BLOCK,
+    BasicBlock, BasicBlockData, CoverageInfo, Operand, Place, SourceInfo, SourceScope,
+    StatementKind, Terminator, TerminatorKind,
 };
 use rustc_middle::ty;
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::FnDef;
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::{FnDef, TyCtxt};
 use rustc_span::def_id::DefId;
-use rustc_span::{Pos, Span};
+use rustc_span::{FileName, Pos, RealFileName, Span};
 
 /// Inserts call to count_code_region() as a placeholder to be replaced during code generation with
 /// the intrinsic llvm.instrprof.increment.
@@ -41,14 +41,14 @@ fn coverageinfo_from_mir<'tcx>(tcx: TyCtxt<'tcx>, mir_def_id: DefId) -> Coverage
         tcx.require_lang_item(lang_items::CoverageCounterSubtractFnLangItem, None);
 
     // The `num_counters` argument to `llvm.instrprof.increment` is the number of injected
-    // counters, with each counter having an index from `0..num_counters-1`. MIR optimization
+    // counters, with each counter having a counter ID from `0..num_counters-1`. MIR optimization
     // may split and duplicate some BasicBlock sequences. Simply counting the calls may not
-    // not work; but computing the num_counters by adding `1` to the highest index (for a given
+    // work; but computing the num_counters by adding `1` to the highest counter_id (for a given
     // instrumented function) is valid.
     //
     // `num_expressions` is the number of counter expressions added to the MIR body. Both
     // `num_counters` and `num_expressions` are used to initialize new vectors, during backend
-    // code generate, to lookup counters and expressions by their simple u32 indexes.
+    // code generate, to lookup counters and expressions by simple u32 indexes.
     let mut num_counters: u32 = 0;
     let mut num_expressions: u32 = 0;
     for terminator in
@@ -57,27 +57,26 @@ fn coverageinfo_from_mir<'tcx>(tcx: TyCtxt<'tcx>, mir_def_id: DefId) -> Coverage
         if let TerminatorKind::Call { func: Operand::Constant(func), args, .. } = &terminator.kind {
             match func.literal.ty.kind {
                 FnDef(id, _) if id == count_code_region_fn => {
-                    let index_arg =
-                        args.get(count_code_region_args::COUNTER_INDEX).expect("arg found");
-                    let counter_index = mir::Operand::scalar_from_const(index_arg)
+                    let counter_id_arg =
+                        args.get(count_code_region_args::COUNTER_ID).expect("arg found");
+                    let counter_id = mir::Operand::scalar_from_const(counter_id_arg)
                         .to_u32()
-                        .expect("index arg is u32");
-                    num_counters = std::cmp::max(num_counters, counter_index + 1);
+                        .expect("counter_id arg is u32");
+                    num_counters = std::cmp::max(num_counters, counter_id + 1);
                 }
                 FnDef(id, _)
                     if id == coverage_counter_add_fn || id == coverage_counter_subtract_fn =>
                 {
-                    let index_arg = args
-                        .get(coverage_counter_expression_args::COUNTER_EXPRESSION_INDEX)
+                    let expression_id_arg = args
+                        .get(coverage_counter_expression_args::EXPRESSION_ID)
                         .expect("arg found");
-                    let translated_index = mir::Operand::scalar_from_const(index_arg)
+                    let id_descending_from_max = mir::Operand::scalar_from_const(expression_id_arg)
                         .to_u32()
-                        .expect("index arg is u32");
-                    // Counter expressions start with "translated indexes", descending from
-                    // `u32::MAX`, so the range of expression indexes is disjoint from the range of
-                    // counter indexes. This way, both counters and expressions can be operands in
-                    // other expressions.
-                    let expression_index = u32::MAX - translated_index;
+                        .expect("expression_id arg is u32");
+                    // Counter expressions are initially assigned IDs descending from `u32::MAX`, so
+                    // the range of expression IDs is disjoint from the range of counter IDs. This
+                    // way, both counters and expressions can be operands in other expressions.
+                    let expression_index = u32::MAX - id_descending_from_max;
                     num_expressions = std::cmp::max(num_expressions, expression_index + 1);
                 }
                 _ => {}
@@ -97,12 +96,10 @@ fn call_terminators(data: &'tcx BasicBlockData<'tcx>) -> Option<&'tcx Terminator
 
 impl<'tcx> MirPass<'tcx> for InstrumentCoverage {
     fn run_pass(&self, tcx: TyCtxt<'tcx>, src: MirSource<'tcx>, mir_body: &mut mir::Body<'tcx>) {
-        if tcx.sess.opts.debugging_opts.instrument_coverage {
-            // If the InstrumentCoverage pass is called on promoted MIRs, skip them.
-            // See: https://github.com/rust-lang/rust/pull/73011#discussion_r438317601
-            if src.promoted.is_none() {
-                Instrumentor::new(tcx, src, mir_body).inject_counters();
-            }
+        // If the InstrumentCoverage pass is called on promoted MIRs, skip them.
+        // See: https://github.com/rust-lang/rust/pull/73011#discussion_r438317601
+        if src.promoted.is_none() {
+            Instrumentor::new(tcx, src, mir_body).inject_counters();
         }
     }
 }
@@ -111,6 +108,13 @@ impl<'tcx> MirPass<'tcx> for InstrumentCoverage {
 enum Op {
     Add,
     Subtract,
+}
+
+struct InjectedCall<'tcx> {
+    func: Operand<'tcx>,
+    args: Vec<Operand<'tcx>>,
+    span: Span,
+    inject_at: Span,
 }
 
 struct Instrumentor<'a, 'tcx> {
@@ -147,11 +151,8 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
     }
 
     /// Expression IDs start from u32::MAX and go down because a CounterExpression can reference
-    /// (add or subtract counts) of both Counter regions and CounterExpression regions. The indexes
-    /// of each type of region must be contiguous, but also must be unique across both sets.
-    /// The expression IDs are eventually translated into region indexes (starting after the last
-    /// counter index, for the given function), during backend code generation, by the helper method
-    /// `rustc_codegen_ssa::coverageinfo::map::FunctionCoverage::translate_expressions()`.
+    /// (add or subtract counts) of both Counter regions and CounterExpression regions. The counter
+    /// expression operand IDs must be unique across both types.
     fn next_expression(&mut self) -> u32 {
         assert!(self.num_counters < u32::MAX - self.num_expressions);
         let next = u32::MAX - self.num_expressions;
@@ -171,17 +172,24 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
     }
 
     fn inject_counters(&mut self) {
+        let mir_body = &self.mir_body;
         let body_span = self.hir_body.value.span;
-        debug!(
-            "instrumenting {:?}, span: {}",
-            self.mir_def_id,
-            self.tcx.sess.source_map().span_to_string(body_span)
-        );
+        debug!("instrumenting {:?}, span: {:?}", self.mir_def_id, body_span);
 
         // FIXME(richkadel): As a first step, counters are only injected at the top of each
         // function. The complete solution will inject counters at each conditional code branch.
-        let next_block = START_BLOCK;
-        self.inject_counter(body_span, next_block);
+        let _ignore = mir_body;
+        let id = self.next_counter();
+        let function_source_hash = self.function_source_hash();
+        let scope = rustc_middle::mir::OUTERMOST_SOURCE_SCOPE;
+        let is_cleanup = false;
+        let next_block = rustc_middle::mir::START_BLOCK;
+        self.inject_call(
+            self.make_counter(id, function_source_hash, body_span),
+            scope,
+            is_cleanup,
+            next_block,
+        );
 
         // FIXME(richkadel): The next step to implement source based coverage analysis will be
         // instrumenting branches within functions, and some regions will be counted by "counter
@@ -190,57 +198,56 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
         let fake_use = false;
         if fake_use {
             let add = false;
-            if add {
-                self.inject_counter_expression(body_span, next_block, 1, Op::Add, 2);
-            } else {
-                self.inject_counter_expression(body_span, next_block, 1, Op::Subtract, 2);
-            }
+            let lhs = 1;
+            let op = if add { Op::Add } else { Op::Subtract };
+            let rhs = 2;
+
+            let scope = rustc_middle::mir::OUTERMOST_SOURCE_SCOPE;
+            let is_cleanup = false;
+            let next_block = rustc_middle::mir::START_BLOCK;
+
+            let id = self.next_expression();
+            self.inject_call(
+                self.make_expression(id, body_span, lhs, op, rhs),
+                scope,
+                is_cleanup,
+                next_block,
+            );
         }
     }
 
-    fn inject_counter(&mut self, code_region: Span, next_block: BasicBlock) -> u32 {
-        let counter_id = self.next_counter();
-        let function_source_hash = self.function_source_hash();
-        let injection_point = code_region.shrink_to_lo();
+    fn make_counter(&self, id: u32, function_source_hash: u64, span: Span) -> InjectedCall<'tcx> {
+        let inject_at = span.shrink_to_lo();
 
-        let count_code_region_fn = function_handle(
+        let func = function_handle(
             self.tcx,
             self.tcx.require_lang_item(lang_items::CountCodeRegionFnLangItem, None),
-            injection_point,
+            inject_at,
         );
 
         let mut args = Vec::new();
 
         use count_code_region_args::*;
         debug_assert_eq!(FUNCTION_SOURCE_HASH, args.len());
-        args.push(self.const_u64(function_source_hash, injection_point));
+        args.push(self.const_u64(function_source_hash, inject_at));
 
-        debug_assert_eq!(COUNTER_INDEX, args.len());
-        args.push(self.const_u32(counter_id, injection_point));
+        debug_assert_eq!(COUNTER_ID, args.len());
+        args.push(self.const_u32(id, inject_at));
 
-        debug_assert_eq!(START_BYTE_POS, args.len());
-        args.push(self.const_u32(code_region.lo().to_u32(), injection_point));
-
-        debug_assert_eq!(END_BYTE_POS, args.len());
-        args.push(self.const_u32(code_region.hi().to_u32(), injection_point));
-
-        self.inject_call(count_code_region_fn, args, injection_point, next_block);
-
-        counter_id
+        InjectedCall { func, args, span, inject_at }
     }
 
-    fn inject_counter_expression(
-        &mut self,
-        code_region: Span,
-        next_block: BasicBlock,
+    fn make_expression(
+        &self,
+        id: u32,
+        span: Span,
         lhs: u32,
         op: Op,
         rhs: u32,
-    ) -> u32 {
-        let expression_id = self.next_expression();
-        let injection_point = code_region.shrink_to_lo();
+    ) -> InjectedCall<'tcx> {
+        let inject_at = span.shrink_to_lo();
 
-        let count_code_region_fn = function_handle(
+        let func = function_handle(
             self.tcx,
             self.tcx.require_lang_item(
                 match op {
@@ -249,43 +256,68 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
                 },
                 None,
             ),
-            injection_point,
+            inject_at,
         );
 
         let mut args = Vec::new();
 
         use coverage_counter_expression_args::*;
-        debug_assert_eq!(COUNTER_EXPRESSION_INDEX, args.len());
-        args.push(self.const_u32(expression_id, injection_point));
+        debug_assert_eq!(EXPRESSION_ID, args.len());
+        args.push(self.const_u32(id, inject_at));
 
-        debug_assert_eq!(LEFT_INDEX, args.len());
-        args.push(self.const_u32(lhs, injection_point));
+        debug_assert_eq!(LEFT_ID, args.len());
+        args.push(self.const_u32(lhs, inject_at));
 
-        debug_assert_eq!(RIGHT_INDEX, args.len());
-        args.push(self.const_u32(rhs, injection_point));
+        debug_assert_eq!(RIGHT_ID, args.len());
+        args.push(self.const_u32(rhs, inject_at));
 
-        debug_assert_eq!(START_BYTE_POS, args.len());
-        args.push(self.const_u32(code_region.lo().to_u32(), injection_point));
-
-        debug_assert_eq!(END_BYTE_POS, args.len());
-        args.push(self.const_u32(code_region.hi().to_u32(), injection_point));
-
-        self.inject_call(count_code_region_fn, args, injection_point, next_block);
-
-        expression_id
+        InjectedCall { func, args, span, inject_at }
     }
 
     fn inject_call(
         &mut self,
-        func: Operand<'tcx>,
-        args: Vec<Operand<'tcx>>,
-        fn_span: Span,
+        call: InjectedCall<'tcx>,
+        scope: SourceScope,
+        is_cleanup: bool,
         next_block: BasicBlock,
     ) {
+        let InjectedCall { func, mut args, span, inject_at } = call;
+        debug!(
+            "  injecting {}call to {:?}({:?}) at: {:?}, scope: {:?}",
+            if is_cleanup { "cleanup " } else { "" },
+            func,
+            args,
+            inject_at,
+            scope,
+        );
+
         let mut patch = MirPatch::new(self.mir_body);
 
-        let temp = patch.new_temp(self.tcx.mk_unit(), fn_span);
-        let new_block = patch.new_block(placeholder_block(fn_span));
+        let (file_name, start_line, start_col, end_line, end_col) = self.code_region(&span);
+
+        // FIXME(richkadel): Note that `const_str()` results in the creation of an `Allocation` to
+        // hold one copy of each unique filename. It looks like that `Allocation` may translate into
+        // the creation of an `@alloc` in LLVM IR that is never actually used by runtime code.
+        //
+        // Example LLVM IR:
+        //
+        // @alloc4 = private unnamed_addr constant <{ [43 x i8] }> \
+        //   <{ [43 x i8] c"C:\\msys64\\home\\richkadel\\rust\\rust_basic.rs" }>, align 1
+        //
+        // Can I flag the alloc as something not to be added to codegen? Or somehow remove it before
+        // it gets added to the LLVM IR? Do we need some kind of reference counting to know it's
+        // not used by any runtime code?
+        //
+        // This question is moot if I convert the Call Terminators to Statements, I believe:
+        // https://rust-lang.zulipchat.com/#narrow/stream/233931-t-compiler.2Fmajor-changes/topic/Implement.20LLVM-compatible.20source-based.20cod.20compiler-team.23278/near/206731748
+        args.push(self.const_str(&file_name, inject_at));
+        args.push(self.const_u32(start_line, inject_at));
+        args.push(self.const_u32(start_col, inject_at));
+        args.push(self.const_u32(end_line, inject_at));
+        args.push(self.const_u32(end_col, inject_at));
+
+        let temp = patch.new_temp(self.tcx.mk_unit(), inject_at);
+        let new_block = patch.new_block(placeholder_block(inject_at, scope, is_cleanup));
         patch.patch_terminator(
             new_block,
             TerminatorKind::Call {
@@ -295,7 +327,7 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
                 destination: Some((Place::from(temp), new_block)),
                 cleanup: None,
                 from_hir_call: false,
-                fn_span,
+                fn_span: inject_at,
             },
         );
 
@@ -307,6 +339,43 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
         // To insert the `new_block` in front of the first block in the counted branch (the
         // `next_block`), just swap the indexes, leaving the rest of the graph unchanged.
         self.mir_body.basic_blocks_mut().swap(next_block, new_block);
+    }
+
+    /// Convert the Span into its file name, start line and column, and end line and column
+    fn code_region(&self, span: &Span) -> (String, u32, u32, u32, u32) {
+        let source_map = self.tcx.sess.source_map();
+        let start = source_map.lookup_char_pos(span.lo());
+        let end = if span.hi() == span.lo() {
+            start.clone()
+        } else {
+            let end = source_map.lookup_char_pos(span.hi());
+            debug_assert_eq!(
+                start.file.name,
+                end.file.name,
+                "Region start ({:?} -> {:?}) and end ({:?} -> {:?}) don't come from the same source file!",
+                span.lo(),
+                start,
+                span.hi(),
+                end
+            );
+            end
+        };
+        match &start.file.name {
+            FileName::Real(RealFileName::Named(path)) => (
+                path.to_string_lossy().to_string(),
+                start.line as u32,
+                start.col.to_u32() + 1,
+                end.line as u32,
+                end.col.to_u32() + 1,
+            ),
+            _ => {
+                bug!("start.file.name should be a RealFileName, but it was: {:?}", start.file.name)
+            }
+        }
+    }
+
+    fn const_str(&self, value: &str, span: Span) -> Operand<'tcx> {
+        Operand::const_from_str(self.tcx, value, span)
     }
 
     fn const_u32(&self, value: u32, span: Span) -> Operand<'tcx> {
@@ -325,15 +394,15 @@ fn function_handle<'tcx>(tcx: TyCtxt<'tcx>, fn_def_id: DefId, span: Span) -> Ope
     Operand::function_handle(tcx, fn_def_id, substs, span)
 }
 
-fn placeholder_block(span: Span) -> BasicBlockData<'tcx> {
+fn placeholder_block(span: Span, scope: SourceScope, is_cleanup: bool) -> BasicBlockData<'tcx> {
     BasicBlockData {
         statements: vec![],
         terminator: Some(Terminator {
-            source_info: SourceInfo::outermost(span),
+            source_info: SourceInfo { span, scope },
             // this gets overwritten by the counter Call
             kind: TerminatorKind::Unreachable,
         }),
-        is_cleanup: false,
+        is_cleanup,
     }
 }
 

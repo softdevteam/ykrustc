@@ -31,10 +31,7 @@ MAINTAINERS = {
     'nomicon': {'frewsxcv', 'Gankra'},
     'reference': {'steveklabnik', 'Havvy', 'matthewjasper', 'ehuss'},
     'rust-by-example': {'steveklabnik', 'marioidival'},
-    'embedded-book': {
-        'adamgreig', 'andre-richter', 'jamesmunns', 'korken89',
-        'ryankurte', 'thejpster', 'therealprof',
-    },
+    'embedded-book': {'adamgreig', 'andre-richter', 'jamesmunns', 'therealprof'},
     'edition-guide': {'ehuss', 'steveklabnik'},
     'rustc-dev-guide': {'mark-i-m', 'spastorino', 'amanjeev', 'JohnTitor'},
 }
@@ -42,7 +39,7 @@ MAINTAINERS = {
 LABELS = {
     'miri': ['A-miri', 'C-bug'],
     'rls': ['A-rls', 'C-bug'],
-    'rustfmt': ['C-bug'],
+    'rustfmt': ['A-rustfmt', 'C-bug'],
     'book': ['C-bug'],
     'nomicon': ['C-bug'],
     'reference': ['C-bug'],

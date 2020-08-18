@@ -18,7 +18,6 @@ use crate::{
     pluralize, CodeSuggestion, Diagnostic, DiagnosticId, Level, SubDiagnostic, SuggestionStyle,
 };
 
-use log::*;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
 use rustc_span::hygiene::{ExpnKind, MacroKind};
@@ -30,6 +29,7 @@ use std::iter;
 use std::path::Path;
 use termcolor::{Ansi, BufferWriter, ColorChoice, ColorSpec, StandardStream};
 use termcolor::{Buffer, Color, WriteColor};
+use tracing::*;
 
 /// Default column width, used in tests and when terminal dimensions cannot be determined.
 const DEFAULT_COLUMN_WIDTH: usize = 140;
@@ -362,7 +362,7 @@ pub trait Emitter {
                         format!(
                             "in this expansion of `{}`{}",
                             trace.kind.descr(),
-                            if macro_backtrace.len() > 2 {
+                            if macro_backtrace.len() > 1 {
                                 // if macro_backtrace.len() == 1 it'll be
                                 // pointed at by "in this macro invocation"
                                 format!(" (#{})", i + 1)
@@ -393,7 +393,7 @@ pub trait Emitter {
                         trace.call_site,
                         format!(
                             "in this macro invocation{}",
-                            if macro_backtrace.len() > 2 && always_backtrace {
+                            if macro_backtrace.len() > 1 && always_backtrace {
                                 // only specify order when the macro
                                 // backtrace is multiple levels deep
                                 format!(" (#{})", i + 1)

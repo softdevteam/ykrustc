@@ -30,20 +30,18 @@ use crate::SESSION_GLOBALS;
 use crate::{Span, DUMMY_SP};
 
 use crate::def_id::{CrateNum, DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
-use log::*;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::sync::{Lock, Lrc};
 use rustc_macros::HashStable_Generic;
-use rustc_serialize::{
-    Decodable, Decoder, Encodable, Encoder, UseSpecializedDecodable, UseSpecializedEncodable,
-};
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use std::fmt;
+use tracing::*;
 
 /// A `SyntaxContext` represents a chain of pairs `(ExpnId, Transparency)` named "marks".
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SyntaxContext(u32);
 
-#[derive(Debug, RustcEncodable, RustcDecodable, Clone)]
+#[derive(Debug, Encodable, Decodable, Clone)]
 pub struct SyntaxContextData {
     outer_expn: ExpnId,
     outer_transparency: Transparency,
@@ -62,7 +60,7 @@ pub struct ExpnId(u32);
 
 /// A property of a macro expansion that determines how identifiers
 /// produced by that expansion are resolved.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Hash, Debug, Encodable, Decodable)]
 #[derive(HashStable_Generic)]
 pub enum Transparency {
     /// Identifier produced by a transparent expansion is always resolved at call-site.
@@ -79,8 +77,6 @@ pub enum Transparency {
     /// Def-site spans in procedural macros, identifiers from `macro` by default use this.
     Opaque,
 }
-
-pub(crate) const NUM_TRANSPARENCIES: usize = 3;
 
 impl ExpnId {
     pub fn fresh(expn_data: Option<ExpnData>) -> Self {
@@ -619,6 +615,11 @@ impl SyntaxContext {
     }
 
     #[inline]
+    pub fn outer_mark(self) -> (ExpnId, Transparency) {
+        HygieneData::with(|data| data.outer_mark(self))
+    }
+
+    #[inline]
     pub fn outer_mark_with_data(self) -> (ExpnId, Transparency, ExpnData) {
         HygieneData::with(|data| {
             let (expn_id, transparency) = data.outer_mark(self);
@@ -661,13 +662,12 @@ impl Span {
 
 /// A subset of properties from both macro definition and macro call available through global data.
 /// Avoid using this if you have access to the original definition or call structures.
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable_Generic)]
+#[derive(Clone, Debug, Encodable, Decodable, HashStable_Generic)]
 pub struct ExpnData {
     // --- The part unique to each expansion.
     /// The kind of this expansion - macro or compiler desugaring.
     pub kind: ExpnKind,
     /// The expansion that produced this expansion.
-    #[stable_hasher(ignore)]
     pub parent: ExpnId,
     /// The location of the actual macro invocation or syntax sugar , e.g.
     /// `let x = foo!();` or `if let Some(y) = x {}`
@@ -764,7 +764,7 @@ impl ExpnData {
 }
 
 /// Expansion kind.
-#[derive(Clone, Debug, PartialEq, RustcEncodable, RustcDecodable, HashStable_Generic)]
+#[derive(Clone, Debug, PartialEq, Encodable, Decodable, HashStable_Generic)]
 pub enum ExpnKind {
     /// No expansion, aka root expansion. Only `ExpnId::root()` has this kind.
     Root,
@@ -792,7 +792,7 @@ impl ExpnKind {
 }
 
 /// The kind of macro invocation or definition.
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Encodable, Decodable, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub enum MacroKind {
     /// A bang macro `foo!()`.
@@ -828,7 +828,7 @@ impl MacroKind {
 }
 
 /// The kind of AST transform.
-#[derive(Clone, Copy, Debug, PartialEq, RustcEncodable, RustcDecodable, HashStable_Generic)]
+#[derive(Clone, Copy, Debug, PartialEq, Encodable, Decodable, HashStable_Generic)]
 pub enum AstPass {
     StdImports,
     TestHarness,
@@ -846,7 +846,7 @@ impl AstPass {
 }
 
 /// The kind of compiler desugaring.
-#[derive(Clone, Copy, PartialEq, Debug, RustcEncodable, RustcDecodable, HashStable_Generic)]
+#[derive(Clone, Copy, PartialEq, Debug, Encodable, Decodable, HashStable_Generic)]
 pub enum DesugaringKind {
     /// We desugar `if c { i } else { e }` to `match $ExprKind::Use(c) { true => i, _ => e }`.
     /// However, we do not want to blame `c` for unreachability but rather say that `i`
@@ -865,7 +865,7 @@ pub enum DesugaringKind {
 }
 
 /// A location in the desugaring of a `for` loop
-#[derive(Clone, Copy, PartialEq, Debug, RustcEncodable, RustcDecodable, HashStable_Generic)]
+#[derive(Clone, Copy, PartialEq, Debug, Encodable, Decodable, HashStable_Generic)]
 pub enum ForLoopLoc {
     Head,
     IntoIter,
@@ -886,12 +886,9 @@ impl DesugaringKind {
     }
 }
 
-impl UseSpecializedEncodable for ExpnId {}
-impl UseSpecializedDecodable for ExpnId {}
-
 #[derive(Default)]
 pub struct HygieneEncodeContext {
-    /// All `SyntaxContexts` for which we have writen `SyntaxContextData` into crate metadata.
+    /// All `SyntaxContexts` for which we have written `SyntaxContextData` into crate metadata.
     /// This is `None` after we finish encoding `SyntaxContexts`, to ensure
     /// that we don't accidentally try to encode any more `SyntaxContexts`
     serialized_ctxts: Lock<FxHashSet<SyntaxContext>>,
@@ -961,7 +958,7 @@ pub struct HygieneDecodeContext {
     // Maps serialized `SyntaxContext` ids to a `SyntaxContext` in the current
     // global `HygieneData`. When we deserialize a `SyntaxContext`, we need to create
     // a new id in the global `HygieneData`. This map tracks the ID we end up picking,
-    // so that multiple occurences of the same serialized id are decoded to the same
+    // so that multiple occurrences of the same serialized id are decoded to the same
     // `SyntaxContext`
     remapped_ctxts: Lock<Vec<Option<SyntaxContext>>>,
     // The same as `remapepd_ctxts`, but for `ExpnId`s
@@ -1030,7 +1027,7 @@ pub fn decode_expn_id<
         drop(expns);
         expn_id
     });
-    return Ok(expn_id);
+    Ok(expn_id)
 }
 
 // Decodes `SyntaxContext`, using the provided `HygieneDecodeContext`
@@ -1103,7 +1100,7 @@ pub fn decode_syntax_context<
         assert_eq!(dummy.dollar_crate_name, kw::Invalid);
     });
 
-    return Ok(new_ctxt);
+    Ok(new_ctxt)
 }
 
 pub fn num_syntax_ctxts() -> usize {
@@ -1135,6 +1132,7 @@ pub fn for_all_expns_in<E, F: FnMut(u32, ExpnId, &ExpnData) -> Result<(), E>>(
     }
     Ok(())
 }
+
 pub fn for_all_data<E, F: FnMut((u32, SyntaxContext, &SyntaxContextData)) -> Result<(), E>>(
     mut f: F,
 ) -> Result<(), E> {
@@ -1143,6 +1141,18 @@ pub fn for_all_data<E, F: FnMut((u32, SyntaxContext, &SyntaxContextData)) -> Res
         f((i as u32, SyntaxContext(i as u32), &data))?;
     }
     Ok(())
+}
+
+impl<E: Encoder> Encodable<E> for ExpnId {
+    default fn encode(&self, _: &mut E) -> Result<(), E::Error> {
+        panic!("cannot encode `ExpnId` with `{}`", std::any::type_name::<E>());
+    }
+}
+
+impl<D: Decoder> Decodable<D> for ExpnId {
+    default fn decode(_: &mut D) -> Result<Self, D::Error> {
+        panic!("cannot decode `ExpnId` with `{}`", std::any::type_name::<D>());
+    }
 }
 
 pub fn for_all_expn_data<E, F: FnMut(u32, &ExpnData) -> Result<(), E>>(mut f: F) -> Result<(), E> {
@@ -1170,13 +1180,30 @@ pub fn raw_encode_expn_id<E: Encoder>(
     mode: ExpnDataEncodeMode,
     e: &mut E,
 ) -> Result<(), E::Error> {
-    if !context.serialized_expns.lock().contains(&expn) {
-        context.latest_expns.lock().insert(expn);
-    }
+    // Record the fact that we need to serialize the corresponding
+    // `ExpnData`
+    let needs_data = || {
+        if !context.serialized_expns.lock().contains(&expn) {
+            context.latest_expns.lock().insert(expn);
+        }
+    };
+
     match mode {
-        ExpnDataEncodeMode::IncrComp => expn.0.encode(e),
+        ExpnDataEncodeMode::IncrComp => {
+            // Always serialize the `ExpnData` in incr comp mode
+            needs_data();
+            expn.0.encode(e)
+        }
         ExpnDataEncodeMode::Metadata => {
             let data = expn.expn_data();
+            // We only need to serialize the ExpnData
+            // if it comes from this crate.
+            // We currently don't serialize any hygiene information data for
+            // proc-macro crates: see the `SpecializedEncoder<Span>` impl
+            // for crate metadata.
+            if data.krate == LOCAL_CRATE {
+                needs_data();
+            }
             data.orig_id.expect("Missing orig_id").encode(e)?;
             data.krate.encode(e)
         }
@@ -1199,5 +1226,14 @@ impl<'a> ExpnDataDecodeMode<'a, Box<dyn FnOnce(CrateNum) -> &'a HygieneDecodeCon
     }
 }
 
-impl UseSpecializedEncodable for SyntaxContext {}
-impl UseSpecializedDecodable for SyntaxContext {}
+impl<E: Encoder> Encodable<E> for SyntaxContext {
+    default fn encode(&self, _: &mut E) -> Result<(), E::Error> {
+        panic!("cannot encode `SyntaxContext` with `{}`", std::any::type_name::<E>());
+    }
+}
+
+impl<D: Decoder> Decodable<D> for SyntaxContext {
+    default fn decode(_: &mut D) -> Result<Self, D::Error> {
+        panic!("cannot decode `SyntaxContext` with `{}`", std::any::type_name::<D>());
+    }
+}

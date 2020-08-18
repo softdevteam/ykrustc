@@ -230,11 +230,11 @@ use rustc_span::Span;
 use rustc_target::spec::{Target, TargetTriple};
 
 use flate2::read::DeflateDecoder;
-use log::{debug, info, warn};
 use std::io::{Read, Result as IoResult, Write};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::{cmp, fmt, fs};
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 crate struct CrateLocator<'a> {
@@ -426,20 +426,17 @@ impl<'a> CrateLocator<'a> {
             info!("lib candidate: {}", spf.path.display());
 
             let (rlibs, rmetas, dylibs) = candidates.entry(hash.to_string()).or_default();
-            fs::canonicalize(&spf.path)
-                .map(|p| {
-                    if seen_paths.contains(&p) {
-                        return FileDoesntMatch;
-                    };
-                    seen_paths.insert(p.clone());
-                    match found_kind {
-                        CrateFlavor::Rlib => rlibs.insert(p, kind),
-                        CrateFlavor::Rmeta => rmetas.insert(p, kind),
-                        CrateFlavor::Dylib => dylibs.insert(p, kind),
-                    };
-                    FileMatches
-                })
-                .unwrap_or(FileDoesntMatch)
+            let path = fs::canonicalize(&spf.path).unwrap_or_else(|_| spf.path.clone());
+            if seen_paths.contains(&path) {
+                return FileDoesntMatch;
+            };
+            seen_paths.insert(path.clone());
+            match found_kind {
+                CrateFlavor::Rlib => rlibs.insert(path, kind),
+                CrateFlavor::Rmeta => rmetas.insert(path, kind),
+                CrateFlavor::Dylib => dylibs.insert(path, kind),
+            };
+            FileMatches
         });
         self.rejected_via_kind.extend(staticlibs);
 
@@ -688,12 +685,19 @@ impl<'a> CrateLocator<'a> {
                     && file.ends_with(&self.target.options.dll_suffix)
             {
                 // Make sure there's at most one rlib and at most one dylib.
+                // Note to take care and match against the non-canonicalized name:
+                // some systems save build artifacts into content-addressed stores
+                // that do not preserve extensions, and then link to them using
+                // e.g. symbolic links. If we canonicalize too early, we resolve
+                // the symlink, the file type is lost and we might treat rlibs and
+                // rmetas as dylibs.
+                let loc_canon = fs::canonicalize(&loc).unwrap_or_else(|_| loc.clone());
                 if loc.file_name().unwrap().to_str().unwrap().ends_with(".rlib") {
-                    rlibs.insert(fs::canonicalize(&loc).unwrap(), PathKind::ExternFlag);
+                    rlibs.insert(loc_canon, PathKind::ExternFlag);
                 } else if loc.file_name().unwrap().to_str().unwrap().ends_with(".rmeta") {
-                    rmetas.insert(fs::canonicalize(&loc).unwrap(), PathKind::ExternFlag);
+                    rmetas.insert(loc_canon, PathKind::ExternFlag);
                 } else {
-                    dylibs.insert(fs::canonicalize(&loc).unwrap(), PathKind::ExternFlag);
+                    dylibs.insert(loc_canon, PathKind::ExternFlag);
                 }
             } else {
                 self.rejected_via_filename

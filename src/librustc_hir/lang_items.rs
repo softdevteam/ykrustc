@@ -10,9 +10,9 @@
 pub use self::LangItem::*;
 
 use crate::def_id::DefId;
-use crate::Target;
+use crate::{MethodKind, Target};
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_macros::HashStable_Generic;
@@ -45,7 +45,7 @@ macro_rules! language_item_table {
 
         enum_from_u32! {
             /// A representation of all the valid language items in Rust.
-            #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+            #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Encodable, Decodable)]
             pub enum LangItem {
                 $($variant,)*
             }
@@ -141,12 +141,20 @@ impl<CTX> HashStable<CTX> for LangItem {
 /// Extracts the first `lang = "$name"` out of a list of attributes.
 /// The attributes `#[panic_handler]` and `#[alloc_error_handler]`
 /// are also extracted out when found.
-pub fn extract(attrs: &[ast::Attribute]) -> Option<(Symbol, Span)> {
+///
+/// About the `check_name` argument: passing in a `Session` would be simpler,
+/// because then we could call `Session::check_name` directly. But we want to
+/// avoid the need for `librustc_hir` to depend on `librustc_session`, so we
+/// use a closure instead.
+pub fn extract<'a, F>(check_name: F, attrs: &'a [ast::Attribute]) -> Option<(Symbol, Span)>
+where
+    F: Fn(&'a ast::Attribute, Symbol) -> bool,
+{
     attrs.iter().find_map(|attr| {
         Some(match attr {
-            _ if attr.check_name(sym::lang) => (attr.value_str()?, attr.span),
-            _ if attr.check_name(sym::panic_handler) => (sym::panic_impl, attr.span),
-            _ if attr.check_name(sym::alloc_error_handler) => (sym::oom, attr.span),
+            _ if check_name(attr, sym::lang) => (attr.value_str()?, attr.span),
+            _ if check_name(attr, sym::panic_handler) => (sym::panic_impl, attr.span),
+            _ if check_name(attr, sym::alloc_error_handler) => (sym::oom, attr.span),
             _ => return None,
         })
     })
@@ -157,6 +165,7 @@ language_item_table! {
     BoolImplItem,                  sym::bool,               bool_impl,               Target::Impl;
     CharImplItem,                  sym::char,               char_impl,               Target::Impl;
     StrImplItem,                   sym::str,                str_impl,                Target::Impl;
+    ArrayImplItem,                 sym::array,              array_impl,              Target::Impl;
     SliceImplItem,                 sym::slice,              slice_impl,              Target::Impl;
     SliceU8ImplItem,               sym::slice_u8,           slice_u8_impl,           Target::Impl;
     StrAllocImplItem,              sym::str_alloc,          str_alloc_impl,          Target::Impl;
@@ -301,4 +310,38 @@ language_item_table! {
     CountCodeRegionFnLangItem,         sym::count_code_region,         count_code_region_fn,         Target::Fn;
     CoverageCounterAddFnLangItem,      sym::coverage_counter_add,      coverage_counter_add_fn,      Target::Fn;
     CoverageCounterSubtractFnLangItem, sym::coverage_counter_subtract, coverage_counter_subtract_fn, Target::Fn;
+
+    // Language items from AST lowering
+    TryFromError,                  sym::from_error,         from_error_fn,           Target::Method(MethodKind::Trait { body: false });
+    TryFromOk,                     sym::from_ok,            from_ok_fn,              Target::Method(MethodKind::Trait { body: false });
+    TryIntoResult,                 sym::into_result,        into_result_fn,          Target::Method(MethodKind::Trait { body: false });
+
+    PollReady,                     sym::Ready,              poll_ready_variant,      Target::Variant;
+    PollPending,                   sym::Pending,            poll_pending_variant,    Target::Variant;
+
+    FromGenerator,                 sym::from_generator,     from_generator_fn,       Target::Fn;
+    GetContext,                    sym::get_context,        get_context_fn,          Target::Fn;
+
+    FuturePoll,                    sym::poll,               future_poll_fn,          Target::Method(MethodKind::Trait { body: false });
+
+    FromFrom,                      sym::from,               from_fn,                 Target::Method(MethodKind::Trait { body: false });
+
+    OptionSome,                    sym::Some,               option_some_variant,     Target::Variant;
+    OptionNone,                    sym::None,               option_none_variant,     Target::Variant;
+
+    ResultOk,                      sym::Ok,                 result_ok_variant,       Target::Variant;
+    ResultErr,                     sym::Err,                result_err_variant,      Target::Variant;
+
+    IntoIterIntoIter,              sym::into_iter,          into_iter_fn,            Target::Method(MethodKind::Trait { body: false });
+    IteratorNext,                  sym::next,               next_fn,                 Target::Method(MethodKind::Trait { body: false});
+
+    PinNewUnchecked,               sym::new_unchecked,      new_unchecked_fn,        Target::Method(MethodKind::Inherent);
+
+    RangeFrom,                     sym::RangeFrom,           range_from_struct,          Target::Struct;
+    RangeFull,                     sym::RangeFull,           range_full_struct,          Target::Struct;
+    RangeInclusiveStruct,          sym::RangeInclusive,      range_inclusive_struct,     Target::Struct;
+    RangeInclusiveNew,             sym::range_inclusive_new, range_inclusive_new_method, Target::Method(MethodKind::Inherent);
+    Range,                         sym::Range,               range_struct,               Target::Struct;
+    RangeToInclusive,              sym::RangeToInclusive,    range_to_inclusive_struct,  Target::Struct;
+    RangeTo,                       sym::RangeTo,             range_to_struct,            Target::Struct;
 }

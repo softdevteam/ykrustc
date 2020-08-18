@@ -1,7 +1,7 @@
 use super::{ImplTraitContext, LoweringContext, ParamMode};
 
-use rustc_ast::ast::*;
 use rustc_ast::ptr::P;
+use rustc_ast::*;
 use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
@@ -112,7 +112,6 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 // Found a sub-tuple pattern `$binding_mode $ident @ ..`.
                 // This is not allowed as a sub-tuple pattern
                 PatKind::Ident(ref _bm, ident, Some(ref sub)) if sub.is_rest() => {
-                    rest = Some((idx, pat.span));
                     let sp = pat.span;
                     self.diagnostic()
                         .struct_span_err(
@@ -128,7 +127,6 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                             Applicability::MaybeIncorrect,
                         )
                         .emit();
-                    break;
                 }
                 _ => {}
             }

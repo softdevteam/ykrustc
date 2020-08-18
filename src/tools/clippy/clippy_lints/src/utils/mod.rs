@@ -43,6 +43,7 @@ use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::{LateContext, Level, Lint, LintContext};
 use rustc_middle::hir::map::Map;
 use rustc_middle::ty::{self, layout::IntegerExt, subst::GenericArg, Ty, TyCtxt, TypeFoldable};
+use rustc_mir::const_eval;
 use rustc_span::hygiene::{ExpnKind, MacroKind};
 use rustc_span::source_map::original_sp;
 use rustc_span::symbol::{self, kw, Symbol};
@@ -52,7 +53,6 @@ use rustc_trait_selection::traits::query::normalize::AtExt;
 use smallvec::SmallVec;
 
 use crate::consts::{constant, Constant};
-use crate::reexport::Name;
 
 /// Returns `true` if the two spans come from differing expansions (i.e., one is
 /// from a macro and one isn't).
@@ -142,6 +142,14 @@ pub fn is_type_diagnostic_item(cx: &LateContext<'_>, ty: Ty<'_>, diag_item: Symb
     }
 }
 
+/// Checks if the type is equal to a lang item
+pub fn is_type_lang_item(cx: &LateContext<'_>, ty: Ty<'_>, lang_item: hir::LangItem) -> bool {
+    match ty.kind {
+        ty::Adt(adt, _) => cx.tcx.lang_items().require(lang_item).unwrap() == adt.did,
+        _ => false,
+    }
+}
+
 /// Checks if the method call given in `expr` belongs to the given trait.
 pub fn match_trait_method(cx: &LateContext<'_>, expr: &Expr<'_>, path: &[&str]) -> bool {
     let def_id = cx.typeck_results().type_dependent_def_id(expr.hir_id).unwrap();
@@ -150,7 +158,7 @@ pub fn match_trait_method(cx: &LateContext<'_>, expr: &Expr<'_>, path: &[&str]) 
 }
 
 /// Checks if an expression references a variable of the given name.
-pub fn match_var(expr: &Expr<'_>, var: Name) -> bool {
+pub fn match_var(expr: &Expr<'_>, var: Symbol) -> bool {
     if let ExprKind::Path(QPath::Resolved(None, ref path)) = expr.kind {
         if let [p] = path.segments {
             return p.ident.name == var;
@@ -163,6 +171,7 @@ pub fn last_path_segment<'tcx>(path: &QPath<'tcx>) -> &'tcx PathSegment<'tcx> {
     match *path {
         QPath::Resolved(_, ref path) => path.segments.last().expect("A path must have at least one segment"),
         QPath::TypeRelative(_, ref seg) => seg,
+        QPath::LangItem(..) => panic!("last_path_segment: lang item has no path segments"),
     }
 }
 
@@ -170,6 +179,7 @@ pub fn single_segment_path<'tcx>(path: &QPath<'tcx>) -> Option<&'tcx PathSegment
     match *path {
         QPath::Resolved(_, ref path) => path.segments.get(0),
         QPath::TypeRelative(_, ref seg) => Some(seg),
+        QPath::LangItem(..) => None,
     }
 }
 
@@ -196,6 +206,7 @@ pub fn match_qpath(path: &QPath<'_>, segments: &[&str]) -> bool {
             },
             _ => false,
         },
+        QPath::LangItem(..) => false,
     }
 }
 
@@ -277,7 +288,7 @@ pub fn path_to_res(cx: &LateContext<'_>, path: &[&str]) -> Option<def::Res> {
 pub fn qpath_res(cx: &LateContext<'_>, qpath: &hir::QPath<'_>, id: hir::HirId) -> Res {
     match qpath {
         hir::QPath::Resolved(_, path) => path.res,
-        hir::QPath::TypeRelative(..) => {
+        hir::QPath::TypeRelative(..) | hir::QPath::LangItem(..) => {
             if cx.tcx.has_typeck_results(id.owner.to_def_id()) {
                 cx.tcx.typeck(id.owner.to_def_id().expect_local()).qpath_res(qpath, id)
             } else {
@@ -420,7 +431,7 @@ pub fn is_entrypoint_fn(cx: &LateContext<'_>, def_id: DefId) -> bool {
 }
 
 /// Gets the name of the item the expression is in, if available.
-pub fn get_item_name(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<Name> {
+pub fn get_item_name(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<Symbol> {
     let parent_id = cx.tcx.hir().get_parent_item(expr.hir_id);
     match cx.tcx.hir().find(parent_id) {
         Some(
@@ -433,7 +444,7 @@ pub fn get_item_name(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<Name> {
 }
 
 /// Gets the name of a `Pat`, if any.
-pub fn get_pat_name(pat: &Pat<'_>) -> Option<Name> {
+pub fn get_pat_name(pat: &Pat<'_>) -> Option<Symbol> {
     match pat.kind {
         PatKind::Binding(.., ref spname, _) => Some(spname.name),
         PatKind::Path(ref qpath) => single_segment_path(qpath).map(|ps| ps.ident.name),
@@ -443,14 +454,14 @@ pub fn get_pat_name(pat: &Pat<'_>) -> Option<Name> {
 }
 
 struct ContainsName {
-    name: Name,
+    name: Symbol,
     result: bool,
 }
 
 impl<'tcx> Visitor<'tcx> for ContainsName {
     type Map = Map<'tcx>;
 
-    fn visit_name(&mut self, _: Span, name: Name) {
+    fn visit_name(&mut self, _: Span, name: Symbol) {
         if self.name == name {
             self.result = true;
         }
@@ -461,7 +472,7 @@ impl<'tcx> Visitor<'tcx> for ContainsName {
 }
 
 /// Checks if an `Expr` contains a certain name.
-pub fn contains_name(name: Name, expr: &Expr<'_>) -> bool {
+pub fn contains_name(name: Symbol, expr: &Expr<'_>) -> bool {
     let mut cn = ContainsName { name, result: false };
     cn.visit_expr(expr);
     cn.result
@@ -869,11 +880,19 @@ pub fn is_copy<'tcx>(cx: &LateContext<'tcx>, ty: Ty<'tcx>) -> bool {
 
 /// Checks if an expression is constructing a tuple-like enum variant or struct
 pub fn is_ctor_or_promotable_const_function(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
+    fn has_no_arguments(cx: &LateContext<'_>, def_id: DefId) -> bool {
+        cx.tcx.fn_sig(def_id).skip_binder().inputs().is_empty()
+    }
+
     if let ExprKind::Call(ref fun, _) = expr.kind {
         if let ExprKind::Path(ref qp) = fun.kind {
             let res = cx.qpath_res(qp, fun.hir_id);
             return match res {
                 def::Res::Def(DefKind::Variant | DefKind::Ctor(..), ..) => true,
+                // FIXME: check the constness of the arguments, see https://github.com/rust-lang/rust-clippy/pull/5682#issuecomment-638681210
+                def::Res::Def(DefKind::Fn, def_id) if has_no_arguments(cx, def_id) => {
+                    const_eval::is_const_fn(cx.tcx, def_id)
+                },
                 def::Res::Def(_, def_id) => cx.tcx.is_promotable_const_fn(def_id),
                 _ => false,
             };
@@ -883,7 +902,7 @@ pub fn is_ctor_or_promotable_const_function(cx: &LateContext<'_>, expr: &Expr<'_
 }
 
 /// Returns `true` if a pattern is refutable.
-// TODO: should be implemented using rustc/mir_build/hair machinery
+// TODO: should be implemented using rustc/mir_build/thir machinery
 pub fn is_refutable(cx: &LateContext<'_>, pat: &Pat<'_>) -> bool {
     fn is_enum_variant(cx: &LateContext<'_>, qpath: &QPath<'_>, id: HirId) -> bool {
         matches!(
@@ -932,7 +951,7 @@ pub fn is_refutable(cx: &LateContext<'_>, pat: &Pat<'_>) -> bool {
 /// Checks for the `#[automatically_derived]` attribute all `#[derive]`d
 /// implementations have.
 pub fn is_automatically_derived(attrs: &[ast::Attribute]) -> bool {
-    attr::contains_name(attrs, sym!(automatically_derived))
+    attrs.iter().any(|attr| attr.has_name(sym!(automatically_derived)))
 }
 
 /// Remove blocks around an expression.
@@ -1027,7 +1046,7 @@ pub fn is_allowed(cx: &LateContext<'_>, lint: &'static Lint, id: HirId) -> bool 
     cx.tcx.lint_level_at_node(lint, id).0 == Level::Allow
 }
 
-pub fn get_arg_name(pat: &Pat<'_>) -> Option<Name> {
+pub fn get_arg_name(pat: &Pat<'_>) -> Option<Symbol> {
     match pat.kind {
         PatKind::Binding(.., ident, None) => Some(ident.name),
         PatKind::Ref(ref subpat, _) => get_arg_name(subpat),
@@ -1376,6 +1395,36 @@ pub fn run_lints(cx: &LateContext<'_>, lints: &[&'static Lint], id: HirId) -> bo
             (Level::Forbid | Level::Deny | Level::Warn, _)
         )
     })
+}
+
+/// Returns true iff the given type is a primitive (a bool or char, any integer or floating-point
+/// number type, a str, or an array, slice, or tuple of those types).
+pub fn is_recursively_primitive_type(ty: Ty<'_>) -> bool {
+    match ty.kind {
+        ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Str => true,
+        ty::Ref(_, inner, _) if inner.kind == ty::Str => true,
+        ty::Array(inner_type, _) | ty::Slice(inner_type) => is_recursively_primitive_type(inner_type),
+        ty::Tuple(inner_types) => inner_types.types().all(is_recursively_primitive_type),
+        _ => false,
+    }
+}
+
+/// Returns true iff the given expression is a slice of primitives (as defined in the
+/// `is_recursively_primitive_type` function).
+pub fn is_slice_of_primitives(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
+    let expr_type = cx.typeck_results().expr_ty_adjusted(expr);
+    match expr_type.kind {
+        ty::Slice(ref element_type)
+        | ty::Ref(
+            _,
+            ty::TyS {
+                kind: ty::Slice(ref element_type),
+                ..
+            },
+            _,
+        ) => is_recursively_primitive_type(element_type),
+        _ => false,
+    }
 }
 
 #[macro_export]

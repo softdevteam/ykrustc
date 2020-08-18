@@ -7,7 +7,9 @@ use crate::lint;
 use crate::parse::ParseSess;
 use crate::search_paths::{PathKind, SearchPath};
 
+pub use rustc_ast::attr::MarkedAttrs;
 pub use rustc_ast::crate_disambiguator::CrateDisambiguator;
+pub use rustc_ast::Attribute;
 use rustc_data_structures::flock;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::jobserver::{self, Client};
@@ -22,7 +24,7 @@ use rustc_errors::registry::Registry;
 use rustc_errors::{Applicability, DiagnosticBuilder, DiagnosticId, ErrorReported};
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{FileLoader, MultiSpan, RealFileLoader, SourceMap, Span};
-use rustc_span::{SourceFileHashAlgorithm, Symbol};
+use rustc_span::{sym, SourceFileHashAlgorithm, Symbol};
 use rustc_target::asm::InlineAsmArch;
 use rustc_target::spec::{CodeModel, PanicStrategy, RelocModel, RelroLevel};
 use rustc_target::spec::{Target, TargetTriple, TlsModel};
@@ -208,6 +210,9 @@ pub struct Session {
 
     /// Set of enabled features for the current target.
     pub target_features: FxHashSet<Symbol>,
+
+    known_attrs: Lock<MarkedAttrs>,
+    used_attrs: Lock<MarkedAttrs>,
 }
 
 pub struct PerfStats {
@@ -432,6 +437,7 @@ impl Session {
         }
     }
     /// Delay a span_bug() call until abort_if_errors()
+    #[track_caller]
     pub fn delay_span_bug<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.diagnostic().delay_span_bug(sp, msg)
     }
@@ -1020,6 +1026,76 @@ impl Session {
         // MemorySanitizer uses lifetimes to detect use of uninitialized stack variables.
         || self.opts.debugging_opts.sanitizer.intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY)
     }
+
+    pub fn mark_attr_known(&self, attr: &Attribute) {
+        self.known_attrs.lock().mark(attr)
+    }
+
+    pub fn is_attr_known(&self, attr: &Attribute) -> bool {
+        self.known_attrs.lock().is_marked(attr)
+    }
+
+    pub fn mark_attr_used(&self, attr: &Attribute) {
+        self.used_attrs.lock().mark(attr)
+    }
+
+    pub fn is_attr_used(&self, attr: &Attribute) -> bool {
+        self.used_attrs.lock().is_marked(attr)
+    }
+
+    /// Returns `true` if the attribute's path matches the argument. If it matches, then the
+    /// attribute is marked as used.
+
+    /// Returns `true` if the attribute's path matches the argument. If it
+    /// matches, then the attribute is marked as used.
+    ///
+    /// This method should only be used by rustc, other tools can use
+    /// `Attribute::has_name` instead, because only rustc is supposed to report
+    /// the `unused_attributes` lint. (`MetaItem` and `NestedMetaItem` are
+    /// produced by lowering an `Attribute` and don't have identity, so they
+    /// only have the `has_name` method, and you need to mark the original
+    /// `Attribute` as used when necessary.)
+    pub fn check_name(&self, attr: &Attribute, name: Symbol) -> bool {
+        let matches = attr.has_name(name);
+        if matches {
+            self.mark_attr_used(attr);
+        }
+        matches
+    }
+
+    pub fn is_proc_macro_attr(&self, attr: &Attribute) -> bool {
+        [sym::proc_macro, sym::proc_macro_attribute, sym::proc_macro_derive]
+            .iter()
+            .any(|kind| self.check_name(attr, *kind))
+    }
+
+    pub fn contains_name(&self, attrs: &[Attribute], name: Symbol) -> bool {
+        attrs.iter().any(|item| self.check_name(item, name))
+    }
+
+    pub fn find_by_name<'a>(
+        &'a self,
+        attrs: &'a [Attribute],
+        name: Symbol,
+    ) -> Option<&'a Attribute> {
+        attrs.iter().find(|attr| self.check_name(attr, name))
+    }
+
+    pub fn filter_by_name<'a>(
+        &'a self,
+        attrs: &'a [Attribute],
+        name: Symbol,
+    ) -> impl Iterator<Item = &'a Attribute> {
+        attrs.iter().filter(move |attr| self.check_name(attr, name))
+    }
+
+    pub fn first_attr_value_str_by_name(
+        &self,
+        attrs: &[Attribute],
+        name: Symbol,
+    ) -> Option<Symbol> {
+        attrs.iter().find(|at| self.check_name(at, name)).and_then(|at| at.value_str())
+    }
 }
 
 fn default_emitter(
@@ -1283,6 +1359,8 @@ pub fn build_session(
         real_rust_source_base_dir,
         asm_arch,
         target_features: FxHashSet::default(),
+        known_attrs: Lock::new(MarkedAttrs::new()),
+        used_attrs: Lock::new(MarkedAttrs::new()),
     };
 
     validate_commandline_args_with_session_available(&sess);
@@ -1294,19 +1372,19 @@ pub fn build_session(
 // commandline argument, you can do so here.
 fn validate_commandline_args_with_session_available(sess: &Session) {
     // Since we don't know if code in an rlib will be linked to statically or
-    // dynamically downstream, rustc generates `__imp_` symbols that help the
-    // MSVC linker deal with this lack of knowledge (#27438). Unfortunately,
+    // dynamically downstream, rustc generates `__imp_` symbols that help linkers
+    // on Windows deal with this lack of knowledge (#27438). Unfortunately,
     // these manually generated symbols confuse LLD when it tries to merge
-    // bitcode during ThinLTO. Therefore we disallow dynamic linking on MSVC
+    // bitcode during ThinLTO. Therefore we disallow dynamic linking on Windows
     // when compiling for LLD ThinLTO. This way we can validly just not generate
     // the `dllimport` attributes and `__imp_` symbols in that case.
     if sess.opts.cg.linker_plugin_lto.enabled()
         && sess.opts.cg.prefer_dynamic
-        && sess.target.target.options.is_like_msvc
+        && sess.target.target.options.is_like_windows
     {
         sess.err(
             "Linker plugin based LTO is not supported together with \
-                  `-C prefer-dynamic` when targeting MSVC",
+                  `-C prefer-dynamic` when targeting Windows-like targets",
         );
     }
 
@@ -1376,14 +1454,19 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
         "x86_64-fuchsia",
+        "x86_64-unknown-freebsd",
         "x86_64-unknown-linux-gnu",
     ];
     const LSAN_SUPPORTED_TARGETS: &[&str] =
         &["aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"];
     const MSAN_SUPPORTED_TARGETS: &[&str] =
-        &["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
-    const TSAN_SUPPORTED_TARGETS: &[&str] =
-        &["aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"];
+        &["aarch64-unknown-linux-gnu", "x86_64-unknown-freebsd", "x86_64-unknown-linux-gnu"];
+    const TSAN_SUPPORTED_TARGETS: &[&str] = &[
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-freebsd",
+        "x86_64-unknown-linux-gnu",
+    ];
 
     // Sanitizers can only be used on some tested platforms.
     for s in sess.opts.debugging_opts.sanitizer {

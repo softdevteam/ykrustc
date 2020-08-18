@@ -67,7 +67,7 @@ type parameter).
 pub mod _match;
 mod autoderef;
 mod callee;
-mod cast;
+pub mod cast;
 mod closure;
 pub mod coercion;
 mod compare_method;
@@ -88,7 +88,7 @@ pub mod writeback;
 use crate::astconv::{
     AstConv, ExplicitLateBound, GenericArgCountMismatch, GenericArgCountResult, PathSeg,
 };
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::util::parser::ExprPrecedence;
 use rustc_attr as attr;
 use rustc_data_structures::captures::Captures;
@@ -122,10 +122,9 @@ use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::subst::{self, InternalSubsts, Subst, SubstsRef};
 use rustc_middle::ty::subst::{GenericArgKind, UserSelfTy, UserSubsts};
 use rustc_middle::ty::util::{Discr, IntTypeExt, Representability};
-use rustc_middle::ty::{
-    self, AdtKind, CanonicalUserType, Const, GenericParamDefKind, RegionKind, ToPolyTraitRef,
-    ToPredicate, Ty, TyCtxt, UserType, WithConstness,
-};
+use rustc_middle::ty::WithConstness;
+use rustc_middle::ty::{self, AdtKind, CanonicalUserType, Const, DefIdTree, GenericParamDefKind};
+use rustc_middle::ty::{RegionKind, ToPolyTraitRef, ToPredicate, Ty, TyCtxt, UserType};
 use rustc_session::config::{self, EntryFnType};
 use rustc_session::lint;
 use rustc_session::parse::feature_err;
@@ -648,7 +647,7 @@ impl Inherited<'_, 'tcx> {
 }
 
 impl<'tcx> InheritedBuilder<'tcx> {
-    fn enter<F, R>(&mut self, f: F) -> R
+    pub fn enter<F, R>(&mut self, f: F) -> R
     where
         F: for<'a> FnOnce(Inherited<'a, 'tcx>) -> R,
     {
@@ -974,7 +973,7 @@ fn typeck<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> &ty::TypeckResults<'tc
 /// Currently only used for type inference of `static`s and `const`s to avoid type cycle errors.
 fn diagnostic_only_typeck<'tcx>(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> &ty::TypeckResults<'tcx> {
     let fallback = move || {
-        let span = tcx.hir().span(tcx.hir().as_local_hir_id(def_id));
+        let span = tcx.hir().span(tcx.hir().local_def_id_to_hir_id(def_id));
         tcx.ty_error_with_message(span, "diagnostic only typeck table used")
     };
     typeck_with_fallback(tcx, def_id, fallback)
@@ -992,7 +991,7 @@ fn typeck_with_fallback<'tcx>(
         return tcx.typeck(outer_def_id);
     }
 
-    let id = tcx.hir().as_local_hir_id(def_id);
+    let id = tcx.hir().local_def_id_to_hir_id(def_id);
     let span = tcx.hir().span(id);
 
     // Figure out what primary body this item has.
@@ -1333,7 +1332,7 @@ fn check_fn<'a, 'tcx>(
     }
 
     let outer_def_id = tcx.closure_base_def_id(hir.local_def_id(fn_id).to_def_id()).expect_local();
-    let outer_hir_id = hir.as_local_hir_id(outer_def_id);
+    let outer_hir_id = hir.local_def_id_to_hir_id(outer_def_id);
     GatherLocalsVisitor { fcx: &fcx, parent_id: outer_hir_id }.visit_body(body);
 
     // C-variadic fns also have a `VaList` input that's not listed in `fn_sig`
@@ -1444,7 +1443,7 @@ fn check_fn<'a, 'tcx>(
     // Check that the main return type implements the termination trait.
     if let Some(term_id) = tcx.lang_items().termination() {
         if let Some((def_id, EntryFnType::Main)) = tcx.entry_fn(LOCAL_CRATE) {
-            let main_id = hir.as_local_hir_id(def_id);
+            let main_id = hir.local_def_id_to_hir_id(def_id);
             if main_id == fn_id {
                 let substs = tcx.mk_substs_trait(declared_ret_ty, &[]);
                 let trait_ref = ty::TraitRef::new(term_id, substs);
@@ -1622,7 +1621,7 @@ fn check_opaque<'tcx>(
 /// Checks that an opaque type does not use `Self` or `T::Foo` projections that would result
 /// in "inheriting lifetimes".
 fn check_opaque_for_inheriting_lifetimes(tcx: TyCtxt<'tcx>, def_id: LocalDefId, span: Span) {
-    let item = tcx.hir().expect_item(tcx.hir().as_local_hir_id(def_id));
+    let item = tcx.hir().expect_item(tcx.hir().local_def_id_to_hir_id(def_id));
     debug!(
         "check_opaque_for_inheriting_lifetimes: def_id={:?} span={:?} item={:?}",
         def_id, span, item
@@ -1729,7 +1728,7 @@ fn get_owner_return_paths(
     tcx: TyCtxt<'tcx>,
     def_id: LocalDefId,
 ) -> Option<(hir::HirId, ReturnsVisitor<'tcx>)> {
-    let hir_id = tcx.hir().as_local_hir_id(def_id);
+    let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
     let id = tcx.hir().get_parent_item(hir_id);
     tcx.hir()
         .find(id)
@@ -1833,7 +1832,7 @@ fn binding_opaque_type_cycle_error(
     let mut err = struct_span_err!(tcx.sess, span, E0720, "cannot resolve opaque type");
     err.span_label(span, "cannot resolve opaque type");
     // Find the the owner that declared this `impl Trait` type.
-    let hir_id = tcx.hir().as_local_hir_id(def_id);
+    let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
     let mut prev_hir_id = hir_id;
     let mut hir_id = tcx.hir().get_parent_node(hir_id);
     while let Some(node) = tcx.hir().find(hir_id) {
@@ -1858,7 +1857,7 @@ fn binding_opaque_type_cycle_error(
                 source: hir::LocalSource::Normal,
                 ..
             }) => {
-                let hir_id = tcx.hir().as_local_hir_id(def_id);
+                let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                 let typeck_results =
                     tcx.typeck(tcx.hir().local_def_id(tcx.hir().get_parent_item(hir_id)));
                 if let Some(ty) = typeck_results.node_type_opt(expr.hir_id) {
@@ -1967,10 +1966,16 @@ pub fn check_item_type<'tcx>(tcx: TyCtxt<'tcx>, it: &'tcx hir::Item<'tcx>) {
             check_union(tcx, it.hir_id, it.span);
         }
         hir::ItemKind::OpaqueTy(hir::OpaqueTy { origin, .. }) => {
-            let def_id = tcx.hir().local_def_id(it.hir_id);
+            // HACK(jynelson): trying to infer the type of `impl trait` breaks documenting
+            // `async-std` (and `pub async fn` in general).
+            // Since rustdoc doesn't care about the concrete type behind `impl Trait`, just don't look at it!
+            // See https://github.com/rust-lang/rust/issues/75100
+            if !tcx.sess.opts.actually_rustdoc {
+                let def_id = tcx.hir().local_def_id(it.hir_id);
 
-            let substs = InternalSubsts::identity_for_item(tcx, def_id.to_def_id());
-            check_opaque(tcx, def_id, substs, it.span, &origin);
+                let substs = InternalSubsts::identity_for_item(tcx, def_id.to_def_id());
+                check_opaque(tcx, def_id, substs, it.span, &origin);
+            }
         }
         hir::ItemKind::TyAlias(..) => {
             let def_id = tcx.hir().local_def_id(it.hir_id);
@@ -2603,7 +2608,7 @@ fn check_packed(tcx: TyCtxt<'_>, sp: Span, def: &ty::AdtDef) {
     let repr = def.repr;
     if repr.packed() {
         for attr in tcx.get_attrs(def.did).iter() {
-            for r in attr::find_repr_attrs(&tcx.sess.parse_sess, attr) {
+            for r in attr::find_repr_attrs(&tcx.sess, attr) {
                 if let attr::ReprPacked(pack) = r {
                     if let Some(repr_pack) = repr.pack {
                         if pack as u64 != repr_pack.bytes() {
@@ -2814,7 +2819,7 @@ pub fn check_enum<'tcx>(
 
     if vs.is_empty() {
         let attributes = tcx.get_attrs(def_id.to_def_id());
-        if let Some(attr) = attr::find_by_name(&attributes, sym::repr) {
+        if let Some(attr) = tcx.sess.find_by_name(&attributes, sym::repr) {
             struct_span_err!(
                 tcx.sess,
                 attr.span,
@@ -2868,7 +2873,7 @@ pub fn check_enum<'tcx>(
         // Check for duplicate discriminant values
         if let Some(i) = disr_vals.iter().position(|&x| x.val == discr.val) {
             let variant_did = def.variants[VariantIdx::new(i)].def_id;
-            let variant_i_hir_id = tcx.hir().as_local_hir_id(variant_did.expect_local());
+            let variant_i_hir_id = tcx.hir().local_def_id_to_hir_id(variant_did.expect_local());
             let variant_i = tcx.hir().expect_variant(variant_i_hir_id);
             let i_span = match variant_i.disr_expr {
                 Some(ref expr) => tcx.hir().span(expr.hir_id),
@@ -2929,7 +2934,7 @@ impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
 
     fn get_type_parameter_bounds(&self, _: Span, def_id: DefId) -> ty::GenericPredicates<'tcx> {
         let tcx = self.tcx;
-        let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
+        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
         let item_id = tcx.hir().ty_param_owner(hir_id);
         let item_def_id = tcx.hir().local_def_id(item_id);
         let generics = tcx.generics_of(item_def_id);
@@ -4424,10 +4429,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         qpath: &QPath<'_>,
         hir_id: hir::HirId,
     ) -> Option<(&'tcx ty::VariantDef, Ty<'tcx>)> {
-        let path_span = match *qpath {
-            QPath::Resolved(_, ref path) => path.span,
-            QPath::TypeRelative(ref qself, _) => qself.span,
-        };
+        let path_span = qpath.qself_span();
         let (def, ty) = self.finish_resolving_struct_path(qpath, path_span, hir_id);
         let variant = match def {
             Res::Err => {
@@ -4505,7 +4507,32 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 (result.map(|(kind, def_id)| Res::Def(kind, def_id)).unwrap_or(Res::Err), ty)
             }
+            QPath::LangItem(lang_item, span) => {
+                self.resolve_lang_item_path(lang_item, span, hir_id)
+            }
         }
+    }
+
+    fn resolve_lang_item_path(
+        &self,
+        lang_item: hir::LangItem,
+        span: Span,
+        hir_id: hir::HirId,
+    ) -> (Res, Ty<'tcx>) {
+        let def_id = self.tcx.require_lang_item(lang_item, Some(span));
+        let def_kind = self.tcx.def_kind(def_id);
+
+        let item_ty = if let DefKind::Variant = def_kind {
+            self.tcx.type_of(self.tcx.parent(def_id).expect("variant w/out parent"))
+        } else {
+            self.tcx.type_of(def_id)
+        };
+        let substs = self.infcx.fresh_substs_for_item(span, def_id);
+        let ty = item_ty.subst(self.tcx, substs);
+
+        self.write_resolution(hir_id, Ok((def_kind, def_id)));
+        self.add_required_obligations(span, def_id, &substs);
+        (Res::Def(def_kind, def_id), ty)
     }
 
     /// Resolves an associated value path into a base type and associated constant, or method
@@ -4526,6 +4553,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 );
             }
             QPath::TypeRelative(ref qself, ref segment) => (self.to_ty(qself), qself, segment),
+            QPath::LangItem(..) => bug!("`resolve_ty_and_res_ufcs` called on `LangItem`"),
         };
         if let Some(&cached_result) = self.typeck_results.borrow().type_dependent_defs().get(hir_id)
         {
@@ -5170,6 +5198,51 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
+    fn note_internal_mutation_in_method(
+        &self,
+        err: &mut DiagnosticBuilder<'_>,
+        expr: &hir::Expr<'_>,
+        expected: Ty<'tcx>,
+        found: Ty<'tcx>,
+    ) {
+        if found != self.tcx.types.unit {
+            return;
+        }
+        if let ExprKind::MethodCall(path_segment, _, [rcvr, ..], _) = expr.kind {
+            if self
+                .typeck_results
+                .borrow()
+                .expr_ty_adjusted_opt(rcvr)
+                .map_or(true, |ty| expected.peel_refs() != ty.peel_refs())
+            {
+                return;
+            }
+            let mut sp = MultiSpan::from_span(path_segment.ident.span);
+            sp.push_span_label(
+                path_segment.ident.span,
+                format!(
+                    "this call modifies {} in-place",
+                    match rcvr.kind {
+                        ExprKind::Path(QPath::Resolved(
+                            None,
+                            hir::Path { segments: [segment], .. },
+                        )) => format!("`{}`", segment.ident),
+                        _ => "its receiver".to_string(),
+                    }
+                ),
+            );
+            sp.push_span_label(
+                rcvr.span,
+                "you probably want to use this value after calling the method...".to_string(),
+            );
+            err.span_note(
+                sp,
+                &format!("method `{}` modifies its receiver in-place", path_segment.ident),
+            );
+            err.note(&format!("...instead of the `()` output of method `{}`", path_segment.ident));
+        }
+    }
+
     /// When encountering an `impl Future` where `BoxFuture` is expected, suggest `Box::pin`.
     fn suggest_calling_boxed_future_when_appropriate(
         &self,
@@ -5392,6 +5465,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     debug!("suggest_missing_await: obligation did not hold: {:?}", obligation)
                 }
             }
+        }
+    }
+
+    fn suggest_missing_parentheses(&self, err: &mut DiagnosticBuilder<'_>, expr: &hir::Expr<'_>) {
+        let sp = self.tcx.sess.source_map().start_point(expr.span);
+        if let Some(sp) = self.tcx.sess.parse_sess.ambiguous_block_expr_parse.borrow().get(&sp) {
+            // `{ 42 } &&x` (#61475) or `{ 42 } && if x { 1 } else { 0 }`
+            self.tcx.sess.parse_sess.expr_parentheses_needed(err, *sp, None);
         }
     }
 

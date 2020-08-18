@@ -83,7 +83,7 @@
 //! # Formatting Parameters
 //!
 //! Each argument being formatted can be transformed by a number of formatting
-//! parameters (corresponding to `format_spec` in the syntax above). These
+//! parameters (corresponding to `format_spec` in [the syntax](#syntax)). These
 //! parameters affect the string representation of what's being formatted.
 //!
 //! ## Width
@@ -239,7 +239,7 @@
 //! println!("{}, `{name:>8.*}` has 3 right-aligned characters", "Hello", 3, name="1234.56");
 //! ```
 //!
-//! print two significantly different things:
+//! print three significantly different things:
 //!
 //! ```text
 //! Hello, `1234.560` has 3 fractional digits

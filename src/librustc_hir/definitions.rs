@@ -15,15 +15,15 @@ use rustc_index::vec::IndexVec;
 use rustc_span::hygiene::ExpnId;
 use rustc_span::symbol::{sym, Symbol};
 
-use log::debug;
 use std::fmt::Write;
 use std::hash::Hash;
+use tracing::debug;
 
 /// The `DefPathTable` maps `DefIndex`es to `DefKey`s and vice versa.
 /// Internally the `DefPathTable` holds a tree of `DefKey`s, where each `DefKey`
 /// stores the `DefIndex` of its parent.
 /// There is one `DefPathTable` for each crate.
-#[derive(Clone, Default, RustcDecodable, RustcEncodable)]
+#[derive(Clone, Default, Decodable, Encodable)]
 pub struct DefPathTable {
     index_to_key: IndexVec<DefIndex, DefKey>,
     def_path_hashes: IndexVec<DefIndex, DefPathHash>,
@@ -92,7 +92,7 @@ pub struct Definitions {
 /// A unique identifier that we can use to lookup a definition
 /// precisely. It combines the index of the definition's parent (if
 /// any) with a `DisambiguatedDefPathData`.
-#[derive(Copy, Clone, PartialEq, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Debug, Encodable, Decodable)]
 pub struct DefKey {
     /// The parent path.
     pub parent: Option<DefIndex>,
@@ -143,13 +143,13 @@ impl DefKey {
 /// between them. This introduces some artificial ordering dependency
 /// but means that if you have, e.g., two impls for the same type in
 /// the same module, they do get distinct `DefId`s.
-#[derive(Copy, Clone, PartialEq, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Debug, Encodable, Decodable)]
 pub struct DisambiguatedDefPathData {
     pub data: DefPathData,
     pub disambiguator: u32,
 }
 
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Debug, Encodable, Decodable)]
 pub struct DefPath {
     /// The path leading from the crate root to the item.
     pub data: Vec<DisambiguatedDefPathData>,
@@ -244,7 +244,7 @@ impl DefPath {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Encodable, Decodable)]
 pub enum DefPathData {
     // Root: these should only be used for the root nodes, because
     // they are treated specially by the `def_path` function.
@@ -304,11 +304,6 @@ impl Definitions {
         DefPath::make(LOCAL_CRATE, id.local_def_index, |index| {
             self.def_key(LocalDefId { local_def_index: index })
         })
-    }
-
-    #[inline]
-    pub fn as_local_hir_id(&self, def_id: LocalDefId) -> hir::HirId {
-        self.local_def_id_to_hir_id(def_id)
     }
 
     #[inline]

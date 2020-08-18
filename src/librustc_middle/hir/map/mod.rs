@@ -3,7 +3,7 @@ use self::collector::NodeCollector;
 use crate::hir::{Owner, OwnerNodes};
 use crate::ty::query::Providers;
 use crate::ty::TyCtxt;
-use rustc_ast::ast::{self};
+use rustc_ast as ast;
 use rustc_data_structures::svh::Svh;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
@@ -171,11 +171,6 @@ impl<'hir> Map<'hir> {
     #[inline]
     pub fn opt_local_def_id(&self, hir_id: HirId) -> Option<LocalDefId> {
         self.tcx.definitions.opt_hir_id_to_local_def_id(hir_id)
-    }
-
-    #[inline]
-    pub fn as_local_hir_id(&self, def_id: LocalDefId) -> HirId {
-        self.tcx.definitions.as_local_hir_id(def_id)
     }
 
     #[inline]
@@ -450,7 +445,7 @@ impl<'hir> Map<'hir> {
     }
 
     pub fn get_module(&self, module: LocalDefId) -> (&'hir Mod<'hir>, Span, HirId) {
-        let hir_id = self.as_local_hir_id(module);
+        let hir_id = self.local_def_id_to_hir_id(module);
         match self.get_entry(hir_id).node {
             Node::Item(&Item { span, kind: ItemKind::Mod(ref m), .. }) => (m, span, hir_id),
             Node::Crate(item) => (&item.module, item.span, hir_id),
@@ -483,7 +478,7 @@ impl<'hir> Map<'hir> {
     }
 
     pub fn get_if_local(&self, id: DefId) -> Option<Node<'hir>> {
-        id.as_local().map(|id| self.get(self.as_local_hir_id(id)))
+        id.as_local().map(|id| self.get(self.local_def_id_to_hir_id(id)))
     }
 
     pub fn get_generics(&self, id: DefId) -> Option<&'hir Generics<'hir>> {
@@ -872,7 +867,7 @@ impl<'hir> Map<'hir> {
     }
 
     pub fn span_if_local(&self, id: DefId) -> Option<Span> {
-        id.as_local().map(|id| self.span(self.as_local_hir_id(id)))
+        id.as_local().map(|id| self.span(self.local_def_id_to_hir_id(id)))
     }
 
     pub fn res_span(&self, res: Res) -> Option<Span> {

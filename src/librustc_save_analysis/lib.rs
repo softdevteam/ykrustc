@@ -9,8 +9,8 @@ mod dumper;
 mod span_utils;
 mod sig;
 
-use rustc_ast::ast::{self};
-use rustc_ast::util::comments::strip_doc_comment_decoration;
+use rustc_ast as ast;
+use rustc_ast::util::comments::beautify_doc_string;
 use rustc_ast_pretty::pprust::attribute_to_string;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind as HirDefKind, Res};
@@ -45,7 +45,7 @@ use rls_data::{
     RefKind, Relation, RelationKind, SpanData,
 };
 
-use log::{debug, error, info};
+use tracing::{debug, error, info};
 
 pub struct SaveContext<'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -551,28 +551,22 @@ impl<'tcx> SaveContext<'tcx> {
                     }
                 }
             }
-            hir::ExprKind::Struct(qpath, ..) => {
-                let segment = match qpath {
-                    hir::QPath::Resolved(_, path) => path.segments.last().unwrap(),
-                    hir::QPath::TypeRelative(_, segment) => segment,
-                };
-                match ty.kind {
-                    ty::Adt(def, _) => {
-                        let sub_span = segment.ident.span;
-                        filter!(self.span_utils, sub_span);
-                        let span = self.span_from_span(sub_span);
-                        Some(Data::RefData(Ref {
-                            kind: RefKind::Type,
-                            span,
-                            ref_id: id_from_def_id(def.did),
-                        }))
-                    }
-                    _ => {
-                        debug!("expected adt, found {:?}", ty);
-                        None
-                    }
+            hir::ExprKind::Struct(qpath, ..) => match ty.kind {
+                ty::Adt(def, _) => {
+                    let sub_span = qpath.last_segment_span();
+                    filter!(self.span_utils, sub_span);
+                    let span = self.span_from_span(sub_span);
+                    Some(Data::RefData(Ref {
+                        kind: RefKind::Type,
+                        span,
+                        ref_id: id_from_def_id(def.did),
+                    }))
                 }
-            }
+                _ => {
+                    debug!("expected adt, found {:?}", ty);
+                    None
+                }
+            },
             hir::ExprKind::MethodCall(ref seg, ..) => {
                 let method_id = match self.typeck_results().type_dependent_def_id(expr.hir_id) {
                     Some(id) => id,
@@ -636,7 +630,7 @@ impl<'tcx> SaveContext<'tcx> {
             })
             | Node::Ty(&hir::Ty { kind: hir::TyKind::Path(ref qpath), .. }) => match qpath {
                 hir::QPath::Resolved(_, path) => path.res,
-                hir::QPath::TypeRelative(..) => self
+                hir::QPath::TypeRelative(..) | hir::QPath::LangItem(..) => self
                     .maybe_typeck_results
                     .map_or(Res::Err, |typeck_results| typeck_results.qpath_res(qpath, hir_id)),
             },
@@ -653,6 +647,7 @@ impl<'tcx> SaveContext<'tcx> {
         let segment = match path {
             hir::QPath::Resolved(_, path) => path.segments.last(),
             hir::QPath::TypeRelative(_, segment) => Some(*segment),
+            hir::QPath::LangItem(..) => None,
         };
         segment.and_then(|seg| {
             self.get_path_segment_data(seg).or_else(|| self.get_path_segment_data_with_id(seg, id))
@@ -702,7 +697,7 @@ impl<'tcx> SaveContext<'tcx> {
             Res::Def(HirDefKind::ConstParam, def_id) => {
                 Some(Ref { kind: RefKind::Variable, span, ref_id: id_from_def_id(def_id) })
             }
-            Res::Def(HirDefKind::Ctor(_, ..), def_id) => {
+            Res::Def(HirDefKind::Ctor(..), def_id) => {
                 // This is a reference to a tuple struct or an enum variant where the def_id points
                 // to an invisible constructor function. That is not a very useful
                 // def, so adjust to point to the tuple struct or enum variant itself.
@@ -822,20 +817,17 @@ impl<'tcx> SaveContext<'tcx> {
 
         for attr in attrs {
             if let Some(val) = attr.doc_str() {
-                if attr.is_doc_comment() {
-                    result.push_str(&strip_doc_comment_decoration(val));
-                } else {
-                    result.push_str(&val.as_str());
-                }
+                // FIXME: Should save-analysis beautify doc strings itself or leave it to users?
+                result.push_str(&beautify_doc_string(val));
                 result.push('\n');
-            } else if attr.check_name(sym::doc) {
+            } else if self.tcx.sess.check_name(attr, sym::doc) {
                 if let Some(meta_list) = attr.meta_item_list() {
                     meta_list
                         .into_iter()
-                        .filter(|it| it.check_name(sym::include))
+                        .filter(|it| it.has_name(sym::include))
                         .filter_map(|it| it.meta_item_list().map(|l| l.to_owned()))
                         .flat_map(|it| it)
-                        .filter(|meta| meta.check_name(sym::contents))
+                        .filter(|meta| meta.has_name(sym::contents))
                         .filter_map(|meta| meta.value_str())
                         .for_each(|val| {
                             result.push_str(&val.as_str());

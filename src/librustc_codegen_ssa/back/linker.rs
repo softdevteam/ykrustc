@@ -35,7 +35,7 @@ pub fn disable_localization(linker: &mut Command) {
 
 /// For all the linkers we support, and information they might
 /// need out of the shared crate context before we get rid of it.
-#[derive(RustcEncodable, RustcDecodable)]
+#[derive(Encodable, Decodable)]
 pub struct LinkerInfo {
     exports: FxHashMap<CrateType, Vec<String>>,
 }
@@ -267,7 +267,7 @@ impl<'a> GccLinker<'a> {
                 if let Some(implib_name) = implib_name {
                     let implib = out_filename.parent().map(|dir| dir.join(&implib_name));
                     if let Some(implib) = implib {
-                        self.linker_arg(&format!("--out-implib,{}", (*implib).to_str().unwrap()));
+                        self.linker_arg(&format!("--out-implib={}", (*implib).to_str().unwrap()));
                     }
                 }
             }
@@ -524,8 +524,9 @@ impl<'a> Linker for GccLinker<'a> {
             return;
         }
 
+        let is_windows = self.sess.target.target.options.is_like_windows;
         let mut arg = OsString::new();
-        let path = tmpdir.join("list");
+        let path = tmpdir.join(if is_windows { "list.def" } else { "list" });
 
         debug!("EXPORTED SYMBOLS:");
 
@@ -540,6 +541,21 @@ impl<'a> Linker for GccLinker<'a> {
             };
             if let Err(e) = res {
                 self.sess.fatal(&format!("failed to write lib.def file: {}", e));
+            }
+        } else if is_windows {
+            let res: io::Result<()> = try {
+                let mut f = BufWriter::new(File::create(&path)?);
+
+                // .def file similar to MSVC one but without LIBRARY section
+                // because LD doesn't like when it's empty
+                writeln!(f, "EXPORTS")?;
+                for symbol in self.info.exports[&crate_type].iter() {
+                    debug!("  _{}", symbol);
+                    writeln!(f, "  {}", symbol)?;
+                }
+            };
+            if let Err(e) = res {
+                self.sess.fatal(&format!("failed to write list.def file: {}", e));
             }
         } else {
             // Write an LD version script
@@ -574,7 +590,10 @@ impl<'a> Linker for GccLinker<'a> {
             if !self.is_ld {
                 arg.push("-Wl,")
             }
-            arg.push("--version-script=");
+            // Both LD and LLD accept export list in *.def file form, there are no flags required
+            if !is_windows {
+                arg.push("--version-script=")
+            }
         }
 
         arg.push(&path);

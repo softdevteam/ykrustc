@@ -29,7 +29,7 @@ use crate::{id_from_def_id, id_from_hir_id, SaveContext};
 
 use rls_data::{SigElement, Signature};
 
-use rustc_ast::ast::Mutability;
+use rustc_ast::Mutability;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir_pretty::id_to_string;
@@ -285,6 +285,9 @@ impl<'hir> Sig for hir::Ty<'hir> {
                     defs: vec![],
                     refs: vec![SigElement { id, start, end }],
                 })
+            }
+            hir::TyKind::Path(hir::QPath::LangItem(lang_item, _)) => {
+                Ok(text_sig(format!("#[lang = \"{}\"]", lang_item.name())))
             }
             hir::TyKind::TraitObject(bounds, ..) => {
                 // FIXME recurse into bounds

@@ -1,7 +1,7 @@
 use super::*;
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::intrinsics;
-use crate::slice::SliceIndex;
+use crate::slice::{self, SliceIndex};
 
 #[lang = "mut_ptr"]
 impl<T: ?Sized> *mut T {
@@ -11,6 +11,15 @@ impl<T: ?Sized> *mut T {
     /// raw data pointer is considered, not their length, vtable, etc.
     /// Therefore, two pointers that are null may still not compare equal to
     /// each other.
+    ///
+    /// ## Behavior during const evaluation
+    ///
+    /// When this function is used during const evaluation, it may return `false` for pointers
+    /// that turn out to be null at runtime. Specifically, when a pointer to some memory
+    /// is offset beyond its bounds in such a way that the resulting pointer is null,
+    /// the function will still return `false`. There is no way for CTFE to know
+    /// the absolute position of that memory, so we cannot tell if the pointer is
+    /// null or not.
     ///
     /// # Examples
     ///
@@ -22,11 +31,12 @@ impl<T: ?Sized> *mut T {
     /// assert!(!ptr.is_null());
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_const_unstable(feature = "const_ptr_is_null", issue = "74939")]
     #[inline]
-    pub fn is_null(self) -> bool {
+    pub const fn is_null(self) -> bool {
         // Compare via a cast to a thin pointer, so fat pointers are only
         // considering their "data" part for null-ness.
-        (self as *mut u8) == null_mut()
+        (self as *mut u8).guaranteed_eq(null_mut())
     }
 
     /// Casts to a pointer of another type.
@@ -37,32 +47,36 @@ impl<T: ?Sized> *mut T {
         self as _
     }
 
-    /// Returns `None` if the pointer is null, or else returns a reference to
-    /// the value wrapped in `Some`.
+    /// Returns `None` if the pointer is null, or else returns a shared reference to
+    /// the value wrapped in `Some`. If the value may be uninitialized, [`as_uninit_ref`]
+    /// must be used instead.
+    ///
+    /// For the mutable counterpart see [`as_mut`].
+    ///
+    /// [`as_uninit_ref`]: #method.as_uninit_ref-1
+    /// [`as_mut`]: #method.as_mut
     ///
     /// # Safety
     ///
-    /// While this method and its mutable counterpart are useful for
-    /// null-safety, it is important to note that this is still an unsafe
-    /// operation because the returned value could be pointing to invalid
-    /// memory.
-    ///
     /// When calling this method, you have to ensure that *either* the pointer is NULL *or*
     /// all of the following is true:
-    /// - it is properly aligned
-    /// - it must point to an initialized instance of T; in particular, the pointer must be
-    ///   "dereferencable" in the sense defined [here].
+    ///
+    /// * The pointer must be properly aligned.
+    ///
+    /// * It must be "dereferencable" in the sense defined in [the module documentation].
+    ///
+    /// * The pointer must point to an initialized instance of `T`.
+    ///
+    /// * You must enforce Rust's aliasing rules, since the returned lifetime `'a` is
+    ///   arbitrarily chosen and does not necessarily reflect the actual lifetime of the data.
+    ///   In particular, for the duration of this lifetime, the memory the pointer points to must
+    ///   not get mutated (except inside `UnsafeCell`).
     ///
     /// This applies even if the result of this method is unused!
     /// (The part about being initialized is not yet fully decided, but until
     /// it is, the only safe approach is to ensure that they are indeed initialized.)
     ///
-    /// Additionally, the lifetime `'a` returned is arbitrarily chosen and does
-    /// not necessarily reflect the actual lifetime of the data. *You* must enforce
-    /// Rust's aliasing rules. In particular, for the duration of this lifetime,
-    /// the memory the pointer points to must not get mutated (except inside `UnsafeCell`).
-    ///
-    /// [here]: crate::ptr#safety
+    /// [the module documentation]: crate::ptr#safety
     ///
     /// # Examples
     ///
@@ -98,6 +112,59 @@ impl<T: ?Sized> *mut T {
         // SAFETY: the caller must guarantee that `self` is valid for a
         // reference if it isn't null.
         if self.is_null() { None } else { unsafe { Some(&*self) } }
+    }
+
+    /// Returns `None` if the pointer is null, or else returns a shared reference to
+    /// the value wrapped in `Some`. In contrast to [`as_ref`], this does not require
+    /// that the value has to be initialized.
+    ///
+    /// For the mutable counterpart see [`as_uninit_mut`].
+    ///
+    /// [`as_ref`]: #method.as_ref-1
+    /// [`as_uninit_mut`]: #method.as_uninit_mut
+    ///
+    /// # Safety
+    ///
+    /// When calling this method, you have to ensure that *either* the pointer is NULL *or*
+    /// all of the following is true:
+    ///
+    /// * The pointer must be properly aligned.
+    ///
+    /// * It must be "dereferencable" in the sense defined in [the module documentation].
+    ///
+    /// * You must enforce Rust's aliasing rules, since the returned lifetime `'a` is
+    ///   arbitrarily chosen and does not necessarily reflect the actual lifetime of the data.
+    ///   In particular, for the duration of this lifetime, the memory the pointer points to must
+    ///   not get mutated (except inside `UnsafeCell`).
+    ///
+    /// This applies even if the result of this method is unused!
+    ///
+    /// [the module documentation]: crate::ptr#safety
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(ptr_as_uninit)]
+    ///
+    /// let ptr: *mut u8 = &mut 10u8 as *mut u8;
+    ///
+    /// unsafe {
+    ///     if let Some(val_back) = ptr.as_uninit_ref() {
+    ///         println!("We got back the value: {}!", val_back.assume_init());
+    ///     }
+    /// }
+    /// ```
+    #[inline]
+    #[unstable(feature = "ptr_as_uninit", issue = "75402")]
+    pub unsafe fn as_uninit_ref<'a>(self) -> Option<&'a MaybeUninit<T>>
+    where
+        T: Sized,
+    {
+        // SAFETY: the caller must guarantee that `self` meets all the
+        // requirements for a reference.
+        if self.is_null() { None } else { Some(unsafe { &*(self as *const MaybeUninit<T>) }) }
     }
 
     /// Calculates the offset from a pointer.
@@ -225,33 +292,36 @@ impl<T: ?Sized> *mut T {
         unsafe { intrinsics::arith_offset(self, count) as *mut T }
     }
 
-    /// Returns `None` if the pointer is null, or else returns a mutable
-    /// reference to the value wrapped in `Some`.
+    /// Returns `None` if the pointer is null, or else returns a unique reference to
+    /// the value wrapped in `Some`. If the value may be uninitialized, [`as_uninit_mut`]
+    /// must be used instead.
+    ///
+    /// For the shared counterpart see [`as_ref`].
+    ///
+    /// [`as_uninit_mut`]: #method.as_uninit_mut
+    /// [`as_ref`]: #method.as_ref-1
     ///
     /// # Safety
     ///
-    /// As with [`as_ref`], this is unsafe because it cannot verify the validity
-    /// of the returned pointer, nor can it ensure that the lifetime `'a`
-    /// returned is indeed a valid lifetime for the contained data.
-    ///
     /// When calling this method, you have to ensure that *either* the pointer is NULL *or*
     /// all of the following is true:
-    /// - it is properly aligned
-    /// - it must point to an initialized instance of T; in particular, the pointer must be
-    ///   "dereferenceable" in the sense defined [here].
+    ///
+    /// * The pointer must be properly aligned.
+    ///
+    /// * It must be "dereferencable" in the sense defined in [the module documentation].
+    ///
+    /// * The pointer must point to an initialized instance of `T`.
+    ///
+    /// * You must enforce Rust's aliasing rules, since the returned lifetime `'a` is
+    ///   arbitrarily chosen and does not necessarily reflect the actual lifetime of the data.
+    ///   In particular, for the duration of this lifetime, the memory the pointer points to must
+    ///   not get accessed (read or written) through any other pointer.
     ///
     /// This applies even if the result of this method is unused!
     /// (The part about being initialized is not yet fully decided, but until
-    /// it is the only safe approach is to ensure that they are indeed initialized.)
+    /// it is, the only safe approach is to ensure that they are indeed initialized.)
     ///
-    /// Additionally, the lifetime `'a` returned is arbitrarily chosen and does
-    /// not necessarily reflect the actual lifetime of the data. *You* must enforce
-    /// Rust's aliasing rules. In particular, for the duration of this lifetime,
-    /// the memory this pointer points to must not get accessed (read or written)
-    /// through any other pointer.
-    ///
-    /// [here]: crate::ptr#safety
-    /// [`as_ref`]: #method.as_ref
+    /// [the module documentation]: crate::ptr#safety
     ///
     /// # Examples
     ///
@@ -262,6 +332,7 @@ impl<T: ?Sized> *mut T {
     /// let ptr: *mut u32 = s.as_mut_ptr();
     /// let first_value = unsafe { ptr.as_mut().unwrap() };
     /// *first_value = 4;
+    /// # assert_eq!(s, [4, 2, 3]);
     /// println!("{:?}", s); // It'll print: "[4, 2, 3]".
     /// ```
     ///
@@ -276,6 +347,7 @@ impl<T: ?Sized> *mut T {
     /// let ptr: *mut u32 = s.as_mut_ptr();
     /// let first_value = unsafe { &mut *ptr };
     /// *first_value = 4;
+    /// # assert_eq!(s, [4, 2, 3]);
     /// println!("{:?}", s); // It'll print: "[4, 2, 3]".
     /// ```
     #[stable(feature = "ptr_as_ref", since = "1.9.0")]
@@ -284,6 +356,43 @@ impl<T: ?Sized> *mut T {
         // SAFETY: the caller must guarantee that `self` is be valid for
         // a mutable reference if it isn't null.
         if self.is_null() { None } else { unsafe { Some(&mut *self) } }
+    }
+
+    /// Returns `None` if the pointer is null, or else returns a unique reference to
+    /// the value wrapped in `Some`. In contrast to [`as_mut`], this does not require
+    /// that the value has to be initialized.
+    ///
+    /// For the shared counterpart see [`as_uninit_ref`].
+    ///
+    /// [`as_mut`]: #method.as_mut
+    /// [`as_uninit_ref`]: #method.as_uninit_ref-1
+    ///
+    /// # Safety
+    ///
+    /// When calling this method, you have to ensure that *either* the pointer is NULL *or*
+    /// all of the following is true:
+    ///
+    /// * The pointer must be properly aligned.
+    ///
+    /// * It must be "dereferencable" in the sense defined in [the module documentation].
+    ///
+    /// * You must enforce Rust's aliasing rules, since the returned lifetime `'a` is
+    ///   arbitrarily chosen and does not necessarily reflect the actual lifetime of the data.
+    ///   In particular, for the duration of this lifetime, the memory the pointer points to must
+    ///   not get accessed (read or written) through any other pointer.
+    ///
+    /// This applies even if the result of this method is unused!
+    ///
+    /// [the module documentation]: crate::ptr#safety
+    #[inline]
+    #[unstable(feature = "ptr_as_uninit", issue = "75402")]
+    pub unsafe fn as_uninit_mut<'a>(self) -> Option<&'a mut MaybeUninit<T>>
+    where
+        T: Sized,
+    {
+        // SAFETY: the caller must guarantee that `self` meets all the
+        // requirements for a reference.
+        if self.is_null() { None } else { Some(unsafe { &mut *(self as *mut MaybeUninit<T>) }) }
     }
 
     /// Returns whether two pointers are guaranteed to be equal.
@@ -712,6 +821,47 @@ impl<T: ?Sized> *mut T {
         self.wrapping_offset((count as isize).wrapping_neg())
     }
 
+    /// Sets the pointer value to `ptr`.
+    ///
+    /// In case `self` is a (fat) pointer to an unsized type, this operation
+    /// will only affect the pointer part, whereas for (thin) pointers to
+    /// sized types, this has the same effect as a simple assignment.
+    ///
+    /// The resulting pointer will have provenance of `val`, i.e., for a fat
+    /// pointer, this operation is semantically the same as creating a new
+    /// fat pointer with the data pointer value of `val` but the metadata of
+    /// `self`.
+    ///
+    /// # Examples
+    ///
+    /// This function is primarily useful for allowing byte-wise pointer
+    /// arithmetic on potentially fat pointers:
+    ///
+    /// ```
+    /// #![feature(set_ptr_value)]
+    /// # use core::fmt::Debug;
+    /// let mut arr: [i32; 3] = [1, 2, 3];
+    /// let mut ptr = &mut arr[0] as *mut dyn Debug;
+    /// let thin = ptr as *mut u8;
+    /// unsafe {
+    ///     ptr = ptr.set_ptr_value(thin.add(8));
+    ///     # assert_eq!(*(ptr as *mut i32), 3);
+    ///     println!("{:?}", &*ptr); // will print "3"
+    /// }
+    /// ```
+    #[unstable(feature = "set_ptr_value", issue = "75091")]
+    #[must_use = "returns a new pointer rather than modifying its argument"]
+    #[inline]
+    pub fn set_ptr_value(mut self, val: *mut u8) -> Self {
+        let thin = &mut self as *mut *mut T as *mut *mut u8;
+        // SAFETY: In case of a thin pointer, this operations is identical
+        // to a simple assignment. In case of a fat pointer, with the current
+        // fat pointer layout implementation, the first field of such a
+        // pointer is always the data pointer, which is likewise assigned.
+        unsafe { *thin = val };
+        self
+    }
+
     /// Reads the value from `self` without moving it. This leaves the
     /// memory in `self` unchanged.
     ///
@@ -1079,6 +1229,110 @@ impl<T> *mut [T] {
     {
         // SAFETY: the caller ensures that `self` is dereferencable and `index` in-bounds.
         unsafe { index.get_unchecked_mut(self) }
+    }
+
+    /// Returns `None` if the pointer is null, or else returns a shared slice to
+    /// the value wrapped in `Some`. In contrast to [`as_ref`], this does not require
+    /// that the value has to be initialized.
+    ///
+    /// For the mutable counterpart see [`as_uninit_slice_mut`].
+    ///
+    /// [`as_ref`]: #method.as_ref-1
+    /// [`as_uninit_slice_mut`]: #method.as_uninit_slice_mut
+    ///
+    /// # Safety
+    ///
+    /// When calling this method, you have to ensure that *either* the pointer is NULL *or*
+    /// all of the following is true:
+    ///
+    /// * The pointer must be [valid] for reads for `ptr.len() * mem::size_of::<T>()` many bytes,
+    ///   and it must be properly aligned. This means in particular:
+    ///
+    ///     * The entire memory range of this slice must be contained within a single allocated object!
+    ///       Slices can never span across multiple allocated objects.
+    ///
+    ///     * The pointer must be aligned even for zero-length slices. One
+    ///       reason for this is that enum layout optimizations may rely on references
+    ///       (including slices of any length) being aligned and non-null to distinguish
+    ///       them from other data. You can obtain a pointer that is usable as `data`
+    ///       for zero-length slices using [`NonNull::dangling()`].
+    ///
+    /// * The total size `ptr.len() * mem::size_of::<T>()` of the slice must be no larger than `isize::MAX`.
+    ///   See the safety documentation of [`pointer::offset`].
+    ///
+    /// * You must enforce Rust's aliasing rules, since the returned lifetime `'a` is
+    ///   arbitrarily chosen and does not necessarily reflect the actual lifetime of the data.
+    ///   In particular, for the duration of this lifetime, the memory the pointer points to must
+    ///   not get mutated (except inside `UnsafeCell`).
+    ///
+    /// This applies even if the result of this method is unused!
+    ///
+    /// See also [`slice::from_raw_parts`][].
+    ///
+    /// [valid]: crate::ptr#safety
+    /// [`NonNull::dangling()`]: NonNull::dangling
+    /// [`pointer::offset`]: ../std/primitive.pointer.html#method.offset
+    #[inline]
+    #[unstable(feature = "ptr_as_uninit", issue = "75402")]
+    pub unsafe fn as_uninit_slice<'a>(self) -> Option<&'a [MaybeUninit<T>]> {
+        if self.is_null() {
+            None
+        } else {
+            // SAFETY: the caller must uphold the safety contract for `as_uninit_slice`.
+            Some(unsafe { slice::from_raw_parts(self as *const MaybeUninit<T>, self.len()) })
+        }
+    }
+
+    /// Returns `None` if the pointer is null, or else returns a unique slice to
+    /// the value wrapped in `Some`. In contrast to [`as_mut`], this does not require
+    /// that the value has to be initialized.
+    ///
+    /// For the shared counterpart see [`as_uninit_slice`].
+    ///
+    /// [`as_mut`]: #method.as_mut
+    /// [`as_uninit_slice`]: #method.as_uninit_slice-1
+    ///
+    /// # Safety
+    ///
+    /// When calling this method, you have to ensure that *either* the pointer is NULL *or*
+    /// all of the following is true:
+    ///
+    /// * The pointer must be [valid] for reads and writes for `ptr.len() * mem::size_of::<T>()`
+    ///   many bytes, and it must be properly aligned. This means in particular:
+    ///
+    ///     * The entire memory range of this slice must be contained within a single allocated object!
+    ///       Slices can never span across multiple allocated objects.
+    ///
+    ///     * The pointer must be aligned even for zero-length slices. One
+    ///       reason for this is that enum layout optimizations may rely on references
+    ///       (including slices of any length) being aligned and non-null to distinguish
+    ///       them from other data. You can obtain a pointer that is usable as `data`
+    ///       for zero-length slices using [`NonNull::dangling()`].
+    ///
+    /// * The total size `ptr.len() * mem::size_of::<T>()` of the slice must be no larger than `isize::MAX`.
+    ///   See the safety documentation of [`pointer::offset`].
+    ///
+    /// * You must enforce Rust's aliasing rules, since the returned lifetime `'a` is
+    ///   arbitrarily chosen and does not necessarily reflect the actual lifetime of the data.
+    ///   In particular, for the duration of this lifetime, the memory the pointer points to must
+    ///   not get accessed (read or written) through any other pointer.
+    ///
+    /// This applies even if the result of this method is unused!
+    ///
+    /// See also [`slice::from_raw_parts_mut`][].
+    ///
+    /// [valid]: crate::ptr#safety
+    /// [`NonNull::dangling()`]: NonNull::dangling
+    /// [`pointer::offset`]: ../std/primitive.pointer.html#method.offset
+    #[inline]
+    #[unstable(feature = "ptr_as_uninit", issue = "75402")]
+    pub unsafe fn as_uninit_slice_mut<'a>(self) -> Option<&'a mut [MaybeUninit<T>]> {
+        if self.is_null() {
+            None
+        } else {
+            // SAFETY: the caller must uphold the safety contract for `as_uninit_slice_mut`.
+            Some(unsafe { slice::from_raw_parts_mut(self as *mut MaybeUninit<T>, self.len()) })
+        }
     }
 }
 

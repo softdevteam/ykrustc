@@ -456,7 +456,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         //
         // Both of these trigger a special `CoerceUnsized`-related error (E0376)
         //
-        // We can take advantage of this fact to avoid performing unecessary work.
+        // We can take advantage of this fact to avoid performing unnecessary work.
         // If either `source` or `target` is a type variable, then any applicable impl
         // would need to be generic over the self-type (`impl<T> CoerceUnsized<SomeType> for T`)
         // or generic over the `CoerceUnsized` type parameter (`impl<T> CoerceUnsized<T> for
@@ -1502,7 +1502,7 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
                 let ty = AstConv::ast_ty_to_ty(fcx, ty);
                 // Get the `impl Trait`'s `DefId`.
                 if let ty::Opaque(def_id, _) = ty.kind {
-                    let hir_id = fcx.tcx.hir().as_local_hir_id(def_id.expect_local());
+                    let hir_id = fcx.tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
                     // Get the `impl Trait`'s `Item` so that we can get its trait bounds and
                     // get the `Trait`'s `DefId`.
                     if let hir::ItemKind::OpaqueTy(hir::OpaqueTy { bounds, .. }) =

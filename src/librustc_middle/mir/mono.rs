@@ -198,10 +198,10 @@ impl<'tcx> MonoItem<'tcx> {
     pub fn local_span(&self, tcx: TyCtxt<'tcx>) -> Option<Span> {
         match *self {
             MonoItem::Fn(Instance { def, .. }) => {
-                def.def_id().as_local().map(|def_id| tcx.hir().as_local_hir_id(def_id))
+                def.def_id().as_local().map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id))
             }
             MonoItem::Static(def_id) => {
-                def_id.as_local().map(|def_id| tcx.hir().as_local_hir_id(def_id))
+                def_id.as_local().map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id))
             }
             MonoItem::GlobalAsm(hir_id) => Some(hir_id),
         }
@@ -242,7 +242,7 @@ pub struct CodegenUnit<'tcx> {
 /// Specifies the linkage type for a `MonoItem`.
 ///
 /// See https://llvm.org/docs/LangRef.html#linkage-types for more details about these variants.
-#[derive(Copy, Clone, PartialEq, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, Debug, TyEncodable, TyDecodable, HashStable)]
 pub enum Linkage {
     External,
     AvailableExternally,
@@ -346,9 +346,10 @@ impl<'tcx> CodegenUnit<'tcx> {
                             // instances into account. The others don't matter for
                             // the codegen tests and can even make item order
                             // unstable.
-                            InstanceDef::Item(def) => {
-                                def.did.as_local().map(|def_id| tcx.hir().as_local_hir_id(def_id))
-                            }
+                            InstanceDef::Item(def) => def
+                                .did
+                                .as_local()
+                                .map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id)),
                             InstanceDef::VtableShim(..)
                             | InstanceDef::ReifyShim(..)
                             | InstanceDef::Intrinsic(..)
@@ -360,7 +361,7 @@ impl<'tcx> CodegenUnit<'tcx> {
                         }
                     }
                     MonoItem::Static(def_id) => {
-                        def_id.as_local().map(|def_id| tcx.hir().as_local_hir_id(def_id))
+                        def_id.as_local().map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id))
                     }
                     MonoItem::GlobalAsm(hir_id) => Some(hir_id),
                 },

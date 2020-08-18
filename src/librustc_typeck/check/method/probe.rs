@@ -7,7 +7,7 @@ use crate::check::FnCtxt;
 use crate::hir::def::DefKind;
 use crate::hir::def_id::DefId;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::util::lev_distance::{find_best_match_for_name, lev_distance};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
@@ -648,6 +648,10 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 ] {
                     self.assemble_inherent_impl_for_primitive(lang_def_id);
                 }
+            }
+            ty::Array(_, _) => {
+                let lang_def_id = lang_items.array_impl();
+                self.assemble_inherent_impl_for_primitive(lang_def_id);
             }
             ty::RawPtr(ty::TypeAndMut { ty: _, mutbl }) => {
                 let (lang_def_id1, lang_def_id2) = match mutbl {

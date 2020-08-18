@@ -1,17 +1,19 @@
 use super::ty::{AllowPlus, RecoverQPath};
 use super::{Parser, TokenType};
 use crate::maybe_whole;
-use rustc_ast::ast::{self, AngleBracketedArg, AngleBracketedArgs, GenericArg, ParenthesizedArgs};
-use rustc_ast::ast::{AnonConst, AssocTyConstraint, AssocTyConstraintKind, BlockCheckMode};
-use rustc_ast::ast::{Path, PathSegment, QSelf};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Token};
+use rustc_ast::{
+    self as ast, AngleBracketedArg, AngleBracketedArgs, GenericArg, ParenthesizedArgs,
+};
+use rustc_ast::{AnonConst, AssocTyConstraint, AssocTyConstraintKind, BlockCheckMode};
+use rustc_ast::{Path, PathSegment, QSelf};
 use rustc_errors::{pluralize, Applicability, PResult};
 use rustc_span::source_map::{BytePos, Span};
 use rustc_span::symbol::{kw, sym, Ident};
 
-use log::debug;
 use std::mem;
+use tracing::debug;
 
 /// Specifies how to parse a path.
 #[derive(Copy, Clone, PartialEq)]
@@ -125,7 +127,7 @@ impl<'a> Parser<'a> {
     /// `a::b::C::<D>` (with disambiguator)
     /// `Fn(Args)` (without disambiguator)
     /// `Fn::(Args)` (with disambiguator)
-    pub fn parse_path(&mut self, style: PathStyle) -> PResult<'a, Path> {
+    pub(super) fn parse_path(&mut self, style: PathStyle) -> PResult<'a, Path> {
         maybe_whole!(self, NtPath, |path| {
             if style == PathStyle::Mod && path.segments.iter().any(|segment| segment.args.is_some())
             {
