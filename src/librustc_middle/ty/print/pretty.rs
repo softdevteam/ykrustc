@@ -5,7 +5,7 @@ use crate::ty::subst::{GenericArg, GenericArgKind, Subst};
 use crate::ty::{self, ConstInt, DefIdTree, ParamConst, Ty, TyCtxt, TypeFoldable};
 use rustc_apfloat::ieee::{Double, Single};
 use rustc_apfloat::Float;
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_attr::{SignedInt, UnsignedInt};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, DefKind, Namespace};
@@ -610,7 +610,7 @@ pub trait PrettyPrinter<'tcx>:
 
                 // FIXME(eddyb) should use `def_span`.
                 if let Some(did) = did.as_local() {
-                    let hir_id = self.tcx().hir().as_local_hir_id(did);
+                    let hir_id = self.tcx().hir().local_def_id_to_hir_id(did);
                     let span = self.tcx().hir().span(hir_id);
                     p!(write("@{}", self.tcx().sess.source_map().span_to_string(span)));
 
@@ -656,7 +656,7 @@ pub trait PrettyPrinter<'tcx>:
 
                 // FIXME(eddyb) should use `def_span`.
                 if let Some(did) = did.as_local() {
-                    let hir_id = self.tcx().hir().as_local_hir_id(did);
+                    let hir_id = self.tcx().hir().local_def_id_to_hir_id(did);
                     if self.tcx().sess.opts.debugging_opts.span_free_formats {
                         p!(write("@"), print_def_path(did.to_def_id(), substs));
                     } else {
@@ -1107,7 +1107,7 @@ pub trait PrettyPrinter<'tcx>:
                 // The `inspect` here is okay since we checked the bounds, and there are
                 // no relocations (we have an active slice reference here). We don't use
                 // this result to affect interpreter execution.
-                let byte_str = data.inspect_with_undef_and_ptr_outside_interpreter(start..end);
+                let byte_str = data.inspect_with_uninit_and_ptr_outside_interpreter(start..end);
                 self.pretty_print_byte_str(byte_str)
             }
             (
@@ -1117,7 +1117,7 @@ pub trait PrettyPrinter<'tcx>:
                 // The `inspect` here is okay since we checked the bounds, and there are no
                 // relocations (we have an active `str` reference here). We don't use this
                 // result to affect interpreter execution.
-                let slice = data.inspect_with_undef_and_ptr_outside_interpreter(start..end);
+                let slice = data.inspect_with_uninit_and_ptr_outside_interpreter(start..end);
                 let s = ::std::str::from_utf8(slice).expect("non utf8 str from miri");
                 p!(write("{:?}", s));
                 Ok(self)

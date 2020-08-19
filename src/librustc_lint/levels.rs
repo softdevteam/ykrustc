@@ -1,6 +1,6 @@
 use crate::context::{CheckLintNameResult, LintStore};
 use crate::late::unerased_lint_store;
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::attr;
 use rustc_ast::unwrap_or;
 use rustc_ast_pretty::pprust;
@@ -125,7 +125,7 @@ impl<'s> LintLevelsBuilder<'s> {
             };
 
             let meta = unwrap_or!(attr.meta(), continue);
-            attr::mark_used(attr);
+            self.sess.mark_attr_used(attr);
 
             let mut metas = unwrap_or!(meta.meta_item_list(), continue);
 

@@ -4,25 +4,25 @@ use super::{FollowedByType, Parser, PathStyle};
 
 use crate::maybe_whole;
 
-use rustc_ast::ast::{self, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID};
-use rustc_ast::ast::{AssocItem, AssocItemKind, ForeignItemKind, Item, ItemKind, Mod};
-use rustc_ast::ast::{Async, Const, Defaultness, IsAuto, Mutability, Unsafe, UseTree, UseTreeKind};
-use rustc_ast::ast::{BindingMode, Block, FnDecl, FnSig, Param, SelfKind};
-use rustc_ast::ast::{EnumDef, Generics, StructField, TraitRef, Ty, TyKind, Variant, VariantData};
-use rustc_ast::ast::{FnHeader, ForeignItem, Path, PathSegment, Visibility, VisibilityKind};
-use rustc_ast::ast::{MacArgs, MacCall, MacDelimiter};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, TokenKind};
 use rustc_ast::tokenstream::{DelimSpan, TokenStream, TokenTree};
+use rustc_ast::{self as ast, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID};
+use rustc_ast::{AssocItem, AssocItemKind, ForeignItemKind, Item, ItemKind, Mod};
+use rustc_ast::{Async, Const, Defaultness, IsAuto, Mutability, Unsafe, UseTree, UseTreeKind};
+use rustc_ast::{BindingMode, Block, FnDecl, FnSig, Param, SelfKind};
+use rustc_ast::{EnumDef, Generics, StructField, TraitRef, Ty, TyKind, Variant, VariantData};
+use rustc_ast::{FnHeader, ForeignItem, Path, PathSegment, Visibility, VisibilityKind};
+use rustc_ast::{MacArgs, MacCall, MacDelimiter};
 use rustc_ast_pretty::pprust;
 use rustc_errors::{struct_span_err, Applicability, PResult, StashKey};
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{self, Span};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 
-use log::debug;
 use std::convert::TryFrom;
 use std::mem;
+use tracing::debug;
 
 impl<'a> Parser<'a> {
     /// Parses a source module as a crate. This is the main entry point for the parser.
@@ -610,7 +610,7 @@ impl<'a> Parser<'a> {
 
     /// Recover on a doc comment before `}`.
     fn recover_doc_comment_before_brace(&mut self) -> bool {
-        if let token::DocComment(_) = self.token.kind {
+        if let token::DocComment(..) = self.token.kind {
             if self.look_ahead(1, |tok| tok == &token::CloseDelim(token::Brace)) {
                 struct_span_err!(
                     self.diagnostic(),
@@ -1231,7 +1231,7 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
             token::CloseDelim(token::Brace) => {}
-            token::DocComment(_) => {
+            token::DocComment(..) => {
                 let previous_span = self.prev_token.span;
                 let mut err = self.span_fatal_err(self.token.span, Error::UselessDocComment);
                 self.bump(); // consume the doc comment
@@ -1313,7 +1313,7 @@ impl<'a> Parser<'a> {
         vis: Visibility,
         attrs: Vec<Attribute>,
     ) -> PResult<'a, StructField> {
-        let name = self.parse_ident()?;
+        let name = self.parse_ident_common(false)?;
         self.expect(&token::Colon)?;
         let ty = self.parse_ty()?;
         Ok(StructField {

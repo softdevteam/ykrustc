@@ -2,10 +2,11 @@
 //
 use State::*;
 
-use rustc_ast::ast::{self, LlvmAsmDialect};
+use rustc_ast as ast;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Token};
 use rustc_ast::tokenstream::{self, TokenStream};
+use rustc_ast::LlvmAsmDialect;
 use rustc_errors::{struct_span_err, DiagnosticBuilder, PResult};
 use rustc_expand::base::*;
 use rustc_parse::parser::Parser;
@@ -110,7 +111,7 @@ fn parse_inline_asm<'a>(
                     // If we already have a string with instructions,
                     // ending up in Asm state again is an error.
                     return Err(struct_span_err!(
-                        cx.parse_sess.span_diagnostic,
+                        cx.sess.parse_sess.span_diagnostic,
                         sp,
                         E0660,
                         "malformed inline assembly"
@@ -171,7 +172,7 @@ fn parse_inline_asm<'a>(
                         Some('+') => Some(Symbol::intern(&format!("={}", ch.as_str()))),
                         _ => {
                             struct_span_err!(
-                                cx.parse_sess.span_diagnostic,
+                                cx.sess.parse_sess.span_diagnostic,
                                 span,
                                 E0661,
                                 "output operand constraint lacks '=' or '+'"
@@ -201,7 +202,7 @@ fn parse_inline_asm<'a>(
 
                     if constraint.as_str().starts_with('=') {
                         struct_span_err!(
-                            cx.parse_sess.span_diagnostic,
+                            cx.sess.parse_sess.span_diagnostic,
                             p.prev_token.span,
                             E0662,
                             "input operand constraint contains '='"
@@ -209,7 +210,7 @@ fn parse_inline_asm<'a>(
                         .emit();
                     } else if constraint.as_str().starts_with('+') {
                         struct_span_err!(
-                            cx.parse_sess.span_diagnostic,
+                            cx.sess.parse_sess.span_diagnostic,
                             p.prev_token.span,
                             E0663,
                             "input operand constraint contains '+'"
@@ -236,7 +237,7 @@ fn parse_inline_asm<'a>(
                         cx.span_warn(p.prev_token.span, "expected a clobber, found an option");
                     } else if s.as_str().starts_with('{') || s.as_str().ends_with('}') {
                         struct_span_err!(
-                            cx.parse_sess.span_diagnostic,
+                            cx.sess.parse_sess.span_diagnostic,
                             p.prev_token.span,
                             E0664,
                             "clobber should not be surrounded by braces"

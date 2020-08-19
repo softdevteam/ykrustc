@@ -6,7 +6,6 @@ use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
 use libc::c_uint;
-use log::debug;
 use rustc_codegen_ssa::traits::*;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -21,6 +20,7 @@ use rustc_middle::{bug, span_bug};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
 use rustc_target::abi::{AddressSpace, Align, HasDataLayout, LayoutOf, Primitive, Scalar, Size};
+use tracing::debug;
 
 use std::ffi::CStr;
 
@@ -41,7 +41,7 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
             // some arbitrary byte value.
             //
             // FIXME: relay undef bytes to codegen as undef const bytes
-            let bytes = alloc.inspect_with_undef_and_ptr_outside_interpreter(next_offset..offset);
+            let bytes = alloc.inspect_with_uninit_and_ptr_outside_interpreter(next_offset..offset);
             llvals.push(cx.const_bytes(bytes));
         }
         let ptr_offset = read_target_uint(
@@ -49,7 +49,7 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
             // This `inspect` is okay since it is within the bounds of the allocation, it doesn't
             // affect interpreter execution (we inspect the result after interpreter execution),
             // and we properly interpret the relocation as a relocation pointer offset.
-            alloc.inspect_with_undef_and_ptr_outside_interpreter(offset..(offset + pointer_size)),
+            alloc.inspect_with_uninit_and_ptr_outside_interpreter(offset..(offset + pointer_size)),
         )
         .expect("const_alloc_to_llvm: could not read relocation pointer")
             as u64;
@@ -74,7 +74,7 @@ pub fn const_alloc_to_llvm(cx: &CodegenCx<'ll, '_>, alloc: &Allocation) -> &'ll 
         // arbitrary byte value.
         //
         // FIXME: relay undef bytes to codegen as undef const bytes
-        let bytes = alloc.inspect_with_undef_and_ptr_outside_interpreter(range);
+        let bytes = alloc.inspect_with_uninit_and_ptr_outside_interpreter(range);
         llvals.push(cx.const_bytes(bytes));
     }
 
@@ -215,7 +215,7 @@ impl CodegenCx<'ll, 'tcx> {
         debug!("get_static: sym={} instance={:?}", sym, instance);
 
         let g = if let Some(def_id) = def_id.as_local() {
-            let id = self.tcx.hir().as_local_hir_id(def_id);
+            let id = self.tcx.hir().local_def_id_to_hir_id(def_id);
             let llty = self.layout_of(ty).llvm_type(self);
             // FIXME: refactor this to work without accessing the HIR
             let (g, attrs) = match self.tcx.hir().get(id) {
@@ -253,7 +253,7 @@ impl CodegenCx<'ll, 'tcx> {
             debug!("get_static: sym={} attrs={:?}", sym, attrs);
 
             for attr in attrs {
-                if attr.check_name(sym::thread_local) {
+                if self.tcx.sess.check_name(attr, sym::thread_local) {
                     llvm::set_thread_local_mode(g, self.tls_model);
                 }
             }
@@ -287,7 +287,7 @@ impl CodegenCx<'ll, 'tcx> {
             // argument validation.
             debug_assert!(
                 !(self.tcx.sess.opts.cg.linker_plugin_lto.enabled()
-                    && self.tcx.sess.target.target.options.is_like_msvc
+                    && self.tcx.sess.target.target.options.is_like_windows
                     && self.tcx.sess.opts.cg.prefer_dynamic)
             );
 
@@ -452,7 +452,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
                     // BSS.
                     let all_bytes_are_zero = alloc.relocations().is_empty()
                         && alloc
-                            .inspect_with_undef_and_ptr_outside_interpreter(0..alloc.len())
+                            .inspect_with_uninit_and_ptr_outside_interpreter(0..alloc.len())
                             .iter()
                             .all(|&byte| byte == 0);
 
@@ -480,7 +480,7 @@ impl StaticMethods for CodegenCx<'ll, 'tcx> {
                     // because we are doing this access to inspect the final interpreter state (not
                     // as part of the interpreter execution).
                     let bytes =
-                        alloc.inspect_with_undef_and_ptr_outside_interpreter(0..alloc.len());
+                        alloc.inspect_with_uninit_and_ptr_outside_interpreter(0..alloc.len());
                     let alloc = llvm::LLVMMDStringInContext(
                         self.llcx,
                         bytes.as_ptr().cast(),

@@ -106,7 +106,7 @@ use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::{self, Instance, TyCtxt};
 use rustc_session::config::SymbolManglingVersion;
 
-use log::debug;
+use tracing::debug;
 
 mod legacy;
 mod v0;
@@ -173,7 +173,7 @@ fn compute_symbol_name(
             let disambiguator = tcx.sess.local_crate_disambiguator();
             return tcx.sess.generate_proc_macro_decls_symbol(disambiguator);
         }
-        let hir_id = tcx.hir().as_local_hir_id(def_id);
+        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
         match tcx.hir().get(hir_id) {
             Node::ForeignItem(_) => true,
             _ => false,

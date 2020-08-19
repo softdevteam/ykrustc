@@ -9,11 +9,14 @@
 #![feature(proc_macro_internals)]
 #![feature(min_specialization)]
 #![feature(stmt_expr_attributes)]
+#![feature(try_blocks)]
 #![feature(never_type)]
 #![recursion_limit = "256"]
 
 extern crate proc_macro;
 
+#[macro_use]
+extern crate rustc_macros;
 #[macro_use]
 extern crate rustc_middle;
 #[macro_use]

@@ -1,7 +1,7 @@
 use crate::interface::{Compiler, Result};
 use crate::passes::{self, BoxedResolver, QueryContext};
 
-use rustc_ast::{self, ast};
+use rustc_ast as ast;
 use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_data_structures::sync::{Lrc, OnceCell, WorkerLocal};
 use rustc_errors::ErrorReported;
@@ -159,7 +159,7 @@ impl<'tcx> Queries<'tcx> {
                 None => {
                     let parse_result = self.parse()?;
                     let krate = parse_result.peek();
-                    find_crate_name(Some(self.session()), &krate.attrs, &self.compiler.input)
+                    find_crate_name(self.session(), &krate.attrs, &self.compiler.input)
                 }
             })
         })
@@ -168,7 +168,7 @@ impl<'tcx> Queries<'tcx> {
     pub fn expansion(
         &self,
     ) -> Result<&Query<(ast::Crate, Steal<Rc<RefCell<BoxedResolver>>>, Lrc<LintStore>)>> {
-        log::trace!("expansion");
+        tracing::trace!("expansion");
         self.expansion.compute(|| {
             let crate_name = self.crate_name()?.peek().clone();
             let (krate, lint_store) = self.register_plugins()?.take();
@@ -294,7 +294,7 @@ impl<'tcx> Queries<'tcx> {
         };
 
         let attrs = &*tcx.get_attrs(def_id.to_def_id());
-        let attrs = attrs.iter().filter(|attr| attr.check_name(sym::rustc_error));
+        let attrs = attrs.iter().filter(|attr| tcx.sess.check_name(attr, sym::rustc_error));
         for attr in attrs {
             match attr.meta_item_list() {
                 // Check if there is a `#[rustc_error(delay_span_bug_from_inside_query)]`.

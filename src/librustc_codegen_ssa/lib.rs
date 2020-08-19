@@ -1,5 +1,6 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(bool_to_option)]
+#![feature(option_expect_none)]
 #![feature(box_patterns)]
 #![feature(try_blocks)]
 #![feature(in_band_lifetimes)]
@@ -7,6 +8,8 @@
 #![feature(or_patterns)]
 #![feature(trusted_len)]
 #![feature(associated_type_bounds)]
+#![feature(const_fn)] // for rustc_index::newtype_index
+#![feature(const_panic)] // for rustc_index::newtype_index
 #![recursion_limit = "256"]
 
 //! This crate contains codegen code that is used by all codegen backends (LLVM and others).
@@ -14,7 +17,9 @@
 //! have to be implemented by each backends.
 
 #[macro_use]
-extern crate log;
+extern crate rustc_macros;
+#[macro_use]
+extern crate tracing;
 #[macro_use]
 extern crate rustc_middle;
 
@@ -74,7 +79,7 @@ impl<M> ModuleCodegen<M> {
     }
 }
 
-#[derive(Debug, RustcEncodable, RustcDecodable)]
+#[derive(Debug, Encodable, Decodable)]
 pub struct CompiledModule {
     pub name: String,
     pub kind: ModuleKind,
@@ -87,7 +92,7 @@ pub struct CachedModuleCodegen {
     pub source: WorkProduct,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Encodable, Decodable)]
 pub enum ModuleKind {
     Regular,
     Metadata,
@@ -111,7 +116,7 @@ bitflags::bitflags! {
 /// identifiers (`CrateNum`) to `CrateSource`. The other fields map `CrateNum` to the crate's own
 /// additional properties, so that effectively we can retrieve each dependent crate's `CrateSource`
 /// and the corresponding properties without referencing information outside of a `CrateInfo`.
-#[derive(Debug, RustcEncodable, RustcDecodable)]
+#[derive(Debug, Encodable, Decodable)]
 pub struct CrateInfo {
     pub panic_runtime: Option<CrateNum>,
     pub compiler_builtins: Option<CrateNum>,
@@ -129,7 +134,7 @@ pub struct CrateInfo {
     pub dependency_formats: Lrc<Dependencies>,
 }
 
-#[derive(RustcEncodable, RustcDecodable)]
+#[derive(Encodable, Decodable)]
 pub struct CodegenResults {
     pub crate_name: Symbol,
     pub modules: Vec<CompiledModule>,

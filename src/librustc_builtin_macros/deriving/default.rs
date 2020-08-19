@@ -1,8 +1,8 @@
 use crate::deriving::generic::ty::*;
 use crate::deriving::generic::*;
 
-use rustc_ast::ast::{Expr, MetaItem};
 use rustc_ast::ptr::P;
+use rustc_ast::{Expr, MetaItem};
 use rustc_errors::struct_span_err;
 use rustc_expand::base::{Annotatable, DummyResult, ExtCtxt};
 use rustc_span::symbol::{kw, sym};
@@ -72,7 +72,7 @@ fn default_substructure(
         },
         StaticEnum(..) => {
             struct_span_err!(
-                cx.parse_sess.span_diagnostic,
+                &cx.sess.parse_sess.span_diagnostic,
                 trait_span,
                 E0665,
                 "`Default` cannot be derived for enums, only structs"

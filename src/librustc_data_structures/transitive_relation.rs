@@ -1,8 +1,6 @@
-use crate::fx::FxHashMap;
-use crate::stable_hasher::{HashStable, StableHasher};
+use crate::fx::FxIndexSet;
 use crate::sync::Lock;
 use rustc_index::bit_set::BitMatrix;
-use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::mem;
@@ -13,10 +11,7 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct TransitiveRelation<T: Eq + Hash> {
     // List of elements. This is used to map from a T to a usize.
-    elements: Vec<T>,
-
-    // Maps each element to an index.
-    map: FxHashMap<T, Index>,
+    elements: FxIndexSet<T>,
 
     // List of base edges in the graph. Require to compute transitive
     // closure.
@@ -39,17 +34,16 @@ impl<T: Eq + Hash> Default for TransitiveRelation<T> {
     fn default() -> Self {
         TransitiveRelation {
             elements: Default::default(),
-            map: Default::default(),
             edges: Default::default(),
             closure: Default::default(),
         }
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Debug)]
 struct Index(usize);
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 struct Edge {
     source: Index,
     target: Index,
@@ -65,20 +59,16 @@ impl<T: Clone + Debug + Eq + Hash> TransitiveRelation<T> {
     }
 
     fn index(&self, a: &T) -> Option<Index> {
-        self.map.get(a).cloned()
+        self.elements.get_index_of(a).map(Index)
     }
 
     fn add_index(&mut self, a: T) -> Index {
-        let &mut TransitiveRelation { ref mut elements, ref mut closure, ref mut map, .. } = self;
-
-        *map.entry(a.clone()).or_insert_with(|| {
-            elements.push(a);
-
+        let (index, added) = self.elements.insert_full(a);
+        if added {
             // if we changed the dimensions, clear the cache
-            *closure.get_mut() = None;
-
-            Index(elements.len() - 1)
-        })
+            *self.closure.get_mut() = None;
+        }
+        Index(index)
     }
 
     /// Applies the (partial) function to each edge and returns a new
@@ -408,73 +398,5 @@ fn pare_down(candidates: &mut Vec<usize>, closure: &BitMatrix<usize, usize>) {
             j += 1;
         }
         candidates.truncate(j - dead);
-    }
-}
-
-impl<T> Encodable for TransitiveRelation<T>
-where
-    T: Clone + Encodable + Debug + Eq + Hash + Clone,
-{
-    fn encode<E: Encoder>(&self, s: &mut E) -> Result<(), E::Error> {
-        s.emit_struct("TransitiveRelation", 2, |s| {
-            s.emit_struct_field("elements", 0, |s| self.elements.encode(s))?;
-            s.emit_struct_field("edges", 1, |s| self.edges.encode(s))?;
-            Ok(())
-        })
-    }
-}
-
-impl<T> Decodable for TransitiveRelation<T>
-where
-    T: Clone + Decodable + Debug + Eq + Hash + Clone,
-{
-    fn decode<D: Decoder>(d: &mut D) -> Result<Self, D::Error> {
-        d.read_struct("TransitiveRelation", 2, |d| {
-            let elements: Vec<T> = d.read_struct_field("elements", 0, |d| Decodable::decode(d))?;
-            let edges = d.read_struct_field("edges", 1, |d| Decodable::decode(d))?;
-            let map = elements
-                .iter()
-                .enumerate()
-                .map(|(index, elem)| (elem.clone(), Index(index)))
-                .collect();
-            Ok(TransitiveRelation { elements, edges, map, closure: Lock::new(None) })
-        })
-    }
-}
-
-impl<CTX, T> HashStable<CTX> for TransitiveRelation<T>
-where
-    T: HashStable<CTX> + Eq + Debug + Clone + Hash,
-{
-    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
-        // We are assuming here that the relation graph has been built in a
-        // deterministic way and we can just hash it the way it is.
-        let TransitiveRelation {
-            ref elements,
-            ref edges,
-            // "map" is just a copy of elements vec
-            map: _,
-            // "closure" is just a copy of the data above
-            closure: _,
-        } = *self;
-
-        elements.hash_stable(hcx, hasher);
-        edges.hash_stable(hcx, hasher);
-    }
-}
-
-impl<CTX> HashStable<CTX> for Edge {
-    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
-        let Edge { ref source, ref target } = *self;
-
-        source.hash_stable(hcx, hasher);
-        target.hash_stable(hcx, hasher);
-    }
-}
-
-impl<CTX> HashStable<CTX> for Index {
-    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
-        let Index(idx) = *self;
-        idx.hash_stable(hcx, hasher);
     }
 }

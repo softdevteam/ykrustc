@@ -15,7 +15,7 @@
 //! for all lint attributes.
 
 use crate::{passes::LateLintPassObject, LateContext, LateLintPass, LintStore};
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::walk_list;
 use rustc_data_structures::sync::{join, par_iter, ParallelIterator};
 use rustc_hir as hir;
@@ -28,10 +28,10 @@ use rustc_session::lint::LintPass;
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 
-use log::debug;
 use std::any::Any;
 use std::cell::Cell;
 use std::slice;
+use tracing::debug;
 
 /// Extract the `LintStore` from the query context.
 /// This function exists because we've erased `LintStore` as `dyn Any` in the context.
@@ -379,7 +379,7 @@ fn late_lint_mod_pass<'tcx, T: LateLintPass<'tcx>>(
         param_env: ty::ParamEnv::empty(),
         access_levels,
         lint_store: unerased_lint_store(tcx),
-        last_node_with_lint_attrs: tcx.hir().as_local_hir_id(module_def_id),
+        last_node_with_lint_attrs: tcx.hir().local_def_id_to_hir_id(module_def_id),
         generics: None,
         only_module: true,
     };

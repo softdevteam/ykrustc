@@ -9,8 +9,8 @@ use crate::attributes;
 use crate::context::CodegenCx;
 use crate::llvm;
 use crate::value::Value;
-use log::debug;
 use rustc_codegen_ssa::traits::*;
+use tracing::debug;
 
 use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt};
 use rustc_middle::ty::{self, Instance, TypeFoldable};
@@ -172,7 +172,12 @@ pub fn get_fn(cx: &CodegenCx<'ll, 'tcx>, instance: Instance<'tcx>) -> &'ll Value
             }
         }
 
-        if cx.use_dll_storage_attrs && tcx.is_dllimport_foreign_item(instance_def_id) {
+        // MinGW: For backward compatibility we rely on the linker to decide whether it
+        // should use dllimport for functions.
+        if cx.use_dll_storage_attrs
+            && tcx.is_dllimport_foreign_item(instance_def_id)
+            && tcx.sess.target.target.target_env != "gnu"
+        {
             unsafe {
                 llvm::LLVMSetDLLStorageClass(llfn, llvm::DLLStorageClass::DllImport);
             }

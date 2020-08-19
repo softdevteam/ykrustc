@@ -1,15 +1,15 @@
 use crate::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use crate::hir;
 
-use rustc_ast::ast;
-use rustc_ast::ast::NodeId;
+use rustc_ast as ast;
+use rustc_ast::NodeId;
 use rustc_macros::HashStable_Generic;
 use rustc_span::hygiene::MacroKind;
 
 use std::fmt::Debug;
 
 /// Encodes if a `DefKind::Ctor` is the constructor of an enum variant or a struct.
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Encodable, Decodable, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub enum CtorOf {
     /// This `DefKind::Ctor` is a synthesized constructor of a tuple or unit struct.
@@ -18,7 +18,7 @@ pub enum CtorOf {
     Variant,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Encodable, Decodable, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub enum CtorKind {
     /// Constructor function automatically created by a tuple struct/variant.
@@ -29,7 +29,7 @@ pub enum CtorKind {
     Fictive,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Encodable, Decodable, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub enum NonMacroAttrKind {
     /// Single-segment attribute defined by the language (`#[inline]`)
@@ -42,7 +42,7 @@ pub enum NonMacroAttrKind {
     Registered,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Encodable, Decodable, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub enum DefKind {
     // Type namespace
@@ -150,7 +150,7 @@ impl DefKind {
         }
     }
 
-    pub fn matches_ns(&self, ns: Namespace) -> bool {
+    pub fn ns(&self) -> Option<Namespace> {
         match self {
             DefKind::Mod
             | DefKind::Struct
@@ -163,7 +163,7 @@ impl DefKind {
             | DefKind::ForeignTy
             | DefKind::TraitAlias
             | DefKind::AssocTy
-            | DefKind::TyParam => ns == Namespace::TypeNS,
+            | DefKind::TyParam => Some(Namespace::TypeNS),
 
             DefKind::Fn
             | DefKind::Const
@@ -171,9 +171,9 @@ impl DefKind {
             | DefKind::Static
             | DefKind::Ctor(..)
             | DefKind::AssocFn
-            | DefKind::AssocConst => ns == Namespace::ValueNS,
+            | DefKind::AssocConst => Some(Namespace::ValueNS),
 
-            DefKind::Macro(..) => ns == Namespace::MacroNS,
+            DefKind::Macro(..) => Some(Namespace::MacroNS),
 
             // Not namespaced.
             DefKind::AnonConst
@@ -185,13 +185,13 @@ impl DefKind {
             | DefKind::Use
             | DefKind::ForeignMod
             | DefKind::GlobalAsm
-            | DefKind::Impl => false,
+            | DefKind::Impl => None,
         }
     }
 }
 
 /// The resolution of a path or export.
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Encodable, Decodable, Hash, Debug)]
 #[derive(HashStable_Generic)]
 pub enum Res<Id = hir::HirId> {
     Def(DefKind, DefId),
@@ -453,7 +453,7 @@ impl<Id> Res<Id> {
 
     pub fn matches_ns(&self, ns: Namespace) -> bool {
         match self {
-            Res::Def(kind, ..) => kind.matches_ns(ns),
+            Res::Def(kind, ..) => kind.ns() == Some(ns),
             Res::PrimTy(..) | Res::SelfTy(..) | Res::ToolMod => ns == Namespace::TypeNS,
             Res::SelfCtor(..) | Res::Local(..) => ns == Namespace::ValueNS,
             Res::NonMacroAttr(..) => ns == Namespace::MacroNS,

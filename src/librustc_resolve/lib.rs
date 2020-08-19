@@ -20,13 +20,12 @@ pub use rustc_hir::def::{Namespace, PerNS};
 use Determinacy::*;
 
 use rustc_arena::TypedArena;
-use rustc_ast::ast::{self, FloatTy, IntTy, NodeId, UintTy};
-use rustc_ast::ast::{Crate, CRATE_NODE_ID};
-use rustc_ast::ast::{ItemKind, Path};
-use rustc_ast::attr;
 use rustc_ast::node_id::NodeMap;
 use rustc_ast::unwrap_or;
 use rustc_ast::visit::{self, Visitor};
+use rustc_ast::{self as ast, FloatTy, IntTy, NodeId, UintTy};
+use rustc_ast::{Crate, CRATE_NODE_ID};
+use rustc_ast::{ItemKind, Path};
 use rustc_ast_lowering::ResolverAstLowering;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet, FxIndexMap};
@@ -55,10 +54,10 @@ use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 
-use log::debug;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::{cmp, fmt, iter, ptr};
+use tracing::debug;
 
 use diagnostics::{extend_span_to_previous_binding, find_span_of_binding_until_next_binding};
 use diagnostics::{ImportSuggestion, LabelSuggestion, Suggestion};
@@ -218,6 +217,10 @@ enum ResolutionError<'a> {
     ParamInTyOfConstParam(Symbol),
     /// constant values inside of type parameter defaults must not depend on generic parameters.
     ParamInAnonConstInTyDefault(Symbol),
+    /// generic parameters must not be used inside of non trivial constant values.
+    ///
+    /// This error is only emitted when using `min_const_generics`.
+    ParamInNonTrivialAnonConst(Symbol),
     /// Error E0735: type parameters with a default cannot use `Self`
     SelfInTyParamDefault,
     /// Error E0767: use of unreachable label
@@ -1073,37 +1076,6 @@ impl ResolverAstLowering for Resolver<'_> {
         self.cstore().item_generics_num_lifetimes(def_id, sess)
     }
 
-    fn resolve_str_path(
-        &mut self,
-        span: Span,
-        crate_root: Option<Symbol>,
-        components: &[Symbol],
-        ns: Namespace,
-    ) -> (ast::Path, Res) {
-        let root = if crate_root.is_some() { kw::PathRoot } else { kw::Crate };
-        let segments = iter::once(Ident::with_dummy_span(root))
-            .chain(
-                crate_root
-                    .into_iter()
-                    .chain(components.iter().cloned())
-                    .map(Ident::with_dummy_span),
-            )
-            .map(|i| self.new_ast_path_segment(i))
-            .collect::<Vec<_>>();
-
-        let path = ast::Path { span, segments };
-
-        let parent_scope = &ParentScope::module(self.graph_root);
-        let res = match self.resolve_ast_path(&path, ns, parent_scope) {
-            Ok(res) => res,
-            Err((span, error)) => {
-                self.report_error(span, error);
-                Res::Err
-            }
-        };
-        (path, res)
-    }
-
     fn get_partial_res(&mut self, id: NodeId) -> Option<PartialRes> {
         self.partial_res_map.get(&id).cloned()
     }
@@ -1194,7 +1166,7 @@ impl<'a> Resolver<'a> {
         let root_def_id = DefId::local(CRATE_DEF_INDEX);
         let root_module_kind = ModuleKind::Def(DefKind::Mod, root_def_id, kw::Invalid);
         let graph_root = arenas.alloc_module(ModuleData {
-            no_implicit_prelude: attr::contains_name(&krate.attrs, sym::no_implicit_prelude),
+            no_implicit_prelude: session.contains_name(&krate.attrs, sym::no_implicit_prelude),
             ..ModuleData::new(None, root_module_kind, root_def_id, ExpnId::root(), krate.span)
         });
         let empty_module_kind = ModuleKind::Def(DefKind::Mod, root_def_id, kw::Invalid);
@@ -1232,9 +1204,9 @@ impl<'a> Resolver<'a> {
             .map(|(name, _)| (Ident::from_str(name), Default::default()))
             .collect();
 
-        if !attr::contains_name(&krate.attrs, sym::no_core) {
+        if !session.contains_name(&krate.attrs, sym::no_core) {
             extern_prelude.insert(Ident::with_dummy_span(sym::core), Default::default());
-            if !attr::contains_name(&krate.attrs, sym::no_std) {
+            if !session.contains_name(&krate.attrs, sym::no_std) {
                 extern_prelude.insert(Ident::with_dummy_span(sym::std), Default::default());
                 if session.rust_2018() {
                     extern_prelude.insert(Ident::with_dummy_span(sym::meta), Default::default());
@@ -2507,7 +2479,7 @@ impl<'a> Resolver<'a> {
                                 res_err = Some(CannotCaptureDynamicEnvironmentInFnItem);
                             }
                         }
-                        ConstantItemRibKind => {
+                        ConstantItemRibKind(_) => {
                             // Still doesn't deal with upvars
                             if record_used {
                                 self.report_error(span, AttemptToUseNonConstantValueInConstant);
@@ -2546,7 +2518,18 @@ impl<'a> Resolver<'a> {
                             in_ty_param_default = true;
                             continue;
                         }
-                        ConstantItemRibKind => {
+                        ConstantItemRibKind(trivial) => {
+                            // HACK(min_const_generics): We currently only allow `N` or `{ N }`.
+                            if !trivial && self.session.features_untracked().min_const_generics {
+                                if record_used {
+                                    self.report_error(
+                                        span,
+                                        ResolutionError::ParamInNonTrivialAnonConst(rib_ident.name),
+                                    );
+                                }
+                                return Res::Err;
+                            }
+
                             if in_ty_param_default {
                                 if record_used {
                                     self.report_error(
@@ -2612,7 +2595,18 @@ impl<'a> Resolver<'a> {
                             in_ty_param_default = true;
                             continue;
                         }
-                        ConstantItemRibKind => {
+                        ConstantItemRibKind(trivial) => {
+                            // HACK(min_const_generics): We currently only allow `N` or `{ N }`.
+                            if !trivial && self.session.features_untracked().min_const_generics {
+                                if record_used {
+                                    self.report_error(
+                                        span,
+                                        ResolutionError::ParamInNonTrivialAnonConst(rib_ident.name),
+                                    );
+                                }
+                                return Res::Err;
+                            }
+
                             if in_ty_param_default {
                                 if record_used {
                                     self.report_error(

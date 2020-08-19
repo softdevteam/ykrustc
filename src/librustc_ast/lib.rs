@@ -18,8 +18,7 @@
 #![feature(unicode_internals)]
 #![recursion_limit = "256"]
 
-// FIXME(#56935): Work around ICEs during cross-compilation.
-#[allow(unused)]
+#[macro_use]
 extern crate rustc_macros;
 
 #[macro_export]
@@ -42,7 +41,6 @@ pub mod util {
 
 pub mod ast;
 pub mod attr;
-pub use attr::{with_default_session_globals, with_session_globals, SESSION_GLOBALS};
 pub mod crate_disambiguator;
 pub mod entry;
 pub mod expand;
@@ -52,6 +50,8 @@ pub mod ptr;
 pub mod token;
 pub mod tokenstream;
 pub mod visit;
+
+pub use self::ast::*;
 
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 

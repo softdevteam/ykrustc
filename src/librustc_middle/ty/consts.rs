@@ -15,7 +15,7 @@ pub use int::*;
 pub use kind::*;
 
 /// Typed constant value.
-#[derive(Copy, Clone, Debug, Hash, RustcEncodable, RustcDecodable, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Debug, Hash, TyEncodable, TyDecodable, Eq, PartialEq, Ord, PartialOrd)]
 #[derive(HashStable)]
 pub struct Const<'tcx> {
     pub ty: Ty<'tcx>,
@@ -88,7 +88,7 @@ impl<'tcx> Const<'tcx> {
             ExprKind::Path(QPath::Resolved(_, &Path { res: Res::Def(ConstParam, def_id), .. })) => {
                 // Find the name and index of the const parameter by indexing the generics of
                 // the parent item and construct a `ParamConst`.
-                let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
+                let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
                 let item_id = tcx.hir().get_parent_node(hir_id);
                 let item_def_id = tcx.hir().local_def_id(item_id);
                 let generics = tcx.generics_of(item_def_id.to_def_id());
@@ -158,7 +158,7 @@ impl<'tcx> Const<'tcx> {
         ty: Ty<'tcx>,
     ) -> Option<u128> {
         assert_eq!(self.ty, ty);
-        let size = tcx.layout_of(param_env.with_reveal_all().and(ty)).ok()?.size;
+        let size = tcx.layout_of(param_env.with_reveal_all_normalized(tcx).and(ty)).ok()?.size;
         // if `ty` does not depend on generic parameters, use an empty param_env
         self.val.eval(tcx, param_env).try_to_bits(size)
     }

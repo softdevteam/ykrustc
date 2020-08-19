@@ -2,11 +2,11 @@ use super::{Parser, PathStyle, TokenType};
 
 use crate::{maybe_recover_from_interpolated_ty_qpath, maybe_whole};
 
-use rustc_ast::ast::{self, BareFnTy, FnRetTy, GenericParam, Lifetime, MutTy, Ty, TyKind};
-use rustc_ast::ast::{GenericBound, GenericBounds, MacCall, Mutability};
-use rustc_ast::ast::{PolyTraitRef, TraitBoundModifier, TraitObjectSyntax};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Token, TokenKind};
+use rustc_ast::{self as ast, BareFnTy, FnRetTy, GenericParam, Lifetime, MutTy, Ty, TyKind};
+use rustc_ast::{GenericBound, GenericBounds, MacCall, Mutability};
+use rustc_ast::{PolyTraitRef, TraitBoundModifier, TraitObjectSyntax};
 use rustc_errors::{pluralize, struct_span_err, Applicability, PResult};
 use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, sym};
@@ -610,13 +610,13 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn check_lifetime(&mut self) -> bool {
+    pub(super) fn check_lifetime(&mut self) -> bool {
         self.expected_tokens.push(TokenType::Lifetime);
         self.token.is_lifetime()
     }
 
     /// Parses a single lifetime `'a` or panics.
-    pub fn expect_lifetime(&mut self) -> Lifetime {
+    pub(super) fn expect_lifetime(&mut self) -> Lifetime {
         if let Some(ident) = self.token.lifetime() {
             self.bump();
             Lifetime { ident, id: ast::DUMMY_NODE_ID }

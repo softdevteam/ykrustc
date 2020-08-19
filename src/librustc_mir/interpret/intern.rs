@@ -9,7 +9,7 @@ use rustc_hir as hir;
 use rustc_middle::mir::interpret::InterpResult;
 use rustc_middle::ty::{self, query::TyCtxtAt, Ty};
 
-use rustc_ast::ast::Mutability;
+use rustc_ast::Mutability;
 
 use super::{AllocId, Allocation, InterpCx, MPlaceTy, Machine, MemoryKind, Scalar, ValueVisitor};
 
@@ -312,7 +312,8 @@ pub fn intern_const_alloc_recursive<M: CompileTimeMachine<'mir, 'tcx>>(
     let tcx = ecx.tcx;
     let base_intern_mode = match intern_kind {
         InternKind::Static(mutbl) => InternMode::Static(mutbl),
-        // FIXME: what about array lengths, array initializers?
+        // `Constant` includes array lengths.
+        // `Promoted` includes non-`Copy` array initializers and `rustc_args_required_const` arguments.
         InternKind::Constant | InternKind::Promoted => InternMode::ConstBase,
     };
 

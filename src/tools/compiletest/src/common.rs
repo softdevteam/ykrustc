@@ -172,7 +172,7 @@ impl fmt::Display for Debugger {
 }
 
 /// Configuration for compiletest
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// `true` to to overwrite stderr/stdout files instead of complaining about changes in output.
     pub bless: bool,

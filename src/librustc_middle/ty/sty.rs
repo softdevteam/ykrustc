@@ -10,9 +10,9 @@ use crate::ty::subst::{GenericArg, InternalSubsts, Subst, SubstsRef};
 use crate::ty::{
     self, AdtDef, DefIdTree, Discr, Ty, TyCtxt, TypeFlags, TypeFoldable, WithConstness,
 };
-use crate::ty::{List, ParamEnv, TyS};
+use crate::ty::{DelaySpanBugEmitted, List, ParamEnv, TyS};
 use polonius_engine::Atom;
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::captures::Captures;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -27,14 +27,14 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use ty::util::IntTypeExt;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable, Lift)]
 pub struct TypeAndMut<'tcx> {
     pub ty: Ty<'tcx>,
     pub mutbl: hir::Mutability,
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, RustcEncodable, RustcDecodable, Copy)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, TyEncodable, TyDecodable, Copy)]
 #[derive(HashStable)]
 /// A "free" region `fr` can be interpreted as "some region
 /// at least as big as the scope `fr.scope`".
@@ -43,7 +43,7 @@ pub struct FreeRegion {
     pub bound_region: BoundRegion,
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, RustcEncodable, RustcDecodable, Copy)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, TyEncodable, TyDecodable, Copy)]
 #[derive(HashStable)]
 pub enum BoundRegion {
     /// An anonymous region parameter for a given fn (&T)
@@ -82,7 +82,7 @@ impl BoundRegion {
 
 /// N.B., if you change this, you'll probably want to change the corresponding
 /// AST structure in `librustc_ast/ast.rs` as well.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable, Debug)]
 #[derive(HashStable)]
 #[rustc_diagnostic_item = "TyKind"]
 pub enum TyKind<'tcx> {
@@ -202,11 +202,15 @@ pub enum TyKind<'tcx> {
     Error(DelaySpanBugEmitted),
 }
 
-/// A type that is not publicly constructable. This prevents people from making `TyKind::Error`
-/// except through `tcx.err*()`.
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-#[derive(RustcEncodable, RustcDecodable, HashStable)]
-pub struct DelaySpanBugEmitted(pub(super) ());
+impl TyKind<'tcx> {
+    #[inline]
+    pub fn is_primitive(&self) -> bool {
+        match self {
+            Bool | Char | Int(_) | Uint(_) | Float(_) => true,
+            _ => false,
+        }
+    }
+}
 
 // `TyKind` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
@@ -315,24 +319,39 @@ pub struct ClosureSubsts<'tcx> {
     pub substs: SubstsRef<'tcx>,
 }
 
-/// Struct returned by `split()`. Note that these are subslices of the
-/// parent slice and not canonical substs themselves.
-struct SplitClosureSubsts<'tcx> {
-    parent: &'tcx [GenericArg<'tcx>],
-    closure_kind_ty: GenericArg<'tcx>,
-    closure_sig_as_fn_ptr_ty: GenericArg<'tcx>,
-    tupled_upvars_ty: GenericArg<'tcx>,
+/// Struct returned by `split()`.
+pub struct ClosureSubstsParts<'tcx, T> {
+    pub parent_substs: &'tcx [GenericArg<'tcx>],
+    pub closure_kind_ty: T,
+    pub closure_sig_as_fn_ptr_ty: T,
+    pub tupled_upvars_ty: T,
 }
 
 impl<'tcx> ClosureSubsts<'tcx> {
-    /// Divides the closure substs into their respective
-    /// components. Single source of truth with respect to the
-    /// ordering.
-    fn split(self) -> SplitClosureSubsts<'tcx> {
+    /// Construct `ClosureSubsts` from `ClosureSubstsParts`, containing `Substs`
+    /// for the closure parent, alongside additional closure-specific components.
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        parts: ClosureSubstsParts<'tcx, Ty<'tcx>>,
+    ) -> ClosureSubsts<'tcx> {
+        ClosureSubsts {
+            substs: tcx.mk_substs(
+                parts.parent_substs.iter().copied().chain(
+                    [parts.closure_kind_ty, parts.closure_sig_as_fn_ptr_ty, parts.tupled_upvars_ty]
+                        .iter()
+                        .map(|&ty| ty.into()),
+                ),
+            ),
+        }
+    }
+
+    /// Divides the closure substs into their respective components.
+    /// The ordering assumed here must match that used by `ClosureSubsts::new` above.
+    fn split(self) -> ClosureSubstsParts<'tcx, GenericArg<'tcx>> {
         match self.substs[..] {
-            [ref parent @ .., closure_kind_ty, closure_sig_as_fn_ptr_ty, tupled_upvars_ty] => {
-                SplitClosureSubsts {
-                    parent,
+            [ref parent_substs @ .., closure_kind_ty, closure_sig_as_fn_ptr_ty, tupled_upvars_ty] => {
+                ClosureSubstsParts {
+                    parent_substs,
                     closure_kind_ty,
                     closure_sig_as_fn_ptr_ty,
                     tupled_upvars_ty,
@@ -353,7 +372,7 @@ impl<'tcx> ClosureSubsts<'tcx> {
 
     /// Returns the substitutions of the closure's parent.
     pub fn parent_substs(self) -> &'tcx [GenericArg<'tcx>] {
-        self.split().parent
+        self.split().parent_substs
     }
 
     #[inline]
@@ -408,21 +427,46 @@ pub struct GeneratorSubsts<'tcx> {
     pub substs: SubstsRef<'tcx>,
 }
 
-struct SplitGeneratorSubsts<'tcx> {
-    parent: &'tcx [GenericArg<'tcx>],
-    resume_ty: GenericArg<'tcx>,
-    yield_ty: GenericArg<'tcx>,
-    return_ty: GenericArg<'tcx>,
-    witness: GenericArg<'tcx>,
-    tupled_upvars_ty: GenericArg<'tcx>,
+pub struct GeneratorSubstsParts<'tcx, T> {
+    pub parent_substs: &'tcx [GenericArg<'tcx>],
+    pub resume_ty: T,
+    pub yield_ty: T,
+    pub return_ty: T,
+    pub witness: T,
+    pub tupled_upvars_ty: T,
 }
 
 impl<'tcx> GeneratorSubsts<'tcx> {
-    fn split(self) -> SplitGeneratorSubsts<'tcx> {
+    /// Construct `GeneratorSubsts` from `GeneratorSubstsParts`, containing `Substs`
+    /// for the generator parent, alongside additional generator-specific components.
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        parts: GeneratorSubstsParts<'tcx, Ty<'tcx>>,
+    ) -> GeneratorSubsts<'tcx> {
+        GeneratorSubsts {
+            substs: tcx.mk_substs(
+                parts.parent_substs.iter().copied().chain(
+                    [
+                        parts.resume_ty,
+                        parts.yield_ty,
+                        parts.return_ty,
+                        parts.witness,
+                        parts.tupled_upvars_ty,
+                    ]
+                    .iter()
+                    .map(|&ty| ty.into()),
+                ),
+            ),
+        }
+    }
+
+    /// Divides the generator substs into their respective components.
+    /// The ordering assumed here must match that used by `GeneratorSubsts::new` above.
+    fn split(self) -> GeneratorSubstsParts<'tcx, GenericArg<'tcx>> {
         match self.substs[..] {
-            [ref parent @ .., resume_ty, yield_ty, return_ty, witness, tupled_upvars_ty] => {
-                SplitGeneratorSubsts {
-                    parent,
+            [ref parent_substs @ .., resume_ty, yield_ty, return_ty, witness, tupled_upvars_ty] => {
+                GeneratorSubstsParts {
+                    parent_substs,
                     resume_ty,
                     yield_ty,
                     return_ty,
@@ -445,7 +489,7 @@ impl<'tcx> GeneratorSubsts<'tcx> {
 
     /// Returns the substitutions of the generator's parent.
     pub fn parent_substs(self) -> &'tcx [GenericArg<'tcx>] {
-        self.split().parent
+        self.split().parent_substs
     }
 
     /// This describes the types that can be contained in a generator.
@@ -612,7 +656,7 @@ impl<'tcx> UpvarSubsts<'tcx> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub enum ExistentialPredicate<'tcx> {
     /// E.g., `Iterator`.
@@ -662,8 +706,6 @@ impl<'tcx> Binder<ExistentialPredicate<'tcx>> {
         }
     }
 }
-
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx List<ExistentialPredicate<'tcx>> {}
 
 impl<'tcx> List<ExistentialPredicate<'tcx>> {
     /// Returns the "principal `DefId`" of this set of existential predicates.
@@ -760,7 +802,7 @@ impl<'tcx> Binder<&'tcx List<ExistentialPredicate<'tcx>>> {
 ///
 /// Trait references also appear in object types like `Foo<U>`, but in
 /// that case the `Self` parameter is absent from the substitutions.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct TraitRef<'tcx> {
     pub def_id: DefId,
@@ -818,7 +860,7 @@ impl<'tcx> PolyTraitRef<'tcx> {
 ///
 /// The substitutions don't include the erased `Self`, only trait
 /// type and lifetime parameters (`[X, Y]` and `['a, 'b]` above).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ExistentialTraitRef<'tcx> {
     pub def_id: DefId,
@@ -874,7 +916,7 @@ impl<'tcx> PolyExistentialTraitRef<'tcx> {
 /// erase, or otherwise "discharge" these bound vars, we change the
 /// type from `Binder<T>` to just `T` (see
 /// e.g., `liberate_late_bound_regions`).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 pub struct Binder<T>(T);
 
 impl<T> Binder<T> {
@@ -1006,7 +1048,7 @@ impl<T> Binder<Option<T>> {
 
 /// Represents the projection of an associated type. In explicit UFCS
 /// form this would be written `<T as Trait<..>>::N`.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ProjectionTy<'tcx> {
     /// The parameters of the associated item.
@@ -1076,7 +1118,7 @@ impl<'tcx> PolyGenSig<'tcx> {
 /// - `inputs`: is the list of arguments and their modes.
 /// - `output`: is the return type.
 /// - `c_variadic`: indicates whether this is a C-variadic function.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct FnSig<'tcx> {
     pub inputs_and_output: &'tcx List<Ty<'tcx>>,
@@ -1137,7 +1179,7 @@ impl<'tcx> PolyFnSig<'tcx> {
 
 pub type CanonicalPolyFnSig<'tcx> = Canonical<'tcx, Binder<FnSig<'tcx>>>;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub struct ParamTy {
     pub index: u32,
@@ -1162,7 +1204,7 @@ impl<'tcx> ParamTy {
     }
 }
 
-#[derive(Copy, Clone, Hash, RustcEncodable, RustcDecodable, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Hash, TyEncodable, TyDecodable, Eq, PartialEq, Ord, PartialOrd)]
 #[derive(HashStable)]
 pub struct ParamConst {
     pub index: u32,
@@ -1335,7 +1377,7 @@ pub type Region<'tcx> = &'tcx RegionKind;
 /// [1]: http://smallcultfollowing.com/babysteps/blog/2013/10/29/intermingled-parameter-lists/
 /// [2]: http://smallcultfollowing.com/babysteps/blog/2013/11/04/intermingled-parameter-lists/
 /// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/hrtb.html
-#[derive(Clone, PartialEq, Eq, Hash, Copy, RustcEncodable, RustcDecodable, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, Copy, TyEncodable, TyDecodable, PartialOrd, Ord)]
 pub enum RegionKind {
     /// Region bound in a type or fn declaration which will be
     /// substituted 'early' -- that is, at the same time when type
@@ -1373,32 +1415,30 @@ pub enum RegionKind {
     ReErased,
 }
 
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for Region<'tcx> {}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, Debug, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, TyEncodable, TyDecodable, Debug, PartialOrd, Ord)]
 pub struct EarlyBoundRegion {
     pub def_id: DefId,
     pub index: u32,
     pub name: Symbol,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct TyVid {
     pub index: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct ConstVid<'tcx> {
     pub index: u32,
     pub phantom: PhantomData<&'tcx ()>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct IntVid {
     pub index: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct FloatVid {
     pub index: u32,
 }
@@ -1415,7 +1455,7 @@ impl Atom for RegionVid {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub enum InferTy {
     TyVar(TyVid),
@@ -1434,14 +1474,14 @@ rustc_index::newtype_index! {
     pub struct BoundVar { .. }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub struct BoundTy {
     pub var: BoundVar,
     pub kind: BoundTyKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub enum BoundTyKind {
     Anon,
@@ -1455,7 +1495,7 @@ impl From<BoundVar> for BoundTy {
 }
 
 /// A `ProjectionPredicate` for an `ExistentialTraitRef`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ExistentialProjection<'tcx> {
     pub item_def_id: DefId,
@@ -1766,10 +1806,7 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_primitive(&self) -> bool {
-        match self.kind {
-            Bool | Char | Int(_) | Uint(_) | Float(_) => true,
-            _ => false,
-        }
+        self.kind.is_primitive()
     }
 
     #[inline]

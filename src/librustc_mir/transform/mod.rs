@@ -29,6 +29,7 @@ pub mod generator;
 pub mod inline;
 pub mod instcombine;
 pub mod instrument_coverage;
+pub mod match_branches;
 pub mod no_landing_pads;
 pub mod nrvo;
 pub mod promote_consts;
@@ -333,21 +334,25 @@ fn mir_validated(
     body.required_consts = required_consts;
 
     let promote_pass = promote_consts::PromoteTemps::default();
+    let promote: &[&dyn MirPass<'tcx>] = &[
+        // What we need to run borrowck etc.
+        &promote_pass,
+        &simplify::SimplifyCfg::new("qualify-consts"),
+    ];
+
+    let opt_coverage: &[&dyn MirPass<'tcx>] = if tcx.sess.opts.debugging_opts.instrument_coverage {
+        &[&instrument_coverage::InstrumentCoverage]
+    } else {
+        &[]
+    };
+
     run_passes(
         tcx,
         &mut body,
         InstanceDef::Item(def.to_global()),
         None,
         MirPhase::Validated,
-        &[&[
-            // What we need to run borrowck etc.
-            &promote_pass,
-            &simplify::SimplifyCfg::new("qualify-consts"),
-            // If the `instrument-coverage` option is enabled, analyze the CFG, identify each
-            // conditional branch, construct a coverage map to be passed to LLVM, and inject counters
-            // where needed.
-            &instrument_coverage::InstrumentCoverage,
-        ]],
+        &[promote, opt_coverage],
     );
 
     let promoted = promote_pass.promoted_fragments.into_inner();
@@ -405,6 +410,9 @@ fn run_post_borrowck_cleanup_passes<'tcx>(
         // but before optimizations begin.
         &add_retag::AddRetag,
         &simplify::SimplifyCfg::new("elaborate-drops"),
+        // `Deaggregator` is conceptually part of MIR building, some backends rely on it happening
+        // and it can help optimizations.
+        &deaggregator::Deaggregator,
     ];
 
     // Software tracing pass would be somewhere near here, but it's currently broken and rotting,
@@ -438,13 +446,9 @@ fn run_optimization_passes<'tcx>(
         // with async primitives.
         &generator::StateTransform,
         &instcombine::InstCombine,
+        &match_branches::MatchBranchSimplification,
         &const_prop::ConstProp,
         &simplify_branches::SimplifyBranches::new("after-const-prop"),
-        // Run deaggregation here because:
-        //   1. Some codegen backends require it
-        //   2. It creates additional possibilities for some MIR optimizations to trigger
-        // FIXME(#70073): Why is this done here and not in `post_borrowck_cleanup`?
-        &deaggregator::Deaggregator,
         &simplify_try::SimplifyArmIdentity,
         &simplify_try::SimplifyBranchSame,
         &copy_prop::CopyPropagation,
@@ -461,9 +465,6 @@ fn run_optimization_passes<'tcx>(
         &generator::StateTransform,
         // FIXME(#70073): This pass is responsible for both optimization as well as some lints.
         &const_prop::ConstProp,
-        // Even if we don't do optimizations, still run deaggregation because some backends assume
-        // that deaggregation always occurs.
-        &deaggregator::Deaggregator,
     ];
 
     let pre_codegen_cleanup: &[&dyn MirPass<'tcx>] = &[

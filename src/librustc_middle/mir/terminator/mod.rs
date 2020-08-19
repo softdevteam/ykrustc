@@ -1,12 +1,12 @@
 use crate::mir::interpret::Scalar;
 use crate::ty::{self, Ty, TyCtxt};
-use rustc_ast::ast::{InlineAsmOptions, InlineAsmTemplatePiece};
+use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 
 use super::{
     AssertMessage, BasicBlock, InlineAsmOperand, Operand, Place, SourceInfo, Successors,
     SuccessorsMut,
 };
-pub use rustc_ast::ast::Mutability;
+pub use rustc_ast::Mutability;
 use rustc_macros::HashStable;
 use rustc_span::Span;
 use std::borrow::Cow;
@@ -16,7 +16,7 @@ use std::slice;
 
 pub use super::query::*;
 
-#[derive(Clone, RustcEncodable, RustcDecodable, HashStable, PartialEq)]
+#[derive(Clone, TyEncodable, TyDecodable, HashStable, PartialEq)]
 pub enum TerminatorKind<'tcx> {
     /// Block should have one successor in the graph; we jump there.
     Goto { target: BasicBlock },
@@ -194,7 +194,7 @@ pub enum TerminatorKind<'tcx> {
         destination: Option<BasicBlock>,
     },
 }
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct Terminator<'tcx> {
     pub source_info: SourceInfo,
     pub kind: TerminatorKind<'tcx>,

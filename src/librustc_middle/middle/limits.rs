@@ -6,7 +6,7 @@
 //! just peeks and looks for that attribute.
 
 use crate::bug;
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::sync::OnceCell;
 use rustc_session::{Limit, Session};
 use rustc_span::symbol::{sym, Symbol};
@@ -27,7 +27,7 @@ fn update_limit(
     default: usize,
 ) {
     for attr in &krate.attrs {
-        if !attr.check_name(name) {
+        if !sess.check_name(attr, name) {
             continue;
         }
 

@@ -352,7 +352,7 @@ rustc_queries! {
         /// per-type-parameter predicates for resolving `T::AssocTy`.
         query type_param_predicates(key: (DefId, LocalDefId)) -> ty::GenericPredicates<'tcx> {
             desc { |tcx| "computing the bounds for type parameter `{}`", {
-                let id = tcx.hir().as_local_hir_id(key.1);
+                let id = tcx.hir().local_def_id_to_hir_id(key.1);
                 tcx.hir().ty_param_name(id)
             }}
         }
@@ -740,7 +740,8 @@ rustc_queries! {
     }
 
     Other {
-        query reachable_set(_: CrateNum) -> &'tcx HirIdSet {
+        query reachable_set(_: CrateNum) -> FxHashSet<LocalDefId> {
+            storage(ArenaCacheSelector<'tcx>)
             desc { "reachability" }
         }
 
@@ -864,9 +865,15 @@ rustc_queries! {
         /// type-checking etc, and it does not normalize specializable
         /// associated types. This is almost always what you want,
         /// unless you are doing MIR optimizations, in which case you
-        /// might want to use `reveal_all()` method to change modes.
         query param_env(def_id: DefId) -> ty::ParamEnv<'tcx> {
             desc { |tcx| "computing normalized predicates of `{}`", tcx.def_path_str(def_id) }
+        }
+
+        /// Like `param_env`, but returns the `ParamEnv in `Reveal::All` mode.
+        /// Prefer this over `tcx.param_env(def_id).with_reveal_all_normalized(tcx)`,
+        /// as this method is more efficient.
+        query param_env_reveal_all_normalized(def_id: DefId) -> ty::ParamEnv<'tcx> {
+            desc { |tcx| "computing revealed normalized predicates of `{}`", tcx.def_path_str(def_id) }
         }
 
         /// Trait selection queries. These are best used by invoking `ty.is_copy_modulo_regions()`,
@@ -1119,11 +1126,11 @@ rustc_queries! {
 
     TypeChecking {
         query implementations_of_trait(_: (CrateNum, DefId))
-            -> &'tcx [DefId] {
+            -> &'tcx [(DefId, Option<ty::fast_reject::SimplifiedType>)] {
             desc { "looking up implementations of a trait in a crate" }
         }
         query all_trait_implementations(_: CrateNum)
-            -> &'tcx [DefId] {
+            -> &'tcx [(DefId, Option<ty::fast_reject::SimplifiedType>)] {
             desc { "looking up all (?) trait implementations" }
         }
     }
@@ -1180,7 +1187,7 @@ rustc_queries! {
     }
 
     Other {
-        query dep_kind(_: CrateNum) -> DepKind {
+        query dep_kind(_: CrateNum) -> CrateDepKind {
             eval_always
             desc { "fetching what a dependency looks like" }
         }
@@ -1313,7 +1320,7 @@ rustc_queries! {
         query codegen_unit(_: Symbol) -> &'tcx CodegenUnit<'tcx> {
             desc { "codegen_unit" }
         }
-        query unused_generic_params(key: DefId) -> FiniteBitSet<u64> {
+        query unused_generic_params(key: DefId) -> FiniteBitSet<u32> {
             cache_on_disk_if { key.is_local() }
             desc {
                 |tcx| "determining which generic parameters are unused by `{}`",
@@ -1526,6 +1533,10 @@ rustc_queries! {
                 "resolving instance of the const argument `{}`",
                 ty::Instance::new(key.value.0.to_def_id(), key.value.2),
             }
+        }
+
+        query normalize_opaque_types(key: &'tcx ty::List<ty::Predicate<'tcx>>) -> &'tcx ty::List<ty::Predicate<'tcx>> {
+            desc { "normalizing opaque types in {:?}", key }
         }
     }
 }

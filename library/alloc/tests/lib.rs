@@ -1,9 +1,7 @@
 #![feature(allocator_api)]
 #![feature(box_syntax)]
-#![feature(btree_drain_filter)]
 #![feature(drain_filter)]
 #![feature(exact_size_is_empty)]
-#![feature(map_first_last)]
 #![feature(new_uninit)]
 #![feature(pattern)]
 #![feature(str_split_once)]
@@ -13,6 +11,7 @@
 #![feature(associated_type_bounds)]
 #![feature(binary_heap_into_iter_sorted)]
 #![feature(binary_heap_drain_sorted)]
+#![feature(slice_ptr_get)]
 #![feature(split_inclusive)]
 #![feature(binary_heap_retain)]
 
@@ -23,7 +22,7 @@ mod arc;
 mod binary_heap;
 mod borrow;
 mod boxed;
-mod btree;
+mod btree_set_hash;
 mod cow_str;
 mod fmt;
 mod heap;

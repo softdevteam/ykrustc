@@ -1,7 +1,7 @@
 use crate::build;
 use crate::build::scope::DropKind;
-use crate::hair::cx::Cx;
-use crate::hair::{BindingMode, LintLevel, PatKind};
+use crate::thir::cx::Cx;
+use crate::thir::{BindingMode, LintLevel, PatKind};
 use rustc_attr::{self as attr, UnwindAttr};
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
@@ -34,7 +34,7 @@ crate fn mir_built<'tcx>(
 
 /// Construct the MIR for a given `DefId`.
 fn mir_build(tcx: TyCtxt<'_>, def: ty::WithOptConstParam<LocalDefId>) -> Body<'_> {
-    let id = tcx.hir().as_local_hir_id(def.did);
+    let id = tcx.hir().local_def_id_to_hir_id(def.did);
 
     // Figure out what primary body this item has.
     let (body_id, return_ty_span) = match tcx.hir().get(id) {
@@ -293,7 +293,7 @@ struct Builder<'a, 'tcx> {
     /// see the `scope` module for more details.
     scopes: scope::Scopes<'tcx>,
 
-    /// The block-context: each time we build the code within an hair::Block,
+    /// The block-context: each time we build the code within an thir::Block,
     /// we push a frame here tracking whether we are building a statement or
     /// if we are pushing the tail expression of the block. This is used to
     /// embed information in generated temps about whether they were created
@@ -536,7 +536,7 @@ macro_rules! unpack {
 fn should_abort_on_panic(tcx: TyCtxt<'_>, fn_def_id: LocalDefId, _abi: Abi) -> bool {
     // Validate `#[unwind]` syntax regardless of platform-specific panic strategy.
     let attrs = &tcx.get_attrs(fn_def_id.to_def_id());
-    let unwind_attr = attr::find_unwind_attr(Some(tcx.sess.diagnostic()), attrs);
+    let unwind_attr = attr::find_unwind_attr(&tcx.sess, attrs);
 
     // We never unwind, so it's not relevant to stop an unwind.
     if tcx.sess.panic_strategy() != PanicStrategy::Unwind {

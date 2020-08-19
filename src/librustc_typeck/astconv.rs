@@ -8,7 +8,7 @@
 use crate::collect::PlaceholderHirTyCollector;
 use crate::middle::resolve_lifetime as rl;
 use crate::require_c_abi_if_c_variadic;
-use rustc_ast::{ast::ParamKindOrd, util::lev_distance::find_best_match_for_name};
+use rustc_ast::{util::lev_distance::find_best_match_for_name, ParamKindOrd};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::ErrorReported;
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticId, FatalError};
@@ -170,7 +170,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         def: Option<&ty::GenericParamDef>,
     ) -> ty::Region<'tcx> {
         let tcx = self.tcx();
-        let lifetime_name = |def_id| tcx.hir().name(tcx.hir().as_local_hir_id(def_id));
+        let lifetime_name = |def_id| tcx.hir().name(tcx.hir().local_def_id_to_hir_id(def_id));
 
         let r = match tcx.named_region(lifetime.hir_id) {
             Some(rl::Region::Static) => tcx.lifetimes.re_static,
@@ -489,10 +489,11 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             kind,
         );
 
+        let unordered = sess.features_untracked().const_generics;
         let kind_ord = match kind {
             "lifetime" => ParamKindOrd::Lifetime,
             "type" => ParamKindOrd::Type,
-            "constant" => ParamKindOrd::Const,
+            "constant" => ParamKindOrd::Const { unordered },
             // It's more concise to match on the string representation, though it means
             // the match is non-exhaustive.
             _ => bug!("invalid generic parameter kind {}", kind),
@@ -500,17 +501,19 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         let arg_ord = match arg {
             GenericArg::Lifetime(_) => ParamKindOrd::Lifetime,
             GenericArg::Type(_) => ParamKindOrd::Type,
-            GenericArg::Const(_) => ParamKindOrd::Const,
+            GenericArg::Const(_) => ParamKindOrd::Const { unordered },
         };
 
-        // This note will be true as long as generic parameters are strictly ordered by their kind.
-        let (first, last) =
-            if kind_ord < arg_ord { (kind, arg.descr()) } else { (arg.descr(), kind) };
-        err.note(&format!("{} arguments must be provided before {} arguments", first, last));
-
-        if let Some(help) = help {
-            err.help(help);
+        // This note is only true when generic parameters are strictly ordered by their kind.
+        if kind_ord.cmp(&arg_ord) != core::cmp::Ordering::Equal {
+            let (first, last) =
+                if kind_ord < arg_ord { (kind, arg.descr()) } else { (arg.descr(), kind) };
+            err.note(&format!("{} arguments must be provided before {} arguments", first, last));
+            if let Some(help) = help {
+                err.help(help);
+            }
         }
+
         err.emit();
     }
 
@@ -672,7 +675,12 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                                                         ParamKindOrd::Type
                                                     }
                                                     GenericParamDefKind::Const => {
-                                                        ParamKindOrd::Const
+                                                        ParamKindOrd::Const {
+                                                            unordered: tcx
+                                                                .sess
+                                                                .features_untracked()
+                                                                .const_generics,
+                                                        }
                                                     }
                                                 },
                                                 param,
@@ -1194,6 +1202,36 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         )
     }
 
+    pub fn instantiate_lang_item_trait_ref(
+        &self,
+        lang_item: hir::LangItem,
+        span: Span,
+        hir_id: hir::HirId,
+        args: &GenericArgs<'_>,
+        self_ty: Ty<'tcx>,
+        bounds: &mut Bounds<'tcx>,
+    ) {
+        let trait_def_id = self.tcx().require_lang_item(lang_item, Some(span));
+
+        let (substs, assoc_bindings, _) =
+            self.create_substs_for_ast_path(span, trait_def_id, &[], args, false, Some(self_ty));
+        let poly_trait_ref = ty::Binder::bind(ty::TraitRef::new(trait_def_id, substs));
+        bounds.trait_bounds.push((poly_trait_ref, span, Constness::NotConst));
+
+        let mut dup_bindings = FxHashMap::default();
+        for binding in assoc_bindings {
+            let _: Result<_, ErrorReported> = self.add_predicates_for_ast_type_binding(
+                hir_id,
+                poly_trait_ref,
+                &binding,
+                bounds,
+                false,
+                &mut dup_bindings,
+                span,
+            );
+        }
+    }
+
     fn ast_path_to_mono_trait_ref(
         &self,
         span: Span,
@@ -1384,6 +1422,10 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     trait_bounds.push((b, Constness::NotConst))
                 }
                 hir::GenericBound::Trait(_, hir::TraitBoundModifier::Maybe) => {}
+                hir::GenericBound::LangItemTrait(lang_item, span, hir_id, args) => self
+                    .instantiate_lang_item_trait_ref(
+                        lang_item, span, hir_id, args, param_ty, bounds,
+                    ),
                 hir::GenericBound::Outlives(ref l) => region_bounds.push(l),
             }
         }
@@ -1615,6 +1657,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         span: Span,
         trait_bounds: &[hir::PolyTraitRef<'_>],
         lifetime: &hir::Lifetime,
+        borrowed: bool,
     ) -> Ty<'tcx> {
         let tcx = self.tcx();
 
@@ -1657,6 +1700,20 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 "additional use",
             );
             first_trait.label_with_exp_info(&mut err, "first non-auto trait", "first use");
+            err.help(&format!(
+                "consider creating a new trait with all of these as super-traits and using that \
+                 trait here instead: `trait NewTrait: {} {{}}`",
+                regular_traits
+                    .iter()
+                    .map(|t| t.trait_ref().print_only_trait_path().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" + "),
+            ));
+            err.note(
+                "auto-traits like `Send` and `Sync` are traits that have special properties; \
+                 for more information on them, visit \
+                 <https://doc.rust-lang.org/reference/special-types-and-traits.html#auto-traits>",
+            );
             err.emit();
         }
 
@@ -1829,15 +1886,20 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     self.ast_region_to_region(lifetime, None)
                 } else {
                     self.re_infer(None, span).unwrap_or_else(|| {
-                        // FIXME: these can be redundant with E0106, but not always.
-                        struct_span_err!(
+                        let mut err = struct_span_err!(
                             tcx.sess,
                             span,
                             E0228,
                             "the lifetime bound for this object type cannot be deduced \
                              from context; please supply an explicit bound"
-                        )
-                        .emit();
+                        );
+                        if borrowed {
+                            // We will have already emitted an error E0106 complaining about a
+                            // missing named lifetime in `&dyn Trait`, so we elide this one.
+                            err.delay_as_bug();
+                        } else {
+                            err.emit();
+                        }
                         tcx.lifetimes.re_static
                     })
                 }
@@ -2091,7 +2153,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
 
         debug!("find_bound_for_assoc_item: predicates={:#?}", predicates);
 
-        let param_hir_id = tcx.hir().as_local_hir_id(ty_param_def_id);
+        let param_hir_id = tcx.hir().local_def_id_to_hir_id(ty_param_def_id);
         let param_name = tcx.hir().ty_param_name(param_hir_id);
         self.one_bound_for_assoc_type(
             || {
@@ -2475,7 +2537,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
 
             let parent_def_id = def_id
                 .and_then(|def_id| {
-                    def_id.as_local().map(|def_id| tcx.hir().as_local_hir_id(def_id))
+                    def_id.as_local().map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id))
                 })
                 .map(|hir_id| tcx.hir().get_parent_did(hir_id).to_def_id());
 
@@ -2811,7 +2873,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 assert_eq!(opt_self_ty, None);
                 self.prohibit_generics(path.segments);
 
-                let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
+                let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
                 let item_id = tcx.hir().get_parent_node(hir_id);
                 let item_def_id = tcx.hir().local_def_id(item_id);
                 let generics = tcx.generics_of(item_def_id);
@@ -2865,6 +2927,12 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
     /// Parses the programmer's textual representation of a type into our
     /// internal notion of a type.
     pub fn ast_ty_to_ty(&self, ast_ty: &hir::Ty<'_>) -> Ty<'tcx> {
+        self.ast_ty_to_ty_inner(ast_ty, false)
+    }
+
+    /// Turns a `hir::Ty` into a `Ty`. For diagnostics' purposes we keep track of whether trait
+    /// objects are borrowed like `&dyn Trait` to avoid emitting redundant errors.
+    fn ast_ty_to_ty_inner(&self, ast_ty: &hir::Ty<'_>, borrowed: bool) -> Ty<'tcx> {
         debug!("ast_ty_to_ty(id={:?}, ast_ty={:?} ty_ty={:?})", ast_ty.hir_id, ast_ty, ast_ty.kind);
 
         let tcx = self.tcx();
@@ -2877,7 +2945,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             hir::TyKind::Rptr(ref region, ref mt) => {
                 let r = self.ast_region_to_region(region, None);
                 debug!("ast_ty_to_ty: r={:?}", r);
-                let t = self.ast_ty_to_ty(&mt.ty);
+                let t = self.ast_ty_to_ty_inner(&mt.ty, true);
                 tcx.mk_ref(r, ty::TypeAndMut { ty: t, mutbl: mt.mutbl })
             }
             hir::TyKind::Never => tcx.types.never,
@@ -2895,7 +2963,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 ))
             }
             hir::TyKind::TraitObject(ref bounds, ref lifetime) => {
-                self.conv_object_ty_poly_trait_ref(ast_ty.span, bounds, lifetime)
+                self.conv_object_ty_poly_trait_ref(ast_ty.span, bounds, lifetime, borrowed)
             }
             hir::TyKind::Path(hir::QPath::Resolved(ref maybe_qself, ref path)) => {
                 debug!("ast_ty_to_ty: maybe_qself={:?} path={:?}", maybe_qself, path);
@@ -2925,6 +2993,18 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 self.associated_path_to_ty(ast_ty.hir_id, ast_ty.span, ty, res, segment, false)
                     .map(|(ty, _, _)| ty)
                     .unwrap_or_else(|_| tcx.ty_error())
+            }
+            hir::TyKind::Path(hir::QPath::LangItem(lang_item, span)) => {
+                let def_id = tcx.require_lang_item(lang_item, Some(span));
+                let (substs, _, _) = self.create_substs_for_ast_path(
+                    span,
+                    def_id,
+                    &[],
+                    &GenericArgs::none(),
+                    true,
+                    None,
+                );
+                self.normalize_ty(span, tcx.at(span).type_of(def_id).subst(tcx, substs))
             }
             hir::TyKind::Array(ref ty, ref length) => {
                 let length_def_id = tcx.hir().local_def_id(length.hir_id);

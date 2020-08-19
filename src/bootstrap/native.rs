@@ -178,7 +178,7 @@ impl Step for Llvm {
             .define("LLVM_TARGET_ARCH", target_native.split('-').next().unwrap())
             .define("LLVM_DEFAULT_TARGET_TRIPLE", target_native);
 
-        if !target.contains("netbsd") {
+        if !target.contains("netbsd") && target != "aarch64-apple-darwin" {
             cfg.define("LLVM_ENABLE_ZLIB", "ON");
         } else {
             // FIXME: Enable zlib on NetBSD too
@@ -282,14 +282,6 @@ impl Step for Llvm {
                 "LLVM_CONFIG_PATH",
                 host_bin.join("llvm-config").with_extension(EXE_EXTENSION),
             );
-
-            if target.contains("netbsd") {
-                cfg.define("CMAKE_SYSTEM_NAME", "NetBSD");
-            } else if target.contains("freebsd") {
-                cfg.define("CMAKE_SYSTEM_NAME", "FreeBSD");
-            } else if target.contains("windows") {
-                cfg.define("CMAKE_SYSTEM_NAME", "Windows");
-            }
         }
 
         if let Some(ref suffix) = builder.config.llvm_version_suffix {
@@ -377,6 +369,22 @@ fn configure_cmake(
         cfg.generator("Ninja");
     }
     cfg.target(&target.triple).host(&builder.config.build.triple);
+
+    if target != builder.config.build {
+        if target.contains("netbsd") {
+            cfg.define("CMAKE_SYSTEM_NAME", "NetBSD");
+        } else if target.contains("freebsd") {
+            cfg.define("CMAKE_SYSTEM_NAME", "FreeBSD");
+        } else if target.contains("windows") {
+            cfg.define("CMAKE_SYSTEM_NAME", "Windows");
+        }
+        // When cross-compiling we should also set CMAKE_SYSTEM_VERSION, but in
+        // that case like CMake we cannot easily determine system version either.
+        //
+        // Since, the LLVM itself makes rather limited use of version checks in
+        // CMakeFiles (and then only in tests), and so far no issues have been
+        // reported, the system version is currently left unset.
+    }
 
     let sanitize_cc = |cc: &Path| {
         if target.contains("msvc") {
@@ -786,6 +794,7 @@ fn supported_sanitizers(
         }
         "x86_64-apple-darwin" => darwin_libs("osx", &["asan", "lsan", "tsan"]),
         "x86_64-fuchsia" => common_libs("fuchsia", "x86_64", &["asan"]),
+        "x86_64-unknown-freebsd" => common_libs("freebsd", "x86_64", &["asan", "msan", "tsan"]),
         "x86_64-unknown-linux-gnu" => {
             common_libs("linux", "x86_64", &["asan", "lsan", "msan", "tsan"])
         }

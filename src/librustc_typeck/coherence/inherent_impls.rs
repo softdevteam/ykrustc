@@ -13,7 +13,7 @@ use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, LOCAL_CRATE};
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_middle::ty::{self, CrateInherentImpls, TyCtxt};
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_span::Span;
 
 /// On-demand query: yields a map containing all types mapped to their inherent impls.
@@ -109,6 +109,16 @@ impl ItemLikeVisitor<'v> for InherentCollect<'tcx> {
                     lang_items.slice_alloc_impl(),
                     "slice",
                     "[T]",
+                    item.span,
+                );
+            }
+            ty::Array(_, _) => {
+                self.check_primitive_impl(
+                    def_id,
+                    lang_items.array_impl(),
+                    None,
+                    "array",
+                    "[T; N]",
                     item.span,
                 );
             }

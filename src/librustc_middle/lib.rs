@@ -27,6 +27,7 @@
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
+#![feature(cmp_min_max_by)]
 #![feature(const_fn)]
 #![feature(const_panic)]
 #![feature(const_fn_transmute)]
@@ -55,13 +56,11 @@
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
-extern crate scoped_tls;
-#[macro_use]
 extern crate rustc_macros;
 #[macro_use]
 extern crate rustc_data_structures;
 #[macro_use]
-extern crate log;
+extern crate tracing;
 #[macro_use]
 extern crate smallvec;
 
