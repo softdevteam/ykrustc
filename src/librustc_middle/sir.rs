@@ -109,6 +109,11 @@ impl SirFuncCx<'tcx> {
         let local_decls = Vec::with_capacity(mir.local_decls.len());
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name);
 
+        let crate_name = tcx.crate_name(instance.def_id().krate).as_str();
+        if crate_name == "core" || crate_name == "alloc" {
+            flags |= ykpack::bodyflags::DO_NOT_TRACE;
+        }
+
         Self {
             func: ykpack::Body {
                 symbol_name,
