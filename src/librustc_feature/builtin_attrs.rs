@@ -236,6 +236,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // Yorick: Markers for trimming traces.
     ungated!(trace_head, AssumedUsed, template!(Word)),
     ungated!(trace_tail, AssumedUsed, template!(Word)),
+    ungated!(do_not_trace, AssumedUsed, template!(Word)),
 
     ungated!(used, AssumedUsed, template!(Word)),
 

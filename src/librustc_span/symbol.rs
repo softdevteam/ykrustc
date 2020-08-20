@@ -428,6 +428,7 @@ symbols! {
         dispatch_from_dyn,
         div,
         div_assign,
+        do_not_trace,
         doc,
         doc_alias,
         doc_cfg,
