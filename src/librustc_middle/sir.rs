@@ -7,6 +7,7 @@ use crate::mir;
 use crate::ty::{self, Instance, Ty, TyCtxt};
 use indexmap::IndexMap;
 use rustc_ast::ast;
+use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::fx::FxHasher;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_session::config::OutputType;
@@ -152,12 +153,8 @@ impl SirFuncCx<'tcx> {
                 let assign = self.lower_assign_stmt(place, rvalue);
                 self.push_stmt(bb, assign);
             }
-            mir::StatementKind::StorageLive(l) => {
-                self.push_stmt(bb, ykpack::Statement::StorageLive(self.lower_local(l)))
-            }
-            mir::StatementKind::StorageDead(l) => {
-                self.push_stmt(bb, ykpack::Statement::StorageDead(self.lower_local(l)))
-            }
+            // We compute our own liveness in Yorick, so these are ignored.
+            mir::StatementKind::StorageLive(_) | mir::StatementKind::StorageDead(_) => {}
             _ => self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt))),
         }
     }
@@ -351,6 +348,8 @@ pub struct SirTypes {
     pub map: IndexMap<ykpack::Ty, ykpack::TyIndex, BuildHasherDefault<FxHasher>>,
     /// The next available type index.
     next_idx: ykpack::TyIndex,
+    /// Indices which are thread tracer types.
+    pub thread_tracers: FxHashSet<u32>,
 }
 
 impl SirTypes {

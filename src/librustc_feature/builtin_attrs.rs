@@ -230,13 +230,12 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(link_section, AssumedUsed, template!(NameValueStr: "name")),
     ungated!(no_mangle, AssumedUsed, template!(Word)),
 
-    // Yorick: "Don't software trace this". Disables the `AddYkSWTCalls` MIR transform.
+    // Yorick-related stuff.
     ungated!(no_sw_trace, AssumedUsed, template!(Word)),
-
-    // Yorick: Markers for trimming traces.
     ungated!(trace_head, AssumedUsed, template!(Word)),
     ungated!(trace_tail, AssumedUsed, template!(Word)),
     ungated!(do_not_trace, AssumedUsed, template!(Word)),
+    ungated!(thread_tracer, AssumedUsed, template!(Word)),
 
     ungated!(used, AssumedUsed, template!(Word)),
 

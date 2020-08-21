@@ -1091,6 +1091,7 @@ symbols! {
         then_with,
         thread,
         thread_local,
+        thread_tracer,
         tool_attributes,
         tool_lints,
         trace_head,
