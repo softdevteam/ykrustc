@@ -38,7 +38,10 @@ pub fn write_sir<'tcx>(tcx: TyCtxt<'tcx>, sir_llvm_module: &mut ModuleLlvm) {
     let types =
         tcx.sir_types.borrow_mut().map.drain(..).map(|(k, _)| k).collect::<Vec<ykpack::Ty>>();
     let crate_hash = tcx.crate_hash(LOCAL_CRATE).as_u64();
-    encoder.serialise(ykpack::Pack::Types(ykpack::Types { crate_hash, types })).unwrap();
+    let thread_tracers = tcx.sir_types.borrow_mut().thread_tracers.drain().collect::<Vec<u32>>();
+    encoder
+        .serialise(ykpack::Pack::Types(ykpack::Types { crate_hash, types, thread_tracers }))
+        .unwrap();
 
     for func in sir_funcs {
         encoder.serialise(ykpack::Pack::Body(func)).unwrap();

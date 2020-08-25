@@ -4,6 +4,7 @@ use rustc_ast::ast::{IntTy, UintTy};
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::ty::AdtDef;
 use rustc_middle::ty::{self, layout::TyAndLayout, TyCtxt};
+use rustc_span::sym;
 use rustc_target::abi::FieldsShape;
 use rustc_target::abi::VariantIdx;
 use std::convert::TryFrom;
@@ -47,17 +48,24 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &Bx,
     ty_layout: &TyAndLayout<'tcx>,
 ) -> ykpack::TypeId {
-    let sir_ty = match ty_layout.ty.kind {
-        ty::Int(si) => lower_signed_int(si),
-        ty::Uint(ui) => lower_unsigned_int(ui),
+    let (sir_ty, is_thread_tracer) = match ty_layout.ty.kind {
+        ty::Int(si) => (lower_signed_int(si), false),
+        ty::Uint(ui) => (lower_unsigned_int(ui), false),
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
-        ty::Ref(_, typ, _) => ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
-        ty::Bool => ykpack::Ty::Bool,
-        ty::Tuple(..) => lower_tuple(tcx, bx, ty_layout),
-        _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
+        ty::Ref(_, typ, _) => {
+            (ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
+        }
+        ty::Bool => (ykpack::Ty::Bool, false),
+        ty::Tuple(..) => (lower_tuple(tcx, bx, ty_layout), false),
+        _ => (ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)), false),
     };
 
-    (tcx.crate_hash(LOCAL_CRATE).as_u64(), tcx.sir_types.borrow_mut().index(sir_ty))
+    let mut sir_types = tcx.sir_types.borrow_mut();
+    let type_id = (tcx.crate_hash(LOCAL_CRATE).as_u64(), sir_types.index(sir_ty));
+    if is_thread_tracer {
+        sir_types.thread_tracers.insert(u32::try_from(type_id.1).unwrap());
+    }
+    type_id
 }
 
 fn lower_signed_int(si: IntTy) -> ykpack::Ty {
@@ -113,9 +121,16 @@ fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &Bx,
     adt_def: &AdtDef,
     ty_layout: &TyAndLayout<'tcx>,
-) -> ykpack::Ty {
+) -> (ykpack::Ty, bool) {
     let align = i32::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
     let size = i32::try_from(ty_layout.layout.size.bytes()).unwrap();
+
+    let mut is_thread_tracer = false;
+    for attr in tcx.get_attrs(adt_def.did).iter() {
+        if tcx.sess.check_name(attr, sym::thread_tracer) {
+            is_thread_tracer = true;
+        }
+    }
 
     if adt_def.variants.len() == 1 {
         // Plain old struct-like thing.
@@ -130,15 +145,18 @@ fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                     sir_offsets.push(offs.bytes());
                 }
 
-                ykpack::Ty::Struct(ykpack::StructTy {
-                    fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
-                    size_align: ykpack::SizeAndAlign { align, size },
-                })
+                (
+                    ykpack::Ty::Struct(ykpack::StructTy {
+                        fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
+                        size_align: ykpack::SizeAndAlign { align, size },
+                    }),
+                    is_thread_tracer,
+                )
             }
-            _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
+            _ => (ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)), false),
         }
     } else {
         // An enum with variants.
-        ykpack::Ty::Unimplemented(format!("{:?}", ty_layout))
+        (ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)), false)
     }
 }
