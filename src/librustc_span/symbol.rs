@@ -1095,6 +1095,7 @@ symbols! {
         tool_attributes,
         tool_lints,
         trace_head,
+        trace_inputs,
         trace_macros,
         trace_tail,
         track_caller,
@@ -1195,8 +1196,6 @@ symbols! {
         wrapping_mul,
         wrapping_sub,
         write_bytes,
-        yk_swt_rec_loc,
-        yk_trace_inputs,
     }
 }
 

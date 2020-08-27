@@ -276,10 +276,6 @@ mod bool;
 mod tuple;
 mod unit;
 
-/// Yorick tracing.
-#[unstable(feature = "yk", issue = "none")]
-pub mod yk;
-
 #[stable(feature = "core_primitive", since = "1.43.0")]
 pub mod primitive;
 

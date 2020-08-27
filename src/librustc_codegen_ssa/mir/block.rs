@@ -566,37 +566,44 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         if let Some(sfcx) = &mut self.sir_func_cx {
             let opnd = match instance {
-                Some(inst) if inst.def_id() == sfcx.trace_inputs_defid => {
-                    // Call to our special lang item. The return value is used to identify the
-                    // trace inputs. It should be an owned tuple.
-                    let ret_place = destination.unwrap().0;
-
-                    // The user must assign the return value to a top-level local.
-                    if !ret_place.projection.is_empty() {
-                        panic!("Return value of `trace_inputs()` is assigned to a projection.");
-                    }
-
-                    // Check trace inputs are not assigned more than once.
-                    if sfcx.func.trace_inputs_local.is_some() {
-                        panic!(
-                            "Multiple trace input declarations detected in {}",
-                            bx.tcx().def_path_str(inst.def_id())
-                        );
-                    }
-
-                    // Check it's the right type.
-                    let local_decl = &self.mir.local_decls[ret_place.local];
-                    match local_decl.ty.kind {
-                        ty::Tuple(_) => (),
-                        _ => panic!("Argument to `trace_inputs()` should be a tuple."),
-                    }
-
-                    sfcx.func.trace_inputs_local = Some(sfcx.lower_local(ret_place.local));
-                    None
-                }
                 Some(inst) => {
-                    let sym = (&*bx.tcx().symbol_name(inst).name).to_owned();
-                    Some(ykpack::CallOperand::Fn(sym))
+                    let mut is_trace_inputs = false;
+                    for attr in bx.tcx().get_attrs(inst.def_id()).iter() {
+                        if bx.tcx().sess.check_name(attr, sym::trace_inputs) {
+                            is_trace_inputs = true;
+                        }
+                    }
+                    if is_trace_inputs {
+                        // Call to our special lang item. The return value is used to identify the
+                        // trace inputs. It should be an owned tuple.
+                        let ret_place = destination.unwrap().0;
+
+                        // The user must assign the return value to a top-level local.
+                        if !ret_place.projection.is_empty() {
+                            panic!("Return value of `trace_inputs()` is assigned to a projection.");
+                        }
+
+                        // Check trace inputs are not assigned more than once.
+                        if sfcx.func.trace_inputs_local.is_some() {
+                            panic!(
+                                "Multiple trace input declarations detected in {}",
+                                bx.tcx().def_path_str(inst.def_id())
+                            );
+                        }
+
+                        // Check it's the right type.
+                        let local_decl = &self.mir.local_decls[ret_place.local];
+                        match local_decl.ty.kind {
+                            ty::Tuple(_) => (),
+                            _ => panic!("Argument to `trace_inputs()` should be a tuple."),
+                        }
+
+                        sfcx.func.trace_inputs_local = Some(sfcx.lower_local(ret_place.local));
+                        None
+                    } else {
+                        let sym = (&*bx.tcx().symbol_name(inst).name).to_owned();
+                        Some(ykpack::CallOperand::Fn(sym))
+                    }
                 }
                 None => Some(ykpack::CallOperand::Unknown),
             };
