@@ -7,7 +7,7 @@ use crate::common::{Codegen, CodegenUnits, DebugInfo, Debugger, Rustdoc};
 use crate::common::{CompareMode, FailMode, PassMode};
 use crate::common::{CompileFail, Pretty, RunFail, RunPassValgrind};
 use crate::common::{Config, TestPaths};
-use crate::common::{YkSir, UI_RUN_STDERR, UI_RUN_STDOUT};
+use crate::common::{UI_RUN_STDERR, UI_RUN_STDOUT};
 use crate::errors::{self, Error, ErrorKind};
 use crate::header::TestProps;
 use crate::json;
@@ -34,8 +34,6 @@ use tracing::*;
 
 use crate::extract_gdb_version;
 use crate::is_android_gdb_target;
-
-include!("runtest_sir.rs");
 
 #[cfg(test)]
 mod tests;
@@ -348,7 +346,6 @@ impl<'test> TestCx<'test> {
             RunMake => self.run_rmake_test(),
             Ui => self.run_ui_test(),
             MirOpt => self.run_mir_opt_test(),
-            YkSir => self.run_yk_sir_test(),
             Assembly => self.run_assembly_test(),
             JsDocTest => self.run_js_doc_test(),
         }
@@ -1956,13 +1953,6 @@ impl<'test> TestCx<'test> {
                 debug!("dir_opt: {:?}", dir_opt);
 
                 rustc.arg(dir_opt);
-            }
-            YkSir => {
-                rustc.args(&["--emit", "yk-sir"]);
-
-                let mir_dump_dir = self.get_mir_dump_dir();
-                let _ = fs::remove_dir_all(&mir_dump_dir);
-                create_dir_all(mir_dump_dir.as_path()).unwrap();
             }
             RunFail | RunPassValgrind | Pretty | DebugInfo | Codegen | Rustdoc | RunMake
             | CodegenUnits | JsDocTest | Assembly => {

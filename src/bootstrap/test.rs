@@ -910,8 +910,6 @@ default_test!(RunPassValgrind {
 
 default_test!(MirOpt { path: "src/test/mir-opt", mode: "mir-opt", suite: "mir-opt" });
 
-default_test!(YkSir { path: "src/test/yk-sir", mode: "yk-sir", suite: "yk-sir" });
-
 default_test!(Codegen { path: "src/test/codegen", mode: "codegen", suite: "codegen" });
 
 default_test!(CodegenUnits {
