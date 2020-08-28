@@ -6,7 +6,6 @@
 #![feature(rustc_attrs)]
 #![rustc_partition_reused(module = "krate_inherent-x", cfg = "cfail2")]
 #![crate_type = "rlib"]
-#![no_sw_trace]
 
 pub mod x {
     pub struct Foo;

@@ -57,7 +57,6 @@
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
 #![feature(repr_simd)]
-#![no_sw_trace]
 
 #[repr(simd)]
 struct i8x16(i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8);

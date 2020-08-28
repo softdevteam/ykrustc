@@ -2,7 +2,6 @@
 // ignore-debug: the debug assertions get in the way
 
 #![crate_type = "lib"]
-#![no_sw_trace]
 
 // verify that LLVM recognizes a loop involving 0..=n and will const-fold it.
 

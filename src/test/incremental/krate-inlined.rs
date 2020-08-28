@@ -7,7 +7,6 @@
 
 #![allow(warnings)]
 #![feature(rustc_attrs)]
-#![no_sw_trace]
 #![rustc_partition_reused(module = "krate_inlined-x", cfg = "rpass2")]
 
 fn main() {

@@ -13,7 +13,6 @@
 #![allow(warnings)]
 #![feature(rustc_attrs)]
 #![crate_type="rlib"]
-#![no_sw_trace]
 
 // Change condition (if)
 #[cfg(cfail1)]

@@ -16,7 +16,6 @@
 // gdb-check:$2 = &[u8] {data_ptr: [...]"\000", length: 1000000000}
 
 #![allow(unused_variables)]
-#![no_sw_trace]
 
 fn main() {
 

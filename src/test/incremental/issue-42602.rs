@@ -11,7 +11,6 @@
 // build-pass (FIXME(62277): could be check-pass?)
 
 #![feature(rustc_attrs)]
-#![no_sw_trace]
 
 fn main() {
     a::foo();

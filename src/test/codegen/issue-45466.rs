@@ -2,7 +2,6 @@
 // ignore-debug: the debug assertions get in the way
 
 #![crate_type="rlib"]
-#![no_sw_trace]
 
 // CHECK-LABEL: @memzero
 // CHECK-NOT: store

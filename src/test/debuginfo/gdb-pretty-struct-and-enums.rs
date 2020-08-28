@@ -28,7 +28,6 @@
 // gdbr-check:$5 = gdb_pretty_struct_and_enums::CStyleEnum::CStyleEnumVar3
 
 #![allow(dead_code, unused_variables)]
-#![no_sw_trace]
 
 struct RegularStruct {
     the_first_field: isize,

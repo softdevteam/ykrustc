@@ -129,7 +129,6 @@
 #![allow(unused_variables)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![no_sw_trace]
 
 fn main() {
     let no_padding1: ((u32, u32), u32, u32) = ((0, 1), 2, 3);

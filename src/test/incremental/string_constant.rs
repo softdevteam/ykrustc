@@ -5,7 +5,6 @@
 #![allow(warnings)]
 #![feature(rustc_attrs)]
 #![crate_type = "rlib"]
-#![no_sw_trace]
 
 // Here the only thing which changes is the string constant in `x`.
 // Therefore, the compiler deduces (correctly) that typeck is not

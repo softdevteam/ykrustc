@@ -726,7 +726,6 @@ symbols! {
         no_stack_check,
         no_start,
         no_std,
-        no_sw_trace,
         nomem,
         non_ascii_idents,
         non_exhaustive,
