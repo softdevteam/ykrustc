@@ -1,4 +1,3 @@
-// ignore-test FIXME swt_ignore
 // compile-flags: -O
 
 // A drop([...].clone()) sequence on an Rc should be a no-op

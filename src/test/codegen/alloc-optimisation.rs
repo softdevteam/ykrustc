@@ -1,7 +1,6 @@
 //
 // no-system-llvm
 // compile-flags: -O
-// ignore-test FIXME swt_ignore
 #![crate_type="lib"]
 
 #[no_mangle]
