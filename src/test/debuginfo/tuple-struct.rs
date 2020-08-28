@@ -68,7 +68,6 @@
 
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![no_sw_trace]
 
 struct NoPadding16(u16, i16);
 struct NoPadding32(i32, f32, u32);

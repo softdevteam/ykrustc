@@ -1,4 +1,3 @@
-// ignore-test FIXME swt_ignore
 // compile-flags: -O
 // ignore-tidy-linelength
 

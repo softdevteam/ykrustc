@@ -37,7 +37,6 @@
 #![allow(unused_variables)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![no_sw_trace]
 
 enum ABC { TheA, TheB, TheC }
 

@@ -231,8 +231,8 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(no_mangle, AssumedUsed, template!(Word)),
 
     // Yorick-related stuff.
-    ungated!(no_sw_trace, AssumedUsed, template!(Word)),
     ungated!(trace_head, AssumedUsed, template!(Word)),
+    ungated!(trace_inputs, AssumedUsed, template!(Word)),
     ungated!(trace_tail, AssumedUsed, template!(Word)),
     ungated!(do_not_trace, AssumedUsed, template!(Word)),
     ungated!(thread_tracer, AssumedUsed, template!(Word)),

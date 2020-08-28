@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::fx::FxHasher;
-use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_session::config::OutputType;
 use rustc_span::sym;
 use std::cell::RefCell;
@@ -76,7 +76,6 @@ impl Sir {
 pub struct SirFuncCx<'tcx> {
     pub func: ykpack::Body,
     tcx: TyCtxt<'tcx>,
-    pub trace_inputs_defid: DefId,
 }
 
 impl SirFuncCx<'tcx> {
@@ -102,11 +101,6 @@ impl SirFuncCx<'tcx> {
             mir.basic_blocks().len()
         ];
 
-        let trace_inputs_defid = tcx
-            .get_lang_items(LOCAL_CRATE)
-            .yk_trace_inputs()
-            .expect("couldn't find trace inputs lang item");
-
         let local_decls = Vec::with_capacity(mir.local_decls.len());
         let symbol_name = String::from(&*tcx.symbol_name(*instance).name);
 
@@ -124,7 +118,6 @@ impl SirFuncCx<'tcx> {
                 local_decls,
             },
             tcx,
-            trace_inputs_defid,
         }
     }
 

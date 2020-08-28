@@ -35,7 +35,6 @@ pub mod nrvo;
 pub mod promote_consts;
 pub mod qualify_min_const_fn;
 pub mod remove_noop_landing_pads;
-//pub mod add_yk_swt_calls;
 pub mod required_consts;
 pub mod rustc_peek;
 pub mod simplify;
@@ -414,10 +413,6 @@ fn run_post_borrowck_cleanup_passes<'tcx>(
         // and it can help optimizations.
         &deaggregator::Deaggregator,
     ];
-
-    // Software tracing pass would be somewhere near here, but it's currently broken and rotting,
-    // and would need to be moved into the codegen post-monomorphisation anyway.
-    //&add_yk_swt_calls::AddYkSWTCalls(def_id.index),
 
     run_passes(
         tcx,

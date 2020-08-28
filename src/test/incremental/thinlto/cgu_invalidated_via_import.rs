@@ -8,7 +8,6 @@
 
 #![feature(rustc_attrs)]
 #![crate_type="rlib"]
-#![no_sw_trace]
 
 #![rustc_expected_cgu_reuse(module="cgu_invalidated_via_import-foo",
                             cfg="cfail2",

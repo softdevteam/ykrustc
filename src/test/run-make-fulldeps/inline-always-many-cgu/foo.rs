@@ -1,5 +1,4 @@
 #![crate_type = "lib"]
-#![no_sw_trace]
 
 pub mod a {
     #[inline(always)]

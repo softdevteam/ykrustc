@@ -1,7 +1,6 @@
 // compile-flags: -O
 
 #![crate_type = "lib"]
-#![no_sw_trace]
 
 // CHECK: define { i8, i8 } @pair_bool_bool(i1 zeroext %pair.0, i1 zeroext %pair.1)
 #[no_mangle]

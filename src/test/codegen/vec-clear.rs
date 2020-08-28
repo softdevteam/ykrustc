@@ -1,5 +1,4 @@
 // compile-flags: -O
-// ignore-test FIXME swt_ignore
 
 #![crate_type = "lib"]
 

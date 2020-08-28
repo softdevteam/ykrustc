@@ -85,7 +85,6 @@
 #![allow(dead_code)]
 #![feature(omit_gdb_pretty_printer_section)]
 #![omit_gdb_pretty_printer_section]
-#![no_sw_trace]
 
 trait TraitWithAssocType {
     type Type;

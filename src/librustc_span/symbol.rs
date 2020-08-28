@@ -726,7 +726,6 @@ symbols! {
         no_stack_check,
         no_start,
         no_std,
-        no_sw_trace,
         nomem,
         non_ascii_idents,
         non_exhaustive,
@@ -1095,6 +1094,7 @@ symbols! {
         tool_attributes,
         tool_lints,
         trace_head,
+        trace_inputs,
         trace_macros,
         trace_tail,
         track_caller,
@@ -1195,8 +1195,6 @@ symbols! {
         wrapping_mul,
         wrapping_sub,
         write_bytes,
-        yk_swt_rec_loc,
-        yk_trace_inputs,
     }
 }
 

@@ -2,7 +2,6 @@
 // compile-flags: -Zquery-dep-graph
 
 #![feature(rustc_attrs)]
-#![no_sw_trace]
 #![rustc_partition_codegened(module = "change_symbol_export_status-mod1", cfg = "rpass2")]
 #![rustc_partition_reused(module = "change_symbol_export_status-mod2", cfg = "rpass2")]
 

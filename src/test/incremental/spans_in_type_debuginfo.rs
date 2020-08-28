@@ -9,7 +9,6 @@
 #![rustc_partition_reused(module="spans_in_type_debuginfo-enums", cfg="rpass2")]
 
 #![feature(rustc_attrs)]
-#![no_sw_trace]
 
 mod structs {
     #[cfg(rpass1)]
