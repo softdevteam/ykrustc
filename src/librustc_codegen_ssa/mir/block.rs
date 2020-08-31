@@ -1039,7 +1039,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         debug!("codegen_block({:?}={:?})", bb, data);
 
         for statement in &data.statements {
-            bx = self.codegen_statement(bx, bb, statement);
+            bx = self.codegen_statement(bx, statement);
 
             if let Some(fcx) = self.sir_func_cx.as_mut() {
                 fcx.lower_statement(bb.as_u32(), statement);

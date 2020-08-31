@@ -1451,7 +1451,7 @@ fn parse_target_triple(matches: &getopts::Matches, error_format: ErrorOutputType
 
 fn parse_opt_level(
     matches: &getopts::Matches,
-    cg: &mut CodegenOptions,
+    cg: &CodegenOptions,
     error_format: ErrorOutputType,
 ) -> OptLevel {
     // The `-O` and `-C opt-level` flags specify the same setting, so we want to be able
@@ -1470,7 +1470,7 @@ fn parse_opt_level(
             },
         )
         .max();
-    let opt_level = if max_o > max_c {
+    if max_o > max_c {
         OptLevel::Default
     } else {
         match cg.opt_level.as_ref() {
@@ -1491,9 +1491,7 @@ fn parse_opt_level(
                 );
             }
         }
-    };
-
-    opt_level
+    }
 }
 
 fn select_debuginfo(
@@ -1802,17 +1800,17 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
 
     let prints = collect_print_requests(&mut cg, &mut debugging_opts, matches, error_format);
 
+    let cg = cg;
+
     let sysroot_opt = matches.opt_str("sysroot").map(|m| PathBuf::from(&m));
     let target_triple = parse_target_triple(matches, error_format);
-    let opt_level = parse_opt_level(matches, &mut cg, error_format);
+    let opt_level = parse_opt_level(matches, &cg, error_format);
 
     // We don't allow optimisation and tracing to be enabled simultaneously as LLVM is likely to
     // reorder things, thus destroying the correctness of our SIR and DILabels.
     if opt_level != OptLevel::No && cg.tracer != TracerMode::Off {
         early_error(error_format, &format!("optimisation cannot be enabled with a tracer"));
     }
-
-    let cg = cg;
 
     // The `-g` and `-C debuginfo` flags specify the same setting, so we want to be able
     // to use them interchangeably. See the note above (regarding `-O` and `-C opt-level`)

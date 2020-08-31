@@ -524,10 +524,6 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         finalize(self)
     }
 
-    fn has_debug(&self) -> bool {
-        self.dbg_cx.is_some()
-    }
-
     // FIXME(eddyb) find a common convention for all of the debuginfo-related
     // names (choose between `dbg`, `debug`, `debuginfo`, `debug_info` etc.).
     fn create_dbg_var(
