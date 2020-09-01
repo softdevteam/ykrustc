@@ -124,7 +124,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
             let name = SmallCStr::new(name);
             llvm::LLVMAppendBasicBlockInContext(cx.llcx, llfn, name.as_ptr())
         };
-
         bx.position_at_end(llbb);
         bx
     }
@@ -141,12 +140,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
 
     fn llbb(&self) -> &'ll BasicBlock {
         unsafe { llvm::LLVMGetInsertBlock(self.llbuilder) }
-    }
-
-    fn position_before(&mut self, instr: &Value) {
-        unsafe {
-            llvm::LLVMPositionBuilderBefore(self.llbuilder, instr);
-        }
     }
 
     fn position_at_end(&mut self, llbb: &'ll BasicBlock) {
@@ -200,10 +193,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
                 );
             }
         }
-    }
-
-    fn first_instruction(&mut self, llbb: &'ll BasicBlock) -> Option<&'ll Value> {
-        unsafe { llvm::LLVMGetFirstInstruction(llbb) }
     }
 
     fn ret_void(&mut self) {

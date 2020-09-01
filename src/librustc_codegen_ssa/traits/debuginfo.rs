@@ -29,7 +29,6 @@ pub trait DebugInfoMethods<'tcx>: BackendTypes {
         defining_crate: CrateNum,
     ) -> Self::DIScope;
     fn debuginfo_finalize(&self);
-    fn has_debug(&self) -> bool;
 
     // FIXME(eddyb) find a common convention for all of the debuginfo-related
     // names (choose between `dbg`, `debug`, `debuginfo`, `debug_info` etc.).

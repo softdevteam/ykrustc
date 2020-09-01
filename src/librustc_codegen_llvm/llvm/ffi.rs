@@ -1093,8 +1093,6 @@ extern "C" {
     // Operations on instructions
     pub fn LLVMIsAInstruction(Val: &Value) -> Option<&Value>;
     pub fn LLVMGetFirstBasicBlock(Fn: &Value) -> &BasicBlock;
-    pub fn LLVMGetFirstInstruction(BB: &BasicBlock) -> Option<&Value>;
-    pub fn LLVMGetInstructionParent(I: &Value) -> &BasicBlock;
 
     // Operations on call sites
     pub fn LLVMSetInstructionCallConv(Instr: &Value, CC: c_uint);
@@ -1117,7 +1115,6 @@ extern "C" {
 
     // Instruction builders
     pub fn LLVMCreateBuilderInContext(C: &'a Context) -> &'a mut Builder<'a>;
-    pub fn LLVMPositionBuilderBefore(Builder: &Builder<'a>, Instr: &Value);
     pub fn LLVMPositionBuilderAtEnd(Builder: &Builder<'a>, Block: &'a BasicBlock);
     pub fn LLVMGetInsertBlock(Builder: &Builder<'a>) -> &'a BasicBlock;
     pub fn LLVMDisposeBuilder(Builder: &'a mut Builder<'a>);
@@ -2107,8 +2104,6 @@ extern "C" {
         Block: &BasicBlock,
         Name: *const c_char,
     );
-
-    pub fn LLVMRustInstructionIndex(Instr: &Value) -> usize;
 
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTypeToString(Type: &Type, s: &RustString);
