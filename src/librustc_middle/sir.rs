@@ -116,6 +116,7 @@ impl SirFuncCx<'tcx> {
                 flags,
                 trace_inputs_local: None,
                 local_decls,
+                num_args: mir.arg_count,
             },
             tcx,
         }
