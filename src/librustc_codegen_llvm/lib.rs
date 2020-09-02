@@ -92,9 +92,6 @@ impl ExtraBackendMethods for LlvmCodegenBackend {
     ) {
         base::write_compressed_metadata(tcx, metadata, llvm_module)
     }
-    fn write_sir<'tcx>(&self, tcx: TyCtxt<'tcx>, llvm_module: &mut ModuleLlvm) {
-        crate::sir::write_sir(tcx, llvm_module)
-    }
     fn codegen_allocator<'tcx>(
         &self,
         tcx: TyCtxt<'tcx>,

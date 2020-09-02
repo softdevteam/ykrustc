@@ -8,6 +8,7 @@ use crate::type_::Type;
 use crate::value::Value;
 
 use rustc_codegen_ssa::base::wants_msvc_seh;
+use rustc_codegen_ssa::sir;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::base_n;
 use rustc_data_structures::const_cstr;
@@ -15,7 +16,6 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_middle::bug;
 use rustc_middle::mir::mono::CodegenUnit;
-use rustc_middle::sir;
 use rustc_middle::ty::layout::{HasParamEnv, LayoutError, TyAndLayout};
 use rustc_middle::ty::{self, Instance, Ty, TyCtxt};
 use rustc_session::config::{CFGuard, CrateType, DebugInfo};
@@ -295,7 +295,11 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
         // If we are putting SIR into the binary or dumping it to disk, then create a place to
         // store it until it is serialised. Also skip generating SIR for build scripts (we will
         // never trace them).
-        let sir = if sir::Sir::is_required(tcx) { Some(Default::default()) } else { None };
+        let sir = if sir::Sir::is_required(tcx) {
+            Some(sir::Sir::new(tcx, &*codegen_unit.name().as_str()))
+        } else {
+            None
+        };
 
         CodegenCx {
             tcx,

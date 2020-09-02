@@ -27,20 +27,25 @@ const SIR_GLOBAL_SYM_PREFIX: &str = ".yksir";
 
 /// Writes the SIR into a buffer which will be linked in into an ELF section via LLVM.
 /// This is based on write_compressed_metadata().
-pub fn write_sir<'tcx>(tcx: TyCtxt<'tcx>, sir_llvm_module: &mut ModuleLlvm) {
-    let sir_funcs = tcx.sir.funcs.replace(Vec::new());
+pub fn write_sir<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    llvm_module: &ModuleLlvm,
+    cgu_name: &str,
+    sir_types: rustc_codegen_ssa::sir::SirTypes,
+    sir_funcs: Vec<ykpack::Body>,
+) {
     let mut buf = Vec::new();
     let mut encoder = ykpack::Encoder::from(&mut buf);
 
     // First we serialise the types which will be referenced in the body packs that will follow.
     // The serialisation order matters here, as the load order (in the runtime) corresponds with
     // the type indices, hence use of `IndexMap` for insertion order.
-    let types =
-        tcx.sir_types.borrow_mut().map.drain(..).map(|(k, _)| k).collect::<Vec<ykpack::Ty>>();
-    let crate_hash = tcx.crate_hash(LOCAL_CRATE).as_u64();
-    let thread_tracers = tcx.sir_types.borrow_mut().thread_tracers.drain().collect::<Vec<u32>>();
     encoder
-        .serialise(ykpack::Pack::Types(ykpack::Types { crate_hash, types, thread_tracers }))
+        .serialise(ykpack::Pack::Types(ykpack::Types {
+            crate_hash: sir_types.crate_hash,
+            types: sir_types.map.into_iter().map(|(k, _)| k).collect::<Vec<ykpack::Ty>>(),
+            thread_tracers: sir_types.thread_tracers.into_iter().collect(),
+        }))
         .unwrap();
 
     for func in sir_funcs {
@@ -49,23 +54,29 @@ pub fn write_sir<'tcx>(tcx: TyCtxt<'tcx>, sir_llvm_module: &mut ModuleLlvm) {
 
     encoder.done().unwrap();
 
-    let (sir_llcx, sir_llmod) = (&*sir_llvm_module.llcx, sir_llvm_module.llmod());
+    let (sir_llcx, sir_llmod) = (&*llvm_module.llcx, llvm_module.llmod());
     let llmeta = common::bytes_in_context(sir_llcx, &buf);
     let llconst = common::struct_in_context(sir_llcx, &[llmeta], false);
 
     // Borrowed from exported_symbols::metadata_symbol_name().
     let sym_name = format!(
-        "{}_{}_{}",
+        "{}_{}_{}_{}_sym",
         SIR_GLOBAL_SYM_PREFIX,
         tcx.original_crate_name(LOCAL_CRATE),
-        tcx.crate_disambiguator(LOCAL_CRATE).to_fingerprint().to_hex()
+        tcx.crate_disambiguator(LOCAL_CRATE).to_fingerprint().to_hex(),
+        cgu_name,
     );
 
-    let buf = CString::new(sym_name).unwrap();
+    let buf = CString::new(sym_name.clone()).unwrap();
     let llglobal = unsafe { llvm::LLVMAddGlobal(sir_llmod, common::val_ty(llconst), buf.as_ptr()) };
 
-    let section_name =
-        format!("{}{}", ykpack::SIR_SECTION_PREFIX, &*tcx.crate_name(LOCAL_CRATE).as_str());
+    let section_name = format!(
+        "{}_{}_{}_{}",
+        SIR_GLOBAL_SYM_PREFIX,
+        tcx.original_crate_name(LOCAL_CRATE),
+        tcx.crate_disambiguator(LOCAL_CRATE).to_fingerprint().to_hex(),
+        cgu_name,
+    );
     unsafe {
         llvm::LLVMSetInitializer(llglobal, llconst);
         let name = SmallCStr::new(&section_name);

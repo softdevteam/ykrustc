@@ -60,8 +60,6 @@ pub struct ModuleCodegen<M> {
     pub kind: ModuleKind,
 }
 
-pub const SIR_FILENAME: &str = "yksir.bin";
-
 // FIXME(eddyb) maybe include the crate name in this?
 pub const METADATA_FILENAME: &str = "lib.rmeta";
 
@@ -97,7 +95,6 @@ pub enum ModuleKind {
     Regular,
     Metadata,
     Allocator,
-    YkSir,
 }
 
 bitflags::bitflags! {
@@ -140,7 +137,6 @@ pub struct CodegenResults {
     pub modules: Vec<CompiledModule>,
     pub allocator_module: Option<CompiledModule>,
     pub metadata_module: Option<CompiledModule>,
-    pub sir_module: Option<CompiledModule>,
     pub crate_hash: Svh,
     pub metadata: rustc_middle::middle::cstore::EncodedMetadata,
     pub windows_subsystem: Option<String>,

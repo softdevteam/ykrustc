@@ -161,9 +161,14 @@ pub fn compile_codegen_unit(
                 cx.debuginfo_finalize();
             }
 
-            // If we collected SIR in this codegen unit, then merge it with that of the other units.
             if let Some(sir) = cx.sir {
-                cx.tcx.sir.update(sir);
+                crate::sir::write_sir(
+                    cx.tcx,
+                    &llvm_module,
+                    &*cgu_name.as_str(),
+                    sir.types.into_inner(),
+                    sir.funcs.into_inner(),
+                );
             }
         }
 

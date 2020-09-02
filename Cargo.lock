@@ -3351,6 +3351,7 @@ version = "0.0.0"
 dependencies = [
  "bitflags",
  "cc",
+ "indexmap",
  "jobserver",
  "libc",
  "memmap",
@@ -3697,7 +3698,6 @@ dependencies = [
  "bitflags",
  "byteorder",
  "chalk-ir",
- "indexmap",
  "measureme",
  "polonius-engine",
  "rustc-rayon-core",
@@ -3718,7 +3718,6 @@ dependencies = [
  "rustc_target",
  "smallvec 1.4.0",
  "tracing",
- "ykpack",
 ]
 
 [[package]]
