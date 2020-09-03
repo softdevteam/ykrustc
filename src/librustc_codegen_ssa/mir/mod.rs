@@ -16,9 +16,8 @@ use rustc_index::vec::IndexVec;
 use self::analyze::CleanupKind;
 use self::debuginfo::{FunctionDebugContext, PerLocalVarDebugInfo};
 use self::place::PlaceRef;
-use crate::sir;
+use crate::sir::{self, Sir, SirFuncCx};
 use rustc_middle::mir::traversal;
-use rustc_middle::sir::{Sir, SirFuncCx};
 
 use self::operand::{OperandRef, OperandValue};
 
@@ -305,7 +304,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         // There's no use in serialising these "empty functions" and they clash with the real
         // declarations.
         if !sfcx.is_empty() {
-            cx.tcx().sir.funcs.borrow_mut().push(sfcx.func);
+            cx.define_function_sir(sfcx.func);
         }
     }
 }

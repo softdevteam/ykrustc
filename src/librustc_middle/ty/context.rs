@@ -10,9 +10,8 @@ use crate::middle;
 use crate::middle::cstore::{CrateStoreDyn, EncodedMetadata};
 use crate::middle::resolve_lifetime::{self, ObjectLifetimeDefault};
 use crate::middle::stability;
-use crate::mir::interpret::{Allocation, ConstValue, Scalar};
-use crate::mir::{interpret, Body, Field, Local, Place, PlaceElem, ProjectionKind, Promoted};
-use crate::sir::{Sir, SirTypes};
+use crate::mir::interpret::{self, Allocation, ConstValue, Scalar};
+use crate::mir::{Body, Field, Local, Place, PlaceElem, ProjectionKind, Promoted};
 use crate::traits;
 use crate::ty::query::{self, TyCtxtAt};
 use crate::ty::steal::Steal;
@@ -984,10 +983,6 @@ pub struct GlobalCtxt<'tcx> {
     layout_interner: ShardedHashMap<&'tcx Layout, ()>,
 
     output_filenames: Arc<OutputFilenames>,
-
-    /// Yorick seriliased IR.
-    pub sir: Sir,
-    pub sir_types: Lock<SirTypes>,
 }
 
 impl<'tcx> TyCtxt<'tcx> {
@@ -1168,8 +1163,6 @@ impl<'tcx> TyCtxt<'tcx> {
             allocation_interner: Default::default(),
             alloc_map: Lock::new(interpret::AllocMap::new()),
             output_filenames: Arc::new(output_filenames.clone()),
-            sir: Default::default(),
-            sir_types: Default::default(),
         }
     }
 

@@ -21,7 +21,6 @@ use super::archive::ArchiveBuilder;
 use super::command::Command;
 use super::linker::{self, Linker};
 use super::rpath::{self, RPathConfig};
-use crate::SIR_FILENAME;
 use crate::{looks_like_rust_object_file, CodegenResults, CrateInfo, METADATA_FILENAME};
 
 use cc::windows_registry;
@@ -363,16 +362,6 @@ fn link_rlib<'a, B: ArchiveBuilder<'a>>(
             // contain the metadata in a separate file.
             ab.add_file(&emit_metadata(sess, &codegen_results.metadata, tmpdir));
 
-            // Put Yorick SIR in an ELF section in the rlib.
-            // We rename the object file to a well-known name so that we can find it later. See
-            // link_sir() for more on this.
-            if let Some(sir_mod) = codegen_results.sir_module.as_ref() {
-                let mut dest = PathBuf::from(tmpdir.as_ref());
-                dest.push(SIR_FILENAME);
-                fs::rename(sir_mod.object.as_ref().unwrap(), &dest).unwrap();
-                ab.add_file(&dest);
-            }
-
             // After adding all files to the archive, we need to update the
             // symbol table of the archive. This currently dies on macOS (see
             // #11162), and isn't necessary there anyway
@@ -486,19 +475,6 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
     );
 
     linker::disable_localization(&mut cmd);
-
-    // Link Yorick SIR into executables.
-    // This links only the code from the local crate. See add_upstream_rust_crates() for where SIR
-    // for dependencies is linked.
-    //
-    // FIXME When rebuilding after a small change, only the rebuilt code gets SIR. We should cache
-    // the SIR in a file between builds and load the SIR from last time as a starting point, only
-    // updating what changed. This may require dumping the SIR into a file between builds, as Rust
-    // does with metadata.
-    if let Some(sir_mod) = codegen_results.sir_module.as_ref() {
-        let sir_path = sir_mod.object.as_ref().unwrap();
-        cmd.arg(sir_path);
-    }
 
     for &(ref k, ref v) in &sess.target.target.options.link_env {
         cmd.env(k, v);
@@ -1920,9 +1896,6 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
             Linkage::NotLinked | Linkage::IncludedFromDylib => {}
             Linkage::Static => {
                 add_static_crate::<B>(cmd, sess, codegen_results, tmpdir, crate_type, cnum);
-                if sess.opts.cg.tracer.encode_sir() {
-                    link_sir::<B>(cmd, sess, codegen_results, tmpdir, cnum);
-                }
             }
             Linkage::Dynamic => add_dynamic_crate(cmd, sess, &src.dylib.as_ref().unwrap().0),
         }
@@ -1939,38 +1912,6 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
     // is used)
     if let Some(cnum) = compiler_builtins {
         add_static_crate::<B>(cmd, sess, codegen_results, tmpdir, crate_type, cnum);
-    }
-
-    /// Extracts the SIR from the dependency rlib and puts it into it's own static object for
-    /// --whole-archive linkage. This is required because the link editor will normally only link
-    /// strictly required symbols and it is unaware that we will look directly into the SIR section
-    /// at runtime. Whilst we could link the original rlib with --whole-archive, that would bloat
-    /// the binary a lot (we'd include unused code).
-    fn link_sir<'a, B: ArchiveBuilder<'a>>(
-        cmd: &mut dyn Linker,
-        sess: &'a Session,
-        codegen_results: &CodegenResults,
-        tmpdir: &Path,
-        cnum: CrateNum,
-    ) {
-        let src = &codegen_results.crate_info.used_crate_source[&cnum];
-        let cratepath = &src.rlib.as_ref().unwrap().0;
-        let filename = format!("{}.yksir", cratepath.file_name().unwrap().to_str().unwrap());
-
-        // Note that if there was a reproducible build test that used our tracer, then this would
-        // break it because the tempdir is non-deterministic.
-        let dst = tmpdir.join(filename);
-        let mut archive = <B as ArchiveBuilder>::new(sess, &dst, Some(cratepath));
-        archive.update_symbols();
-
-        for f in archive.src_files() {
-            if f != SIR_FILENAME {
-                archive.remove_file(&f);
-            }
-        }
-
-        archive.build();
-        cmd.link_whole_rlib(&dst);
     }
 
     // Converts a library file-stem into a cc -l argument

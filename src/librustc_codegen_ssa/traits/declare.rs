@@ -45,6 +45,10 @@ pub trait DeclareMethods<'tcx>: BackendTypes {
     /// Gets defined or externally defined (AvailableExternally linkage) value by
     /// name.
     fn get_defined_value(&self, name: &str) -> Option<Self::Value>;
+
+    fn define_sir_type(&self, ty: ykpack::Ty) -> ykpack::TypeId;
+    fn define_sir_thread_tracer(&self, type_id: ykpack::TypeId);
+    fn define_function_sir(&self, sir: ykpack::Body);
 }
 
 pub trait PreDefineMethods<'tcx>: BackendTypes {

@@ -37,3 +37,4 @@ rustc_macros = { path = "../librustc_macros" }
 rustc_target = { path = "../librustc_target" }
 rustc_session = { path = "../librustc_session" }
 ykpack = { git = "https://github.com/softdevteam/yk" }
+indexmap = "1.4.0"

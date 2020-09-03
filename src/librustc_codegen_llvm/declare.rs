@@ -20,6 +20,7 @@ use crate::type_::Type;
 use crate::value::Value;
 use rustc_codegen_ssa::traits::*;
 use rustc_middle::ty::Ty;
+use std::convert::TryFrom;
 use tracing::debug;
 
 /// Declare a function.
@@ -91,5 +92,20 @@ impl DeclareMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             let declaration = unsafe { llvm::LLVMIsDeclaration(val) != 0 };
             if !declaration { Some(val) } else { None }
         })
+    }
+
+    fn define_sir_type(&self, ty: ykpack::Ty) -> ykpack::TypeId {
+        let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
+        (types.crate_hash, types.index(ty))
+    }
+
+    fn define_sir_thread_tracer(&self, type_id: ykpack::TypeId) {
+        let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
+        assert_eq!(types.crate_hash, type_id.0);
+        types.thread_tracers.insert(u32::try_from(type_id.1).unwrap());
+    }
+
+    fn define_function_sir(&self, sir: ykpack::Body) {
+        self.sir.as_ref().unwrap().funcs.borrow_mut().push(sir);
     }
 }

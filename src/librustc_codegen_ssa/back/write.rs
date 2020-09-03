@@ -136,7 +136,6 @@ impl ModuleConfig {
                 ModuleKind::Regular => sess.opts.output_types.contains_key(&OutputType::Object),
                 ModuleKind::Allocator => false,
                 ModuleKind::Metadata => sess.opts.output_types.contains_key(&OutputType::Metadata),
-                ModuleKind::YkSir => sess.opts.output_types.contains_key(&OutputType::YkSir),
             };
 
         let emit_obj = if !should_emit_obj {
@@ -307,7 +306,6 @@ pub struct CodegenContext<B: WriteBackendMethods> {
     pub regular_module_config: Arc<ModuleConfig>,
     pub metadata_module_config: Arc<ModuleConfig>,
     pub allocator_module_config: Arc<ModuleConfig>,
-    pub sir_module_config: Arc<ModuleConfig>,
     pub tm_factory: TargetMachineFactory<B>,
     pub msvc_imps_needed: bool,
     pub target_pointer_width: String,
@@ -341,7 +339,6 @@ impl<B: WriteBackendMethods> CodegenContext<B> {
             ModuleKind::Regular => &self.regular_module_config,
             ModuleKind::Metadata => &self.metadata_module_config,
             ModuleKind::Allocator => &self.allocator_module_config,
-            ModuleKind::YkSir => &self.sir_module_config,
         }
     }
 }
@@ -386,7 +383,6 @@ pub struct CompiledModules {
     pub modules: Vec<CompiledModule>,
     pub metadata_module: Option<CompiledModule>,
     pub allocator_module: Option<CompiledModule>,
-    pub sir_module: Option<CompiledModule>,
 }
 
 fn need_bitcode_in_object(sess: &Session) -> bool {
@@ -445,7 +441,6 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
         ModuleConfig::new(ModuleKind::Metadata, sess, no_builtins, is_compiler_builtins);
     let allocator_config =
         ModuleConfig::new(ModuleKind::Allocator, sess, no_builtins, is_compiler_builtins);
-    let sir_config = ModuleConfig::new(ModuleKind::YkSir, sess, no_builtins, is_compiler_builtins);
 
     let (shared_emitter, shared_emitter_main) = SharedEmitter::new();
     let (codegen_worker_send, codegen_worker_receive) = channel();
@@ -462,7 +457,6 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
         Arc::new(regular_config),
         Arc::new(metadata_config),
         Arc::new(allocator_config),
-        Arc::new(sir_config),
         coordinator_send.clone(),
     );
 
@@ -589,11 +583,7 @@ fn produce_final_output_artifacts(
                 user_wants_objects = true;
                 copy_if_one_unit(OutputType::Object, true);
             }
-            OutputType::YkSir
-            | OutputType::Mir
-            | OutputType::Metadata
-            | OutputType::Exe
-            | OutputType::DepInfo => {}
+            OutputType::Mir | OutputType::Metadata | OutputType::Exe | OutputType::DepInfo => {}
         }
     }
 
@@ -943,7 +933,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
     regular_config: Arc<ModuleConfig>,
     metadata_config: Arc<ModuleConfig>,
     allocator_config: Arc<ModuleConfig>,
-    sir_config: Arc<ModuleConfig>,
     tx_to_llvm_workers: Sender<Box<dyn Any + Send>>,
 ) -> thread::JoinHandle<Result<CompiledModules, ()>> {
     let coordinator_send = tx_to_llvm_workers;
@@ -1026,7 +1015,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
         output_filenames: tcx.output_filenames(LOCAL_CRATE),
         regular_module_config: regular_config,
         metadata_module_config: metadata_config,
-        sir_module_config: sir_config,
         allocator_module_config: allocator_config,
         tm_factory: TargetMachineFactory(backend.target_machine_factory(tcx.sess, ol)),
         total_cgus,
@@ -1190,7 +1178,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
         let mut compiled_modules = vec![];
         let mut compiled_metadata_module = None;
         let mut compiled_allocator_module = None;
-        let mut compiled_sir_module = None;
         let mut needs_fat_lto = Vec::new();
         let mut needs_thin_lto = Vec::new();
         let mut lto_import_only_modules = Vec::new();
@@ -1445,10 +1432,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
                             assert!(compiled_allocator_module.is_none());
                             compiled_allocator_module = Some(compiled_module);
                         }
-                        ModuleKind::YkSir => {
-                            assert!(compiled_sir_module.is_none());
-                            compiled_sir_module = Some(compiled_module);
-                        }
                     }
                 }
                 Message::NeedsFatLTO { result, worker_id } => {
@@ -1491,7 +1474,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
             modules: compiled_modules,
             metadata_module: compiled_metadata_module,
             allocator_module: compiled_allocator_module,
-            sir_module: compiled_sir_module,
         })
     });
 
@@ -1758,7 +1740,6 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
                 modules: compiled_modules.modules,
                 allocator_module: compiled_modules.allocator_module,
                 metadata_module: compiled_modules.metadata_module,
-                sir_module: compiled_modules.sir_module,
             },
             work_products,
         )
