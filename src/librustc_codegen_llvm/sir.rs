@@ -85,6 +85,6 @@ pub fn write_sir<'tcx>(
         // Following the precedent of write_compressed_metadata(), force empty flags so that
         // the SIR doesn't get loaded into memory.
         let directive = format!(".section {}, \"\", @progbits", &section_name);
-        llvm::LLVMSetModuleInlineAsm2(sir_llmod, directive.as_ptr().cast(), directive.len())
+        llvm::LLVMRustAppendModuleInlineAsm(sir_llmod, directive.as_ptr().cast(), directive.len());
     }
 }
