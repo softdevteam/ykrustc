@@ -194,12 +194,23 @@ pub struct Sir {
 
 impl Sir {
     pub fn new(tcx: TyCtxt<'_>, cgu_name: &str) -> Self {
-        let mut crate_hash_hasher = FxHasher::default();
-        tcx.crate_hash(LOCAL_CRATE).hash(&mut crate_hash_hasher);
-        cgu_name.hash(&mut crate_hash_hasher);
+        // Build the CGU hash.
+        //
+        // This must be a globally unique hash for this compilation unit. It might have been
+        // tempting to use the `tcx.crate_hash()` as part of the CGU hash, but this query is
+        // invalidated on every source code change to the crate. In turn, that would mean lots of
+        // unnecessary rebuilds.
+        //
+        // We settle on:
+        // CGU hash = crate name + crate disambiguator + codegen unit name.
+        let mut cgu_hasher = FxHasher::default();
+        tcx.crate_name(LOCAL_CRATE).hash(&mut cgu_hasher);
+        tcx.crate_disambiguator(LOCAL_CRATE).hash(&mut cgu_hasher);
+        cgu_name.hash(&mut cgu_hasher);
+
         Sir {
             types: RefCell::new(SirTypes {
-                crate_hash: crate_hash_hasher.finish(),
+                cgu_hash: ykpack::CguHash(cgu_hasher.finish()),
                 map: Default::default(),
                 next_idx: Default::default(),
                 thread_tracers: Default::default(),
@@ -493,7 +504,8 @@ impl SirFuncCx<'tcx> {
 }
 
 pub struct SirTypes {
-    pub crate_hash: ykpack::CrateHash,
+    /// A globally unique identifier for the codegen unit.
+    pub cgu_hash: ykpack::CguHash,
     /// Maps types to their index. Ordered by insertion via `IndexMap`.
     pub map: IndexMap<ykpack::Ty, ykpack::TyIndex, BuildHasherDefault<FxHasher>>,
     /// The next available type index.
@@ -506,8 +518,8 @@ impl SirTypes {
     /// Get the index of a type. If this is the first time we have seen this type, a new index is
     /// allocated and returned.
     ///
-    /// Note that the index is only unique within the scope of the crate currently being compiled.
-    /// To make a globally unique type index, pair the index with crate hash.
+    /// Note that the index is only unique within the scope of the current compilation unit.
+    /// To make a globally unique ID, we pair the index with CGU hash (see ykpack::CguHash).
     pub fn index(&mut self, t: ykpack::Ty) -> ykpack::TyIndex {
         let next_idx = &mut self.next_idx;
         *self.map.entry(t).or_insert_with(|| {

@@ -42,7 +42,7 @@ pub fn write_sir<'tcx>(
     // the type indices, hence use of `IndexMap` for insertion order.
     encoder
         .serialise(ykpack::Pack::Types(ykpack::Types {
-            crate_hash: sir_types.crate_hash,
+            cgu_hash: sir_types.cgu_hash,
             types: sir_types.map.into_iter().map(|(k, _)| k).collect::<Vec<ykpack::Ty>>(),
             thread_tracers: sir_types.thread_tracers.into_iter().collect(),
         }))
