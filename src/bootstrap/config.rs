@@ -32,7 +32,8 @@ use serde::Deserialize;
 #[derive(Default)]
 pub struct Config {
     pub ccache: Option<String>,
-    pub ninja: bool,
+    /// Call Build::ninja() instead of this.
+    pub ninja_in_file: bool,
     pub verbose: usize,
     pub submodules: bool,
     pub fast_submodules: bool,
@@ -450,6 +451,7 @@ impl Config {
     pub fn default_opts() -> Config {
         let mut config = Config::default();
         config.llvm_optimize = true;
+        config.ninja_in_file = true;
         config.llvm_version_check = true;
         config.backtrace = true;
         config.rust_optimize = true;
@@ -527,7 +529,7 @@ impl Config {
 
         let build = toml.build.clone().unwrap_or_default();
         // set by bootstrap.py
-        config.hosts.push(config.build.clone());
+        config.hosts.push(config.build);
         for host in build.host.iter().map(|h| TargetSelection::from_user(h)) {
             if !config.hosts.contains(&host) {
                 config.hosts.push(host);
@@ -605,7 +607,7 @@ impl Config {
                 }
                 Some(StringOrBool::Bool(false)) | None => {}
             }
-            set(&mut config.ninja, llvm.ninja);
+            set(&mut config.ninja_in_file, llvm.ninja);
             llvm_assertions = llvm.assertions;
             llvm_skip_rebuild = llvm_skip_rebuild.or(llvm.skip_rebuild);
             set(&mut config.llvm_optimize, llvm.optimize);

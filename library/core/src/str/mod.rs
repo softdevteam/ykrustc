@@ -13,8 +13,9 @@ use self::pattern::{DoubleEndedSearcher, ReverseSearcher, Searcher};
 
 use crate::char;
 use crate::fmt::{self, Write};
+use crate::iter::TrustedRandomAccess;
 use crate::iter::{Chain, FlatMap, Flatten};
-use crate::iter::{Copied, Filter, FusedIterator, Map, TrustedLen, TrustedRandomAccess};
+use crate::iter::{Copied, Filter, FusedIterator, Map, TrustedLen};
 use crate::mem;
 use crate::ops::Try;
 use crate::option;
@@ -475,6 +476,7 @@ Section: Iterators
 /// This struct is created by the [`chars`] method on [`str`].
 /// See its documentation for more.
 ///
+/// [`char`]: prim@char
 /// [`chars`]: str::chars
 #[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -672,6 +674,7 @@ impl<'a> Chars<'a> {
 /// This struct is created by the [`char_indices`] method on [`str`].
 /// See its documentation for more.
 ///
+/// [`char`]: prim@char
 /// [`char_indices`]: str::char_indices
 #[derive(Clone, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -819,6 +822,13 @@ impl Iterator for Bytes<'_> {
     {
         self.0.rposition(predicate)
     }
+
+    #[inline]
+    unsafe fn get_unchecked(&mut self, idx: usize) -> u8 {
+        // SAFETY: the caller must uphold the safety contract
+        // for `Iterator::get_unchecked`.
+        unsafe { self.0.get_unchecked(idx) }
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -862,12 +872,8 @@ impl FusedIterator for Bytes<'_> {}
 unsafe impl TrustedLen for Bytes<'_> {}
 
 #[doc(hidden)]
+#[unstable(feature = "trusted_random_access", issue = "none")]
 unsafe impl TrustedRandomAccess for Bytes<'_> {
-    unsafe fn get_unchecked(&mut self, i: usize) -> u8 {
-        // SAFETY: the caller must uphold the safety contract
-        // for `TrustedRandomAccess::get_unchecked`.
-        unsafe { self.0.get_unchecked(i) }
-    }
     fn may_have_side_effect() -> bool {
         false
     }
@@ -2031,7 +2037,7 @@ mod traits {
     /// # Panics
     ///
     /// Panics if `begin` does not point to the starting byte offset of
-    /// a character (as defined by `is_char_boundary`), or if `begin >= len`.
+    /// a character (as defined by `is_char_boundary`), or if `begin > len`.
     #[stable(feature = "str_checked_slicing", since = "1.20.0")]
     unsafe impl SliceIndex<str> for ops::RangeFrom<usize> {
         type Output = str;
@@ -2265,6 +2271,8 @@ impl str {
     ///
     /// This length is in bytes, not [`char`]s or graphemes. In other words,
     /// it may not be what a human considers the length of the string.
+    ///
+    /// [`char`]: prim@char
     ///
     /// # Examples
     ///
@@ -2787,7 +2795,9 @@ impl str {
     /// assert_eq!(None, chars.next());
     /// ```
     ///
-    /// Remember, [`char`]s may not match your human intuition about characters:
+    /// Remember, [`char`]s may not match your intuition about characters:
+    ///
+    /// [`char`]: prim@char
     ///
     /// ```
     /// let y = "y̆";
@@ -2838,7 +2848,9 @@ impl str {
     /// assert_eq!(None, char_indices.next());
     /// ```
     ///
-    /// Remember, [`char`]s may not match your human intuition about characters:
+    /// Remember, [`char`]s may not match your intuition about characters:
+    ///
+    /// [`char`]: prim@char
     ///
     /// ```
     /// let yes = "y̆es";
@@ -3049,6 +3061,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -3075,6 +3088,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -3100,6 +3114,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -3128,6 +3143,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -3175,6 +3191,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -3221,6 +3238,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3340,6 +3358,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -3379,6 +3398,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3430,6 +3450,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// Equivalent to [`split`], except that the trailing substring
@@ -3474,6 +3495,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// Equivalent to [`split`], except that the trailing substring is
@@ -3522,6 +3544,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3574,6 +3597,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3662,6 +3686,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3698,6 +3723,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3739,6 +3765,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3781,6 +3808,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Iterator behavior
@@ -3999,6 +4027,7 @@ impl str {
     /// The [pattern] can be a [`char`], a slice of [`char`]s, or a function
     /// or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -4046,6 +4075,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Text directionality
@@ -4090,6 +4120,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -4117,6 +4148,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Examples
@@ -4143,6 +4175,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Text directionality
@@ -4191,6 +4224,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Text directionality
@@ -4227,6 +4261,7 @@ impl str {
     /// The [pattern] can be a `&str`, [`char`], a slice of [`char`]s, or a
     /// function or closure that determines if a character matches.
     ///
+    /// [`char`]: prim@char
     /// [pattern]: self::pattern
     ///
     /// # Text directionality

@@ -3,6 +3,7 @@ use std::default::Default;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
+use std::lazy::SyncOnceCell as OnceCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -15,16 +16,18 @@ use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc_hir::lang_items;
+use rustc_hir::lang_items::LangItem;
 use rustc_hir::Mutability;
 use rustc_index::vec::IndexVec;
 use rustc_middle::middle::stability;
+use rustc_middle::ty::{AssocKind, TyCtxt};
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::DUMMY_SP;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{self, FileName};
 use rustc_target::abi::VariantIdx;
 use rustc_target::spec::abi::Abi;
+use smallvec::{smallvec, SmallVec};
 
 use crate::clean::cfg::Cfg;
 use crate::clean::external_path;
@@ -279,10 +282,19 @@ pub enum ItemEnum {
 }
 
 impl ItemEnum {
-    pub fn is_associated(&self) -> bool {
+    pub fn is_type_alias(&self) -> bool {
         match *self {
             ItemEnum::TypedefItem(_, _) | ItemEnum::AssocTypeItem(_, _) => true,
             _ => false,
+        }
+    }
+
+    pub fn as_assoc_kind(&self) -> Option<AssocKind> {
+        match *self {
+            ItemEnum::AssocConstItem(..) => Some(AssocKind::Const),
+            ItemEnum::AssocTypeItem(..) => Some(AssocKind::Type),
+            ItemEnum::TyMethodItem(..) | ItemEnum::MethodItem(..) => Some(AssocKind::Fn),
+            _ => None,
         }
     }
 }
@@ -698,7 +710,7 @@ pub enum GenericBound {
 
 impl GenericBound {
     pub fn maybe_sized(cx: &DocContext<'_>) -> GenericBound {
-        let did = cx.tcx.require_lang_item(lang_items::SizedTraitLangItem, None);
+        let did = cx.tcx.require_lang_item(LangItem::Sized, None);
         let empty = cx.tcx.intern_substs(&[]);
         let path = external_path(cx, cx.tcx.item_name(did), Some(did), false, vec![], empty);
         inline::record_extern_fqn(cx, did, TypeKind::Trait);
@@ -1262,6 +1274,86 @@ impl PrimitiveType {
             Fn => "fn",
             Never => "never",
         }
+    }
+
+    pub fn impls(&self, tcx: TyCtxt<'_>) -> &'static SmallVec<[DefId; 4]> {
+        Self::all_impls(tcx).get(self).expect("missing impl for primitive type")
+    }
+
+    pub fn all_impls(tcx: TyCtxt<'_>) -> &'static FxHashMap<PrimitiveType, SmallVec<[DefId; 4]>> {
+        static CELL: OnceCell<FxHashMap<PrimitiveType, SmallVec<[DefId; 4]>>> = OnceCell::new();
+
+        CELL.get_or_init(move || {
+            use self::PrimitiveType::*;
+
+            /// A macro to create a FxHashMap.
+            ///
+            /// Example:
+            ///
+            /// ```
+            /// let letters = map!{"a" => "b", "c" => "d"};
+            /// ```
+            ///
+            /// Trailing commas are allowed.
+            /// Commas between elements are required (even if the expression is a block).
+            macro_rules! map {
+                ($( $key: expr => $val: expr ),* $(,)*) => {{
+                    let mut map = ::rustc_data_structures::fx::FxHashMap::default();
+                    $( map.insert($key, $val); )*
+                    map
+                }}
+            }
+
+            let single = |a: Option<DefId>| a.into_iter().collect();
+            let both = |a: Option<DefId>, b: Option<DefId>| -> SmallVec<_> {
+                a.into_iter().chain(b).collect()
+            };
+
+            let lang_items = tcx.lang_items();
+            map! {
+                Isize => single(lang_items.isize_impl()),
+                I8 => single(lang_items.i8_impl()),
+                I16 => single(lang_items.i16_impl()),
+                I32 => single(lang_items.i32_impl()),
+                I64 => single(lang_items.i64_impl()),
+                I128 => single(lang_items.i128_impl()),
+                Usize => single(lang_items.usize_impl()),
+                U8 => single(lang_items.u8_impl()),
+                U16 => single(lang_items.u16_impl()),
+                U32 => single(lang_items.u32_impl()),
+                U64 => single(lang_items.u64_impl()),
+                U128 => single(lang_items.u128_impl()),
+                F32 => both(lang_items.f32_impl(), lang_items.f32_runtime_impl()),
+                F64 => both(lang_items.f64_impl(), lang_items.f64_runtime_impl()),
+                Char => single(lang_items.char_impl()),
+                Bool => single(lang_items.bool_impl()),
+                Str => both(lang_items.str_impl(), lang_items.str_alloc_impl()),
+                Slice => {
+                    lang_items
+                        .slice_impl()
+                        .into_iter()
+                        .chain(lang_items.slice_u8_impl())
+                        .chain(lang_items.slice_alloc_impl())
+                        .chain(lang_items.slice_u8_alloc_impl())
+                        .collect()
+                },
+                Array => single(lang_items.array_impl()),
+                Tuple => smallvec![],
+                Unit => smallvec![],
+                RawPointer => {
+                    lang_items
+                        .const_ptr_impl()
+                        .into_iter()
+                        .chain(lang_items.mut_ptr_impl())
+                        .chain(lang_items.const_slice_ptr_impl())
+                        .chain(lang_items.mut_slice_ptr_impl())
+                        .collect()
+                },
+                Reference => smallvec![],
+                Fn => smallvec![],
+                Never => smallvec![],
+            }
+        })
     }
 
     pub fn to_url_str(&self) -> &'static str {
