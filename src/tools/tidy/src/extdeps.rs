@@ -37,6 +37,7 @@ pub fn check(root: &Path, bad: &mut bool) {
             || source.starts_with("\"git+https://github.com/vext01/")
             || source.starts_with("\"git+https://github.com/ltratt/")
             || source.starts_with("\"git+https://github.com/ptersilie/")
+            || source.starts_with("\"git+https://github.com/bjorn3/")
         {
             continue;
         }

@@ -12,6 +12,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::fx::FxHasher;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_middle::mir;
+use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::AdtDef;
 use rustc_middle::ty::{self, layout::TyAndLayout, TyCtxt};
 use rustc_middle::ty::{Instance, Ty};
@@ -347,7 +348,9 @@ impl SirFuncCx<'tcx> {
                 self.lower_binop(*op, opnd1, opnd2, true)
             }
             mir::Rvalue::Ref(_, _, place) => self.lower_ref(place),
-            _ => ykpack::Rvalue::Unimplemented(format!("unimplemented rvalue: {:?}", rvalue)),
+            _ => ykpack::Rvalue::Unimplemented(with_no_trimmed_paths(|| {
+                format!("unimplemented rvalue: {:?}", rvalue)
+            })),
         }
     }
 
@@ -378,7 +381,9 @@ impl SirFuncCx<'tcx> {
             ty::ConstKind::Value(mir::interpret::ConstValue::Scalar(s)) => {
                 self.lower_scalar(constant.literal.ty, s)
             }
-            _ => ykpack::Constant::Unimplemented(format!("unimplemented constant: {:?}", constant)),
+            _ => ykpack::Constant::Unimplemented(with_no_trimmed_paths(|| {
+                format!("unimplemented constant: {:?}", constant)
+            })),
         }
     }
 
@@ -388,10 +393,12 @@ impl SirFuncCx<'tcx> {
                 .lower_uint(uint, s)
                 .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(i)))
                 .unwrap_or_else(|_| {
-                    ykpack::Constant::Unimplemented(format!(
-                        "unimplemented uint scalar: {:?}",
-                        ty.kind
-                    ))
+                    with_no_trimmed_paths(|| {
+                        ykpack::Constant::Unimplemented(format!(
+                            "unimplemented uint scalar: {:?}",
+                            ty.kind
+                        ))
+                    })
                 }),
             ty::Int(int) => self
                 .lower_int(int, s)

@@ -29,8 +29,9 @@ use std::borrow::Cow;
 macro_rules! set_unimplemented_sir_term {
     ($func_cx:ident, $bb:expr, $term:expr) => {
         if let Some(sfcx) = &mut $func_cx.sir_func_cx {
-            let note =
-                format!("{}:{}: unimplemented terminator: {:?}", file!(), line!(), $term.kind);
+            let note = with_no_trimmed_paths(|| {
+                format!("{}:{}: unimplemented terminator: {:?}", file!(), line!(), $term.kind)
+            });
             sfcx.set_terminator($bb.as_u32(), ykpack::Terminator::Unimplemented(note))
         }
     };
@@ -589,7 +590,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         if sfcx.func.trace_inputs_local.is_some() {
                             panic!(
                                 "Multiple trace input declarations detected in {}",
-                                bx.tcx().def_path_str(inst.def_id())
+                                bx.tcx().def_path_debug_str(inst.def_id())
                             );
                         }
 
@@ -1040,7 +1041,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         let mut bx = self.build_block(bb);
         let sym = bx.cx().tcx().symbol_name(self.instance);
-        let fname = bx.tcx().def_path_str(self.instance.def_id());
+        let fname = bx.tcx().def_path_debug_str(self.instance.def_id());
         bx.add_yk_block_label(&fname, &sym, bb.index());
     }
 

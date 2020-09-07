@@ -189,10 +189,9 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "winapi-util",
     "winapi-x86_64-pc-windows-gnu",
     // Yorick.
+    "bincode",
     "fallible-iterator",
     "num-traits",
-    "rmp",
-    "rmp-serde",
     "ykpack",
 ];
 
