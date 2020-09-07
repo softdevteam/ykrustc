@@ -66,6 +66,7 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "atty",
     "autocfg",
     "backtrace",
+    "bincode",
     "bitflags",
     "block-buffer",
     "block-padding",
@@ -185,8 +186,6 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     // Yorick.
     "fallible-iterator",
     "num-traits",
-    "rmp",
-    "rmp-serde",
     "ykpack",
 ];
 
