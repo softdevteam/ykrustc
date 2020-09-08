@@ -6,8 +6,10 @@ set -e
 
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
 
+COMMIT_HASH=$(git rev-parse --short HEAD)
 TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest
-TARBALL_NAME=ykrustc-${STD_TRACER_MODE}-stage2-latest.tar.bz2
+TARBALL_NAME=ykrustc-${STD_TRACER_MODE}-stage2-${COMMIT_HASH}.tar.bz2
+SYMLINK_NAME=ykrustc-${STD_TRACER_MODE}-stage2-latest.tar.bz2
 SNAP_DIR=/opt/ykrustc-bin-snapshots
 
 # Ensure the build fails if it uses excessive amounts of memory.
@@ -25,4 +27,9 @@ git show -s HEAD > ${TARBALL_TOPDIR}/VERSION
 cd build
 tar jcf ${TARBALL_NAME} `basename ${TARBALL_TOPDIR}`
 chmod 775 ${TARBALL_NAME}
-mv ${TARBALL_NAME} ${SNAP_DIR} # Overwrites any old archive.
+mv ${TARBALL_NAME} ${SNAP_DIR}
+ln -sf ${SNAP_DIR}/${TARBALL_NAME} ${SNAP_DIR}/${SYMLINK_NAME}
+
+# Remove all but the 10 latest builds
+cd ${SNAP_DIR}
+sh -c "ls -tp | grep -v '/$' | tail -n +11 | xargs -I {} rm -- {}"
