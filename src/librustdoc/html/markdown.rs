@@ -34,9 +34,9 @@ use std::fmt::Write;
 use std::ops::Range;
 use std::str;
 
+use crate::doctest;
 use crate::html::highlight;
 use crate::html::toc::TocBuilder;
-use crate::test;
 
 use pulldown_cmark::{html, CodeBlockKind, CowStr, Event, Options, Parser, Tag};
 
@@ -243,7 +243,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
                 .collect::<Vec<Cow<'_, str>>>()
                 .join("\n");
             let krate = krate.as_ref().map(|s| &**s);
-            let (test, _) = test::make_test(&test, krate, false, &Default::default(), edition);
+            let (test, _) = doctest::make_test(&test, krate, false, &Default::default(), edition);
             let channel = if test.contains("#![feature(") { "&amp;version=nightly" } else { "" };
 
             let edition_string = format!("&amp;edition={}", edition);
@@ -519,8 +519,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for Footnotes<'a, I> {
                 Some(Event::FootnoteReference(ref reference)) => {
                     let entry = self.get_entry(&reference);
                     let reference = format!(
-                        "<sup id=\"fnref{0}\"><a href=\"#fn{0}\">{0}\
-                                             </a></sup>",
+                        "<sup id=\"fnref{0}\"><a href=\"#fn{0}\">{0}</a></sup>",
                         (*entry).1
                     );
                     return Some(Event::Html(reference.into()));
@@ -568,7 +567,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for Footnotes<'a, I> {
     }
 }
 
-pub fn find_testable_code<T: test::Tester>(
+pub fn find_testable_code<T: doctest::Tester>(
     doc: &str,
     tests: &mut T,
     error_codes: ErrorCodes,
@@ -955,44 +954,33 @@ impl MarkdownSummaryLine<'_> {
     }
 }
 
-pub fn plain_summary_line(md: &str) -> String {
-    struct ParserWrapper<'a> {
-        inner: Parser<'a>,
-        is_in: isize,
-        is_first: bool,
+/// Renders the first paragraph of the provided markdown as plain text.
+///
+/// - Headings, links, and formatting are stripped.
+/// - Inline code is rendered as-is, surrounded by backticks.
+/// - HTML and code blocks are ignored.
+pub fn plain_text_summary(md: &str) -> String {
+    if md.is_empty() {
+        return String::new();
     }
 
-    impl<'a> Iterator for ParserWrapper<'a> {
-        type Item = String;
+    let mut s = String::with_capacity(md.len() * 3 / 2);
 
-        fn next(&mut self) -> Option<String> {
-            let next_event = self.inner.next()?;
-            let (ret, is_in) = match next_event {
-                Event::Start(Tag::Paragraph) => (None, 1),
-                Event::Start(Tag::Heading(_)) => (None, 1),
-                Event::Code(code) => (Some(format!("`{}`", code)), 0),
-                Event::Text(ref s) if self.is_in > 0 => (Some(s.as_ref().to_owned()), 0),
-                Event::End(Tag::Paragraph | Tag::Heading(_)) => (None, -1),
-                _ => (None, 0),
-            };
-            if is_in > 0 || (is_in < 0 && self.is_in > 0) {
-                self.is_in += is_in;
+    for event in Parser::new_ext(md, Options::ENABLE_STRIKETHROUGH) {
+        match &event {
+            Event::Text(text) => s.push_str(text),
+            Event::Code(code) => {
+                s.push('`');
+                s.push_str(code);
+                s.push('`');
             }
-            if ret.is_some() {
-                self.is_first = false;
-                ret
-            } else {
-                Some(String::new())
-            }
+            Event::HardBreak | Event::SoftBreak => s.push(' '),
+            Event::Start(Tag::CodeBlock(..)) => break,
+            Event::End(Tag::Paragraph) => break,
+            _ => (),
         }
     }
-    let mut s = String::with_capacity(md.len() * 3 / 2);
-    let p = ParserWrapper {
-        inner: Parser::new_ext(md, Options::ENABLE_STRIKETHROUGH),
-        is_in: 0,
-        is_first: true,
-    };
-    p.filter(|t| !t.is_empty()).for_each(|i| s.push_str(&i));
+
     s
 }
 
