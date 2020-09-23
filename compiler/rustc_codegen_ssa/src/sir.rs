@@ -59,6 +59,9 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         ty::Int(si) => (lower_signed_int(si), false),
         ty::Uint(ui) => (lower_unsigned_int(ui), false),
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
+        ty::Array(typ, _) => {
+            (ykpack::Ty::Array(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
+        }
         ty::Ref(_, typ, _) => {
             (ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
         }
@@ -366,6 +369,9 @@ impl SirFuncCx<'tcx> {
         match pe {
             mir::ProjectionElem::Field(field, ..) => ykpack::Projection::Field(field.as_u32()),
             mir::ProjectionElem::Deref => ykpack::Projection::Deref,
+            mir::ProjectionElem::Index(local) => {
+                ykpack::Projection::Index(self.lower_local(*local))
+            }
             _ => ykpack::Projection::Unimplemented(format!("{:?}", pe)),
         }
     }
