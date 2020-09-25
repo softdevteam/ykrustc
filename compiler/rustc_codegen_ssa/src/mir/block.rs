@@ -594,11 +594,17 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             );
                         }
 
+                        let type_err = "trace inputs should be a struct";
+
                         // Check it's the right type.
                         let local_decl = &self.mir.local_decls[ret_place.local];
                         match local_decl.ty.kind {
-                            ty::Tuple(_) => (),
-                            _ => panic!("Argument to `trace_inputs()` should be a tuple."),
+                            ty::Adt(def, _) => {
+                                if def.variants.len() != 1 {
+                                    panic!(type_err);
+                                }
+                            }
+                            _ => panic!(type_err),
                         }
 
                         sfcx.func.trace_inputs_local = Some(sfcx.lower_local(ret_place.local));
