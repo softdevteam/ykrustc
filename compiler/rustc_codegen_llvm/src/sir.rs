@@ -7,8 +7,8 @@
 
 use crate::llvm::{self, BasicBlock};
 use crate::value::Value;
-use crate::{common, ModuleLlvm};
-use rustc_codegen_ssa::{ModuleCodegen, ModuleKind};
+use crate::{common, context::CodegenCx, ModuleLlvm};
+use rustc_codegen_ssa::{traits::SirMethods, ModuleCodegen, ModuleKind};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_hir::def_id::LOCAL_CRATE;
@@ -18,6 +18,7 @@ use rustc_index::{
 };
 use rustc_middle::ty::TyCtxt;
 use rustc_session::config::OutputType;
+use std::convert::TryFrom;
 use std::default::Default;
 use std::ffi::CString;
 use ykpack;
@@ -86,5 +87,22 @@ pub fn write_sir<'tcx>(
         // the SIR doesn't get loaded into memory.
         let directive = format!(".section {}, \"\", @progbits", &section_name);
         llvm::LLVMRustAppendModuleInlineAsm(sir_llmod, directive.as_ptr().cast(), directive.len());
+    }
+}
+
+impl SirMethods for CodegenCx<'b, 'tcx> {
+    fn define_sir_type(&self, ty: ykpack::Ty) -> ykpack::TypeId {
+        let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
+        (types.cgu_hash, types.index(ty))
+    }
+
+    fn define_sir_thread_tracer(&self, type_id: ykpack::TypeId) {
+        let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
+        assert_eq!(types.cgu_hash, type_id.0);
+        types.thread_tracers.insert(u32::try_from(type_id.1).unwrap());
+    }
+
+    fn define_function_sir(&self, sir: ykpack::Body) {
+        self.sir.as_ref().unwrap().funcs.borrow_mut().push(sir);
     }
 }

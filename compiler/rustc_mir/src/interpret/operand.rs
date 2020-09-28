@@ -549,21 +549,13 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         };
         // Early-return cases.
         let val_val = match val.val {
-            ty::ConstKind::Param(_) => throw_inval!(TooGeneric),
+            ty::ConstKind::Param(_) | ty::ConstKind::Bound(..) => throw_inval!(TooGeneric),
             ty::ConstKind::Error(_) => throw_inval!(TypeckError(ErrorReported)),
             ty::ConstKind::Unevaluated(def, substs, promoted) => {
-                let instance = self.resolve(def.did, substs)?;
-                // We use `const_eval` here and `const_eval_raw` elsewhere in mir interpretation.
-                // The reason we use `const_eval_raw` everywhere else is to prevent cycles during
-                // validation, because validation automatically reads through any references, thus
-                // potentially requiring the current static to be evaluated again. This is not a
-                // problem here, because we are building an operand which means an actual read is
-                // happening.
-                return Ok(self.const_eval(GlobalId { instance, promoted }, val.ty)?);
+                let instance = self.resolve(def, substs)?;
+                return Ok(self.eval_to_allocation(GlobalId { instance, promoted })?.into());
             }
-            ty::ConstKind::Infer(..)
-            | ty::ConstKind::Bound(..)
-            | ty::ConstKind::Placeholder(..) => {
+            ty::ConstKind::Infer(..) | ty::ConstKind::Placeholder(..) => {
                 span_bug!(self.cur_span(), "const_to_op: Unexpected ConstKind {:?}", val)
             }
             ty::ConstKind::Value(val_val) => val_val,
@@ -662,7 +654,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let discr_val = self.cast_from_scalar(tag_bits, tag_layout, discr_layout.ty);
                 let discr_bits = discr_val.assert_bits(discr_layout.size);
                 // Convert discriminant to variant index, and catch invalid discriminants.
-                let index = match op.layout.ty.kind {
+                let index = match *op.layout.ty.kind() {
                     ty::Adt(adt, _) => {
                         adt.discriminants(*self.tcx).find(|(_, var)| var.val == discr_bits)
                     }

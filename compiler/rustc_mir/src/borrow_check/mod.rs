@@ -17,7 +17,7 @@ use rustc_middle::mir::{AggregateKind, BasicBlock, BorrowCheckResult, BorrowKind
 use rustc_middle::mir::{Field, ProjectionElem, Promoted, Rvalue, Statement, StatementKind};
 use rustc_middle::mir::{InlineAsmOperand, Terminator, TerminatorKind};
 use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::{self, InstanceDef, RegionVid, TyCtxt};
+use rustc_middle::ty::{self, InstanceDef, ParamEnv, RegionVid, TyCtxt};
 use rustc_session::lint::builtin::{MUTABLE_BORROW_RESERVATION_CONFLICT, UNUSED_MUT};
 use rustc_span::{Span, Symbol, DUMMY_SP};
 
@@ -205,6 +205,7 @@ fn do_mir_borrowck<'a, 'tcx>(
 
     let mut flow_inits = MaybeInitializedPlaces::new(tcx, &body, &mdpe)
         .into_engine(tcx, &body, def.did.to_def_id())
+        .pass_name("borrowck")
         .iterate_to_fixpoint()
         .into_results_cursor(&body);
 
@@ -264,12 +265,15 @@ fn do_mir_borrowck<'a, 'tcx>(
 
     let flow_borrows = Borrows::new(tcx, &body, regioncx.clone(), &borrow_set)
         .into_engine(tcx, &body, def.did.to_def_id())
+        .pass_name("borrowck")
         .iterate_to_fixpoint();
     let flow_uninits = MaybeUninitializedPlaces::new(tcx, &body, &mdpe)
         .into_engine(tcx, &body, def.did.to_def_id())
+        .pass_name("borrowck")
         .iterate_to_fixpoint();
     let flow_ever_inits = EverInitializedPlaces::new(tcx, &body, &mdpe)
         .into_engine(tcx, &body, def.did.to_def_id())
+        .pass_name("borrowck")
         .iterate_to_fixpoint();
 
     let movable_generator = match tcx.hir().get(id) {
@@ -287,6 +291,7 @@ fn do_mir_borrowck<'a, 'tcx>(
         if let Err((move_data, move_errors)) = move_data_results {
             let mut promoted_mbcx = MirBorrowckCtxt {
                 infcx,
+                param_env,
                 body: promoted_body,
                 mir_def_id: def.did,
                 move_data: &move_data,
@@ -320,6 +325,7 @@ fn do_mir_borrowck<'a, 'tcx>(
 
     let mut mbcx = MirBorrowckCtxt {
         infcx,
+        param_env,
         body,
         mir_def_id: def.did,
         move_data: &mdpe.move_data,
@@ -473,6 +479,7 @@ fn do_mir_borrowck<'a, 'tcx>(
 
 crate struct MirBorrowckCtxt<'cx, 'tcx> {
     crate infcx: &'cx InferCtxt<'cx, 'tcx>,
+    param_env: ParamEnv<'tcx>,
     body: &'cx Body<'tcx>,
     mir_def_id: LocalDefId,
     move_data: &'cx MoveData<'tcx>,
@@ -1758,7 +1765,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         {
             let place_ty =
                 Place::ty_from(place_span.0.local, base_proj, self.body(), self.infcx.tcx);
-            if let ty::Array(..) = place_ty.ty.kind {
+            if let ty::Array(..) = place_ty.ty.kind() {
                 let array_place = PlaceRef { local: place_span.0.local, projection: base_proj };
                 self.check_if_subslice_element_is_moved(
                     location,
@@ -1876,7 +1883,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                     // be already initialized
                     let tcx = self.infcx.tcx;
                     let base_ty = Place::ty_from(place.local, proj_base, self.body(), tcx).ty;
-                    match base_ty.kind {
+                    match base_ty.kind() {
                         ty::Adt(def, _) if def.has_dtor(tcx) => {
                             self.check_if_path_or_subpath_is_moved(
                                 location, InitializationRequiringAction::Assignment,
@@ -1979,7 +1986,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 // of the union - we should error in that case.
                 let tcx = this.infcx.tcx;
                 if let ty::Adt(def, _) =
-                    Place::ty_from(base.local, base.projection, this.body(), tcx).ty.kind
+                    Place::ty_from(base.local, base.projection, this.body(), tcx).ty.kind()
                 {
                     if def.is_union() {
                         if this.move_data.path_map[mpi].iter().any(|moi| {
@@ -2206,7 +2213,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                             Place::ty_from(place.local, proj_base, self.body(), self.infcx.tcx).ty;
 
                         // Check the kind of deref to decide
-                        match base_ty.kind {
+                        match base_ty.kind() {
                             ty::Ref(_, _, mutbl) => {
                                 match mutbl {
                                     // Shared borrowed data is never mutable

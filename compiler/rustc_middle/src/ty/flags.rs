@@ -249,11 +249,14 @@ impl FlagComputation {
                 self.add_const(expected);
                 self.add_const(found);
             }
+            ty::PredicateAtom::TypeWellFormedFromEnv(ty) => {
+                self.add_ty(ty);
+            }
         }
     }
 
     fn add_ty(&mut self, ty: Ty<'_>) {
-        self.add_flags(ty.flags);
+        self.add_flags(ty.flags());
         self.add_exclusive_binder(ty.outer_exclusive_binder);
     }
 

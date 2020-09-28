@@ -4,7 +4,7 @@
 //! into an ELF section at link time.
 
 use crate::mir::LocalRef;
-use crate::traits::{BuilderMethods, DeclareMethods};
+use crate::traits::{BuilderMethods, SirMethods};
 use indexmap::IndexMap;
 use rustc_ast::ast;
 use rustc_ast::ast::{IntTy, UintTy};
@@ -55,9 +55,9 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &Bx,
     ty_layout: &TyAndLayout<'tcx>,
 ) -> ykpack::TypeId {
-    let (sir_ty, is_thread_tracer) = match ty_layout.ty.kind {
-        ty::Int(si) => (lower_signed_int(si), false),
-        ty::Uint(ui) => (lower_unsigned_int(ui), false),
+    let (sir_ty, is_thread_tracer) = match ty_layout.ty.kind() {
+        ty::Int(si) => (lower_signed_int(*si), false),
+        ty::Uint(ui) => (lower_unsigned_int(*ui), false),
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
         ty::Array(typ, _) => {
             (ykpack::Ty::Array(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
@@ -394,29 +394,29 @@ impl SirFuncCx<'tcx> {
     }
 
     fn lower_scalar(&self, ty: Ty<'_>, s: mir::interpret::Scalar) -> ykpack::Constant {
-        match ty.kind {
+        match ty.kind() {
             ty::Uint(uint) => self
-                .lower_uint(uint, s)
+                .lower_uint(*uint, s)
                 .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(i)))
                 .unwrap_or_else(|_| {
                     with_no_trimmed_paths(|| {
                         ykpack::Constant::Unimplemented(format!(
                             "unimplemented uint scalar: {:?}",
-                            ty.kind
+                            ty.kind()
                         ))
                     })
                 }),
             ty::Int(int) => self
-                .lower_int(int, s)
+                .lower_int(*int, s)
                 .map(|i| ykpack::Constant::Int(ykpack::ConstantInt::SignedInt(i)))
                 .unwrap_or_else(|_| {
                     ykpack::Constant::Unimplemented(format!(
                         "unimplemented signed int scalar: {:?}",
-                        ty.kind
+                        ty.kind()
                     ))
                 }),
             ty::Bool => self.lower_bool(s),
-            _ => ykpack::Constant::Unimplemented(format!("unimplemented scalar: {:?}", ty.kind)),
+            _ => ykpack::Constant::Unimplemented(format!("unimplemented scalar: {:?}", ty.kind())),
         }
     }
 

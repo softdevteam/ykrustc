@@ -36,8 +36,10 @@ pub trait EncodableWithShorthand<'tcx, E: TyEncoder<'tcx>>: Copy + Eq + Hash {
 #[allow(rustc::usage_of_ty_tykind)]
 impl<'tcx, E: TyEncoder<'tcx>> EncodableWithShorthand<'tcx, E> for Ty<'tcx> {
     type Variant = ty::TyKind<'tcx>;
+
+    #[inline]
     fn variant(&self) -> &Self::Variant {
-        &self.kind
+        self.kind()
     }
 }
 
@@ -346,6 +348,26 @@ impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for Allocation {
 }
 
 impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [(ty::Predicate<'tcx>, Span)] {
+    fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
+        Ok(decoder.tcx().arena.alloc_from_iter(
+            (0..decoder.read_usize()?)
+                .map(|_| Decodable::decode(decoder))
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
+}
+
+impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [mir::abstract_const::Node<'tcx>] {
+    fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
+        Ok(decoder.tcx().arena.alloc_from_iter(
+            (0..decoder.read_usize()?)
+                .map(|_| Decodable::decode(decoder))
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
+}
+
+impl<'tcx, D: TyDecoder<'tcx>> RefDecodable<'tcx, D> for [mir::abstract_const::NodeId] {
     fn decode(decoder: &mut D) -> Result<&'tcx Self, D::Error> {
         Ok(decoder.tcx().arena.alloc_from_iter(
             (0..decoder.read_usize()?)

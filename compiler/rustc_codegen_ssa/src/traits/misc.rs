@@ -21,4 +21,6 @@ pub trait MiscMethods<'tcx>: BackendTypes {
     fn apply_target_cpu_attr(&self, llfn: Self::Function);
     fn create_used_variable(&self);
     fn push_sir_func(&self, func_cx: SirFuncCx<'_>);
+    /// Declares the extern "C" main function for the entry point. Returns None if the symbol already exists.
+    fn declare_c_main(&self, fn_type: Self::Type) -> Option<Self::Function>;
 }

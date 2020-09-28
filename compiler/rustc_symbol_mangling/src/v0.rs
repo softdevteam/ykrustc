@@ -152,11 +152,8 @@ impl SymbolMangler<'tcx> {
         let _ = write!(self.out, "{}", ident.len());
 
         // Write a separating `_` if necessary (leading digit or `_`).
-        match ident.chars().next() {
-            Some('_' | '0'..='9') => {
-                self.push("_");
-            }
-            _ => {}
+        if let Some('_' | '0'..='9') = ident.chars().next() {
+            self.push("_");
         }
 
         self.push(ident);
@@ -323,7 +320,7 @@ impl Printer<'tcx> for SymbolMangler<'tcx> {
 
     fn print_type(mut self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
         // Basic types, never cached (single-character).
-        let basic_type = match ty.kind {
+        let basic_type = match ty.kind() {
             ty::Bool => "b",
             ty::Char => "c",
             ty::Str => "e",
@@ -359,7 +356,7 @@ impl Printer<'tcx> for SymbolMangler<'tcx> {
         }
         let start = self.out.len();
 
-        match ty.kind {
+        match *ty.kind() {
             // Basic types, handled above.
             ty::Bool | ty::Char | ty::Str | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Never => {
                 unreachable!()
@@ -505,7 +502,7 @@ impl Printer<'tcx> for SymbolMangler<'tcx> {
         }
         let start = self.out.len();
 
-        match ct.ty.kind {
+        match ct.ty.kind() {
             ty::Uint(_) => {}
             _ => {
                 bug!("symbol_names: unsupported constant of type `{}` ({:?})", ct.ty, ct);
