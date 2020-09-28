@@ -36,7 +36,7 @@ impl WaitTimeoutResult {
     /// use std::time::Duration;
     ///
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move || {
     ///     let (lock, cvar) = &*pair2;
@@ -78,13 +78,9 @@ impl WaitTimeoutResult {
 /// and a mutex. The predicate is always verified inside of the mutex before
 /// determining that a thread must block.
 ///
-/// Functions in this module will block the current **thread** of execution and
-/// are bindings to system-provided condition variables where possible. Note
-/// that this module places one additional restriction over the system condition
-/// variables: each condvar can be used with precisely one mutex at runtime. Any
-/// attempt to use multiple mutexes on the same condition variable will result
-/// in a runtime panic. If this is not desired, then the unsafe primitives in
-/// `sys` do not have this restriction but may result in undefined behavior.
+/// Functions in this module will block the current **thread** of execution.
+/// Note that any attempt to use multiple mutexes on the same condition
+/// variable may result in a runtime panic.
 ///
 /// # Examples
 ///
@@ -93,7 +89,7 @@ impl WaitTimeoutResult {
 /// use std::thread;
 ///
 /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-/// let pair2 = pair.clone();
+/// let pair2 = Arc::clone(&pair);
 ///
 /// // Inside of our lock, spawn a new thread, and then wait for it to start.
 /// thread::spawn(move|| {
@@ -159,10 +155,8 @@ impl Condvar {
     ///
     /// # Panics
     ///
-    /// This function will [`panic!`] if it is used with more than one mutex
-    /// over time. Each condition variable is dynamically bound to exactly one
-    /// mutex to ensure defined behavior across platforms. If this functionality
-    /// is not desired, then unsafe primitives in `sys` are provided.
+    /// This function may [`panic!`] if it is used with more than one mutex
+    /// over time.
     ///
     /// [`notify_one`]: Self::notify_one
     /// [`notify_all`]: Self::notify_all
@@ -176,7 +170,7 @@ impl Condvar {
     /// use std::thread;
     ///
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;
@@ -232,7 +226,7 @@ impl Condvar {
     /// use std::thread;
     ///
     /// let pair = Arc::new((Mutex::new(true), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;
@@ -291,7 +285,7 @@ impl Condvar {
     /// use std::thread;
     ///
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;
@@ -363,7 +357,7 @@ impl Condvar {
     /// use std::time::Duration;
     ///
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;
@@ -432,7 +426,7 @@ impl Condvar {
     /// use std::time::Duration;
     ///
     /// let pair = Arc::new((Mutex::new(true), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;
@@ -496,7 +490,7 @@ impl Condvar {
     /// use std::thread;
     ///
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;
@@ -536,7 +530,7 @@ impl Condvar {
     /// use std::thread;
     ///
     /// let pair = Arc::new((Mutex::new(false), Condvar::new()));
-    /// let pair2 = pair.clone();
+    /// let pair2 = Arc::clone(&pair);
     ///
     /// thread::spawn(move|| {
     ///     let (lock, cvar) = &*pair2;

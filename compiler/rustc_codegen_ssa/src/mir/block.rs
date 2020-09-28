@@ -13,7 +13,7 @@ use rustc_ast as ast;
 use rustc_hir::lang_items::LangItem;
 use rustc_index::vec::Idx;
 use rustc_middle::mir;
-use rustc_middle::mir::interpret::{AllocId, ConstValue, Pointer, Scalar};
+use rustc_middle::mir::interpret::ConstValue;
 use rustc_middle::mir::AssertKind;
 use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt};
 use rustc_middle::ty::print::with_no_trimmed_paths;
@@ -343,7 +343,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             args1 = [place.llval];
             &args1[..]
         };
-        let (drop_fn, fn_abi) = match ty.kind {
+        let (drop_fn, fn_abi) = match ty.kind() {
             // FIXME(eddyb) perhaps move some of this logic into
             // `Instance::resolve_drop_in_place`?
             ty::Dynamic(..) => {
@@ -552,7 +552,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // Create the callee. This is a fn ptr or zero-sized and hence a kind of scalar.
         let callee = self.codegen_operand(&mut bx, func);
 
-        let (instance, mut llfn) = match callee.layout.ty.kind {
+        let (instance, mut llfn) = match *callee.layout.ty.kind() {
             ty::FnDef(def_id, substs) => (
                 Some(
                     ty::Instance::resolve(bx.tcx(), ty::ParamEnv::reveal_all(), def_id, substs)
@@ -598,7 +598,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
                         // Check it's the right type.
                         let local_decl = &self.mir.local_decls[ret_place.local];
-                        match local_decl.ty.kind {
+                        match local_decl.ty.kind() {
                             ty::Adt(def, _) => {
                                 if def.variants.len() != 1 {
                                     panic!(type_err);
@@ -771,7 +771,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 })
                 .collect();
 
-            bx.codegen_intrinsic_call(
+            Self::codegen_intrinsic_call(
+                &mut bx,
                 *instance.as_ref().unwrap(),
                 &fn_abi,
                 &args,
@@ -951,27 +952,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         let ty = constant.literal.ty;
                         let size = bx.layout_of(ty).size;
                         let scalar = match const_value {
-                            // Promoted constants are evaluated into a ByRef instead of a Scalar,
-                            // but we want the scalar value here.
-                            ConstValue::ByRef { alloc, offset } => {
-                                let ptr = Pointer::new(AllocId(0), offset);
-                                alloc
-                                    .read_scalar(&bx, ptr, size)
-                                    .and_then(|s| s.check_init())
-                                    .unwrap_or_else(|e| {
-                                        bx.tcx().sess.span_err(
-                                            span,
-                                            &format!("Could not evaluate asm const: {}", e),
-                                        );
-
-                                        // We are erroring out, just emit a dummy constant.
-                                        Scalar::from_u64(0)
-                                    })
-                            }
-                            _ => span_bug!(span, "expected ByRef for promoted asm const"),
+                            ConstValue::Scalar(s) => s,
+                            _ => span_bug!(
+                                span,
+                                "expected Scalar for promoted asm const, but got {:#?}",
+                                const_value
+                            ),
                         };
                         let value = scalar.assert_bits(size);
-                        let string = match ty.kind {
+                        let string = match ty.kind() {
                             ty::Uint(_) => value.to_string(),
                             ty::Int(int_ty) => {
                                 match int_ty.normalize(bx.tcx().sess.target.ptr_width) {
@@ -998,7 +987,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 }
                 mir::InlineAsmOperand::SymFn { ref value } => {
                     let literal = self.monomorphize(&value.literal);
-                    if let ty::FnDef(def_id, substs) = literal.ty.kind {
+                    if let ty::FnDef(def_id, substs) = *literal.ty.kind() {
                         let instance = ty::Instance::resolve_for_fn_ptr(
                             bx.tcx(),
                             ty::ParamEnv::reveal_all(),

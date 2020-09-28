@@ -11,7 +11,7 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def::{self, CtorKind, DefKind, Namespace};
 use rustc_hir::def_id::{CrateNum, DefId, DefIdSet, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc_hir::definitions::{DefPathData, DisambiguatedDefPathData};
+use rustc_hir::definitions::{DefPathData, DefPathDataName, DisambiguatedDefPathData};
 use rustc_hir::ItemKind;
 use rustc_session::config::TrimmedDefPaths;
 use rustc_span::symbol::{kw, Ident, Symbol};
@@ -273,10 +273,10 @@ pub trait PrettyPrinter<'tcx>:
         }
 
         match self.tcx().trimmed_def_paths(LOCAL_CRATE).get(&def_id) {
-            None => return Ok((self, false)),
+            None => Ok((self, false)),
             Some(symbol) => {
                 self.write_str(&symbol.as_str())?;
-                return Ok((self, true));
+                Ok((self, true))
             }
         }
     }
@@ -457,7 +457,7 @@ pub trait PrettyPrinter<'tcx>:
             // Inherent impls. Try to print `Foo::bar` for an inherent
             // impl on `Foo`, but fallback to `<Foo>::bar` if self-type is
             // anything other than a simple path.
-            match self_ty.kind {
+            match self_ty.kind() {
                 ty::Adt(..)
                 | ty::Foreign(_)
                 | ty::Bool
@@ -508,7 +508,7 @@ pub trait PrettyPrinter<'tcx>:
     fn pretty_print_type(mut self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
         define_scoped_cx!(self);
 
-        match ty.kind {
+        match *ty.kind() {
             ty::Bool => p!(write("bool")),
             ty::Char => p!(write("char")),
             ty::Int(t) => p!(write("{}", t.name_str())),
@@ -797,7 +797,7 @@ pub trait PrettyPrinter<'tcx>:
             // Special-case `Fn(...) -> ...` and resugar it.
             let fn_trait_kind = self.tcx().fn_trait_kind_from_lang_item(principal.def_id);
             if !self.tcx().sess.verbose() && fn_trait_kind.is_some() {
-                if let ty::Tuple(ref args) = principal.substs.type_at(0).kind {
+                if let ty::Tuple(ref args) = principal.substs.type_at(0).kind() {
                     let mut projections = predicates.projection_bounds();
                     if let (Some(proj), None) = (projections.next(), projections.next()) {
                         let tys: Vec<_> = args.iter().map(|k| k.expect_ty()).collect();
@@ -976,7 +976,7 @@ pub trait PrettyPrinter<'tcx>:
     ) -> Result<Self::Const, Self::Error> {
         define_scoped_cx!(self);
 
-        match (scalar, &ty.kind) {
+        match (scalar, &ty.kind()) {
             // Byte strings (&[u8; N])
             (
                 Scalar::Ptr(ptr),
@@ -1136,7 +1136,7 @@ pub trait PrettyPrinter<'tcx>:
 
         let u8_type = self.tcx().types.u8;
 
-        match (ct, &ty.kind) {
+        match (ct, ty.kind()) {
             // Byte/string slices, printed as (byte) string literals.
             (
                 ConstValue::Slice { data, start, end },
@@ -1189,7 +1189,7 @@ pub trait PrettyPrinter<'tcx>:
                 );
                 let fields = contents.fields.iter().copied();
 
-                match ty.kind {
+                match *ty.kind() {
                     ty::Array(..) => {
                         p!(write("["), comma_sep(fields), write("]"));
                     }
@@ -1264,6 +1264,7 @@ pub struct FmtPrinterData<'a, 'tcx, F> {
     used_region_names: FxHashSet<Symbol>,
     region_index: usize,
     binder_depth: usize,
+    printed_type_count: usize,
 
     pub region_highlight_mode: RegionHighlightMode,
 
@@ -1294,6 +1295,7 @@ impl<F> FmtPrinter<'a, 'tcx, F> {
             used_region_names: Default::default(),
             region_index: 0,
             binder_depth: 0,
+            printed_type_count: 0,
             region_highlight_mode: RegionHighlightMode::default(),
             name_resolver: None,
         }))
@@ -1411,8 +1413,14 @@ impl<F: fmt::Write> Printer<'tcx> for FmtPrinter<'_, 'tcx, F> {
         self.pretty_print_region(region)
     }
 
-    fn print_type(self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
-        self.pretty_print_type(ty)
+    fn print_type(mut self, ty: Ty<'tcx>) -> Result<Self::Type, Self::Error> {
+        if self.tcx.sess.type_length_limit().value_within_limit(self.printed_type_count) {
+            self.printed_type_count += 1;
+            self.pretty_print_type(ty)
+        } else {
+            write!(self, "...")?;
+            Ok(self)
+        }
     }
 
     fn print_dyn_existential(
@@ -1490,24 +1498,20 @@ impl<F: fmt::Write> Printer<'tcx> for FmtPrinter<'_, 'tcx, F> {
 
         // FIXME(eddyb) `name` should never be empty, but it
         // currently is for `extern { ... }` "foreign modules".
-        let name = disambiguated_data.data.as_symbol();
-        if name != kw::Invalid {
+        let name = disambiguated_data.data.name();
+        if name != DefPathDataName::Named(kw::Invalid) {
             if !self.empty_path {
                 write!(self, "::")?;
             }
-            if Ident::with_dummy_span(name).is_raw_guess() {
-                write!(self, "r#")?;
-            }
-            write!(self, "{}", name)?;
 
-            // FIXME(eddyb) this will print e.g. `{{closure}}#3`, but it
-            // might be nicer to use something else, e.g. `{closure#3}`.
-            let dis = disambiguated_data.disambiguator;
-            let print_dis = disambiguated_data.data.get_opt_name().is_none()
-                || dis != 0 && self.tcx.sess.verbose();
-            if print_dis {
-                write!(self, "#{}", dis)?;
+            if let DefPathDataName::Named(name) = name {
+                if Ident::with_dummy_span(name).is_raw_guess() {
+                    write!(self, "r#")?;
+                }
             }
+
+            let verbose = self.tcx.sess.verbose();
+            disambiguated_data.fmt_maybe_verbose(&mut self, verbose)?;
 
             self.empty_path = false;
         }
@@ -2096,6 +2100,11 @@ define_print_and_forward_display! {
                 print(c2),
                 write("`"))
             }
+            ty::PredicateAtom::TypeWellFormedFromEnv(ty) => {
+                p!(write("the type `"),
+                print(ty),
+                write("` is found in the environment"))
+            }
         }
     }
 
@@ -2112,15 +2121,8 @@ fn for_each_def(tcx: TyCtxt<'_>, mut collect_fn: impl for<'b> FnMut(&'b Ident, N
     // Iterate all local crate items no matter where they are defined.
     let hir = tcx.hir();
     for item in hir.krate().items.values() {
-        if item.ident.name.as_str().is_empty() {
+        if item.ident.name.as_str().is_empty() || matches!(item.kind, ItemKind::Use(_, _)) {
             continue;
-        }
-
-        match item.kind {
-            ItemKind::Use(_, _) => {
-                continue;
-            }
-            _ => {}
         }
 
         if let Some(local_def_id) = hir.definitions().opt_hir_id_to_local_def_id(item.hir_id) {

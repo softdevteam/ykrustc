@@ -720,6 +720,10 @@ impl<'tcx> LateContext<'tcx> {
     /// Anonymous scopes such as `extern` imports are matched with `kw::Invalid`;
     /// inherent `impl` blocks are matched with the name of the type.
     ///
+    /// Instead of using this method, it is often preferable to instead use
+    /// `rustc_diagnostic_item` or a `lang_item`. This is less prone to errors
+    /// as paths get invalidated if the target definition moves.
+    ///
     /// # Examples
     ///
     /// ```rust,ignore (no context or def id available)
@@ -790,7 +794,7 @@ impl<'tcx> LateContext<'tcx> {
                 trait_ref: Option<ty::TraitRef<'tcx>>,
             ) -> Result<Self::Path, Self::Error> {
                 if trait_ref.is_none() {
-                    if let ty::Adt(def, substs) = self_ty.kind {
+                    if let ty::Adt(def, substs) = self_ty.kind() {
                         return self.print_def_path(def.did, substs);
                     }
                 }
@@ -842,7 +846,7 @@ impl<'tcx> LateContext<'tcx> {
                     return Ok(path);
                 }
 
-                path.push(disambiguated_data.data.as_symbol());
+                path.push(Symbol::intern(&disambiguated_data.data.to_string()));
                 Ok(path)
             }
 

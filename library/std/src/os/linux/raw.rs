@@ -1,4 +1,4 @@
-//! Linux-specific raw type definitions
+//! Linux-specific raw type definitions.
 
 #![stable(feature = "raw_ext", since = "1.1.0")]
 #![rustc_deprecated(
@@ -234,7 +234,8 @@ mod arch {
     target_arch = "mips64",
     target_arch = "s390x",
     target_arch = "sparc64",
-    target_arch = "riscv64"
+    target_arch = "riscv64",
+    target_arch = "riscv32"
 ))]
 mod arch {
     pub use libc::{blkcnt_t, blksize_t, ino_t, nlink_t, off_t, stat, time_t};

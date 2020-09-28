@@ -467,8 +467,10 @@ fn locals_live_across_suspend_points(
 
     // Calculate the MIR locals which have been previously
     // borrowed (even if they are still active).
-    let borrowed_locals_results =
-        MaybeBorrowedLocals::all_borrows().into_engine(tcx, body_ref, def_id).iterate_to_fixpoint();
+    let borrowed_locals_results = MaybeBorrowedLocals::all_borrows()
+        .into_engine(tcx, body_ref, def_id)
+        .pass_name("generator")
+        .iterate_to_fixpoint();
 
     let mut borrowed_locals_cursor =
         dataflow::ResultsCursor::new(body_ref, &borrowed_locals_results);
@@ -484,6 +486,7 @@ fn locals_live_across_suspend_points(
     // Calculate the liveness of MIR locals ignoring borrows.
     let mut liveness = MaybeLiveLocals
         .into_engine(tcx, body_ref, def_id)
+        .pass_name("generator")
         .iterate_to_fixpoint()
         .into_results_cursor(body_ref);
 
@@ -726,12 +729,12 @@ fn sanitize_witness<'tcx>(
     saved_locals: &GeneratorSavedLocals,
 ) {
     let allowed_upvars = tcx.erase_regions(upvars);
-    let allowed = match witness.kind {
+    let allowed = match witness.kind() {
         ty::GeneratorWitness(s) => tcx.erase_late_bound_regions(&s),
         _ => {
             tcx.sess.delay_span_bug(
                 body.span,
-                &format!("unexpected generator witness type {:?}", witness.kind),
+                &format!("unexpected generator witness type {:?}", witness.kind()),
             );
             return;
         }
@@ -1252,7 +1255,7 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         let gen_ty = body.local_decls.raw[1].ty;
 
         // Get the interior types and substs which typeck computed
-        let (upvars, interior, discr_ty, movable) = match gen_ty.kind {
+        let (upvars, interior, discr_ty, movable) = match *gen_ty.kind() {
             ty::Generator(_, substs, movability) => {
                 let substs = substs.as_generator();
                 (

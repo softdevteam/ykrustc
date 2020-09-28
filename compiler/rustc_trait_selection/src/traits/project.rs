@@ -345,7 +345,7 @@ impl<'a, 'b, 'tcx> TypeFolder<'tcx> for AssocTypeNormalizer<'a, 'b, 'tcx> {
         // should occur eventually).
 
         let ty = ty.super_fold_with(self);
-        match ty.kind {
+        match *ty.kind() {
             ty::Opaque(def_id, substs) => {
                 // Only normalize `impl Trait` after type-checking, usually in codegen.
                 match self.param_env.reveal() {
@@ -908,7 +908,7 @@ fn assemble_candidates_from_trait_def<'cx, 'tcx>(
     let tcx = selcx.tcx();
     // Check whether the self-type is itself a projection.
     // If so, extract what we know from the trait and try to come up with a good answer.
-    let bounds = match obligation_trait_ref.self_ty().kind {
+    let bounds = match *obligation_trait_ref.self_ty().kind() {
         ty::Projection(ref data) => {
             tcx.projection_predicates(data.item_def_id).subst(tcx, data.substs)
         }
@@ -1000,15 +1000,15 @@ fn assemble_candidates_from_impls<'cx, 'tcx>(
         };
 
         let eligible = match &impl_source {
-            super::ImplSourceClosure(_)
-            | super::ImplSourceGenerator(_)
-            | super::ImplSourceFnPointer(_)
-            | super::ImplSourceObject(_)
-            | super::ImplSourceTraitAlias(_) => {
+            super::ImplSource::Closure(_)
+            | super::ImplSource::Generator(_)
+            | super::ImplSource::FnPointer(_)
+            | super::ImplSource::Object(_)
+            | super::ImplSource::TraitAlias(_) => {
                 debug!("assemble_candidates_from_impls: impl_source={:?}", impl_source);
                 true
             }
-            super::ImplSourceUserDefined(impl_data) => {
+            super::ImplSource::UserDefined(impl_data) => {
                 // We have to be careful when projecting out of an
                 // impl because of specialization. If we are not in
                 // codegen (i.e., projection mode is not "any"), and the
@@ -1060,14 +1060,14 @@ fn assemble_candidates_from_impls<'cx, 'tcx>(
                     }
                 }
             }
-            super::ImplSourceDiscriminantKind(..) => {
+            super::ImplSource::DiscriminantKind(..) => {
                 // While `DiscriminantKind` is automatically implemented for every type,
                 // the concrete discriminant may not be known yet.
                 //
                 // Any type with multiple potential discriminant types is therefore not eligible.
                 let self_ty = selcx.infcx().shallow_resolve(obligation.predicate.self_ty());
 
-                match self_ty.kind {
+                match self_ty.kind() {
                     ty::Bool
                     | ty::Char
                     | ty::Int(_)
@@ -1100,7 +1100,7 @@ fn assemble_candidates_from_impls<'cx, 'tcx>(
                     | ty::Error(_) => false,
                 }
             }
-            super::ImplSourceParam(..) => {
+            super::ImplSource::Param(..) => {
                 // This case tell us nothing about the value of an
                 // associated type. Consider:
                 //
@@ -1128,7 +1128,7 @@ fn assemble_candidates_from_impls<'cx, 'tcx>(
                 // in `assemble_candidates_from_param_env`.
                 false
             }
-            super::ImplSourceAutoImpl(..) | super::ImplSourceBuiltin(..) => {
+            super::ImplSource::AutoImpl(..) | super::ImplSource::Builtin(..) => {
                 // These traits have no associated types.
                 selcx.tcx().sess.delay_span_bug(
                     obligation.cause.span,
@@ -1186,20 +1186,20 @@ fn confirm_select_candidate<'cx, 'tcx>(
     impl_source: Selection<'tcx>,
 ) -> Progress<'tcx> {
     match impl_source {
-        super::ImplSourceUserDefined(data) => confirm_impl_candidate(selcx, obligation, data),
-        super::ImplSourceGenerator(data) => confirm_generator_candidate(selcx, obligation, data),
-        super::ImplSourceClosure(data) => confirm_closure_candidate(selcx, obligation, data),
-        super::ImplSourceFnPointer(data) => confirm_fn_pointer_candidate(selcx, obligation, data),
-        super::ImplSourceDiscriminantKind(data) => {
+        super::ImplSource::UserDefined(data) => confirm_impl_candidate(selcx, obligation, data),
+        super::ImplSource::Generator(data) => confirm_generator_candidate(selcx, obligation, data),
+        super::ImplSource::Closure(data) => confirm_closure_candidate(selcx, obligation, data),
+        super::ImplSource::FnPointer(data) => confirm_fn_pointer_candidate(selcx, obligation, data),
+        super::ImplSource::DiscriminantKind(data) => {
             confirm_discriminant_kind_candidate(selcx, obligation, data)
         }
-        super::ImplSourceObject(_) => {
+        super::ImplSource::Object(_) => {
             confirm_object_candidate(selcx, obligation, obligation_trait_ref)
         }
-        super::ImplSourceAutoImpl(..)
-        | super::ImplSourceParam(..)
-        | super::ImplSourceBuiltin(..)
-        | super::ImplSourceTraitAlias(..) =>
+        super::ImplSource::AutoImpl(..)
+        | super::ImplSource::Param(..)
+        | super::ImplSource::Builtin(..)
+        | super::ImplSource::TraitAlias(..) =>
         // we don't create Select candidates with this kind of resolution
         {
             span_bug!(
@@ -1219,8 +1219,8 @@ fn confirm_object_candidate<'cx, 'tcx>(
     let self_ty = obligation_trait_ref.self_ty();
     let object_ty = selcx.infcx().shallow_resolve(self_ty);
     debug!("confirm_object_candidate(object_ty={:?})", object_ty);
-    let data = match object_ty.kind {
-        ty::Dynamic(ref data, ..) => data,
+    let data = match object_ty.kind() {
+        ty::Dynamic(data, ..) => data,
         _ => span_bug!(
             obligation.cause.span,
             "confirm_object_candidate called with non-object: {:?}",

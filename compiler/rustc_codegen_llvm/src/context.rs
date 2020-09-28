@@ -452,6 +452,17 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             sir.funcs.borrow_mut().push(func_cx.func);
         }
     }
+
+    fn declare_c_main(&self, fn_type: Self::Type) -> Option<Self::Function> {
+        if self.get_declared_value("main").is_none() {
+            Some(self.declare_cfn("main", fn_type))
+        } else {
+            // If the symbol already exists, it is an error: for example, the user wrote
+            // #[no_mangle] extern "C" fn main(..) {..}
+            // instead of #[start]
+            None
+        }
+    }
 }
 
 impl CodegenCx<'b, 'tcx> {

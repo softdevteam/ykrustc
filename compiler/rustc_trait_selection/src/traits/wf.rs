@@ -7,8 +7,9 @@ use rustc_hir::lang_items::LangItem;
 use rustc_middle::ty::subst::{GenericArg, GenericArgKind, SubstsRef};
 use rustc_middle::ty::{self, ToPredicate, Ty, TyCtxt, TypeFoldable, WithConstness};
 use rustc_span::Span;
-use std::rc::Rc;
 
+use std::iter;
+use std::rc::Rc;
 /// Returns the set of obligations needed to make `arg` well-formed.
 /// If `arg` contains unresolved inference variables, this may include
 /// further WF obligations. However, if `arg` IS an unresolved
@@ -25,7 +26,7 @@ pub fn obligations<'a, 'tcx>(
     // Handle the "livelock" case (see comment above) by bailing out if necessary.
     let arg = match arg.unpack() {
         GenericArgKind::Type(ty) => {
-            match ty.kind {
+            match ty.kind() {
                 ty::Infer(ty::TyVar(_)) => {
                     let resolved_ty = infcx.shallow_resolve(ty);
                     if resolved_ty == ty {
@@ -127,6 +128,9 @@ pub fn predicate_obligations<'a, 'tcx>(
             wf.compute(c1.into());
             wf.compute(c2.into());
         }
+        ty::PredicateAtom::TypeWellFormedFromEnv(..) => {
+            bug!("TypeWellFormedFromEnv is only used for Chalk")
+        }
     }
 
     wf.normalize()
@@ -200,7 +204,7 @@ fn extend_cause_with_original_assoc_item_obligation<'tcx>(
             // projection coming from another associated type. See
             // `src/test/ui/associated-types/point-at-type-on-obligation-failure.rs` and
             // `traits-assoc-type-in-supertrait-bad.rs`.
-            if let ty::Projection(projection_ty) = proj.ty.kind {
+            if let ty::Projection(projection_ty) = proj.ty.kind() {
                 let trait_assoc_item = tcx.associated_item(projection_ty.item_def_id);
                 if let Some(impl_item_span) =
                     items.iter().find(|item| item.ident == trait_assoc_item.ident).map(fix_span)
@@ -213,7 +217,7 @@ fn extend_cause_with_original_assoc_item_obligation<'tcx>(
             // An associated item obligation born out of the `trait` failed to be met. An example
             // can be seen in `ui/associated-types/point-at-type-on-obligation-failure-2.rs`.
             debug!("extended_cause_with_original_assoc_item_obligation trait proj {:?}", pred);
-            if let ty::Projection(ty::ProjectionTy { item_def_id, .. }) = pred.self_ty().kind {
+            if let ty::Projection(ty::ProjectionTy { item_def_id, .. }) = *pred.self_ty().kind() {
                 if let Some(impl_item_span) = trait_assoc_items
                     .find(|i| i.def_id == item_def_id)
                     .and_then(|trait_assoc_item| {
@@ -412,7 +416,7 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                 }
             };
 
-            match ty.kind {
+            match *ty.kind() {
                 ty::Bool
                 | ty::Char
                 | ty::Int(..)
@@ -590,7 +594,7 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
                 // prevention, which happens before this can be reached.
                 ty::Infer(_) => {
                     let ty = self.infcx.shallow_resolve(ty);
-                    if let ty::Infer(ty::TyVar(_)) = ty.kind {
+                    if let ty::Infer(ty::TyVar(_)) = ty.kind() {
                         // Not yet resolved, but we've made progress.
                         let cause = self.cause(traits::MiscObligation);
                         self.out.push(traits::Obligation::new(
@@ -613,13 +617,24 @@ impl<'a, 'tcx> WfPredicates<'a, 'tcx> {
         def_id: DefId,
         substs: SubstsRef<'tcx>,
     ) -> Vec<traits::PredicateObligation<'tcx>> {
-        let predicates = self.infcx.tcx.predicates_of(def_id).instantiate(self.infcx.tcx, substs);
+        let predicates = self.infcx.tcx.predicates_of(def_id);
+        let mut origins = vec![def_id; predicates.predicates.len()];
+        let mut head = predicates;
+        while let Some(parent) = head.parent {
+            head = self.infcx.tcx.predicates_of(parent);
+            origins.extend(iter::repeat(parent).take(head.predicates.len()));
+        }
+
+        let predicates = predicates.instantiate(self.infcx.tcx, substs);
+        debug_assert_eq!(predicates.predicates.len(), origins.len());
+
         predicates
             .predicates
             .into_iter()
             .zip(predicates.spans.into_iter())
-            .map(|(pred, span)| {
-                let cause = self.cause(traits::BindingObligation(def_id, span));
+            .zip(origins.into_iter().rev())
+            .map(|((pred, span), origin_def_id)| {
+                let cause = self.cause(traits::BindingObligation(origin_def_id, span));
                 traits::Obligation::new(cause, self.param_env, pred)
             })
             .filter(|pred| !pred.has_escaping_bound_vars())

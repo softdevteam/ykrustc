@@ -1,7 +1,6 @@
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
-#![feature(or_patterns)]
 #![recursion_limit = "256"]
 
 use rustc_attr as attr;
@@ -97,6 +96,15 @@ where
                 ty.visit_with(self)
             }
             ty::PredicateAtom::RegionOutlives(..) => false,
+            ty::PredicateAtom::ConstEvaluatable(..)
+                if self.def_id_visitor.tcx().features().const_evaluatable_checked =>
+            {
+                // FIXME(const_evaluatable_checked): If the constant used here depends on a
+                // private function we may have to do something here...
+                //
+                // For now, let's just pretend that everything is fine.
+                false
+            }
             _ => bug!("unexpected predicate: {:?}", predicate),
         }
     }
@@ -119,7 +127,7 @@ where
     fn visit_ty(&mut self, ty: Ty<'tcx>) -> bool {
         let tcx = self.def_id_visitor.tcx();
         // InternalSubsts are not visited here because they are visited below in `super_visit_with`.
-        match ty.kind {
+        match *ty.kind() {
             ty::Adt(&ty::AdtDef { did: def_id, .. }, ..)
             | ty::Foreign(def_id)
             | ty::FnDef(def_id, ..)
@@ -134,7 +142,7 @@ where
                 // Default type visitor doesn't visit signatures of fn types.
                 // Something like `fn() -> Priv {my_func}` is considered a private type even if
                 // `my_func` is public, so we need to visit signatures.
-                if let ty::FnDef(..) = ty.kind {
+                if let ty::FnDef(..) = ty.kind() {
                     if tcx.fn_sig(def_id).visit_with(self) {
                         return true;
                     }
