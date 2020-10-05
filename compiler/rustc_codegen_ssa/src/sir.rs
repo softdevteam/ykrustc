@@ -62,6 +62,9 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         ty::Array(typ, _) => {
             (ykpack::Ty::Array(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
         }
+        ty::Slice(typ) => {
+            (ykpack::Ty::Slice(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
+        }
         ty::Ref(_, typ, _) => {
             (ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
         }
@@ -351,6 +354,7 @@ impl SirFuncCx<'tcx> {
                 self.lower_binop(*op, opnd1, opnd2, true)
             }
             mir::Rvalue::Ref(_, _, place) => self.lower_ref(place),
+            mir::Rvalue::Len(place) => ykpack::Rvalue::Len(self.lower_place(place)),
             _ => ykpack::Rvalue::Unimplemented(with_no_trimmed_paths(|| {
                 format!("unimplemented rvalue: {:?}", rvalue)
             })),
