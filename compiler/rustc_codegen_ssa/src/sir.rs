@@ -10,7 +10,7 @@ use rustc_ast::ast;
 use rustc_ast::ast::{IntTy, UintTy};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::fx::FxHasher;
-use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_hir::{self, def_id::LOCAL_CRATE};
 use rustc_middle::mir;
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::AdtDef;
@@ -262,6 +262,42 @@ impl SirFuncCx<'tcx> {
                 flags |= ykpack::bodyflags::TRACE_TAIL;
             } else if tcx.sess.check_name(attr, sym::do_not_trace) {
                 flags |= ykpack::bodyflags::DO_NOT_TRACE;
+            } else if tcx.sess.check_name(attr, sym::interp_step) {
+                // Check various properties of the interp_step at compile time.
+                if mir.args_iter().count() != 1 {
+                    tcx.sess
+                        .struct_err("The #[interp_step] function must accept only one argument")
+                        .emit();
+                }
+
+                let arg_ok = if let ty::Ref(_, inner_ty, rustc_hir::Mutability::Mut) =
+                    mir.local_decls[mir::Local::from_u32(1)].ty.kind()
+                {
+                    if let ty::Adt(def, _) = inner_ty.kind() { def.is_struct() } else { false }
+                } else {
+                    false
+                };
+                if !arg_ok {
+                    tcx.sess
+                        .struct_err(
+                            "The #[interp_step] function must accept a mutable reference to a struct"
+                        )
+                        .emit();
+                }
+
+                if !mir.return_ty().is_unit() {
+                    tcx.sess.struct_err("The #[interp_step] function must return unit").emit();
+                }
+
+                if !tcx.upvars_mentioned(instance.def_id()).is_none() {
+                    tcx.sess
+                        .struct_err(
+                            "The #[interp_step] function must not capture from its environment",
+                        )
+                        .emit();
+                }
+
+                flags |= ykpack::bodyflags::INTERP_STEP;
             }
         }
 

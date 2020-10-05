@@ -590,6 +590,7 @@ symbols! {
         inline,
         inout,
         intel,
+        interp_step,
         into_iter,
         into_result,
         intrinsics,

@@ -242,6 +242,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(trace_tail, AssumedUsed, template!(Word)),
     ungated!(do_not_trace, AssumedUsed, template!(Word)),
     ungated!(thread_tracer, AssumedUsed, template!(Word)),
+    ungated!(interp_step, AssumedUsed, template!(Word)),
 
     ungated!(used, AssumedUsed, template!(Word)),
 
