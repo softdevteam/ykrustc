@@ -1023,7 +1023,14 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
             mir::TerminatorKind::SwitchInt { ref discr, switch_ty, ref values, ref targets } => {
                 self.codegen_switchint_terminator(helper, bx, discr, switch_ty, values, targets);
-                set_unimplemented_sir_term!(self, bb, terminator);
+                if let Some(sfcx) = &mut self.sir_func_cx {
+                    sfcx.set_term_switchint(
+                        bb.as_u32(),
+                        discr,
+                        values.iter().map(|v| ykpack::SerU128::new(*v)).collect(),
+                        targets,
+                    );
+                }
             }
 
             mir::TerminatorKind::Return => {

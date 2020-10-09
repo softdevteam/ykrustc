@@ -316,6 +316,29 @@ impl SirFuncCx<'tcx> {
         *term = new_term
     }
 
+    pub fn set_term_switchint(
+        &mut self,
+        bb: ykpack::BasicBlockIndex,
+        discr: &mir::Operand<'_>,
+        values: Vec<ykpack::SerU128>,
+        targets: &Vec<mir::BasicBlock>,
+    ) {
+        // Create the SwitchInt terminator.
+        let mut targetsnew: Vec<u32> = targets.iter().map(|bb| bb.as_u32()).collect();
+        let otherwise = targetsnew.pop().expect("SwitchInt can't have empty targets?");
+        let new_term = ykpack::Terminator::SwitchInt {
+            discr: self.lower_operand(discr),
+            values: values,
+            target_bbs: targetsnew,
+            otherwise_bb: otherwise,
+        };
+        // Set the terminator of the block.
+        let term = &mut self.func.blocks[usize::try_from(bb).unwrap()].term;
+        // We should only ever replace the default unreachable terminator assigned at allocation time.
+        debug_assert!(*term == ykpack::Terminator::Unreachable);
+        *term = new_term
+    }
+
     /// Converts a MIR statement to SIR, appending the result to `bb`.
     pub fn lower_statement(&mut self, bb: ykpack::BasicBlockIndex, stmt: &mir::Statement<'_>) {
         match stmt.kind {
