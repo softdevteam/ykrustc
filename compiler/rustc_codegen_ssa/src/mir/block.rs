@@ -576,15 +576,14 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 None => ykpack::CallOperand::Unknown,
             };
 
-            sfcx.set_terminator(
-                bb.as_u32(),
-                ykpack::Terminator::Call {
-                    operand,
-                    args: args.iter().map(|a| sfcx.lower_operand(a)).collect(),
-                    destination: destination
-                        .map(|(ret_val, ret_bb)| (sfcx.lower_place(&ret_val), ret_bb.as_u32())),
-                },
-            );
+            let term = ykpack::Terminator::Call {
+                operand,
+                args: args.iter().map(|a| sfcx.lower_operand(&bx, bb.as_u32(), a)).collect(),
+                destination: destination.map(|(ret_val, ret_bb)| {
+                    (sfcx.lower_place(&bx, bb.as_u32(), &ret_val), ret_bb.as_u32())
+                }),
+            };
+            sfcx.set_terminator(bb.as_u32(), term);
         }
 
         if let Some(ty::InstanceDef::DropGlue(_, None)) = def {
@@ -976,7 +975,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             bx = self.codegen_statement(bx, statement);
 
             if let Some(fcx) = self.sir_func_cx.as_mut() {
-                fcx.lower_statement(bb.as_u32(), statement);
+                fcx.lower_statement(&bx, bb.as_u32(), statement);
             }
         }
 
@@ -1022,15 +1021,16 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::TerminatorKind::SwitchInt { ref discr, switch_ty, ref values, ref targets } => {
-                self.codegen_switchint_terminator(helper, bx, discr, switch_ty, values, targets);
                 if let Some(sfcx) = &mut self.sir_func_cx {
                     sfcx.set_term_switchint(
+                        &bx,
                         bb.as_u32(),
                         discr,
                         values.iter().map(|v| ykpack::SerU128::new(*v)).collect(),
                         targets,
                     );
                 }
+                self.codegen_switchint_terminator(helper, bx, discr, switch_ty, values, targets);
             }
 
             mir::TerminatorKind::Return => {
