@@ -1198,6 +1198,7 @@ enum class LLVMRustDiagnosticKind {
   OptimizationFailure,
   PGOProfile,
   Linker,
+  Unsupported,
 };
 
 static LLVMRustDiagnosticKind toRust(DiagnosticKind Kind) {
@@ -1224,6 +1225,8 @@ static LLVMRustDiagnosticKind toRust(DiagnosticKind Kind) {
     return LLVMRustDiagnosticKind::PGOProfile;
   case DK_Linker:
     return LLVMRustDiagnosticKind::Linker;
+  case DK_Unsupported:
+    return LLVMRustDiagnosticKind::Unsupported;
   default:
     return (Kind >= DK_FirstRemark && Kind <= DK_LastRemark)
                ? LLVMRustDiagnosticKind::OptimizationRemarkOther

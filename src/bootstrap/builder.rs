@@ -172,15 +172,7 @@ impl StepDescription {
         }
 
         // Determine the targets participating in this rule.
-        let targets = if self.only_hosts {
-            if builder.config.skip_only_host_steps {
-                return; // don't run anything
-            } else {
-                &builder.hosts
-            }
-        } else {
-            &builder.targets
-        };
+        let targets = if self.only_hosts { &builder.hosts } else { &builder.targets };
 
         for target in targets {
             let run = RunConfig { builder, path: pathset.path(builder), target: *target };
@@ -485,7 +477,7 @@ impl<'a> Builder<'a> {
                 install::Src,
                 install::Rustc
             ),
-            Kind::Run => describe!(run::ExpandYamlAnchors,),
+            Kind::Run => describe!(run::ExpandYamlAnchors, run::BuildManifest),
         }
     }
 
@@ -540,7 +532,7 @@ impl<'a> Builder<'a> {
     pub fn new(build: &Build) -> Builder<'_> {
         let (kind, paths) = match build.config.cmd {
             Subcommand::Build { ref paths } => (Kind::Build, &paths[..]),
-            Subcommand::Check { ref paths } => (Kind::Check, &paths[..]),
+            Subcommand::Check { ref paths, all_targets: _ } => (Kind::Check, &paths[..]),
             Subcommand::Clippy { ref paths } => (Kind::Clippy, &paths[..]),
             Subcommand::Fix { ref paths } => (Kind::Fix, &paths[..]),
             Subcommand::Doc { ref paths, .. } => (Kind::Doc, &paths[..]),
