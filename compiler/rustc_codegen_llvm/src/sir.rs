@@ -45,7 +45,6 @@ pub fn write_sir<'tcx>(
         .serialise(ykpack::Pack::Types(ykpack::Types {
             cgu_hash: sir_types.cgu_hash,
             types: sir_types.map.into_iter().map(|(k, _)| k).collect::<Vec<ykpack::Ty>>(),
-            thread_tracers: sir_types.thread_tracers.into_iter().collect(),
         }))
         .unwrap();
 
@@ -94,12 +93,6 @@ impl SirMethods for CodegenCx<'b, 'tcx> {
     fn define_sir_type(&self, ty: ykpack::Ty) -> ykpack::TypeId {
         let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
         (types.cgu_hash, types.index(ty))
-    }
-
-    fn define_sir_thread_tracer(&self, type_id: ykpack::TypeId) {
-        let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
-        assert_eq!(types.cgu_hash, type_id.0);
-        types.thread_tracers.insert(u32::try_from(type_id.1).unwrap());
     }
 
     fn define_function_sir(&self, sir: ykpack::Body) {

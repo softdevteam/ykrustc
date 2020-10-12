@@ -8,9 +8,8 @@ use crate::traits::{BuilderMethods, SirMethods};
 use indexmap::IndexMap;
 use rustc_ast::ast;
 use rustc_ast::ast::{IntTy, UintTy};
-use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::fx::FxHasher;
-use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_hir::{self, def_id::LOCAL_CRATE};
 use rustc_middle::mir;
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::AdtDef;
@@ -55,29 +54,18 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &Bx,
     ty_layout: &TyAndLayout<'tcx>,
 ) -> ykpack::TypeId {
-    let (sir_ty, is_thread_tracer) = match ty_layout.ty.kind() {
-        ty::Int(si) => (lower_signed_int(*si), false),
-        ty::Uint(ui) => (lower_unsigned_int(*ui), false),
+    let sir_ty = match ty_layout.ty.kind() {
+        ty::Int(si) => lower_signed_int(*si),
+        ty::Uint(ui) => lower_unsigned_int(*ui),
         ty::Adt(adt_def, ..) => lower_adt(tcx, bx, adt_def, &ty_layout),
-        ty::Array(typ, _) => {
-            (ykpack::Ty::Array(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
-        }
-        ty::Slice(typ) => {
-            (ykpack::Ty::Slice(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
-        }
-        ty::Ref(_, typ, _) => {
-            (ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))), false)
-        }
-        ty::Bool => (ykpack::Ty::Bool, false),
-        ty::Tuple(..) => (lower_tuple(tcx, bx, ty_layout), false),
-        _ => (ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)), false),
+        ty::Array(typ, _) => ykpack::Ty::Array(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
+        ty::Slice(typ) => ykpack::Ty::Slice(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
+        ty::Ref(_, typ, _) => ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
+        ty::Bool => ykpack::Ty::Bool,
+        ty::Tuple(..) => lower_tuple(tcx, bx, ty_layout),
+        _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
     };
-
-    let type_id = bx.cx().define_sir_type(sir_ty);
-    if is_thread_tracer {
-        bx.cx().define_sir_thread_tracer(type_id);
-    }
-    type_id
+    bx.cx().define_sir_type(sir_ty)
 }
 
 fn lower_signed_int(si: IntTy) -> ykpack::Ty {
@@ -133,16 +121,9 @@ fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &Bx,
     adt_def: &AdtDef,
     ty_layout: &TyAndLayout<'tcx>,
-) -> (ykpack::Ty, bool) {
+) -> ykpack::Ty {
     let align = i32::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
     let size = i32::try_from(ty_layout.layout.size.bytes()).unwrap();
-
-    let mut is_thread_tracer = false;
-    for attr in tcx.get_attrs(adt_def.did).iter() {
-        if tcx.sess.check_name(attr, sym::thread_tracer) {
-            is_thread_tracer = true;
-        }
-    }
 
     if adt_def.variants.len() == 1 {
         // Plain old struct-like thing.
@@ -157,19 +138,16 @@ fn lower_adt<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
                     sir_offsets.push(offs.bytes());
                 }
 
-                (
-                    ykpack::Ty::Struct(ykpack::StructTy {
-                        fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
-                        size_align: ykpack::SizeAndAlign { align, size },
-                    }),
-                    is_thread_tracer,
-                )
+                ykpack::Ty::Struct(ykpack::StructTy {
+                    fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
+                    size_align: ykpack::SizeAndAlign { align, size },
+                })
             }
-            _ => (ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)), false),
+            _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
         }
     } else {
         // An enum with variants.
-        (ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)), false)
+        ykpack::Ty::Unimplemented(format!("{:?}", ty_layout))
     }
 }
 
@@ -220,7 +198,6 @@ impl Sir {
                 cgu_hash: ykpack::CguHash(cgu_hasher.finish()),
                 map: Default::default(),
                 next_idx: Default::default(),
-                thread_tracers: Default::default(),
             }),
             funcs: Default::default(),
         }
@@ -256,12 +233,44 @@ impl SirFuncCx<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, instance: &Instance<'tcx>, mir: &mir::Body<'_>) -> Self {
         let mut flags = 0;
         for attr in tcx.get_attrs(instance.def_id()).iter() {
-            if tcx.sess.check_name(attr, sym::trace_head) {
-                flags |= ykpack::bodyflags::TRACE_HEAD;
-            } else if tcx.sess.check_name(attr, sym::trace_tail) {
-                flags |= ykpack::bodyflags::TRACE_TAIL;
-            } else if tcx.sess.check_name(attr, sym::do_not_trace) {
+            if tcx.sess.check_name(attr, sym::do_not_trace) {
                 flags |= ykpack::bodyflags::DO_NOT_TRACE;
+            } else if tcx.sess.check_name(attr, sym::interp_step) {
+                // Check various properties of the interp_step at compile time.
+                if mir.args_iter().count() != 1 {
+                    tcx.sess
+                        .struct_err("The #[interp_step] function must accept only one argument")
+                        .emit();
+                }
+
+                let arg_ok = if let ty::Ref(_, inner_ty, rustc_hir::Mutability::Mut) =
+                    mir.local_decls[mir::Local::from_u32(1)].ty.kind()
+                {
+                    if let ty::Adt(def, _) = inner_ty.kind() { def.is_struct() } else { false }
+                } else {
+                    false
+                };
+                if !arg_ok {
+                    tcx.sess
+                        .struct_err(
+                            "The #[interp_step] function must accept a mutable reference to a struct"
+                        )
+                        .emit();
+                }
+
+                if !mir.return_ty().is_unit() {
+                    tcx.sess.struct_err("The #[interp_step] function must return unit").emit();
+                }
+
+                if !tcx.upvars_mentioned(instance.def_id()).is_none() {
+                    tcx.sess
+                        .struct_err(
+                            "The #[interp_step] function must not capture from its environment",
+                        )
+                        .emit();
+                }
+
+                flags |= ykpack::bodyflags::INTERP_STEP;
             }
         }
 
@@ -284,14 +293,7 @@ impl SirFuncCx<'tcx> {
         }
 
         Self {
-            func: ykpack::Body {
-                symbol_name,
-                blocks,
-                flags,
-                trace_inputs_local: None,
-                local_decls,
-                num_args: mir.arg_count,
-            },
+            func: ykpack::Body { symbol_name, blocks, flags, local_decls, num_args: mir.arg_count },
             tcx,
         }
     }
@@ -527,8 +529,6 @@ pub struct SirTypes {
     pub map: IndexMap<ykpack::Ty, ykpack::TyIndex, BuildHasherDefault<FxHasher>>,
     /// The next available type index.
     next_idx: ykpack::TyIndex,
-    /// Indices which are thread tracer types.
-    pub thread_tracers: FxHashSet<u32>,
 }
 
 impl SirTypes {
