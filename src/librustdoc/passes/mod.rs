@@ -8,7 +8,7 @@ use std::mem;
 use std::ops::Range;
 
 use self::Condition::*;
-use crate::clean::{self, GetDefId, Item};
+use crate::clean::{self, DocFragmentKind, GetDefId, Item};
 use crate::core::DocContext;
 use crate::fold::{DocFolder, StripItem};
 
@@ -44,6 +44,9 @@ pub use self::check_code_block_syntax::CHECK_CODE_BLOCK_SYNTAX;
 
 mod calculate_doc_coverage;
 pub use self::calculate_doc_coverage::CALCULATE_DOC_COVERAGE;
+
+mod html_tags;
+pub use self::html_tags::CHECK_INVALID_HTML_TAGS;
 
 /// A single pass over the cleaned documentation.
 ///
@@ -87,6 +90,7 @@ pub const PASSES: &[Pass] = &[
     CHECK_CODE_BLOCK_SYNTAX,
     COLLECT_TRAIT_IMPLS,
     CALCULATE_DOC_COVERAGE,
+    CHECK_INVALID_HTML_TAGS,
 ];
 
 /// The list of passes run by default.
@@ -100,6 +104,7 @@ pub const DEFAULT_PASSES: &[ConditionalPass] = &[
     ConditionalPass::new(STRIP_PRIV_IMPORTS, WhenDocumentPrivate),
     ConditionalPass::always(COLLECT_INTRA_DOC_LINKS),
     ConditionalPass::always(CHECK_CODE_BLOCK_SYNTAX),
+    ConditionalPass::always(CHECK_INVALID_HTML_TAGS),
     ConditionalPass::always(PROPAGATE_DOC_CFG),
 ];
 
@@ -314,11 +319,11 @@ crate fn span_of_attrs(attrs: &clean::Attributes) -> Option<Span> {
     if attrs.doc_strings.is_empty() {
         return None;
     }
-    let start = attrs.doc_strings[0].span();
+    let start = attrs.doc_strings[0].span;
     if start == DUMMY_SP {
         return None;
     }
-    let end = attrs.doc_strings.last().expect("no doc strings provided").span();
+    let end = attrs.doc_strings.last().expect("no doc strings provided").span;
     Some(start.to(end))
 }
 
@@ -333,10 +338,8 @@ crate fn source_span_for_markdown_range(
     md_range: &Range<usize>,
     attrs: &clean::Attributes,
 ) -> Option<Span> {
-    let is_all_sugared_doc = attrs.doc_strings.iter().all(|frag| match frag {
-        clean::DocFragment::SugaredDoc(..) => true,
-        _ => false,
-    });
+    let is_all_sugared_doc =
+        attrs.doc_strings.iter().all(|frag| frag.kind == DocFragmentKind::SugaredDoc);
 
     if !is_all_sugared_doc {
         return None;

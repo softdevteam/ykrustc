@@ -232,7 +232,7 @@ impl<'tcx> ty::TyS<'tcx> {
                 let n = tcx.lift(&n).unwrap();
                 match n.try_eval_usize(tcx, ty::ParamEnv::empty()) {
                     _ if t.is_simple_ty() => format!("array `{}`", self).into(),
-                    Some(n) => format!("array of {} element{} ", n, pluralize!(n)).into(),
+                    Some(n) => format!("array of {} element{}", n, pluralize!(n)).into(),
                     None => "array".into(),
                 }
             }
@@ -474,6 +474,18 @@ impl<T> Trait<T> for X {
                                  https://doc.rust-lang.org/book/ch10-02-traits.html\
                                  #traits-as-parameters",
                         );
+                    }
+                    (ty::Param(p), ty::Closure(..) | ty::Generator(..)) => {
+                        let generics = self.generics_of(body_owner_def_id);
+                        let p_span = self.def_span(generics.type_param(p, self).def_id);
+                        if !sp.contains(p_span) {
+                            db.span_label(p_span, "this type parameter");
+                        }
+                        db.help(&format!(
+                            "every closure has a distinct type and so could not always match the \
+                             caller-chosen type of parameter `{}`",
+                            p
+                        ));
                     }
                     (ty::Param(p), _) | (_, ty::Param(p)) => {
                         let generics = self.generics_of(body_owner_def_id);

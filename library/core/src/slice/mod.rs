@@ -11,6 +11,7 @@
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::marker::Copy;
 use crate::mem;
+use crate::num::NonZeroUsize;
 use crate::ops::{FnMut, Range, RangeBounds};
 use crate::option::Option;
 use crate::option::Option::{None, Some};
@@ -458,8 +459,6 @@ impl<T> [T] {
     /// element of this slice:
     ///
     /// ```
-    /// #![feature(slice_ptr_range)]
-    ///
     /// let a = [1, 2, 3];
     /// let x = &a[1] as *const _;
     /// let y = &5 as *const _;
@@ -469,7 +468,7 @@ impl<T> [T] {
     /// ```
     ///
     /// [`as_ptr`]: #method.as_ptr
-    #[unstable(feature = "slice_ptr_range", issue = "65807")]
+    #[stable(feature = "slice_ptr_range", since = "1.48.0")]
     #[rustc_const_unstable(feature = "const_ptr_offset", issue = "71499")]
     #[inline]
     pub const fn as_ptr_range(&self) -> Range<*const T> {
@@ -511,7 +510,7 @@ impl<T> [T] {
     /// common in C++.
     ///
     /// [`as_mut_ptr`]: #method.as_mut_ptr
-    #[unstable(feature = "slice_ptr_range", issue = "65807")]
+    #[stable(feature = "slice_ptr_range", since = "1.48.0")]
     #[rustc_const_unstable(feature = "const_ptr_offset", issue = "71499")]
     #[inline]
     pub const fn as_mut_ptr_range(&mut self) -> Range<*mut T> {
@@ -730,7 +729,7 @@ impl<T> [T] {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn windows(&self, size: usize) -> Windows<'_, T> {
-        assert_ne!(size, 0);
+        let size = NonZeroUsize::new(size).expect("size is zero");
         Windows::new(self, size)
     }
 
@@ -1636,6 +1635,7 @@ impl<T> [T] {
     /// assert!(!v.iter().any(|e| e == "hi"));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[inline]
     pub fn contains(&self, x: &T) -> bool
     where
         T: PartialEq,

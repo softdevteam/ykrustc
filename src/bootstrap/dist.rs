@@ -26,27 +26,10 @@ use crate::{Compiler, DependencyType, Mode, LLVM_TOOLS};
 use time::{self, Timespec};
 
 pub fn pkgname(builder: &Builder<'_>, component: &str) -> String {
-    if component == "cargo" {
-        format!("{}-{}", component, builder.cargo_package_vers())
-    } else if component == "rls" {
-        format!("{}-{}", component, builder.rls_package_vers())
-    } else if component == "rust-analyzer" {
-        format!("{}-{}", component, builder.rust_analyzer_package_vers())
-    } else if component == "clippy" {
-        format!("{}-{}", component, builder.clippy_package_vers())
-    } else if component == "miri" {
-        format!("{}-{}", component, builder.miri_package_vers())
-    } else if component == "rustfmt" {
-        format!("{}-{}", component, builder.rustfmt_package_vers())
-    } else if component == "llvm-tools" {
-        format!("{}-{}", component, builder.llvm_tools_package_vers())
-    } else {
-        assert!(component.starts_with("rust"));
-        format!("{}-{}", component, builder.rust_package_vers())
-    }
+    format!("{}-{}", component, builder.rust_package_vers())
 }
 
-fn distdir(builder: &Builder<'_>) -> PathBuf {
+pub(crate) fn distdir(builder: &Builder<'_>) -> PathBuf {
     builder.out.join("dist")
 }
 
@@ -2368,15 +2351,10 @@ impl Step for HashSign {
         cmd.arg(sign);
         cmd.arg(distdir(builder));
         cmd.arg(today.trim());
-        cmd.arg(builder.rust_package_vers());
         cmd.arg(addr);
-        cmd.arg(builder.package_vers(&builder.release_num("cargo")));
-        cmd.arg(builder.package_vers(&builder.release_num("rls")));
-        cmd.arg(builder.package_vers(&builder.release_num("rust-analyzer/crates/rust-analyzer")));
-        cmd.arg(builder.package_vers(&builder.release_num("clippy")));
-        cmd.arg(builder.package_vers(&builder.release_num("miri")));
-        cmd.arg(builder.package_vers(&builder.release_num("rustfmt")));
-        cmd.arg(builder.llvm_tools_package_vers());
+        cmd.arg(&builder.config.channel);
+        cmd.arg(&builder.src);
+        cmd.env("BUILD_MANIFEST_LEGACY", "1");
 
         builder.create_dir(&distdir(builder));
 

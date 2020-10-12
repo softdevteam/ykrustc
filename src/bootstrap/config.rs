@@ -66,8 +66,6 @@ pub struct Config {
     pub test_compare_mode: bool,
     pub llvm_libunwind: bool,
 
-    pub skip_only_host_steps: bool,
-
     pub on_fail: Option<String>,
     pub stage: u32,
     pub keep_stage: Vec<u32>,
@@ -515,7 +513,6 @@ impl Config {
         config.rust_codegen_backends = vec![INTERNER.intern_str("llvm")];
         config.deny_warnings = true;
         config.missing_tools = false;
-        config.config = PathBuf::from("config.toml");
 
         // set by bootstrap.py
         config.build = TargetSelection::from_user(&env!("BUILD_TRIPLE"));
@@ -558,10 +555,10 @@ impl Config {
         #[cfg(test)]
         let get_toml = |_| TomlConfig::default();
         #[cfg(not(test))]
-        let get_toml = |file: PathBuf| {
+        let get_toml = |file: &Path| {
             use std::process;
 
-            let contents = t!(fs::read_to_string(&file), "`include` config not found");
+            let contents = t!(fs::read_to_string(file), "`include` config not found");
             match toml::from_str(&contents) {
                 Ok(table) => table,
                 Err(err) => {
@@ -571,25 +568,23 @@ impl Config {
             }
         };
 
-        let mut toml = flags.config.map(get_toml).unwrap_or_else(TomlConfig::default);
+        let mut toml = flags.config.as_deref().map(get_toml).unwrap_or_else(TomlConfig::default);
         if let Some(include) = &toml.profile {
             let mut include_path = config.src.clone();
             include_path.push("src");
             include_path.push("bootstrap");
             include_path.push("defaults");
-            include_path.push(format!("config.toml.{}", include));
-            let included_toml = get_toml(include_path);
+            include_path.push(format!("config.{}.toml", include));
+            let included_toml = get_toml(&include_path);
             toml.merge(included_toml);
         }
 
         config.changelog_seen = toml.changelog_seen;
+        if let Some(cfg) = flags.config {
+            config.config = cfg;
+        }
 
         let build = toml.build.unwrap_or_default();
-
-        // If --target was specified but --host wasn't specified, don't run any host-only tests.
-        let has_hosts = build.host.is_some() || flags.host.is_some();
-        let has_targets = build.target.is_some() || flags.target.is_some();
-        config.skip_only_host_steps = !has_hosts && has_targets;
 
         config.hosts = if let Some(arg_host) = flags.host {
             arg_host
