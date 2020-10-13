@@ -5520,7 +5520,7 @@ dependencies = [
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#f61138d53a59f7eabd43dddd88d3471d89091224"
+source = "git+https://github.com/softdevteam/yk#6305bf75087d77cfb9033c503b72ca5e432a6826"
 dependencies = [
  "bincode",
  "fallible-iterator",
