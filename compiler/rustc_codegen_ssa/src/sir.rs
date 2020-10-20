@@ -62,6 +62,7 @@ fn lower_ty_and_layout<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         ty::Slice(typ) => ykpack::Ty::Slice(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
         ty::Ref(_, typ, _) => ykpack::Ty::Ref(lower_ty_and_layout(tcx, bx, &bx.layout_of(typ))),
         ty::Bool => ykpack::Ty::Bool,
+        ty::Char => ykpack::Ty::Char,
         ty::Tuple(..) => lower_tuple(tcx, bx, ty_layout),
         _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
     };
@@ -380,6 +381,7 @@ impl SirFuncCx<'tcx> {
             }
             mir::Rvalue::Ref(_, _, place) => self.lower_ref(place),
             mir::Rvalue::Len(place) => ykpack::Rvalue::Len(self.lower_place(place)),
+            mir::Rvalue::Cast(mir::CastKind::Misc, op, ty) => self.lower_cast_misc(op, ty),
             _ => ykpack::Rvalue::Unimplemented(with_no_trimmed_paths(|| {
                 format!("unimplemented rvalue: {:?}", rvalue)
             })),
@@ -409,6 +411,18 @@ impl SirFuncCx<'tcx> {
         // For the lowering of `Local`s we currently assume a 1:1 mapping from MIR to SIR. If this
         // mapping turns out to be impossible or impractial, this is the place to change it.
         ykpack::Local(local.as_u32())
+    }
+
+    fn lower_cast_misc(&self, op: &mir::Operand<'_>, ty: Ty<'_>) -> ykpack::Rvalue {
+        let lop = self.lower_operand(op);
+        let lty = match ty.kind() {
+            ty::Int(si) => lower_signed_int(*si),
+            ty::Uint(ui) => lower_unsigned_int(*ui),
+            ty::Bool => ykpack::Ty::Bool,
+            ty::Char => ykpack::Ty::Char,
+            _ => ykpack::Ty::Unimplemented(format!("{:?}", ty)),
+        };
+        ykpack::Rvalue::Cast(lop, lty)
     }
 
     fn lower_constant(&self, constant: &mir::Constant<'_>) -> ykpack::Constant {
