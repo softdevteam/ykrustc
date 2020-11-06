@@ -1051,10 +1051,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::TerminatorKind::Assert { ref cond, expected, ref msg, target, cleanup } => {
+                if let Some(sfcx) = &mut self.sir_func_cx {
+                    sfcx.set_term_assert(&bx, bb, cond, expected, target);
+                }
                 self.codegen_assert_terminator(
                     helper, bx, terminator, cond, expected, msg, target, cleanup,
                 );
-                set_unimplemented_sir_term!(self, bb, terminator);
             }
 
             mir::TerminatorKind::DropAndReplace { .. } => {
