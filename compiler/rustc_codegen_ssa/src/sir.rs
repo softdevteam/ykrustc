@@ -288,6 +288,21 @@ impl SirFuncCx<'tcx> {
         *term = new_term
     }
 
+    pub fn set_term_assert<Bx: BuilderMethods<'a, 'tcx>>(
+        &mut self,
+        bx: &Bx,
+        bb: mir::BasicBlock,
+        cond: &mir::Operand<'tcx>,
+        expected: bool,
+        target_bb: mir::BasicBlock,
+    ) {
+        let bb = bb.as_u32();
+        let cond_ip = self.lower_operand(bx, bb, cond);
+        let term =
+            ykpack::Terminator::Assert { cond: cond_ip, expected, target_bb: target_bb.as_u32() };
+        self.set_terminator(bb, term);
+    }
+
     /// Converts a MIR statement to SIR, appending the result to `bb`.
     pub fn lower_statement<Bx: BuilderMethods<'a, 'tcx>>(
         &mut self,

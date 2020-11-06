@@ -5520,7 +5520,7 @@ dependencies = [
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#3bc032d5c1e91b959532e0e6062b0eb281d7a7e6"
+source = "git+https://github.com/vext01/yk?branch=binop-overflow-guards#ac776cbab472a50da746d06a908a1098820f5fe1"
 dependencies = [
  "bincode",
  "fallible-iterator",
