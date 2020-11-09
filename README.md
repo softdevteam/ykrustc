@@ -8,8 +8,7 @@ For Yorick-specific notes, see [the wiki](https://github.com/softdevteam/ykrustc
 
 **Note: this README is for _users_ rather than _contributors_.
 If you wish to _contribute_ to the compiler, you should read the
-[Getting Started][gettingstarted] of the rustc-dev-guide instead of this
-section.**
+[Getting Started][gettingstarted] section of the rustc-dev-guide instead.**
 
 ## Quick Start
 

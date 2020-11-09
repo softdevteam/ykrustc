@@ -12,9 +12,9 @@ use crate::MemFlags;
 use rustc_ast as ast;
 use rustc_hir::lang_items::LangItem;
 use rustc_index::vec::Idx;
-use rustc_middle::mir;
 use rustc_middle::mir::interpret::ConstValue;
 use rustc_middle::mir::AssertKind;
+use rustc_middle::mir::{self, SwitchTargets};
 use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt};
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::{self, Instance, Ty, TypeFoldable};
@@ -23,8 +23,6 @@ use rustc_span::{sym, Symbol};
 use rustc_target::abi::call::{ArgAbi, FnAbi, PassMode};
 use rustc_target::abi::{self, LayoutOf};
 use rustc_target::spec::abi::Abi;
-
-use std::borrow::Cow;
 
 macro_rules! set_unimplemented_sir_term {
     ($func_cx:ident, $bb:expr, $term:expr) => {
@@ -176,7 +174,7 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
                 target <= self.bb
                     && target.start_location().is_predecessor_of(self.bb.start_location(), mir)
             }) {
-                bx.sideeffect();
+                bx.sideeffect(false);
             }
         }
     }
@@ -209,42 +207,37 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         mut bx: Bx,
         discr: &mir::Operand<'tcx>,
         switch_ty: Ty<'tcx>,
-        values: &Cow<'tcx, [u128]>,
-        targets: &Vec<mir::BasicBlock>,
+        targets: &SwitchTargets,
     ) {
         let discr = self.codegen_operand(&mut bx, &discr);
         // `switch_ty` is redundant, sanity-check that.
         assert_eq!(discr.layout.ty, switch_ty);
-        if targets.len() == 2 {
-            // If there are two targets, emit br instead of switch
-            let lltrue = helper.llblock(self, targets[0]);
-            let llfalse = helper.llblock(self, targets[1]);
+        helper.maybe_sideeffect(self.mir, &mut bx, targets.all_targets());
+
+        let mut target_iter = targets.iter();
+        if target_iter.len() == 1 {
+            // If there are two targets (one conditional, one fallback), emit br instead of switch
+            let (test_value, target) = target_iter.next().unwrap();
+            let lltrue = helper.llblock(self, target);
+            let llfalse = helper.llblock(self, targets.otherwise());
             if switch_ty == bx.tcx().types.bool {
-                helper.maybe_sideeffect(self.mir, &mut bx, targets.as_slice());
                 // Don't generate trivial icmps when switching on bool
-                if let [0] = values[..] {
-                    bx.cond_br(discr.immediate(), llfalse, lltrue);
-                } else {
-                    assert_eq!(&values[..], &[1]);
-                    bx.cond_br(discr.immediate(), lltrue, llfalse);
+                match test_value {
+                    0 => bx.cond_br(discr.immediate(), llfalse, lltrue),
+                    1 => bx.cond_br(discr.immediate(), lltrue, llfalse),
+                    _ => bug!(),
                 }
             } else {
                 let switch_llty = bx.immediate_backend_type(bx.layout_of(switch_ty));
-                let llval = bx.const_uint_big(switch_llty, values[0]);
+                let llval = bx.const_uint_big(switch_llty, test_value);
                 let cmp = bx.icmp(IntPredicate::IntEQ, discr.immediate(), llval);
-                helper.maybe_sideeffect(self.mir, &mut bx, targets.as_slice());
                 bx.cond_br(cmp, lltrue, llfalse);
             }
         } else {
-            helper.maybe_sideeffect(self.mir, &mut bx, targets.as_slice());
-            let (otherwise, targets) = targets.split_last().unwrap();
             bx.switch(
                 discr.immediate(),
-                helper.llblock(self, *otherwise),
-                values
-                    .iter()
-                    .zip(targets)
-                    .map(|(&value, target)| (value, helper.llblock(self, *target))),
+                helper.llblock(self, targets.otherwise()),
+                target_iter.map(|(value, target)| (value, helper.llblock(self, target))),
             );
         }
     }
@@ -423,7 +416,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         self.set_debug_loc(&mut bx, terminator.source_info);
 
         // Get the location information.
-        let location = self.get_caller_location(&mut bx, span).immediate();
+        let location = self.get_caller_location(&mut bx, terminator.source_info).immediate();
 
         // Put together the arguments to the panic entry point.
         let (lang_item, args) = match msg {
@@ -460,7 +453,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         bx: &mut Bx,
         intrinsic: Option<Symbol>,
         instance: Option<Instance<'tcx>>,
-        span: Span,
+        source_info: mir::SourceInfo,
         destination: &Option<(mir::Place<'tcx>, mir::BasicBlock)>,
         cleanup: Option<mir::BasicBlock>,
     ) -> bool {
@@ -502,11 +495,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     }
                 });
                 let msg = bx.const_str(Symbol::intern(&msg_str));
-                let location = self.get_caller_location(bx, span).immediate();
+                let location = self.get_caller_location(bx, source_info).immediate();
 
                 // Obtain the panic entry point.
                 // FIXME: dedup this with `codegen_assert_terminator` above.
-                let def_id = common::langcall(bx.tcx(), Some(span), "", LangItem::Panic);
+                let def_id =
+                    common::langcall(bx.tcx(), Some(source_info.span), "", LangItem::Panic);
                 let instance = ty::Instance::mono(bx.tcx(), def_id);
                 let fn_abi = FnAbi::of_instance(bx, instance, &[]);
                 let llfn = bx.get_fn_addr(instance);
@@ -548,7 +542,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         bb: mir::BasicBlock,
         fn_span: Span,
     ) {
-        let span = terminator.source_info.span;
+        let source_info = terminator.source_info;
+        let span = source_info.span;
+
         // Create the callee. This is a fn ptr or zero-sized and hence a kind of scalar.
         let callee = self.codegen_operand(&mut bx, func);
 
@@ -644,7 +640,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             &mut bx,
             intrinsic,
             instance,
-            span,
+            source_info,
             destination,
             cleanup,
         ) {
@@ -665,7 +661,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         if intrinsic == Some(sym::caller_location) {
             if let Some((_, target)) = destination.as_ref() {
-                let location = self.get_caller_location(&mut bx, fn_span);
+                let location = self
+                    .get_caller_location(&mut bx, mir::SourceInfo { span: fn_span, ..source_info });
 
                 if let ReturnDest::IndirectOperand(tmp, _) = ret_dest {
                     location.val.store(&mut bx, tmp);
@@ -724,7 +721,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 &fn_abi,
                 &args,
                 dest,
-                terminator.source_info.span,
+                span,
             );
 
             if let ReturnDest::IndirectOperand(dst, _) = ret_dest {
@@ -831,7 +828,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 args.len() + 1,
                 "#[track_caller] fn's must have 1 more argument in their ABI than in their MIR",
             );
-            let location = self.get_caller_location(&mut bx, fn_span);
+            let location =
+                self.get_caller_location(&mut bx, mir::SourceInfo { span: fn_span, ..source_info });
             debug!(
                 "codegen_call_terminator({:?}): location={:?} (fn_span {:?})",
                 terminator, location, fn_span
@@ -910,7 +908,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         let string = match ty.kind() {
                             ty::Uint(_) => value.to_string(),
                             ty::Int(int_ty) => {
-                                match int_ty.normalize(bx.tcx().sess.target.ptr_width) {
+                                match int_ty.normalize(bx.tcx().sess.target.pointer_width) {
                                     ast::IntTy::I8 => (value as i8).to_string(),
                                     ast::IntTy::I16 => (value as i16).to_string(),
                                     ast::IntTy::I32 => (value as i32).to_string(),
@@ -1015,22 +1013,32 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::TerminatorKind::Goto { target } => {
-                helper.maybe_sideeffect(self.mir, &mut bx, &[target]);
+                if bb == target {
+                    // This is an unconditional branch back to this same basic
+                    // block. That means we have something like a `loop {}`
+                    // statement. Currently LLVM miscompiles this because it
+                    // assumes forward progress. We want to prevent this in all
+                    // cases, but that has a fairly high cost to compile times
+                    // currently. Instead, try to handle this specific case
+                    // which comes up commonly in practice (e.g., in embedded
+                    // code).
+                    //
+                    // The `true` here means we insert side effects regardless
+                    // of -Zinsert-sideeffect being passed on unconditional
+                    // branching to the same basic block.
+                    bx.sideeffect(true);
+                } else {
+                    helper.maybe_sideeffect(self.mir, &mut bx, &[target]);
+                }
                 helper.funclet_br(self, &mut bx, target);
                 set_unimplemented_sir_term!(self, bb, terminator);
             }
 
-            mir::TerminatorKind::SwitchInt { ref discr, switch_ty, ref values, ref targets } => {
+            mir::TerminatorKind::SwitchInt { ref discr, switch_ty, ref targets } => {
                 if let Some(sfcx) = &mut self.sir_func_cx {
-                    sfcx.set_term_switchint(
-                        &bx,
-                        bb.as_u32(),
-                        discr,
-                        values.iter().map(|v| ykpack::SerU128::new(*v)).collect(),
-                        targets,
-                    );
+                    sfcx.set_term_switchint(&bx, bb.as_u32(), discr, targets);
                 }
-                self.codegen_switchint_terminator(helper, bx, discr, switch_ty, values, targets);
+                self.codegen_switchint_terminator(helper, bx, discr, switch_ty, targets);
             }
 
             mir::TerminatorKind::Return => {
@@ -1233,17 +1241,49 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
     }
 
-    fn get_caller_location(&mut self, bx: &mut Bx, span: Span) -> OperandRef<'tcx, Bx::Value> {
-        self.caller_location.unwrap_or_else(|| {
+    fn get_caller_location(
+        &mut self,
+        bx: &mut Bx,
+        mut source_info: mir::SourceInfo,
+    ) -> OperandRef<'tcx, Bx::Value> {
+        let tcx = bx.tcx();
+
+        let mut span_to_caller_location = |span: Span| {
             let topmost = span.ctxt().outer_expn().expansion_cause().unwrap_or(span);
-            let caller = bx.tcx().sess.source_map().lookup_char_pos(topmost.lo());
-            let const_loc = bx.tcx().const_caller_location((
+            let caller = tcx.sess.source_map().lookup_char_pos(topmost.lo());
+            let const_loc = tcx.const_caller_location((
                 Symbol::intern(&caller.file.name.to_string()),
                 caller.line as u32,
                 caller.col_display as u32 + 1,
             ));
             OperandRef::from_const(bx, const_loc, bx.tcx().caller_location_ty())
-        })
+        };
+
+        // Walk up the `SourceScope`s, in case some of them are from MIR inlining.
+        // If so, the starting `source_info.span` is in the innermost inlined
+        // function, and will be replaced with outer callsite spans as long
+        // as the inlined functions were `#[track_caller]`.
+        loop {
+            let scope_data = &self.mir.source_scopes[source_info.scope];
+
+            if let Some((callee, callsite_span)) = scope_data.inlined {
+                // Stop inside the most nested non-`#[track_caller]` function,
+                // before ever reaching its caller (which is irrelevant).
+                if !callee.def.requires_caller_location(tcx) {
+                    return span_to_caller_location(source_info.span);
+                }
+                source_info.span = callsite_span;
+            }
+
+            // Skip past all of the parents with `inlined: None`.
+            match scope_data.inlined_parent_scope {
+                Some(parent) => source_info.scope = parent,
+                None => break,
+            }
+        }
+
+        // No inlined `SourceScope`s, or all of them were `#[track_caller]`.
+        self.caller_location.unwrap_or_else(|| span_to_caller_location(source_info.span))
     }
 
     fn get_personality_slot(&mut self, bx: &mut Bx) -> PlaceRef<'tcx, Bx::Value> {

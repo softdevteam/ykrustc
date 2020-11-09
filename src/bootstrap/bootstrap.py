@@ -435,7 +435,9 @@ class RustBuild(object):
             llvm_sha = subprocess.check_output([
                 "git", "log", "--author=bors", "--format=%H", "-n1",
                 "-m", "--first-parent",
-                "--", "src/llvm-project"
+                "--",
+                "src/llvm-project",
+                "src/bootstrap/download-ci-llvm-stamp",
             ]).decode(sys.getdefaultencoding()).strip()
             llvm_assertions = self.get_toml('assertions', 'llvm') == 'true'
             if self.program_out_of_date(self.llvm_stamp(), llvm_sha + str(llvm_assertions)):
@@ -447,7 +449,8 @@ class RustBuild(object):
 
     def downloading_llvm(self):
         opt = self.get_toml('download-ci-llvm', 'llvm')
-        return opt == "true"
+        return opt == "true" \
+            or (opt == "if-available" and self.build == "x86_64-unknown-linux-gnu")
 
     def _download_stage0_helper(self, filename, pattern, tarball_suffix, date=None):
         if date is None:
@@ -890,10 +893,15 @@ class RustBuild(object):
         ).decode(default_encoding).splitlines()]
         filtered_submodules = []
         submodules_names = []
+        llvm_checked_out = os.path.exists(os.path.join(self.rust_root, "src/llvm-project/.git"))
         for module in submodules:
             if module.endswith("llvm-project"):
-                if self.get_toml('llvm-config') or self.get_toml('download-ci-llvm') == 'true':
-                    if self.get_toml('lld') != 'true':
+                # Don't sync the llvm-project submodule either if an external LLVM
+                # was provided, or if we are downloading LLVM. Also, if the
+                # submodule has been initialized already, sync it anyways so that
+                # it doesn't mess up contributor pull requests.
+                if self.get_toml('llvm-config') or self.downloading_llvm():
+                    if self.get_toml('lld') != 'true' and not llvm_checked_out:
                         continue
             check = self.check_submodule(module, slow_submodules)
             filtered_submodules.append((module, check))
@@ -961,8 +969,12 @@ class RustBuild(object):
         # the rust git repository is updated. Normal development usually does
         # not use vendoring, so hopefully this isn't too much of a problem.
         if self.use_vendored_sources and not os.path.exists(vendor_dir):
-            run([self.cargo(), "vendor", "--sync=./src/tools/rust-analyzer/Cargo.toml"],
-                verbose=self.verbose, cwd=self.rust_root)
+            run([
+                self.cargo(),
+                "vendor",
+                "--sync=./src/tools/rust-analyzer/Cargo.toml",
+                "--sync=./compiler/rustc_codegen_cranelift/Cargo.toml",
+            ], verbose=self.verbose, cwd=self.rust_root)
 
 
 def bootstrap(help_triggered):
@@ -1002,6 +1014,16 @@ def bootstrap(help_triggered):
 
         with open(toml_path) as config:
             build.config_toml = config.read()
+
+    profile = build.get_toml('profile')
+    if profile is not None:
+        include_file = 'config.{}.toml'.format(profile)
+        include_dir = os.path.join(build.rust_root, 'src', 'bootstrap', 'defaults')
+        include_path = os.path.join(include_dir, include_file)
+        # HACK: This works because `build.get_toml()` returns the first match it finds for a
+        # specific key, so appending our defaults at the end allows the user to override them
+        with open(include_path) as included_toml:
+            build.config_toml += os.linesep + included_toml.read()
 
     config_verbose = build.get_toml('verbose', 'build')
     if config_verbose is not None:

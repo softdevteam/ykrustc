@@ -13,8 +13,7 @@ use rustc_span::symbol::sym;
 use rustc_target::abi::{Integer, LayoutOf, Variants};
 
 use super::{
-    truncate, util::ensure_monomorphic_enough, FnVal, ImmTy, Immediate, InterpCx, Machine, OpTy,
-    PlaceTy,
+    util::ensure_monomorphic_enough, FnVal, ImmTy, Immediate, InterpCx, Machine, OpTy, PlaceTy,
 };
 
 impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
@@ -139,9 +138,14 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         // # First handle non-scalar source values.
 
-        // Handle cast from a univariant (ZST) enum.
+        // Handle cast from a ZST enum (0 or 1 variants).
         match src.layout.variants {
             Variants::Single { index } => {
+                if src.layout.abi.is_uninhabited() {
+                    // This is dead code, because an uninhabited enum is UB to
+                    // instantiate.
+                    throw_ub!(Unreachable);
+                }
                 if let Some(discr) = src.layout.ty.discriminant_for_variant(*self.tcx, index) {
                     assert!(src.layout.is_zst());
                     let discr_layout = self.layout_of(discr.ty)?;
@@ -204,7 +208,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                     RawPtr(_) => self.pointer_size(),
                     _ => bug!(),
                 };
-                let v = truncate(v, size);
+                let v = size.truncate(v);
                 Scalar::from_uint(v, size)
             }
 

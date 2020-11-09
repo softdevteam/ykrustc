@@ -99,7 +99,7 @@ x--expand-yaml-anchors--remove:
         run: git config --global core.autocrlf false
 
       - name: checkout the source code
-        uses: actions/checkout@v1
+        uses: actions/checkout@v2
         with:
           fetch-depth: 2
 
@@ -301,6 +301,9 @@ jobs:
           #   Linux/Docker builders   #
           #############################
 
+          - name: aarch64-gnu
+            <<: *job-aarch64-linux
+
           - name: arm-android
             <<: *job-linux-xl
 
@@ -469,24 +472,27 @@ jobs:
                 --build=x86_64-apple-darwin
                 --host=aarch64-apple-darwin
                 --target=aarch64-apple-darwin
+                --enable-full-tools
                 --enable-sanitizers
                 --enable-profiler
                 --set rust.jemalloc
                 --set llvm.ninja=false
-                --tools=rls,clippy,rustfmt,analysis,src
               RUSTC_RETRY_LINKER_ON_SEGFAULT: 1
-              SELECT_XCODE: /Applications/Xcode_12_beta.app
+              SELECT_XCODE: /Applications/Xcode_12.2.app
               USE_XCODE_CLANG: 1
               MACOSX_DEPLOYMENT_TARGET: 11.0
               MACOSX_STD_DEPLOYMENT_TARGET: 11.0
               NO_LLVM_ASSERTIONS: 1
               NO_DEBUG_ASSERTIONS: 1
-              # TODO: Cargo is disabled until OpenSSL 1.1.1 can be
-              # compiled for aarch64-apple-darwin::
-              # https://github.com/openssl/openssl/pull/12369. Once
-              # fixed, remove `--tools`, add back
-              # `--enable-full-tools`, and enable this again
-              # DIST_REQUIRE_ALL_TOOLS: 1
+              DIST_REQUIRE_ALL_TOOLS: 1
+              # Corresponds to 16K page size
+              #
+              # Shouldn't be needed if jemalloc-sys is updated to
+              # handle this platform like iOS or if we build on
+              # aarch64-apple-darwin itself.
+              #
+              # https://github.com/gnzlbg/jemallocator/blob/c27a859e98e3cb790dc269773d9da71a1e918458/jemalloc-sys/build.rs#L237
+              JEMALLOC_SYS_WITH_LG_PAGE: 14
             <<: *job-macos-xl
 
           ######################
@@ -497,9 +503,6 @@ jobs:
             env:
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-profiler
               SCRIPT: make ci-subset-1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-msvc-2
@@ -512,18 +515,12 @@ jobs:
             env:
               RUST_CONFIGURE_ARGS: --build=i686-pc-windows-msvc
               SCRIPT: make ci-subset-1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: i686-msvc-2
             env:
               RUST_CONFIGURE_ARGS: --build=i686-pc-windows-msvc
               SCRIPT: make ci-subset-2
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-msvc-cargo
@@ -531,9 +528,6 @@ jobs:
               SCRIPT: python x.py --stage 2 test src/tools/cargotest src/tools/cargo
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-lld
               VCVARS_BAT: vcvars64.bat
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-msvc-tools
@@ -563,9 +557,6 @@ jobs:
               RUST_CONFIGURE_ARGS: --build=i686-pc-windows-gnu
               SCRIPT: make ci-mingw-subset-1
               CUSTOM_MINGW: 1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: i686-mingw-2
@@ -580,9 +571,6 @@ jobs:
               SCRIPT: make ci-mingw-subset-1
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-gnu --enable-profiler
               CUSTOM_MINGW: 1
-              # FIXME(#59637)
-              NO_DEBUG_ASSERTIONS: 1
-              NO_LLVM_ASSERTIONS: 1
             <<: *job-windows-xl
 
           - name: x86_64-mingw-2
@@ -597,7 +585,7 @@ jobs:
               RUST_CONFIGURE_ARGS: >-
                 --build=x86_64-pc-windows-msvc
                 --host=x86_64-pc-windows-msvc
-                --target=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+                --target=x86_64-pc-windows-msvc
                 --enable-full-tools
                 --enable-profiler
               SCRIPT: python x.py dist
@@ -614,6 +602,18 @@ jobs:
                 --enable-profiler
               SCRIPT: python x.py dist
               DIST_REQUIRE_ALL_TOOLS: 1
+            <<: *job-windows-xl
+
+          - name: dist-aarch64-msvc
+            env:
+              RUST_CONFIGURE_ARGS: >-
+                --build=x86_64-pc-windows-msvc
+                --host=aarch64-pc-windows-msvc
+                --enable-full-tools
+                --enable-profiler
+              SCRIPT: python x.py dist
+              # RLS does not build for aarch64-pc-windows-msvc. See rust-lang/rls#1693
+              DIST_REQUIRE_ALL_TOOLS: 0
             <<: *job-windows-xl
 
           - name: dist-i686-mingw
@@ -637,23 +637,6 @@ jobs:
               RUST_CONFIGURE_ARGS: --build=x86_64-pc-windows-msvc --enable-extended --enable-profiler
               SCRIPT: python x.py dist
             <<: *job-windows-xl
-
-  auto-fallible:
-    <<: *base-ci-job
-    name: auto-fallible
-    env:
-      <<: [*shared-ci-variables, *dummy-variables]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/auto' && github.repository == 'rust-lang-ci/rust'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          #############################
-          #   Linux/Docker builders   #
-          #############################
-
-          - name: aarch64-gnu
-            <<: *job-aarch64-linux
 
   try:
     <<: *base-ci-job

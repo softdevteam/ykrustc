@@ -6,7 +6,6 @@ use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::{is_range_literal, ExprKind, Node};
 use rustc_index::vec::Idx;
-use rustc_middle::mir::interpret::{sign_extend, truncate};
 use rustc_middle::ty::layout::{IntegerExt, SizeSkeleton};
 use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::{self, AdtKind, Ty, TyCtxt, TypeFoldable};
@@ -18,6 +17,7 @@ use rustc_target::abi::{Integer, LayoutOf, TagEncoding, VariantIdx, Variants};
 use rustc_target::spec::abi::Abi as SpecAbi;
 
 use std::cmp;
+use std::ops::ControlFlow;
 use tracing::debug;
 
 declare_lint! {
@@ -145,9 +145,9 @@ fn lint_overflowing_range_endpoint<'tcx>(
                     // We need to preserve the literal's suffix,
                     // as it may determine typing information.
                     let suffix = match lit.node {
-                        LitKind::Int(_, LitIntType::Signed(s)) => s.name_str().to_string(),
-                        LitKind::Int(_, LitIntType::Unsigned(s)) => s.name_str().to_string(),
-                        LitKind::Int(_, LitIntType::Unsuffixed) => "".to_string(),
+                        LitKind::Int(_, LitIntType::Signed(s)) => s.name_str(),
+                        LitKind::Int(_, LitIntType::Unsigned(s)) => s.name_str(),
+                        LitKind::Int(_, LitIntType::Unsuffixed) => "",
                         _ => bug!(),
                     };
                     let suggestion = format!("{}..={}{}", start, lit_val - 1, suffix);
@@ -170,24 +170,25 @@ fn lint_overflowing_range_endpoint<'tcx>(
 // warnings are consistent between 32- and 64-bit platforms.
 fn int_ty_range(int_ty: ast::IntTy) -> (i128, i128) {
     match int_ty {
-        ast::IntTy::Isize => (i64::MIN as i128, i64::MAX as i128),
-        ast::IntTy::I8 => (i8::MIN as i64 as i128, i8::MAX as i128),
-        ast::IntTy::I16 => (i16::MIN as i64 as i128, i16::MAX as i128),
-        ast::IntTy::I32 => (i32::MIN as i64 as i128, i32::MAX as i128),
-        ast::IntTy::I64 => (i64::MIN as i128, i64::MAX as i128),
-        ast::IntTy::I128 => (i128::MIN as i128, i128::MAX),
+        ast::IntTy::Isize => (i64::MIN.into(), i64::MAX.into()),
+        ast::IntTy::I8 => (i8::MIN.into(), i8::MAX.into()),
+        ast::IntTy::I16 => (i16::MIN.into(), i16::MAX.into()),
+        ast::IntTy::I32 => (i32::MIN.into(), i32::MAX.into()),
+        ast::IntTy::I64 => (i64::MIN.into(), i64::MAX.into()),
+        ast::IntTy::I128 => (i128::MIN, i128::MAX),
     }
 }
 
 fn uint_ty_range(uint_ty: ast::UintTy) -> (u128, u128) {
-    match uint_ty {
-        ast::UintTy::Usize => (u64::MIN as u128, u64::MAX as u128),
-        ast::UintTy::U8 => (u8::MIN as u128, u8::MAX as u128),
-        ast::UintTy::U16 => (u16::MIN as u128, u16::MAX as u128),
-        ast::UintTy::U32 => (u32::MIN as u128, u32::MAX as u128),
-        ast::UintTy::U64 => (u64::MIN as u128, u64::MAX as u128),
-        ast::UintTy::U128 => (u128::MIN, u128::MAX),
-    }
+    let max = match uint_ty {
+        ast::UintTy::Usize => u64::MAX.into(),
+        ast::UintTy::U8 => u8::MAX.into(),
+        ast::UintTy::U16 => u16::MAX.into(),
+        ast::UintTy::U32 => u32::MAX.into(),
+        ast::UintTy::U64 => u64::MAX.into(),
+        ast::UintTy::U128 => u128::MAX,
+    };
+    (0, max)
 }
 
 fn get_bin_hex_repr(cx: &LateContext<'_>, lit: &hir::Lit) -> Option<String> {
@@ -216,11 +217,11 @@ fn report_bin_hex_error(
     cx.struct_span_lint(OVERFLOWING_LITERALS, expr.span, |lint| {
         let (t, actually) = match ty {
             attr::IntType::SignedInt(t) => {
-                let actually = sign_extend(val, size) as i128;
+                let actually = size.sign_extend(val) as i128;
                 (t.name_str(), actually.to_string())
             }
             attr::IntType::UnsignedInt(t) => {
-                let actually = truncate(val, size);
+                let actually = size.truncate(val);
                 (t.name_str(), actually.to_string())
             }
         };
@@ -304,7 +305,7 @@ fn lint_int_literal<'tcx>(
     t: ast::IntTy,
     v: u128,
 ) {
-    let int_type = t.normalize(cx.sess().target.ptr_width);
+    let int_type = t.normalize(cx.sess().target.pointer_width);
     let (min, max) = int_ty_range(int_type);
     let max = max as u128;
     let negative = type_limits.negated_expr_id == Some(e.hir_id);
@@ -352,7 +353,7 @@ fn lint_uint_literal<'tcx>(
     lit: &hir::Lit,
     t: ast::UintTy,
 ) {
-    let uint_type = t.normalize(cx.sess().target.ptr_width);
+    let uint_type = t.normalize(cx.sess().target.pointer_width);
     let (min, max) = uint_ty_range(uint_type);
     let lit_val: u128 = match lit.node {
         // _v is u8, within range by definition
@@ -438,7 +439,7 @@ fn lint_literal<'tcx>(
                 cx.struct_span_lint(OVERFLOWING_LITERALS, e.span, |lint| {
                     lint.build(&format!("literal out of range for `{}`", t.name_str()))
                         .note(&format!(
-                            "the literal `{}` does not fit into the type `{}` and will be converted to `std::{}::INFINITY`",
+                            "the literal `{}` does not fit into the type `{}` and will be converted to `{}::INFINITY`",
                             cx.sess()
                                 .source_map()
                                 .span_to_snippet(lit.span)
@@ -543,15 +544,15 @@ impl<'tcx> LateLintPass<'tcx> for TypeLimits {
         }
 
         fn is_comparison(binop: hir::BinOp) -> bool {
-            match binop.node {
+            matches!(
+                binop.node,
                 hir::BinOpKind::Eq
-                | hir::BinOpKind::Lt
-                | hir::BinOpKind::Le
-                | hir::BinOpKind::Ne
-                | hir::BinOpKind::Ge
-                | hir::BinOpKind::Gt => true,
-                _ => false,
-            }
+                    | hir::BinOpKind::Lt
+                    | hir::BinOpKind::Le
+                    | hir::BinOpKind::Ne
+                    | hir::BinOpKind::Ge
+                    | hir::BinOpKind::Gt
+            )
         }
     }
 }
@@ -1134,11 +1135,11 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
         };
 
         impl<'a, 'tcx> ty::fold::TypeVisitor<'tcx> for ProhibitOpaqueTypes<'a, 'tcx> {
-            fn visit_ty(&mut self, ty: Ty<'tcx>) -> bool {
+            fn visit_ty(&mut self, ty: Ty<'tcx>) -> ControlFlow<()> {
                 match ty.kind() {
                     ty::Opaque(..) => {
                         self.ty = Some(ty);
-                        true
+                        ControlFlow::BREAK
                     }
                     // Consider opaque types within projections FFI-safe if they do not normalize
                     // to more opaque types.
@@ -1147,7 +1148,11 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
 
                         // If `ty` is a opaque type directly then `super_visit_with` won't invoke
                         // this function again.
-                        if ty.has_opaque_types() { self.visit_ty(ty) } else { false }
+                        if ty.has_opaque_types() {
+                            self.visit_ty(ty)
+                        } else {
+                            ControlFlow::CONTINUE
+                        }
                     }
                     _ => ty.super_visit_with(self),
                 }
@@ -1232,15 +1237,10 @@ impl<'a, 'tcx> ImproperCTypesVisitor<'a, 'tcx> {
     }
 
     fn is_internal_abi(&self, abi: SpecAbi) -> bool {
-        if let SpecAbi::Rust
-        | SpecAbi::RustCall
-        | SpecAbi::RustIntrinsic
-        | SpecAbi::PlatformIntrinsic = abi
-        {
-            true
-        } else {
-            false
-        }
+        matches!(
+            abi,
+            SpecAbi::Rust | SpecAbi::RustCall | SpecAbi::RustIntrinsic | SpecAbi::PlatformIntrinsic
+        )
     }
 }
 

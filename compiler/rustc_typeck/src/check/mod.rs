@@ -96,7 +96,7 @@ use check::{
 pub use check::{check_item_type, check_wf_new};
 pub use diverges::Diverges;
 pub use expectation::Expectation;
-pub use fn_ctxt::FnCtxt;
+pub use fn_ctxt::*;
 pub use inherited::{Inherited, InheritedBuilder};
 
 use crate::astconv::AstConv;
@@ -111,6 +111,7 @@ use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_hir::{HirIdMap, Node};
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::Idx;
+use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_middle::ty::fold::{TypeFoldable, TypeFolder};
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::subst::GenericArgKind;
@@ -264,7 +265,7 @@ pub fn provide(providers: &mut Providers) {
 }
 
 fn adt_destructor(tcx: TyCtxt<'_>, def_id: DefId) -> Option<ty::Destructor> {
-    tcx.calculate_dtor(def_id, &mut dropck::check_drop_impl)
+    tcx.calculate_dtor(def_id, dropck::check_drop_impl)
 }
 
 /// If this `DefId` is a "primary tables entry", returns
@@ -528,7 +529,20 @@ fn typeck_with_fallback<'tcx>(
                     hir::TyKind::Infer => Some(AstConv::ast_ty_to_ty(&fcx, ty)),
                     _ => None,
                 })
-                .unwrap_or_else(fallback);
+                .unwrap_or_else(|| match tcx.hir().get(id) {
+                    Node::AnonConst(_) => match tcx.hir().get(tcx.hir().get_parent_node(id)) {
+                        Node::Expr(&hir::Expr {
+                            kind: hir::ExprKind::ConstBlock(ref anon_const),
+                            ..
+                        }) if anon_const.hir_id == id => fcx.next_ty_var(TypeVariableOrigin {
+                            kind: TypeVariableOriginKind::TypeInference,
+                            span,
+                        }),
+                        _ => fallback(),
+                    },
+                    _ => fallback(),
+                });
+
             let expected_type = fcx.normalize_associated_types_in(body.value.span, &expected_type);
             fcx.require_type_is_sized(expected_type, body.value.span, traits::ConstSized);
 
@@ -850,7 +864,8 @@ fn bounds_from_generic_predicates<'tcx>(
     let mut projections = vec![];
     for (predicate, _) in predicates.predicates {
         debug!("predicate {:?}", predicate);
-        match predicate.skip_binders() {
+        let bound_predicate = predicate.bound_atom();
+        match bound_predicate.skip_binder() {
             ty::PredicateAtom::Trait(trait_predicate, _) => {
                 let entry = types.entry(trait_predicate.self_ty()).or_default();
                 let def_id = trait_predicate.def_id();
@@ -861,7 +876,7 @@ fn bounds_from_generic_predicates<'tcx>(
                 }
             }
             ty::PredicateAtom::Projection(projection_pred) => {
-                projections.push(ty::Binder::bind(projection_pred));
+                projections.push(bound_predicate.rebind(projection_pred));
             }
             _ => {}
         }

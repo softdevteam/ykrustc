@@ -289,12 +289,12 @@ pub trait Iterator {
     /// This method will eagerly skip `n` elements by calling [`next`] up to `n`
     /// times until [`None`] is encountered.
     ///
-    /// `advance_by(n)` will return [`Ok(())`] if the iterator successfully advances by
-    /// `n` elements, or [`Err(k)`] if [`None`] is encountered, where `k` is the number
+    /// `advance_by(n)` will return [`Ok(())`][Ok] if the iterator successfully advances by
+    /// `n` elements, or [`Err(k)`][Err] if [`None`] is encountered, where `k` is the number
     /// of elements the iterator is advanced by before running out of elements (i.e. the
     /// length of the iterator). Note that `k` is always less than `n`.
     ///
-    /// Calling `advance_by(0)` does not consume any elements and always returns [`Ok(())`].
+    /// Calling `advance_by(0)` does not consume any elements and always returns [`Ok(())`][Ok].
     ///
     /// [`next`]: Iterator::next
     ///
@@ -1887,7 +1887,7 @@ pub trait Iterator {
         while let Some(x) = self.next() {
             accum = f(accum, x)?;
         }
-        Try::from_ok(accum)
+        try { accum }
     }
 
     /// An iterator method that applies a fallible function to each item in the
@@ -2109,7 +2109,7 @@ pub trait Iterator {
         F: FnMut(Self::Item) -> bool,
     {
         #[inline]
-        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut((), T) -> ControlFlow<(), ()> {
+        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut((), T) -> ControlFlow<()> {
             move |(), x| {
                 if f(x) { ControlFlow::CONTINUE } else { ControlFlow::BREAK }
             }
@@ -2162,7 +2162,7 @@ pub trait Iterator {
         F: FnMut(Self::Item) -> bool,
     {
         #[inline]
-        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut((), T) -> ControlFlow<(), ()> {
+        fn check<T>(mut f: impl FnMut(T) -> bool) -> impl FnMut((), T) -> ControlFlow<()> {
             move |(), x| {
                 if f(x) { ControlFlow::BREAK } else { ControlFlow::CONTINUE }
             }
@@ -2222,9 +2222,7 @@ pub trait Iterator {
         P: FnMut(&Self::Item) -> bool,
     {
         #[inline]
-        fn check<T>(
-            mut predicate: impl FnMut(&T) -> bool,
-        ) -> impl FnMut((), T) -> ControlFlow<(), T> {
+        fn check<T>(mut predicate: impl FnMut(&T) -> bool) -> impl FnMut((), T) -> ControlFlow<T> {
             move |(), x| {
                 if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::CONTINUE }
             }
@@ -2255,9 +2253,7 @@ pub trait Iterator {
         F: FnMut(Self::Item) -> Option<B>,
     {
         #[inline]
-        fn check<T, B>(
-            mut f: impl FnMut(T) -> Option<B>,
-        ) -> impl FnMut((), T) -> ControlFlow<(), B> {
+        fn check<T, B>(mut f: impl FnMut(T) -> Option<B>) -> impl FnMut((), T) -> ControlFlow<B> {
             move |(), x| match f(x) {
                 Some(x) => ControlFlow::Break(x),
                 None => ControlFlow::CONTINUE,
@@ -2296,7 +2292,7 @@ pub trait Iterator {
         R: Try<Ok = bool>,
     {
         #[inline]
-        fn check<F, T, R>(mut f: F) -> impl FnMut((), T) -> ControlFlow<(), Result<T, R::Error>>
+        fn check<F, T, R>(mut f: F) -> impl FnMut((), T) -> ControlFlow<Result<T, R::Error>>
         where
             F: FnMut(&T) -> R,
             R: Try<Ok = bool>,
@@ -2855,7 +2851,7 @@ pub trait Iterator {
         Product::product(self)
     }
 
-    /// Lexicographically compares the elements of this [`Iterator`] with those
+    /// [Lexicographically](Ord#lexicographical-comparison) compares the elements of this [`Iterator`] with those
     /// of another.
     ///
     /// # Examples
@@ -2877,7 +2873,7 @@ pub trait Iterator {
         self.cmp_by(other, |x, y| x.cmp(&y))
     }
 
-    /// Lexicographically compares the elements of this [`Iterator`] with those
+    /// [Lexicographically](Ord#lexicographical-comparison) compares the elements of this [`Iterator`] with those
     /// of another with respect to the specified comparison function.
     ///
     /// # Examples
@@ -2929,7 +2925,7 @@ pub trait Iterator {
         }
     }
 
-    /// Lexicographically compares the elements of this [`Iterator`] with those
+    /// [Lexicographically](Ord#lexicographical-comparison) compares the elements of this [`Iterator`] with those
     /// of another.
     ///
     /// # Examples
@@ -2953,7 +2949,7 @@ pub trait Iterator {
         self.partial_cmp_by(other, |x, y| x.partial_cmp(&y))
     }
 
-    /// Lexicographically compares the elements of this [`Iterator`] with those
+    /// [Lexicographically](Ord#lexicographical-comparison) compares the elements of this [`Iterator`] with those
     /// of another with respect to the specified comparison function.
     ///
     /// # Examples
@@ -3093,7 +3089,7 @@ pub trait Iterator {
         !self.eq(other)
     }
 
-    /// Determines if the elements of this [`Iterator`] are lexicographically
+    /// Determines if the elements of this [`Iterator`] are [lexicographically](Ord#lexicographical-comparison)
     /// less than those of another.
     ///
     /// # Examples
@@ -3114,7 +3110,7 @@ pub trait Iterator {
         self.partial_cmp(other) == Some(Ordering::Less)
     }
 
-    /// Determines if the elements of this [`Iterator`] are lexicographically
+    /// Determines if the elements of this [`Iterator`] are [lexicographically](Ord#lexicographical-comparison)
     /// less or equal to those of another.
     ///
     /// # Examples
@@ -3135,7 +3131,7 @@ pub trait Iterator {
         matches!(self.partial_cmp(other), Some(Ordering::Less | Ordering::Equal))
     }
 
-    /// Determines if the elements of this [`Iterator`] are lexicographically
+    /// Determines if the elements of this [`Iterator`] are [lexicographically](Ord#lexicographical-comparison)
     /// greater than those of another.
     ///
     /// # Examples
@@ -3156,7 +3152,7 @@ pub trait Iterator {
         self.partial_cmp(other) == Some(Ordering::Greater)
     }
 
-    /// Determines if the elements of this [`Iterator`] are lexicographically
+    /// Determines if the elements of this [`Iterator`] are [lexicographically](Ord#lexicographical-comparison)
     /// greater than or equal to those of another.
     ///
     /// # Examples

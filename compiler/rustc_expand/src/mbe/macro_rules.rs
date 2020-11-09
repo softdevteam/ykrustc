@@ -288,7 +288,8 @@ fn generic_extension<'cx>(
                 // Replace all the tokens for the corresponding positions in the macro, to maintain
                 // proper positions in error reporting, while maintaining the macro_backtrace.
                 if rhs_spans.len() == tts.len() {
-                    tts = tts.map_enumerated(|i, mut tt| {
+                    tts = tts.map_enumerated(|i, tt| {
+                        let mut tt = tt.clone();
                         let mut sp = rhs_spans[i];
                         sp = sp.with_ctxt(tt.span().ctxt());
                         tt.set_span(sp);
@@ -1035,17 +1036,16 @@ fn token_can_be_followed_by_any(tok: &mbe::TokenTree) -> bool {
 /// a fragment specifier (indeed, these fragments can be followed by
 /// ANYTHING without fear of future compatibility hazards).
 fn frag_can_be_followed_by_any(kind: NonterminalKind) -> bool {
-    match kind {
+    matches!(
+        kind,
         NonterminalKind::Item           // always terminated by `}` or `;`
         | NonterminalKind::Block        // exactly one token tree
         | NonterminalKind::Ident        // exactly one token tree
         | NonterminalKind::Literal      // exactly one token tree
         | NonterminalKind::Meta         // exactly one token tree
         | NonterminalKind::Lifetime     // exactly one token tree
-        | NonterminalKind::TT => true,  // exactly one token tree
-
-        _ => false,
-    }
+        | NonterminalKind::TT // exactly one token tree
+    )
 }
 
 enum IsInFollow {

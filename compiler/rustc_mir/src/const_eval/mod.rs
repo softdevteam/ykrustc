@@ -29,7 +29,9 @@ pub(crate) fn const_caller_location(
     let mut ecx = mk_eval_cx(tcx, DUMMY_SP, ty::ParamEnv::reveal_all(), false);
 
     let loc_place = ecx.alloc_caller_location(file, line, col);
-    intern_const_alloc_recursive(&mut ecx, InternKind::Constant, loc_place, false);
+    if intern_const_alloc_recursive(&mut ecx, InternKind::Constant, loc_place).is_err() {
+        bug!("intern_const_alloc_recursive should not error in this case")
+    }
     ConstValue::Scalar(loc_place.ptr)
 }
 
@@ -50,7 +52,7 @@ pub(crate) fn destructure_const<'tcx>(
     let (field_count, variant, down) = match val.ty.kind() {
         ty::Array(_, len) => (usize::try_from(len.eval_usize(tcx, param_env)).unwrap(), None, op),
         ty::Adt(def, _) if def.variants.is_empty() => {
-            return mir::DestructuredConst { variant: None, fields: tcx.arena.alloc_slice(&[]) };
+            return mir::DestructuredConst { variant: None, fields: &[] };
         }
         ty::Adt(def, _) => {
             let variant = ecx.read_discriminant(op).unwrap().1;

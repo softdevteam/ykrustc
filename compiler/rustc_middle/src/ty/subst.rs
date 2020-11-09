@@ -1,6 +1,5 @@
 // Type substitutions.
 
-use crate::infer::canonical::Canonical;
 use crate::ty::codec::{TyDecoder, TyEncoder};
 use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 use crate::ty::sty::{ClosureSubsts, GeneratorSubsts};
@@ -18,6 +17,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
+use std::ops::ControlFlow;
 
 /// An entity in the Rust type system, which can be one of
 /// several kinds (types, lifetimes, and consts).
@@ -142,11 +142,11 @@ impl<'tcx> GenericArg<'tcx> {
 impl<'a, 'tcx> Lift<'tcx> for GenericArg<'a> {
     type Lifted = GenericArg<'tcx>;
 
-    fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+    fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
         match self.unpack() {
-            GenericArgKind::Lifetime(lt) => tcx.lift(&lt).map(|lt| lt.into()),
-            GenericArgKind::Type(ty) => tcx.lift(&ty).map(|ty| ty.into()),
-            GenericArgKind::Const(ct) => tcx.lift(&ct).map(|ct| ct.into()),
+            GenericArgKind::Lifetime(lt) => tcx.lift(lt).map(|lt| lt.into()),
+            GenericArgKind::Type(ty) => tcx.lift(ty).map(|ty| ty.into()),
+            GenericArgKind::Const(ct) => tcx.lift(ct).map(|ct| ct.into()),
         }
     }
 }
@@ -160,7 +160,7 @@ impl<'tcx> TypeFoldable<'tcx> for GenericArg<'tcx> {
         }
     }
 
-    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<()> {
         match self.unpack() {
             GenericArgKind::Lifetime(lt) => lt.visit_with(visitor),
             GenericArgKind::Type(ty) => ty.visit_with(visitor),
@@ -392,8 +392,8 @@ impl<'tcx> TypeFoldable<'tcx> for SubstsRef<'tcx> {
         }
     }
 
-    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
-        self.iter().any(|t| t.visit_with(visitor))
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<()> {
+        self.iter().try_for_each(|t| t.visit_with(visitor))
     }
 }
 
@@ -647,8 +647,6 @@ impl<'a, 'tcx> SubstFolder<'a, 'tcx> {
         ty::fold::shift_region(self.tcx, region, self.binders_passed)
     }
 }
-
-pub type CanonicalUserSubsts<'tcx> = Canonical<'tcx, UserSubsts<'tcx>>;
 
 /// Stores the user-given substs to reach some fully qualified path
 /// (e.g., `<T>::Item` or `<T as Trait>::Item`).

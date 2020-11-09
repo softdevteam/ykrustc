@@ -269,17 +269,19 @@ impl SirFuncCx<'tcx> {
         bx: &Bx,
         bb: ykpack::BasicBlockIndex,
         discr: &mir::Operand<'tcx>,
-        values: Vec<ykpack::SerU128>,
-        targets: &Vec<mir::BasicBlock>,
+        targets: &mir::SwitchTargets,
     ) {
-        // Create the SwitchInt terminator.
-        let mut targetsnew: Vec<u32> = targets.iter().map(|bb| bb.as_u32()).collect();
-        let otherwise = targetsnew.pop().expect("SwitchInt can't have empty targets?");
+        let mut values = Vec::new();
+        let mut target_bbs = Vec::new();
+        for (v, t) in targets.iter() {
+            values.push(ykpack::SerU128::new(v));
+            target_bbs.push(t.as_u32());
+        }
         let new_term = ykpack::Terminator::SwitchInt {
             discr: self.lower_operand(bx, bb, discr),
-            values: values,
-            target_bbs: targetsnew,
-            otherwise_bb: otherwise,
+            values,
+            target_bbs,
+            otherwise_bb: targets.otherwise().as_u32(),
         };
         self.set_terminator(bb, new_term);
     }
@@ -392,11 +394,11 @@ impl SirFuncCx<'tcx> {
     where
         T: TypeFoldable<'tcx> + Copy,
     {
-        if let Some(substs) = self.instance.substs_for_mir_body() {
-            self.tcx.subst_and_normalize_erasing_regions(substs, ty::ParamEnv::reveal_all(), value)
-        } else {
-            self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), *value)
-        }
+        self.instance.subst_mir_and_normalize_erasing_regions(
+            self.tcx,
+            ty::ParamEnv::reveal_all(),
+            value,
+        )
     }
 
     /// Wrapper for bx.layout_of() which ensures the type is first monomorphised.

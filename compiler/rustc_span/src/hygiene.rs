@@ -619,14 +619,6 @@ impl SyntaxContext {
         HygieneData::with(|data| data.outer_mark(self))
     }
 
-    #[inline]
-    pub fn outer_mark_with_data(self) -> (ExpnId, Transparency, ExpnData) {
-        HygieneData::with(|data| {
-            let (expn_id, transparency) = data.outer_mark(self);
-            (expn_id, transparency, data.expn_data(expn_id).clone())
-        })
-    }
-
     pub fn dollar_crate_name(self) -> Symbol {
         HygieneData::with(|data| data.syntax_context_data[self.0 as usize].dollar_crate_name)
     }
@@ -774,6 +766,8 @@ pub enum ExpnKind {
     AstPass(AstPass),
     /// Desugaring done by the compiler during HIR lowering.
     Desugaring(DesugaringKind),
+    /// MIR inlining
+    Inlined,
 }
 
 impl ExpnKind {
@@ -787,6 +781,7 @@ impl ExpnKind {
             },
             ExpnKind::AstPass(kind) => kind.descr().to_string(),
             ExpnKind::Desugaring(kind) => format!("desugaring of {}", kind.descr()),
+            ExpnKind::Inlined => "inlined source".to_string(),
         }
     }
 }

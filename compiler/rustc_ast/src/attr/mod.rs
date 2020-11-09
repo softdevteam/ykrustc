@@ -101,11 +101,6 @@ impl NestedMetaItem {
         self.meta_item().is_some()
     }
 
-    /// Returns `true` if the variant is `Literal`.
-    pub fn is_literal(&self) -> bool {
-        self.literal().is_some()
-    }
-
     /// Returns `true` if `self` is a `MetaItem` and the meta item is a word.
     pub fn is_word(&self) -> bool {
         self.meta_item().map_or(false, |meta_item| meta_item.is_word())
@@ -232,10 +227,6 @@ impl MetaItem {
     pub fn is_value_str(&self) -> bool {
         self.value_str().is_some()
     }
-
-    pub fn is_meta_item_list(&self) -> bool {
-        self.meta_item_list().is_some()
-    }
 }
 
 impl AttrItem {
@@ -334,7 +325,7 @@ pub fn mk_attr(style: AttrStyle, path: Path, args: MacArgs, span: Span) -> Attri
 }
 
 pub fn mk_attr_from_item(style: AttrStyle, item: AttrItem, span: Span) -> Attribute {
-    Attribute { kind: AttrKind::Normal(item), id: mk_attr_id(), style, span }
+    Attribute { kind: AttrKind::Normal(item), id: mk_attr_id(), style, span, tokens: None }
 }
 
 /// Returns an inner attribute with the given value and span.
@@ -353,7 +344,13 @@ pub fn mk_doc_comment(
     data: Symbol,
     span: Span,
 ) -> Attribute {
-    Attribute { kind: AttrKind::DocComment(comment_kind, data), id: mk_attr_id(), style, span }
+    Attribute {
+        kind: AttrKind::DocComment(comment_kind, data),
+        id: mk_attr_id(),
+        style,
+        span,
+        tokens: None,
+    }
 }
 
 pub fn list_contains_name(items: &[NestedMetaItem], name: Symbol) -> bool {
@@ -363,7 +360,7 @@ pub fn list_contains_name(items: &[NestedMetaItem], name: Symbol) -> bool {
 impl MetaItem {
     fn token_trees_and_spacings(&self) -> Vec<TreeAndSpacing> {
         let mut idents = vec![];
-        let mut last_pos = BytePos(0 as u32);
+        let mut last_pos = BytePos(0_u32);
         for (i, segment) in self.path.segments.iter().enumerate() {
             let is_first = i == 0;
             if !is_first {
@@ -632,7 +629,8 @@ impl HasAttrs for StmtKind {
         match *self {
             StmtKind::Local(ref local) => local.attrs(),
             StmtKind::Expr(ref expr) | StmtKind::Semi(ref expr) => expr.attrs(),
-            StmtKind::Empty | StmtKind::Item(..) => &[],
+            StmtKind::Item(ref item) => item.attrs(),
+            StmtKind::Empty => &[],
             StmtKind::MacCall(ref mac) => mac.attrs.attrs(),
         }
     }
@@ -641,7 +639,8 @@ impl HasAttrs for StmtKind {
         match self {
             StmtKind::Local(local) => local.visit_attrs(f),
             StmtKind::Expr(expr) | StmtKind::Semi(expr) => expr.visit_attrs(f),
-            StmtKind::Empty | StmtKind::Item(..) => {}
+            StmtKind::Item(item) => item.visit_attrs(f),
+            StmtKind::Empty => {}
             StmtKind::MacCall(mac) => {
                 mac.attrs.visit_attrs(f);
             }

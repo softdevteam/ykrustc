@@ -52,13 +52,14 @@ use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
 use std::hash::Hash;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Range, Sub};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use md5::Md5;
 use sha1::Digest;
 use sha1::Sha1;
+use sha2::Sha256;
 
 use tracing::debug;
 
@@ -221,12 +222,6 @@ impl FileName {
             | DocTest(_, _)
             | InlineAsm(_) => false,
         }
-    }
-
-    pub fn quote_expansion_source_code(src: &str) -> FileName {
-        let mut hasher = StableHasher::new();
-        src.hash(&mut hasher);
-        FileName::QuoteExpansion(hasher.finish())
     }
 
     pub fn macro_expansion_source_code(src: &str) -> FileName {
@@ -744,14 +739,14 @@ impl<D: Decoder> Decodable<D> for Span {
 }
 
 /// Calls the provided closure, using the provided `SourceMap` to format
-/// any spans that are debug-printed during the closure'e exectuino.
+/// any spans that are debug-printed during the closure's execution.
 ///
 /// Normally, the global `TyCtxt` is used to retrieve the `SourceMap`
 /// (see `rustc_interface::callbacks::span_debug1). However, some parts
 /// of the compiler (e.g. `rustc_parse`) may debug-print `Span`s before
 /// a `TyCtxt` is available. In this case, we fall back to
 /// the `SourceMap` provided to this function. If that is not available,
-/// we fall back to printing the raw `Span` field values
+/// we fall back to printing the raw `Span` field values.
 pub fn with_source_map<T, F: FnOnce() -> T>(source_map: Lrc<SourceMap>, f: F) -> T {
     SESSION_GLOBALS.with(|session_globals| {
         *session_globals.source_map.borrow_mut() = Some(source_map);
@@ -1040,6 +1035,7 @@ pub struct OffsetOverflowError;
 pub enum SourceFileHashAlgorithm {
     Md5,
     Sha1,
+    Sha256,
 }
 
 impl FromStr for SourceFileHashAlgorithm {
@@ -1049,6 +1045,7 @@ impl FromStr for SourceFileHashAlgorithm {
         match s {
             "md5" => Ok(SourceFileHashAlgorithm::Md5),
             "sha1" => Ok(SourceFileHashAlgorithm::Sha1),
+            "sha256" => Ok(SourceFileHashAlgorithm::Sha256),
             _ => Err(()),
         }
     }
@@ -1061,7 +1058,7 @@ rustc_data_structures::impl_stable_hash_via_hash!(SourceFileHashAlgorithm);
 #[derive(HashStable_Generic, Encodable, Decodable)]
 pub struct SourceFileHash {
     pub kind: SourceFileHashAlgorithm,
-    value: [u8; 20],
+    value: [u8; 32],
 }
 
 impl SourceFileHash {
@@ -1076,6 +1073,9 @@ impl SourceFileHash {
             }
             SourceFileHashAlgorithm::Sha1 => {
                 value.copy_from_slice(&Sha1::digest(data));
+            }
+            SourceFileHashAlgorithm::Sha256 => {
+                value.copy_from_slice(&Sha256::digest(data));
             }
         }
         hash
@@ -1096,6 +1096,7 @@ impl SourceFileHash {
         match self.kind {
             SourceFileHashAlgorithm::Md5 => 16,
             SourceFileHashAlgorithm::Sha1 => 20,
+            SourceFileHashAlgorithm::Sha256 => 32,
         }
     }
 }
@@ -1432,22 +1433,31 @@ impl SourceFile {
         if line_index >= 0 { Some(line_index as usize) } else { None }
     }
 
-    pub fn line_bounds(&self, line_index: usize) -> (BytePos, BytePos) {
-        if self.start_pos == self.end_pos {
-            return (self.start_pos, self.end_pos);
+    pub fn line_bounds(&self, line_index: usize) -> Range<BytePos> {
+        if self.is_empty() {
+            return self.start_pos..self.end_pos;
         }
 
         assert!(line_index < self.lines.len());
         if line_index == (self.lines.len() - 1) {
-            (self.lines[line_index], self.end_pos)
+            self.lines[line_index]..self.end_pos
         } else {
-            (self.lines[line_index], self.lines[line_index + 1])
+            self.lines[line_index]..self.lines[line_index + 1]
         }
     }
 
+    /// Returns whether or not the file contains the given `SourceMap` byte
+    /// position. The position one past the end of the file is considered to be
+    /// contained by the file. This implies that files for which `is_empty`
+    /// returns true still contain one byte position according to this function.
     #[inline]
     pub fn contains(&self, byte_pos: BytePos) -> bool {
         byte_pos >= self.start_pos && byte_pos <= self.end_pos
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.start_pos == self.end_pos
     }
 
     /// Calculates the original byte position relative to the start of the file
@@ -1564,7 +1574,7 @@ fn normalize_src(src: &mut String, start_pos: BytePos) -> Vec<NormalizedPos> {
 
 /// Removes UTF-8 BOM, if any.
 fn remove_bom(src: &mut String, normalized_pos: &mut Vec<NormalizedPos>) {
-    if src.starts_with("\u{feff}") {
+    if src.starts_with('\u{feff}') {
         src.drain(..3);
         normalized_pos.push(NormalizedPos { pos: BytePos(0), diff: 3 });
     }
@@ -1931,9 +1941,7 @@ impl<CTX: HashStableContext> HashStable<CTX> for ExpnId {
             return;
         }
 
-        TAG_NOT_ROOT.hash_stable(ctx, hasher);
         let index = self.as_u32() as usize;
-
         let res = CACHE.with(|cache| cache.borrow().get(index).copied().flatten());
 
         if let Some(res) = res {
@@ -1942,6 +1950,7 @@ impl<CTX: HashStableContext> HashStable<CTX> for ExpnId {
             let new_len = index + 1;
 
             let mut sub_hasher = StableHasher::new();
+            TAG_NOT_ROOT.hash_stable(ctx, &mut sub_hasher);
             self.expn_data().hash_stable(ctx, &mut sub_hasher);
             let sub_hash: Fingerprint = sub_hasher.finish();
 

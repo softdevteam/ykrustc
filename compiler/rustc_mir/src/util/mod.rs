@@ -1,6 +1,5 @@
 pub mod aggregate;
 pub mod borrowck_errors;
-pub mod def_use;
 pub mod elaborate_drops;
 pub mod patch;
 pub mod storage;
@@ -8,6 +7,7 @@ pub mod storage;
 mod alignment;
 pub mod collect_writes;
 mod find_self_call;
+pub(crate) mod generic_graphviz;
 mod graphviz;
 pub(crate) mod pretty;
 pub(crate) mod spanview;

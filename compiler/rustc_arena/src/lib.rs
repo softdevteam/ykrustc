@@ -16,7 +16,6 @@
 #![feature(maybe_uninit_slice)]
 #![cfg_attr(test, feature(test))]
 
-use rustc_data_structures::cold_path;
 use smallvec::SmallVec;
 
 use std::alloc::Layout;
@@ -26,6 +25,12 @@ use std::marker::{PhantomData, Send};
 use std::mem::{self, MaybeUninit};
 use std::ptr;
 use std::slice;
+
+#[inline(never)]
+#[cold]
+pub fn cold_path<F: FnOnce() -> R, R>(f: F) -> R {
+    f()
+}
 
 /// An arena that can hold objects of only one type.
 pub struct TypedArena<T> {
@@ -212,16 +217,18 @@ impl<T> TypedArena<T> {
             let mut chunks = self.chunks.borrow_mut();
             let mut new_cap;
             if let Some(last_chunk) = chunks.last_mut() {
-                let used_bytes = self.ptr.get() as usize - last_chunk.start() as usize;
-                last_chunk.entries = used_bytes / mem::size_of::<T>();
+                // If a type is `!needs_drop`, we don't need to keep track of how many elements
+                // the chunk stores - the field will be ignored anyway.
+                if mem::needs_drop::<T>() {
+                    let used_bytes = self.ptr.get() as usize - last_chunk.start() as usize;
+                    last_chunk.entries = used_bytes / mem::size_of::<T>();
+                }
 
                 // If the previous chunk's len is less than HUGE_PAGE
                 // bytes, then this chunk will be least double the previous
                 // chunk's size.
-                new_cap = last_chunk.storage.len();
-                if new_cap < HUGE_PAGE / elem_size {
-                    new_cap = new_cap.checked_mul(2).unwrap();
-                }
+                new_cap = last_chunk.storage.len().min(HUGE_PAGE / elem_size / 2);
+                new_cap *= 2;
             } else {
                 new_cap = PAGE / elem_size;
             }
@@ -338,10 +345,8 @@ impl DroplessArena {
                 // If the previous chunk's len is less than HUGE_PAGE
                 // bytes, then this chunk will be least double the previous
                 // chunk's size.
-                new_cap = last_chunk.storage.len();
-                if new_cap < HUGE_PAGE {
-                    new_cap = new_cap.checked_mul(2).unwrap();
-                }
+                new_cap = last_chunk.storage.len().min(HUGE_PAGE / 2);
+                new_cap *= 2;
             } else {
                 new_cap = PAGE;
             }
@@ -528,7 +533,7 @@ impl DropArena {
         ptr::write(mem, object);
         let result = &mut *mem;
         // Record the destructor after doing the allocation as that may panic
-        // and would cause `object`'s destuctor to run twice if it was recorded before
+        // and would cause `object`'s destructor to run twice if it was recorded before
         self.destructors
             .borrow_mut()
             .push(DropType { drop_fn: drop_for_type::<T>, obj: result as *mut T as *mut u8 });
@@ -555,12 +560,10 @@ impl DropArena {
         mem::forget(vec.drain(..));
 
         // Record the destructors after doing the allocation as that may panic
-        // and would cause `object`'s destuctor to run twice if it was recorded before
+        // and would cause `object`'s destructor to run twice if it was recorded before
         for i in 0..len {
-            destructors.push(DropType {
-                drop_fn: drop_for_type::<T>,
-                obj: start_ptr.offset(i as isize) as *mut u8,
-            });
+            destructors
+                .push(DropType { drop_fn: drop_for_type::<T>, obj: start_ptr.add(i) as *mut u8 });
         }
 
         slice::from_raw_parts_mut(start_ptr, len)
