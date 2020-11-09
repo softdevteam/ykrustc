@@ -281,11 +281,7 @@ impl SirFuncCx<'tcx> {
             target_bbs: targetsnew,
             otherwise_bb: otherwise,
         };
-        // Set the terminator of the block.
-        let term = &mut self.func.blocks[usize::try_from(bb).unwrap()].term;
-        // We should only ever replace the default unreachable terminator assigned at allocation time.
-        debug_assert!(*term == ykpack::Terminator::Unreachable);
-        *term = new_term
+        self.set_terminator(bb, new_term);
     }
 
     pub fn set_term_assert<Bx: BuilderMethods<'a, 'tcx>>(
