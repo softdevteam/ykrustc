@@ -281,11 +281,22 @@ impl SirFuncCx<'tcx> {
             target_bbs: targetsnew,
             otherwise_bb: otherwise,
         };
-        // Set the terminator of the block.
-        let term = &mut self.func.blocks[usize::try_from(bb).unwrap()].term;
-        // We should only ever replace the default unreachable terminator assigned at allocation time.
-        debug_assert!(*term == ykpack::Terminator::Unreachable);
-        *term = new_term
+        self.set_terminator(bb, new_term);
+    }
+
+    pub fn set_term_assert<Bx: BuilderMethods<'a, 'tcx>>(
+        &mut self,
+        bx: &Bx,
+        bb: mir::BasicBlock,
+        cond: &mir::Operand<'tcx>,
+        expected: bool,
+        target_bb: mir::BasicBlock,
+    ) {
+        let bb = bb.as_u32();
+        let cond_ip = self.lower_operand(bx, bb, cond);
+        let term =
+            ykpack::Terminator::Assert { cond: cond_ip, expected, target_bb: target_bb.as_u32() };
+        self.set_terminator(bb, term);
     }
 
     /// Converts a MIR statement to SIR, appending the result to `bb`.
