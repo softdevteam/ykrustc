@@ -1,4 +1,4 @@
-use anyhow::{Context, Error};
+use anyhow::Error;
 use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::fs::File;
@@ -7,11 +7,13 @@ use std::path::{Path, PathBuf};
 use tar::Archive;
 
 const DEFAULT_TARGET: &str = "x86_64-unknown-linux-gnu";
+const RUSTC_VERSION: &str = include_str!("../../../version");
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub(crate) enum PkgType {
     Rust,
     RustSrc,
+    Rustc,
     Cargo,
     Rls,
     RustAnalyzer,
@@ -27,6 +29,7 @@ impl PkgType {
         match component {
             "rust" => PkgType::Rust,
             "rust-src" => PkgType::RustSrc,
+            "rustc" => PkgType::Rustc,
             "cargo" => PkgType::Cargo,
             "rls" | "rls-preview" => PkgType::Rls,
             "rust-analyzer" | "rust-analyzer-preview" => PkgType::RustAnalyzer,
@@ -43,6 +46,7 @@ impl PkgType {
         match self {
             PkgType::Rust => "rust",
             PkgType::RustSrc => "rust-src",
+            PkgType::Rustc => "rustc",
             PkgType::Cargo => "cargo",
             PkgType::Rls => "rls",
             PkgType::RustAnalyzer => "rust-analyzer",
@@ -68,6 +72,7 @@ impl PkgType {
 
             PkgType::Rust => true,
             PkgType::RustSrc => true,
+            PkgType::Rustc => true,
             PkgType::Other(_) => true,
         }
     }
@@ -87,26 +92,13 @@ pub(crate) struct VersionInfo {
 
 pub(crate) struct Versions {
     channel: String,
-    rustc_version: String,
     dist_path: PathBuf,
     versions: HashMap<PkgType, VersionInfo>,
 }
 
 impl Versions {
-    pub(crate) fn new(
-        channel: &str,
-        dist_path: &Path,
-        monorepo_root: &Path,
-    ) -> Result<Self, Error> {
-        Ok(Self {
-            channel: channel.into(),
-            rustc_version: std::fs::read_to_string(monorepo_root.join("src").join("version"))
-                .context("failed to read the rustc version from src/version")?
-                .trim()
-                .to_string(),
-            dist_path: dist_path.into(),
-            versions: HashMap::new(),
-        })
+    pub(crate) fn new(channel: &str, dist_path: &Path) -> Result<Self, Error> {
+        Ok(Self { channel: channel.into(), dist_path: dist_path.into(), versions: HashMap::new() })
     }
 
     pub(crate) fn channel(&self) -> &str {
@@ -177,27 +169,36 @@ impl Versions {
         }
     }
 
+    pub(crate) fn archive_name(
+        &mut self,
+        package: &PkgType,
+        target: &str,
+        extension: &str,
+    ) -> Result<String, Error> {
+        let component_name = package.tarball_component_name();
+        let version = match self.channel.as_str() {
+            "stable" => RUSTC_VERSION.into(),
+            "beta" => "beta".into(),
+            "nightly" => "nightly".into(),
+            _ => format!("{}-dev", RUSTC_VERSION),
+        };
+
+        if package.target_independent() {
+            Ok(format!("{}-{}.{}", component_name, version, extension))
+        } else {
+            Ok(format!("{}-{}-{}.{}", component_name, version, target, extension))
+        }
+    }
+
     pub(crate) fn tarball_name(
         &mut self,
         package: &PkgType,
         target: &str,
     ) -> Result<String, Error> {
-        let component_name = package.tarball_component_name();
-        let version = match self.channel.as_str() {
-            "stable" => self.rustc_version.clone(),
-            "beta" => "beta".into(),
-            "nightly" => "nightly".into(),
-            _ => format!("{}-dev", self.rustc_version),
-        };
-
-        if package.target_independent() {
-            Ok(format!("{}-{}.tar.gz", component_name, version))
-        } else {
-            Ok(format!("{}-{}-{}.tar.gz", component_name, version, target))
-        }
+        self.archive_name(package, target, "tar.gz")
     }
 
     pub(crate) fn rustc_version(&self) -> &str {
-        &self.rustc_version
+        RUSTC_VERSION
     }
 }

@@ -292,10 +292,8 @@ impl<K: DepKind> DepGraph<K> {
                 );
 
                 data.colors.insert(prev_index, color);
-            } else {
-                if print_status {
-                    eprintln!("[task::new] {:?}", key);
-                }
+            } else if print_status {
+                eprintln!("[task::new] {:?}", key);
             }
 
             (result, dep_node_index)
@@ -400,11 +398,6 @@ impl<K: DepKind> DepGraph<K> {
 
     pub fn prev_fingerprint_of(&self, dep_node: &DepNode<K>) -> Option<Fingerprint> {
         self.data.as_ref().unwrap().previous.fingerprint_of(dep_node)
-    }
-
-    #[inline]
-    pub fn prev_dep_node_index_of(&self, dep_node: &DepNode<K>) -> SerializedDepNodeIndex {
-        self.data.as_ref().unwrap().previous.node_to_index(dep_node)
     }
 
     /// Checks whether a previous work product exists for `v` and, if

@@ -1,12 +1,9 @@
 use crate::middle::cstore::{ExternCrate, ExternCrateSource};
 use crate::mir::interpret::{AllocId, ConstValue, GlobalAlloc, Pointer, Scalar};
-use crate::ty::layout::IntegerExt;
 use crate::ty::subst::{GenericArg, GenericArgKind, Subst};
-use crate::ty::{self, ConstInt, DefIdTree, ParamConst, Ty, TyCtxt, TypeFoldable};
+use crate::ty::{self, ConstInt, DefIdTree, ParamConst, ScalarInt, Ty, TyCtxt, TypeFoldable};
 use rustc_apfloat::ieee::{Double, Single};
-use rustc_apfloat::Float;
 use rustc_ast as ast;
-use rustc_attr::{SignedInt, UnsignedInt};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def::{self, CtorKind, DefKind, Namespace};
@@ -15,14 +12,15 @@ use rustc_hir::definitions::{DefPathData, DefPathDataName, DisambiguatedDefPathD
 use rustc_hir::ItemKind;
 use rustc_session::config::TrimmedDefPaths;
 use rustc_span::symbol::{kw, Ident, Symbol};
-use rustc_target::abi::{Integer, Size};
+use rustc_target::abi::Size;
 use rustc_target::spec::abi::Abi;
 
 use std::cell::Cell;
 use std::char;
 use std::collections::BTreeMap;
+use std::convert::TryFrom;
 use std::fmt::{self, Write as _};
-use std::ops::{Deref, DerefMut};
+use std::ops::{ControlFlow, Deref, DerefMut};
 
 // `pretty` is a separate module only for organization.
 use super::*;
@@ -618,10 +616,9 @@ pub trait PrettyPrinter<'tcx>:
                         // may contain unbound variables. We therefore do this manually.
                         //
                         // FIXME(lcnr): Find out why exactly this is the case :)
-                        if let ty::PredicateAtom::Trait(pred, _) =
-                            predicate.bound_atom(self.tcx()).skip_binder()
-                        {
-                            let trait_ref = ty::Binder::bind(pred.trait_ref);
+                        let bound_predicate = predicate.bound_atom_with_opt_escaping(self.tcx());
+                        if let ty::PredicateAtom::Trait(pred, _) = bound_predicate.skip_binder() {
+                            let trait_ref = bound_predicate.rebind(pred.trait_ref);
                             // Don't print +Sized, but rather +?Sized if absent.
                             if Some(trait_ref.def_id()) == self.tcx().lang_items().sized_trait() {
                                 is_sized = true;
@@ -659,22 +656,17 @@ pub trait PrettyPrinter<'tcx>:
                         let span = self.tcx().hir().span(hir_id);
                         p!(write("@{}", self.tcx().sess.source_map().span_to_string(span)));
                     } else {
-                        p!(write("@{}", self.tcx().def_path_str(did)));
+                        p!(write("@"), print_def_path(did, substs));
                     }
                 } else {
                     p!(print_def_path(did, substs));
-                    if substs.as_generator().is_valid() {
-                        // Search for the first inference variable
-                        p!(" upvar_tys=(");
-                        let mut uninferred_ty =
-                            substs.as_generator().upvar_tys().filter(|ty| ty.is_ty_infer());
-                        if uninferred_ty.next().is_some() {
-                            p!(write("unavailable"));
-                        } else {
-                            self = self.comma_sep(substs.as_generator().upvar_tys())?;
-                        }
-                        p!(")");
+                    p!(" upvar_tys=(");
+                    if !substs.as_generator().is_valid() {
+                        p!("unavailable");
+                    } else {
+                        self = self.comma_sep(substs.as_generator().upvar_tys())?;
                     }
+                    p!(")");
                 }
 
                 if substs.as_generator().is_valid() {
@@ -700,28 +692,21 @@ pub trait PrettyPrinter<'tcx>:
                             p!(write("@{}", self.tcx().sess.source_map().span_to_string(span)));
                         }
                     } else {
-                        p!(write("@{}", self.tcx().def_path_str(did)));
+                        p!(write("@"), print_def_path(did, substs));
                     }
                 } else {
                     p!(print_def_path(did, substs));
-                    if substs.as_closure().is_valid() {
-                        // Search for the first inference variable
-                        let mut uninferred_ty =
-                            substs.as_closure().upvar_tys().filter(|ty| ty.is_ty_infer());
-                        if uninferred_ty.next().is_some() {
-                            // If the upvar substs contain an inference variable we haven't
-                            // finished capture analysis.
-                            p!(" closure_substs=(unavailable)");
-                        } else {
-                            p!(" closure_kind_ty=", print(substs.as_closure().kind_ty()));
-                            p!(
-                                " closure_sig_as_fn_ptr_ty=",
-                                print(substs.as_closure().sig_as_fn_ptr_ty())
-                            );
-                            p!(" upvar_tys=(");
-                            self = self.comma_sep(substs.as_closure().upvar_tys())?;
-                            p!(")");
-                        }
+                    if !substs.as_closure().is_valid() {
+                        p!(" closure_substs=(unavailable)");
+                    } else {
+                        p!(" closure_kind_ty=", print(substs.as_closure().kind_ty()));
+                        p!(
+                            " closure_sig_as_fn_ptr_ty=",
+                            print(substs.as_closure().sig_as_fn_ptr_ty())
+                        );
+                        p!(" upvar_tys=(");
+                        self = self.comma_sep(substs.as_closure().upvar_tys())?;
+                        p!(")");
                     }
                 }
                 p!("]");
@@ -973,11 +958,7 @@ pub trait PrettyPrinter<'tcx>:
                             ty::Array(
                                 ty::TyS { kind: ty::Uint(ast::UintTy::U8), .. },
                                 ty::Const {
-                                    val:
-                                        ty::ConstKind::Value(ConstValue::Scalar(Scalar::Raw {
-                                            data,
-                                            ..
-                                        })),
+                                    val: ty::ConstKind::Value(ConstValue::Scalar(int)),
                                     ..
                                 },
                             ),
@@ -987,8 +968,9 @@ pub trait PrettyPrinter<'tcx>:
                 ),
             ) => match self.tcx().get_global_alloc(ptr.alloc_id) {
                 Some(GlobalAlloc::Memory(alloc)) => {
-                    if let Ok(byte_str) = alloc.get_bytes(&self.tcx(), ptr, Size::from_bytes(*data))
-                    {
+                    let bytes = int.assert_bits(self.tcx().data_layout.pointer_size);
+                    let size = Size::from_bytes(bytes);
+                    if let Ok(byte_str) = alloc.get_bytes(&self.tcx(), ptr, size) {
                         p!(pretty_print_byte_str(byte_str))
                     } else {
                         p!("<too short allocation>")
@@ -1000,32 +982,28 @@ pub trait PrettyPrinter<'tcx>:
                 None => p!("<dangling pointer>"),
             },
             // Bool
-            (Scalar::Raw { data: 0, .. }, ty::Bool) => p!("false"),
-            (Scalar::Raw { data: 1, .. }, ty::Bool) => p!("true"),
+            (Scalar::Int(int), ty::Bool) if int == ScalarInt::FALSE => p!("false"),
+            (Scalar::Int(int), ty::Bool) if int == ScalarInt::TRUE => p!("true"),
             // Float
-            (Scalar::Raw { data, .. }, ty::Float(ast::FloatTy::F32)) => {
-                p!(write("{}f32", Single::from_bits(data)))
+            (Scalar::Int(int), ty::Float(ast::FloatTy::F32)) => {
+                p!(write("{}f32", Single::try_from(int).unwrap()))
             }
-            (Scalar::Raw { data, .. }, ty::Float(ast::FloatTy::F64)) => {
-                p!(write("{}f64", Double::from_bits(data)))
+            (Scalar::Int(int), ty::Float(ast::FloatTy::F64)) => {
+                p!(write("{}f64", Double::try_from(int).unwrap()))
             }
             // Int
-            (Scalar::Raw { data, .. }, ty::Uint(ui)) => {
-                let size = Integer::from_attr(&self.tcx(), UnsignedInt(*ui)).size();
-                let int = ConstInt::new(data, size, false, ty.is_ptr_sized_integral());
-                if print_ty { p!(write("{:#?}", int)) } else { p!(write("{:?}", int)) }
-            }
-            (Scalar::Raw { data, .. }, ty::Int(i)) => {
-                let size = Integer::from_attr(&self.tcx(), SignedInt(*i)).size();
-                let int = ConstInt::new(data, size, true, ty.is_ptr_sized_integral());
+            (Scalar::Int(int), ty::Uint(_) | ty::Int(_)) => {
+                let int =
+                    ConstInt::new(int, matches!(ty.kind(), ty::Int(_)), ty.is_ptr_sized_integral());
                 if print_ty { p!(write("{:#?}", int)) } else { p!(write("{:?}", int)) }
             }
             // Char
-            (Scalar::Raw { data, .. }, ty::Char) if char::from_u32(data as u32).is_some() => {
-                p!(write("{:?}", char::from_u32(data as u32).unwrap()))
+            (Scalar::Int(int), ty::Char) if char::try_from(int).is_ok() => {
+                p!(write("{:?}", char::try_from(int).unwrap()))
             }
             // Raw pointers
-            (Scalar::Raw { data, .. }, ty::RawPtr(_)) => {
+            (Scalar::Int(int), ty::RawPtr(_)) => {
+                let data = int.assert_bits(self.tcx().data_layout.pointer_size);
                 self = self.typed_value(
                     |mut this| {
                         write!(this, "0x{:x}", data)?;
@@ -1047,14 +1025,16 @@ pub trait PrettyPrinter<'tcx>:
                 )?;
             }
             // For function type zsts just printing the path is enough
-            (Scalar::Raw { size: 0, .. }, ty::FnDef(d, s)) => p!(print_value_path(*d, s)),
+            (Scalar::Int(int), ty::FnDef(d, s)) if int == ScalarInt::ZST => {
+                p!(print_value_path(*d, s))
+            }
             // Nontrivial types with scalar bit representation
-            (Scalar::Raw { data, size }, _) => {
+            (Scalar::Int(int), _) => {
                 let print = |mut this: Self| {
-                    if size == 0 {
+                    if int.size() == Size::ZERO {
                         write!(this, "transmute(())")?;
                     } else {
-                        write!(this, "transmute(0x{:01$x})", data, size as usize * 2)?;
+                        write!(this, "transmute(0x{:x})", int)?;
                     }
                     Ok(this)
                 };
@@ -1142,7 +1122,7 @@ pub trait PrettyPrinter<'tcx>:
                 // relocations (we have an active `str` reference here). We don't use this
                 // result to affect interpreter execution.
                 let slice = data.inspect_with_uninit_and_ptr_outside_interpreter(start..end);
-                let s = ::std::str::from_utf8(slice).expect("non utf8 str from miri");
+                let s = std::str::from_utf8(slice).expect("non utf8 str from miri");
                 p!(write("{:?}", s));
                 Ok(self)
             }
@@ -1816,7 +1796,7 @@ impl<F: fmt::Write> FmtPrinter<'_, 'tcx, F> {
     {
         struct LateBoundRegionNameCollector<'a>(&'a mut FxHashSet<Symbol>);
         impl<'tcx> ty::fold::TypeVisitor<'tcx> for LateBoundRegionNameCollector<'_> {
-            fn visit_region(&mut self, r: ty::Region<'tcx>) -> bool {
+            fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<()> {
                 if let ty::ReLateBound(_, ty::BrNamed(_, name)) = *r {
                     self.0.insert(name);
                 }
@@ -1861,7 +1841,7 @@ macro_rules! forward_display_to_print {
         $(impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 ty::tls::with(|tcx| {
-                    tcx.lift(self)
+                    tcx.lift(*self)
                         .expect("could not lift for printing")
                         .print(FmtPrinter::new(tcx, f, Namespace::TypeNS))?;
                     Ok(())

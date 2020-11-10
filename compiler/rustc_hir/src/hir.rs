@@ -3,7 +3,6 @@ use crate::def_id::DefId;
 crate use crate::hir_id::HirId;
 use crate::{itemlikevisit, LangItem};
 
-use rustc_ast::node_id::NodeMap;
 use rustc_ast::util::parser::ExprPrecedence;
 use rustc_ast::{self as ast, CrateSugar, LlvmAsmDialect};
 use rustc_ast::{AttrVec, Attribute, FloatTy, IntTy, Label, LitKind, StrStyle, UintTy};
@@ -273,10 +272,7 @@ impl GenericArg<'_> {
     }
 
     pub fn is_const(&self) -> bool {
-        match self {
-            GenericArg::Const(_) => true,
-            _ => false,
-        }
+        matches!(self, GenericArg::Const(_))
     }
 
     pub fn descr(&self) -> &'static str {
@@ -304,10 +300,6 @@ pub struct GenericArgs<'hir> {
 impl GenericArgs<'_> {
     pub const fn none() -> Self {
         Self { args: &[], bindings: &[], parenthesized: false }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.args.is_empty() && self.bindings.is_empty() && !self.parenthesized
     }
 
     pub fn inputs(&self) -> &[Ty<'_>] {
@@ -467,23 +459,6 @@ impl Generics<'hir> {
         }
     }
 
-    pub fn own_counts(&self) -> GenericParamCount {
-        // We could cache this as a property of `GenericParamCount`, but
-        // the aim is to refactor this away entirely eventually and the
-        // presence of this method will be a constant reminder.
-        let mut own_counts: GenericParamCount = Default::default();
-
-        for param in self.params {
-            match param.kind {
-                GenericParamKind::Lifetime { .. } => own_counts.lifetimes += 1,
-                GenericParamKind::Type { .. } => own_counts.types += 1,
-                GenericParamKind::Const { .. } => own_counts.consts += 1,
-            };
-        }
-
-        own_counts
-    }
-
     pub fn get_named(&self, name: Symbol) -> Option<&GenericParam<'_>> {
         for param in self.params {
             if name == param.name.ident().name {
@@ -508,6 +483,8 @@ impl Generics<'hir> {
 #[derive(HashStable_Generic)]
 pub enum SyntheticTyParamKind {
     ImplTrait,
+    // Created by the `#[rustc_synthetic]` attribute.
+    FromAttr,
 }
 
 /// A where-clause in a definition.
@@ -755,6 +732,9 @@ pub struct Pat<'hir> {
     pub hir_id: HirId,
     pub kind: PatKind<'hir>,
     pub span: Span,
+    // Whether to use default binding modes.
+    // At present, this is false only for destructuring assignment.
+    pub default_binding_modes: bool,
 }
 
 impl Pat<'_> {
@@ -1000,17 +980,11 @@ impl BinOpKind {
     }
 
     pub fn is_lazy(self) -> bool {
-        match self {
-            BinOpKind::And | BinOpKind::Or => true,
-            _ => false,
-        }
+        matches!(self, BinOpKind::And | BinOpKind::Or)
     }
 
     pub fn is_shift(self) -> bool {
-        match self {
-            BinOpKind::Shl | BinOpKind::Shr => true,
-            _ => false,
-        }
+        matches!(self, BinOpKind::Shl | BinOpKind::Shr)
     }
 
     pub fn is_comparison(self) -> bool {
@@ -1090,10 +1064,7 @@ impl UnOp {
 
     /// Returns `true` if the unary operator takes its argument by value.
     pub fn is_by_value(self) -> bool {
-        match self {
-            Self::UnNeg | Self::UnNot => true,
-            _ => false,
-        }
+        matches!(self, Self::UnNeg | Self::UnNot)
     }
 }
 
@@ -1121,11 +1092,11 @@ pub enum StmtKind<'hir> {
     Semi(&'hir Expr<'hir>),
 }
 
-impl StmtKind<'hir> {
-    pub fn attrs(&self) -> &'hir [Attribute] {
+impl<'hir> StmtKind<'hir> {
+    pub fn attrs(&self, get_item: impl FnOnce(ItemId) -> &'hir Item<'hir>) -> &'hir [Attribute] {
         match *self {
             StmtKind::Local(ref l) => &l.attrs,
-            StmtKind::Item(_) => &[],
+            StmtKind::Item(ref item_id) => &get_item(*item_id).attrs,
             StmtKind::Expr(ref e) | StmtKind::Semi(ref e) => &e.attrs,
         }
     }
@@ -1383,6 +1354,7 @@ impl Expr<'_> {
     pub fn precedence(&self) -> ExprPrecedence {
         match self.kind {
             ExprKind::Box(_) => ExprPrecedence::Box,
+            ExprKind::ConstBlock(_) => ExprPrecedence::ConstBlock,
             ExprKind::Array(_) => ExprPrecedence::Array,
             ExprKind::Call(..) => ExprPrecedence::Call,
             ExprKind::MethodCall(..) => ExprPrecedence::MethodCall,
@@ -1428,10 +1400,9 @@ impl Expr<'_> {
     /// on the given expression should be considered a place expression.
     pub fn is_place_expr(&self, mut allow_projections_from: impl FnMut(&Self) -> bool) -> bool {
         match self.kind {
-            ExprKind::Path(QPath::Resolved(_, ref path)) => match path.res {
-                Res::Local(..) | Res::Def(DefKind::Static, _) | Res::Err => true,
-                _ => false,
-            },
+            ExprKind::Path(QPath::Resolved(_, ref path)) => {
+                matches!(path.res, Res::Local(..) | Res::Def(DefKind::Static, _) | Res::Err)
+            }
 
             // Type ascription inherits its place expression kind from its
             // operand. See:
@@ -1468,6 +1439,7 @@ impl Expr<'_> {
             | ExprKind::LlvmInlineAsm(..)
             | ExprKind::AssignOp(..)
             | ExprKind::Lit(_)
+            | ExprKind::ConstBlock(..)
             | ExprKind::Unary(..)
             | ExprKind::Box(..)
             | ExprKind::AddrOf(..)
@@ -1523,6 +1495,8 @@ pub fn is_range_literal(expr: &Expr<'_>) -> bool {
 pub enum ExprKind<'hir> {
     /// A `box x` expression.
     Box(&'hir Expr<'hir>),
+    /// Allow anonymous constants from an inline `const` block
+    ConstBlock(AnonConst),
     /// An array (e.g., `[a, b, c, d]`).
     Array(&'hir [Expr<'hir>]),
     /// A function call.
@@ -1709,6 +1683,9 @@ pub enum LocalSource {
     AsyncFn,
     /// A desugared `<expr>.await`.
     AwaitDesugar,
+    /// A desugared `expr = expr`, where the LHS is a tuple, struct or array.
+    /// The span is that of the `=` sign.
+    AssignDesugar(Span),
 }
 
 /// Hints at the original code for a `match _ { .. }`.
@@ -2220,10 +2197,7 @@ pub enum ImplicitSelfKind {
 impl ImplicitSelfKind {
     /// Does this represent an implicit self?
     pub fn has_implicit_self(&self) -> bool {
-        match *self {
-            ImplicitSelfKind::None => false,
-            _ => true,
-        }
+        !matches!(*self, ImplicitSelfKind::None)
     }
 }
 
@@ -2253,10 +2227,7 @@ impl Defaultness {
     }
 
     pub fn is_default(&self) -> bool {
-        match *self {
-            Defaultness::Default { .. } => true,
-            _ => false,
-        }
+        matches!(*self, Defaultness::Default { .. })
     }
 }
 
@@ -2387,25 +2358,13 @@ pub enum VisibilityKind<'hir> {
 
 impl VisibilityKind<'_> {
     pub fn is_pub(&self) -> bool {
-        match *self {
-            VisibilityKind::Public => true,
-            _ => false,
-        }
+        matches!(*self, VisibilityKind::Public)
     }
 
     pub fn is_pub_restricted(&self) -> bool {
         match *self {
             VisibilityKind::Public | VisibilityKind::Inherited => false,
             VisibilityKind::Crate(..) | VisibilityKind::Restricted { .. } => true,
-        }
-    }
-
-    pub fn descr(&self) -> &'static str {
-        match *self {
-            VisibilityKind::Public => "public",
-            VisibilityKind::Inherited => "private",
-            VisibilityKind::Crate(..) => "crate-visible",
-            VisibilityKind::Restricted { .. } => "restricted",
         }
     }
 }
@@ -2527,10 +2486,7 @@ pub struct FnHeader {
 
 impl FnHeader {
     pub fn is_const(&self) -> bool {
-        match &self.constness {
-            Constness::Const => true,
-            _ => false,
-        }
+        matches!(&self.constness, Constness::Const)
     }
 }
 
@@ -2679,8 +2635,6 @@ pub struct Upvar {
     pub span: Span,
 }
 
-pub type CaptureModeMap = NodeMap<CaptureBy>;
-
 // The TraitCandidate's import_ids is empty if the trait is defined in the same module, and
 // has length > 0 if the trait is found through an chain of imports, starting with the
 // import/use statement in the scope where the trait is used.
@@ -2729,6 +2683,9 @@ impl<'hir> Node<'hir> {
             Node::TraitItem(TraitItem { ident, .. })
             | Node::ImplItem(ImplItem { ident, .. })
             | Node::ForeignItem(ForeignItem { ident, .. })
+            | Node::Field(StructField { ident, .. })
+            | Node::Variant(Variant { ident, .. })
+            | Node::MacroDef(MacroDef { ident, .. })
             | Node::Item(Item { ident, .. }) => Some(*ident),
             _ => None,
         }

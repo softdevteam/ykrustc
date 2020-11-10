@@ -121,18 +121,18 @@ pub unsafe fn create_module(
     let mod_name = SmallCStr::new(mod_name);
     let llmod = llvm::LLVMModuleCreateWithNameInContext(mod_name.as_ptr(), llcx);
 
-    let mut target_data_layout = sess.target.target.data_layout.clone();
+    let mut target_data_layout = sess.target.data_layout.clone();
     if llvm_util::get_major_version() < 9 {
         target_data_layout = strip_function_ptr_alignment(target_data_layout);
     }
-    if llvm_util::get_major_version() < 10 {
-        if sess.target.target.arch == "x86" || sess.target.target.arch == "x86_64" {
-            target_data_layout = strip_x86_address_spaces(target_data_layout);
-        }
+    if llvm_util::get_major_version() < 10
+        && (sess.target.arch == "x86" || sess.target.arch == "x86_64")
+    {
+        target_data_layout = strip_x86_address_spaces(target_data_layout);
     }
 
     // Ensure the data-layout values hardcoded remain the defaults.
-    if sess.target.target.options.is_builtin {
+    if sess.target.options.is_builtin {
         let tm = crate::back::write::create_informational_target_machine(tcx.sess);
         llvm::LLVMRustSetDataLayoutFromTargetMachine(llmod, tm);
         llvm::LLVMRustDisposeTargetMachine(tm);
@@ -163,7 +163,7 @@ pub unsafe fn create_module(
             bug!(
                 "data-layout for builtin `{}` target, `{}`, \
                   differs from LLVM default, `{}`",
-                sess.target.target.llvm_target,
+                sess.target.llvm_target,
                 target_data_layout,
                 llvm_data_layout
             );
@@ -173,7 +173,7 @@ pub unsafe fn create_module(
     let data_layout = SmallCStr::new(&target_data_layout);
     llvm::LLVMSetDataLayout(llmod, data_layout.as_ptr());
 
-    let llvm_target = SmallCStr::new(&sess.target.target.llvm_target);
+    let llvm_target = SmallCStr::new(&sess.target.llvm_target);
     llvm::LLVMRustSetNormalizedTarget(llmod, llvm_target.as_ptr());
 
     if sess.relocation_model() == RelocModel::Pic {
@@ -193,7 +193,7 @@ pub unsafe fn create_module(
     }
 
     // Control Flow Guard is currently only supported by the MSVC linker on Windows.
-    if sess.target.target.options.is_like_msvc {
+    if sess.target.options.is_like_msvc {
         match sess.opts.cg.control_flow_guard {
             CFGuard::Disabled => {}
             CFGuard::NoChecks => {
@@ -268,7 +268,7 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
         // linker will take care of everything. Fixing this problem will likely
         // require adding a few attributes to Rust itself (feature gated at the
         // start) and then strongly recommending static linkage on Windows!
-        let use_dll_storage_attrs = tcx.sess.target.target.options.is_like_windows;
+        let use_dll_storage_attrs = tcx.sess.target.options.is_like_windows;
 
         let check_overflow = tcx.sess.overflow_checks();
 
@@ -337,8 +337,8 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
     }
 
     #[inline]
-    pub fn coverage_context(&'a self) -> &'a coverageinfo::CrateCoverageContext<'tcx> {
-        self.coverage_cx.as_ref().unwrap()
+    pub fn coverage_context(&'a self) -> Option<&'a coverageinfo::CrateCoverageContext<'tcx>> {
+        self.coverage_cx.as_ref()
     }
 }
 
@@ -430,7 +430,8 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
     }
 
     fn apply_target_cpu_attr(&self, llfn: &'ll Value) {
-        attributes::apply_target_cpu_attr(self, llfn)
+        attributes::apply_target_cpu_attr(self, llfn);
+        attributes::apply_tune_cpu_attr(self, llfn);
     }
 
     fn create_used_variable(&self) {
@@ -857,7 +858,7 @@ impl CodegenCx<'b, 'tcx> {
             return eh_catch_typeinfo;
         }
         let tcx = self.tcx;
-        assert!(self.sess().target.target.options.is_like_emscripten);
+        assert!(self.sess().target.options.is_like_emscripten);
         let eh_catch_typeinfo = match tcx.lang_items().eh_catch_typeinfo() {
             Some(def_id) => self.get_static(def_id),
             _ => {
@@ -882,7 +883,7 @@ impl<'b, 'tcx> CodegenCx<'b, 'tcx> {
         // user defined names
         let mut name = String::with_capacity(prefix.len() + 6);
         name.push_str(prefix);
-        name.push_str(".");
+        name.push('.');
         base_n::push_str(idx as u128, base_n::ALPHANUMERIC_ONLY, &mut name);
         name
     }
@@ -896,7 +897,7 @@ impl HasDataLayout for CodegenCx<'ll, 'tcx> {
 
 impl HasTargetSpec for CodegenCx<'ll, 'tcx> {
     fn target_spec(&self) -> &Target {
-        &self.tcx.sess.target.target
+        &self.tcx.sess.target
     }
 }
 

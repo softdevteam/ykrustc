@@ -22,7 +22,7 @@ use crate::ty::{
     ExistentialPredicate, FloatVar, FloatVid, GenericParamDefKind, InferConst, InferTy, IntVar,
     IntVid, List, ParamConst, ParamTy, PolyFnSig, Predicate, PredicateInner, PredicateKind,
     ProjectionTy, Region, RegionKind, ReprOptions, TraitObjectVisitor, Ty, TyKind, TyS, TyVar,
-    TyVid, TypeAndMut,
+    TyVid, TypeAndMut, Visibility,
 };
 use rustc_ast as ast;
 use rustc_ast::expand::allocator::AllocatorKind;
@@ -134,7 +134,7 @@ impl<'tcx> CtxtInterners<'tcx> {
     fn intern_predicate(&self, kind: PredicateKind<'tcx>) -> &'tcx PredicateInner<'tcx> {
         self.predicate
             .intern(kind, |kind| {
-                let flags = super::flags::FlagComputation::for_predicate(&kind);
+                let flags = super::flags::FlagComputation::for_predicate(kind);
 
                 let predicate_struct = PredicateInner {
                     kind,
@@ -368,7 +368,7 @@ pub struct TypeckResults<'tcx> {
     /// leads to a `vec![&&Option<i32>, &Option<i32>]`. Empty vectors are not stored.
     ///
     /// See:
-    /// https://github.com/rust-lang/rfcs/blob/master/text/2005-match-ergonomics.md#definitions
+    /// <https://github.com/rust-lang/rfcs/blob/master/text/2005-match-ergonomics.md#definitions>
     pat_adjustments: ItemLocalMap<Vec<Ty<'tcx>>>,
 
     /// Borrows
@@ -532,10 +532,6 @@ impl<'tcx> TypeckResults<'tcx> {
     // doesn't provide type parameter substitutions.
     pub fn pat_ty(&self, pat: &hir::Pat<'_>) -> Ty<'tcx> {
         self.node_type(pat.hir_id)
-    }
-
-    pub fn pat_ty_opt(&self, pat: &hir::Pat<'_>) -> Option<Ty<'tcx>> {
-        self.node_type_opt(pat.hir_id)
     }
 
     // Returns the type of an expression as a monotype.
@@ -848,7 +844,7 @@ impl<'tcx> CommonConsts<'tcx> {
 
         CommonConsts {
             unit: mk_const(ty::Const {
-                val: ty::ConstKind::Value(ConstValue::Scalar(Scalar::zst())),
+                val: ty::ConstKind::Value(ConstValue::Scalar(Scalar::ZST)),
                 ty: types.unit,
             }),
         }
@@ -914,6 +910,9 @@ pub struct GlobalCtxt<'tcx> {
 
     /// Common consts, pre-interned for your convenience.
     pub consts: CommonConsts<'tcx>,
+
+    /// Visibilities produced by resolver.
+    pub visibilities: FxHashMap<LocalDefId, Visibility>,
 
     /// Resolutions of `extern crate` items produced by resolver.
     extern_crate_map: FxHashMap<LocalDefId, CrateNum>,
@@ -1061,7 +1060,7 @@ impl<'tcx> TyCtxt<'tcx> {
         )
     }
 
-    pub fn lift<T: ?Sized + Lift<'tcx>>(self, value: &T) -> Option<T::Lifted> {
+    pub fn lift<T: Lift<'tcx>>(self, value: T) -> Option<T::Lifted> {
         value.lift_to_tcx(self)
     }
 
@@ -1083,7 +1082,7 @@ impl<'tcx> TyCtxt<'tcx> {
         crate_name: &str,
         output_filenames: &OutputFilenames,
     ) -> GlobalCtxt<'tcx> {
-        let data_layout = TargetDataLayout::parse(&s.target.target).unwrap_or_else(|err| {
+        let data_layout = TargetDataLayout::parse(&s.target).unwrap_or_else(|err| {
             s.fatal(&err);
         });
         let interners = CtxtInterners::new(arena);
@@ -1128,6 +1127,7 @@ impl<'tcx> TyCtxt<'tcx> {
             types: common_types,
             lifetimes: common_lifetimes,
             consts: common_consts,
+            visibilities: resolutions.visibilities,
             extern_crate_map: resolutions.extern_crate_map,
             trait_map,
             export_map: resolutions.export_map,
@@ -1526,7 +1526,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Determines whether identifiers in the assembly have strict naming rules.
     /// Currently, only NVPTX* targets need it.
     pub fn has_strict_asm_symbol_naming(self) -> bool {
-        self.sess.target.target.arch.contains("nvptx")
+        self.sess.target.arch.contains("nvptx")
     }
 
     /// Returns `&'static core::panic::Location<'static>`.
@@ -1569,16 +1569,16 @@ impl<'tcx> TyCtxt<'tcx> {
 /// e.g., `()` or `u8`, was interned in a different context.
 pub trait Lift<'tcx>: fmt::Debug {
     type Lifted: fmt::Debug + 'tcx;
-    fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted>;
+    fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted>;
 }
 
 macro_rules! nop_lift {
     ($set:ident; $ty:ty => $lifted:ty) => {
         impl<'a, 'tcx> Lift<'tcx> for $ty {
             type Lifted = $lifted;
-            fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
-                if tcx.interners.$set.contains_pointer_to(&Interned(*self)) {
-                    Some(unsafe { mem::transmute(*self) })
+            fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+                if tcx.interners.$set.contains_pointer_to(&Interned(self)) {
+                    Some(unsafe { mem::transmute(self) })
                 } else {
                     None
                 }
@@ -1591,12 +1591,12 @@ macro_rules! nop_list_lift {
     ($set:ident; $ty:ty => $lifted:ty) => {
         impl<'a, 'tcx> Lift<'tcx> for &'a List<$ty> {
             type Lifted = &'tcx List<$lifted>;
-            fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
+            fn lift_to_tcx(self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
                 if self.is_empty() {
                     return Some(List::empty());
                 }
-                if tcx.interners.$set.contains_pointer_to(&Interned(*self)) {
-                    Some(unsafe { mem::transmute(*self) })
+                if tcx.interners.$set.contains_pointer_to(&Interned(self)) {
+                    Some(unsafe { mem::transmute(self) })
                 } else {
                     None
                 }
@@ -2036,13 +2036,13 @@ direct_interners! {
 
 macro_rules! slice_interners {
     ($($field:ident: $method:ident($ty:ty)),+ $(,)?) => (
-        $(impl<'tcx> TyCtxt<'tcx> {
-            pub fn $method(self, v: &[$ty]) -> &'tcx List<$ty> {
+        impl<'tcx> TyCtxt<'tcx> {
+            $(pub fn $method(self, v: &[$ty]) -> &'tcx List<$ty> {
                 self.interners.$field.intern_ref(v, || {
                     Interned(List::from_arena(&*self.arena, v))
                 }).0
-            }
-        })+
+            })+
+        }
     );
 }
 

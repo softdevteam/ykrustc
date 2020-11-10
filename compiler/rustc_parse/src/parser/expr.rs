@@ -6,6 +6,7 @@ use crate::maybe_recover_from_interpolated_ty_qpath;
 
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Token, TokenKind};
+use rustc_ast::tokenstream::Spacing;
 use rustc_ast::util::classify;
 use rustc_ast::util::literal::LitError;
 use rustc_ast::util::parser::{prec_let_scrutinee_needs_par, AssocOp, Fixity};
@@ -18,7 +19,6 @@ use rustc_span::source_map::{self, Span, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{BytePos, Pos};
 use std::mem;
-use tracing::debug;
 
 /// Possibly accepts an `token::Interpolated` expression (a pre-parsed expression
 /// dropped into the token stream, which happens while parsing the result of
@@ -246,11 +246,7 @@ impl<'a> Parser<'a> {
                 this.parse_assoc_expr_with(prec + prec_adjustment, LhsExpr::NotYetParsed)
             })?;
 
-            // Make sure that the span of the parent node is larger than the span of lhs and rhs,
-            // including the attributes.
-            let lhs_span =
-                lhs.attrs.iter().find(|a| a.style == AttrStyle::Outer).map_or(lhs_span, |a| a.span);
-            let span = lhs_span.to(rhs.span);
+            let span = self.mk_expr_sp(&lhs, lhs_span, rhs.span);
             lhs = match op {
                 AssocOp::Add
                 | AssocOp::Subtract
@@ -363,6 +359,18 @@ impl<'a> Parser<'a> {
     /// Also performs recovery for `and` / `or` which are mistaken for `&&` and `||` respectively.
     fn check_assoc_op(&self) -> Option<Spanned<AssocOp>> {
         let (op, span) = match (AssocOp::from_token(&self.token), self.token.ident()) {
+            // When parsing const expressions, stop parsing when encountering `>`.
+            (
+                Some(
+                    AssocOp::ShiftRight
+                    | AssocOp::Greater
+                    | AssocOp::GreaterEqual
+                    | AssocOp::AssignOp(token::BinOpToken::Shr),
+                ),
+                _,
+            ) if self.restrictions.contains(Restrictions::CONST_EXPR) => {
+                return None;
+            }
             (Some(op), _) => (op, self.token.span),
             (None, Some((Ident { name: sym::and, span }, false))) => {
                 self.error_bad_logical_op("and", "&&", "conjunction");
@@ -411,7 +419,7 @@ impl<'a> Parser<'a> {
             None
         };
         let rhs_span = rhs.as_ref().map_or(cur_op_span, |x| x.span);
-        let span = lhs.span.to(rhs_span);
+        let span = self.mk_expr_sp(&lhs, lhs.span, rhs_span);
         let limits =
             if op == AssocOp::DotDot { RangeLimits::HalfOpen } else { RangeLimits::Closed };
         Ok(self.mk_expr(span, self.mk_range(Some(lhs), rhs, limits)?, AttrVec::new()))
@@ -463,7 +471,7 @@ impl<'a> Parser<'a> {
     /// Parses a prefix-unary-operator expr.
     fn parse_prefix_expr(&mut self, attrs: Option<AttrVec>) -> PResult<'a, P<Expr>> {
         let attrs = self.parse_or_use_outer_attributes(attrs)?;
-        self.maybe_collect_tokens(!attrs.is_empty(), |this| {
+        self.maybe_collect_tokens(super::attr::maybe_needs_tokens(&attrs), |this| {
             let lo = this.token.span;
             // Note: when adding new unary operators, don't forget to adjust TokenKind::can_begin_expr()
             let (hi, ex) = match this.token.uninterpolate().kind {
@@ -571,7 +579,11 @@ impl<'a> Parser<'a> {
         expr_kind: fn(P<Expr>, P<Ty>) -> ExprKind,
     ) -> PResult<'a, P<Expr>> {
         let mk_expr = |this: &mut Self, rhs: P<Ty>| {
-            this.mk_expr(lhs_span.to(rhs.span), expr_kind(lhs, rhs), AttrVec::new())
+            this.mk_expr(
+                this.mk_expr_sp(&lhs, lhs_span, rhs.span),
+                expr_kind(lhs, rhs),
+                AttrVec::new(),
+            )
         };
 
         // Save the state of the parser before parsing type normally, in case there is a
@@ -819,7 +831,7 @@ impl<'a> Parser<'a> {
         self.struct_span_err(self.token.span, &format!("unexpected token: `{}`", actual)).emit();
     }
 
-    // We need and identifier or integer, but the next token is a float.
+    // We need an identifier or integer, but the next token is a float.
     // Break the float into components to extract the identifier or integer.
     // FIXME: With current `TokenCursor` it's hard to break tokens into more than 2
     // parts unless those parts are processed immediately. `TokenCursor` should either
@@ -884,7 +896,7 @@ impl<'a> Parser<'a> {
                 assert!(suffix.is_none());
                 let symbol = Symbol::intern(&i);
                 self.token = Token::new(token::Ident(symbol, false), ident_span);
-                let next_token = Token::new(token::Dot, dot_span);
+                let next_token = (Token::new(token::Dot, dot_span), self.token_spacing);
                 self.parse_tuple_field_access_expr(lo, base, symbol, None, Some(next_token))
             }
             // 1.2 | 1.2e3
@@ -902,12 +914,14 @@ impl<'a> Parser<'a> {
                 };
                 let symbol1 = Symbol::intern(&i1);
                 self.token = Token::new(token::Ident(symbol1, false), ident1_span);
-                let next_token1 = Token::new(token::Dot, dot_span);
+                // This needs to be `Spacing::Alone` to prevent regressions.
+                // See issue #76399 and PR #76285 for more details
+                let next_token1 = (Token::new(token::Dot, dot_span), Spacing::Alone);
                 let base1 =
                     self.parse_tuple_field_access_expr(lo, base, symbol1, None, Some(next_token1));
                 let symbol2 = Symbol::intern(&i2);
                 let next_token2 = Token::new(token::Ident(symbol2, false), ident2_span);
-                self.bump_with(next_token2); // `.`
+                self.bump_with((next_token2, self.token_spacing)); // `.`
                 self.parse_tuple_field_access_expr(lo, base1, symbol2, suffix, None)
             }
             // 1e+ | 1e- (recovered)
@@ -930,7 +944,7 @@ impl<'a> Parser<'a> {
         base: P<Expr>,
         field: Symbol,
         suffix: Option<Symbol>,
-        next_token: Option<Token>,
+        next_token: Option<(Token, Spacing)>,
     ) -> P<Expr> {
         match next_token {
             Some(next_token) => self.bump_with(next_token),
@@ -1060,6 +1074,8 @@ impl<'a> Parser<'a> {
             })
         } else if self.eat_keyword(kw::Unsafe) {
             self.parse_block_expr(None, lo, BlockCheckMode::Unsafe(ast::UserProvided), attrs)
+        } else if self.check_inline_const(0) {
+            self.parse_const_block(lo.to(self.token.span))
         } else if self.is_do_catch_block() {
             self.recover_do_catch(attrs)
         } else if self.is_try_block() {
@@ -1107,13 +1123,12 @@ impl<'a> Parser<'a> {
 
     fn maybe_collect_tokens(
         &mut self,
-        has_outer_attrs: bool,
+        needs_tokens: bool,
         f: impl FnOnce(&mut Self) -> PResult<'a, P<Expr>>,
     ) -> PResult<'a, P<Expr>> {
-        if has_outer_attrs {
+        if needs_tokens {
             let (mut expr, tokens) = self.collect_tokens(f)?;
-            debug!("maybe_collect_tokens: Collected tokens for {:?} (tokens {:?}", expr, tokens);
-            expr.tokens = Some(tokens);
+            expr.tokens = tokens;
             Ok(expr)
         } else {
             f(self)
@@ -1712,7 +1727,7 @@ impl<'a> Parser<'a> {
         let lo = self.prev_token.span;
         let pat = self.parse_top_pat(GateOr::No)?;
         self.expect(&token::Eq)?;
-        let expr = self.with_res(Restrictions::NO_STRUCT_LITERAL, |this| {
+        let expr = self.with_res(self.restrictions | Restrictions::NO_STRUCT_LITERAL, |this| {
             this.parse_assoc_expr_with(1 + prec_let_scrutinee_needs_par(), None.into())
         })?;
         let span = lo.to(expr.span);
@@ -2323,5 +2338,15 @@ impl<'a> Parser<'a> {
 
     pub(super) fn mk_expr_err(&self, span: Span) -> P<Expr> {
         self.mk_expr(span, ExprKind::Err, AttrVec::new())
+    }
+
+    /// Create expression span ensuring the span of the parent node
+    /// is larger than the span of lhs and rhs, including the attributes.
+    fn mk_expr_sp(&self, lhs: &P<Expr>, lhs_span: Span, rhs_span: Span) -> Span {
+        lhs.attrs
+            .iter()
+            .find(|a| a.style == AttrStyle::Outer)
+            .map_or(lhs_span, |a| a.span)
+            .to(rhs_span)
     }
 }

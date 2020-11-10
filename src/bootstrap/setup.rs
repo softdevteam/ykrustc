@@ -1,5 +1,7 @@
-use crate::t;
+use crate::{t, VERSION};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::str::FromStr;
 use std::{
     env, fmt, fs,
@@ -20,7 +22,28 @@ impl Profile {
     }
 
     pub fn all() -> impl Iterator<Item = Self> {
-        [Profile::Compiler, Profile::Codegen, Profile::Library, Profile::User].iter().copied()
+        use Profile::*;
+        // N.B. these are ordered by how they are displayed, not alphabetically
+        [Library, Compiler, Codegen, User].iter().copied()
+    }
+
+    pub fn purpose(&self) -> String {
+        use Profile::*;
+        match self {
+            Library => "Contribute to the standard library",
+            Compiler => "Contribute to the compiler or rustdoc",
+            Codegen => "Contribute to the compiler, and also modify LLVM or codegen",
+            User => "Install Rust from source",
+        }
+        .to_string()
+    }
+
+    pub fn all_for_help(indent: &str) -> String {
+        let mut out = String::new();
+        for choice in Profile::all() {
+            writeln!(&mut out, "{}{}: {}", indent, choice, choice.purpose()).unwrap();
+        }
+        out
     }
 }
 
@@ -29,10 +52,10 @@ impl FromStr for Profile {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "a" | "lib" | "library" => Ok(Profile::Library),
-            "b" | "compiler" => Ok(Profile::Compiler),
-            "c" | "llvm" | "codegen" => Ok(Profile::Codegen),
-            "d" | "maintainer" | "user" => Ok(Profile::User),
+            "lib" | "library" => Ok(Profile::Library),
+            "compiler" | "rustdoc" => Ok(Profile::Compiler),
+            "llvm" | "codegen" => Ok(Profile::Codegen),
+            "maintainer" | "user" => Ok(Profile::User),
             _ => Err(format!("unknown profile: '{}'", s)),
         }
     }
@@ -66,11 +89,12 @@ pub fn setup(src_path: &Path, profile: Profile) {
         std::process::exit(1);
     }
 
-    let path = cfg_file.unwrap_or_else(|| src_path.join("config.toml"));
+    let path = cfg_file.unwrap_or("config.toml".into());
     let settings = format!(
         "# Includes one of the default files in src/bootstrap/defaults\n\
-    profile = \"{}\"\n",
-        profile
+    profile = \"{}\"\n\
+    changelog-seen = {}\n",
+        profile, VERSION
     );
     t!(fs::write(path, settings));
 
@@ -103,19 +127,40 @@ pub fn setup(src_path: &Path, profile: Profile) {
 
 // Used to get the path for `Subcommand::Setup`
 pub fn interactive_path() -> io::Result<Profile> {
-    let mut input = String::new();
-    println!(
-        "Welcome to the Rust project! What do you want to do with x.py?
-a) Contribute to the standard library
-b) Contribute to the compiler
-c) Contribute to the compiler, and also modify LLVM or codegen
-d) Install Rust from source"
-    );
+    fn abbrev_all() -> impl Iterator<Item = ((String, String), Profile)> {
+        ('a'..)
+            .zip(1..)
+            .map(|(letter, number)| (letter.to_string(), number.to_string()))
+            .zip(Profile::all())
+    }
+
+    fn parse_with_abbrev(input: &str) -> Result<Profile, String> {
+        let input = input.trim().to_lowercase();
+        for ((letter, number), profile) in abbrev_all() {
+            if input == letter || input == number {
+                return Ok(profile);
+            }
+        }
+        input.parse()
+    }
+
+    println!("Welcome to the Rust project! What do you want to do with x.py?");
+    for ((letter, _), profile) in abbrev_all() {
+        println!("{}) {}: {}", letter, profile, profile.purpose());
+    }
     let template = loop {
-        print!("Please choose one (a/b/c/d): ");
+        print!(
+            "Please choose one ({}): ",
+            abbrev_all().map(|((l, _), _)| l).collect::<Vec<_>>().join("/")
+        );
         io::stdout().flush()?;
+        let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        break match input.trim().to_lowercase().parse() {
+        if input == "" {
+            eprintln!("EOF on stdin, when expecting answer to question.  Giving up.");
+            std::process::exit(1);
+        }
+        break match parse_with_abbrev(&input) {
             Ok(profile) => profile,
             Err(err) => {
                 println!("error: {}", err);
@@ -155,10 +200,17 @@ simply delete the `pre-commit` file from .git/hooks."
 
     Ok(if should_install {
         let src = src_path.join("src").join("etc").join("pre-commit.sh");
-        let dst = src_path.join(".git").join("hooks").join("pre-commit");
-        match fs::hard_link(src, dst) {
+        let git = t!(Command::new("git").args(&["rev-parse", "--git-common-dir"]).output().map(
+            |output| {
+                assert!(output.status.success(), "failed to run `git`");
+                PathBuf::from(t!(String::from_utf8(output.stdout)).trim())
+            }
+        ));
+        let dst = git.join("hooks").join("pre-commit");
+        match fs::hard_link(src, &dst) {
             Err(e) => println!(
-                "x.py encountered an error -- do you already have the git hook installed?\n{}",
+                "error: could not create hook {}: do you already have the git hook installed?\n{}",
+                dst.display(),
                 e
             ),
             Ok(_) => println!("Linked `src/etc/pre-commit.sh` to `.git/hooks/pre-commit`"),

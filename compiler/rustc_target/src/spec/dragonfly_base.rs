@@ -16,6 +16,7 @@ pub fn opts() -> TargetOptions {
     );
 
     TargetOptions {
+        target_os: "dragonfly".to_string(),
         dynamic_linking: true,
         executables: true,
         target_family: Some("unix".to_string()),
@@ -24,6 +25,7 @@ pub fn opts() -> TargetOptions {
         pre_link_args: args,
         position_independent_executables: true,
         relro_level: RelroLevel::Full,
+        dwarf_version: Some(2),
         ..Default::default()
     }
 }

@@ -34,6 +34,7 @@ Specifically they will each satisfy the following requirements:
 
 target | std | host | notes
 -------|-----|------|-------
+`aarch64-unknown-linux-gnu` | ✓ | ✓ | ARM64 Linux (kernel 4.2, glibc 2.17+) [^missing-stack-probes]
 `i686-pc-windows-gnu` | ✓ | ✓ | 32-bit MinGW (Windows 7+)
 `i686-pc-windows-msvc` | ✓ | ✓ | 32-bit MSVC (Windows 7+)
 `i686-unknown-linux-gnu` | ✓ | ✓ | 32-bit Linux (kernel 2.6.32+, glibc 2.11+)
@@ -41,6 +42,12 @@ target | std | host | notes
 `x86_64-pc-windows-gnu` | ✓ | ✓ | 64-bit MinGW (Windows 7+)
 `x86_64-pc-windows-msvc` | ✓ | ✓ | 64-bit MSVC (Windows 7+)
 `x86_64-unknown-linux-gnu` | ✓ | ✓ | 64-bit Linux (kernel 2.6.32+, glibc 2.11+)
+
+[^missing-stack-probes]: Stack probes support is missing on
+  `aarch64-unknown-linux-gnu`, but it's planned to be implemented in the near
+  future. The implementation is tracked on [issue #77071][77071].
+
+[77071]: https://github.com/rust-lang/rust/issues/77071
 
 ## Tier 2
 
@@ -57,12 +64,11 @@ Specifically, these platforms are required to have each of the following:
 
 target | std | host | notes
 -------|-----|------|-------
-`aarch64-apple-darwin` | ✓ |  | ARM64 macOS (11.0+, Big Sur+)
+`aarch64-apple-darwin` | ✓ | ✓ | ARM64 macOS (11.0+, Big Sur+)
 `aarch64-apple-ios` | ✓ |  | ARM64 iOS
 `aarch64-fuchsia` | ✓ |  | ARM64 Fuchsia
 `aarch64-linux-android` | ✓ |  | ARM64 Android
-`aarch64-pc-windows-msvc` | ✓ |  | ARM64 Windows MSVC
-`aarch64-unknown-linux-gnu` | ✓ | ✓ | ARM64 Linux (kernel 4.2, glibc 2.17)
+`aarch64-pc-windows-msvc` | ✓ | ✓ | ARM64 Windows MSVC
 `aarch64-unknown-linux-musl` | ✓ | ✓ | ARM64 Linux with MUSL
 `aarch64-unknown-none` | * |  | Bare ARM64, hardfloat
 `aarch64-unknown-none-softfloat` | * |  | Bare ARM64, softfloat
@@ -180,6 +186,7 @@ target | std | host | notes
 `i686-wrs-vxworks` | ? |  |
 `mips-unknown-linux-uclibc` | ✓ |  | MIPS Linux with uClibc
 `mipsel-unknown-linux-uclibc` | ✓ |  | MIPS (LE) Linux with uClibc
+`mipsel-unknown-none` | * |  | Bare MIPS (LE) softfloat
 `mipsel-sony-psp` | * |  | MIPS (LE) Sony PlayStation Portable (PSP)
 `mipsisa32r6-unknown-linux-gnu` | ? |  |
 `mipsisa32r6el-unknown-linux-gnu` | ? |  |

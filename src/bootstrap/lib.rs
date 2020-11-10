@@ -121,7 +121,7 @@ use std::os::windows::fs::symlink_file;
 use build_helper::{mtime, output, run, run_suppressed, t, try_run, try_run_suppressed};
 use filetime::FileTime;
 
-use crate::config::TargetSelection;
+use crate::config::{LlvmLibunwind, TargetSelection};
 use crate::util::{exe, libdir, CiEnv};
 
 mod builder;
@@ -181,7 +181,12 @@ const LLVM_TOOLS: &[&str] = &[
     "llvm-size", // used to prints the size of the linker sections of a program
     "llvm-strip", // used to discard symbols from binary files to reduce their size
     "llvm-ar", // used for creating and modifying archive files
+    "llvm-dis", // used to disassemble LLVM bitcode
+    "llc",     // used to compile LLVM bytecode
+    "opt",     // used to optimize LLVM bytecode
 ];
+
+pub const VERSION: usize = 2;
 
 /// A structure representing a Rust compiler.
 ///
@@ -306,6 +311,9 @@ pub enum Mode {
     /// Build librustc, and compiler libraries, placing output in the "stageN-rustc" directory.
     Rustc,
 
+    /// Build a codegen backend for rustc, placing the output in the "stageN-codegen" directory.
+    Codegen,
+
     /// Build a tool, placing output in the "stage0-bootstrap-tools"
     /// directory. This is for miscellaneous sets of tools that are built
     /// using the bootstrap stage0 compiler in its entirety (target libraries
@@ -327,6 +335,10 @@ pub enum Mode {
 impl Mode {
     pub fn is_tool(&self) -> bool {
         matches!(self, Mode::ToolBootstrap | Mode::ToolRustc | Mode::ToolStd)
+    }
+
+    pub fn must_support_dlopen(&self) -> bool {
+        matches!(self, Mode::Std | Mode::Codegen)
     }
 }
 
@@ -536,8 +548,10 @@ impl Build {
     fn std_features(&self) -> String {
         let mut features = "panic-unwind".to_string();
 
-        if self.config.llvm_libunwind {
-            features.push_str(" llvm-libunwind");
+        match self.config.llvm_libunwind.unwrap_or_default() {
+            LlvmLibunwind::InTree => features.push_str(" llvm-libunwind"),
+            LlvmLibunwind::System => features.push_str(" system-llvm-libunwind"),
+            LlvmLibunwind::No => {}
         }
         if self.config.backtrace {
             features.push_str(" backtrace");
@@ -593,6 +607,7 @@ impl Build {
         let suffix = match mode {
             Mode::Std => "-std",
             Mode::Rustc => "-rustc",
+            Mode::Codegen => "-codegen",
             Mode::ToolBootstrap => "-bootstrap-tools",
             Mode::ToolStd | Mode::ToolRustc => "-tools",
         };
@@ -1115,6 +1130,10 @@ impl Build {
             let krate = &self.crates[&krate];
             ret.push(krate);
             for dep in &krate.deps {
+                if !self.crates.contains_key(dep) {
+                    // Ignore non-workspace members.
+                    continue;
+                }
                 // Don't include optional deps if their features are not
                 // enabled. Ideally this would be computed from `cargo
                 // metadata --features …`, but that is somewhat slow. Just

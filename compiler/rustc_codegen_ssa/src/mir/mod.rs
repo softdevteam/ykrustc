@@ -27,7 +27,7 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     mir: &'tcx mir::Body<'tcx>,
 
-    debug_context: Option<FunctionDebugContext<Bx::DIScope>>,
+    debug_context: Option<FunctionDebugContext<Bx::DIScope, Bx::DILocation>>,
 
     llfn: Bx::Function,
 
@@ -95,20 +95,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         T: Copy + TypeFoldable<'tcx>,
     {
         debug!("monomorphize: self.instance={:?}", self.instance);
-        if let Some(substs) = self.instance.substs_for_mir_body() {
-            self.cx.tcx().subst_and_normalize_erasing_regions(
-                substs,
-                ty::ParamEnv::reveal_all(),
-                &value,
-            )
-        } else {
-            self.cx.tcx().normalize_erasing_regions(ty::ParamEnv::reveal_all(), *value)
-        }
+        self.instance.subst_mir_and_normalize_erasing_regions(
+            self.cx.tcx(),
+            ty::ParamEnv::reveal_all(),
+            value,
+        )
     }
 
-    pub fn fn_metadata(&self, source_info: mir::SourceInfo) -> Option<Bx::DIScope> {
-        let (odisp, _span) = self.debug_loc(source_info);
-        odisp
+    pub fn fn_metadata(&self, source_info: mir::SourceInfo) -> Option<Bx::DILocation> {
+        self.dbg_loc(source_info)
     }
 }
 
@@ -161,7 +156,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         bx.set_personality_fn(cx.eh_personality());
     }
 
-    bx.sideeffect();
+    bx.sideeffect(false);
 
     let cleanup_kinds = analyze::cleanup_kinds(&mir);
     // Allocate a `Block` for every basic block, except

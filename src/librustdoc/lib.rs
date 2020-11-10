@@ -85,12 +85,6 @@ mod theme;
 mod visit_ast;
 mod visit_lib;
 
-struct Output {
-    krate: clean::Crate,
-    renderinfo: config::RenderInfo,
-    renderopts: config::RenderOptions,
-}
-
 pub fn main() {
     rustc_driver::set_sigpipe_handler();
     rustc_driver::install_ice_hook();
@@ -275,6 +269,26 @@ fn opts() -> Vec<RustcOptGroup> {
                 "sort modules by where they appear in the program, rather than alphabetically",
             )
         }),
+        unstable("default-theme", |o| {
+            o.optopt(
+                "",
+                "default-theme",
+                "Set the default theme. THEME should be the theme name, generally lowercase. \
+                 If an unknown default theme is specified, the builtin default is used. \
+                 The set of themes, and the rustdoc built-in default is not stable.",
+                "THEME",
+            )
+        }),
+        unstable("default-setting", |o| {
+            o.optmulti(
+                "",
+                "default-setting",
+                "Default value for a rustdoc setting (used when \"rustdoc-SETTING\" is absent \
+                 from web browser Local Storage). If VALUE is not supplied, \"true\" is used. \
+                 Supported SETTINGs and VALUEs are not documented and not stable.",
+                "SETTING[=VALUE]",
+            )
+        }),
         stable("theme", |o| {
             o.optmulti(
                 "",
@@ -418,6 +432,7 @@ fn usage(argv0: &str) {
         (option.apply)(&mut options);
     }
     println!("{}", options.usage(&format!("{} [options] <input>", argv0)));
+    println!("More information available at https://doc.rust-lang.org/rustdoc/what-is-rustdoc.html")
 }
 
 /// A result type used by several functions under `main()`.
@@ -521,15 +536,12 @@ fn main_options(options: config::Options) -> MainResult {
 
     krate.version = crate_version;
 
-    let out = Output { krate, renderinfo, renderopts };
-
     if show_coverage {
         // if we ran coverage, bail early, we don't need to also generate docs at this point
         // (also we didn't load in any of the useful passes)
         return Ok(());
     }
 
-    let Output { krate, renderinfo, renderopts } = out;
     info!("going to format");
     let (error_format, edition, debugging_options) = diag_opts;
     let diag = core::new_handler(error_format, None, &debugging_options);

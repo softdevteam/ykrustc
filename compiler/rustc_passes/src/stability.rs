@@ -13,15 +13,13 @@ use rustc_hir::{Generics, HirId, Item, StructField, TraitRef, Ty, TyKind, Varian
 use rustc_middle::hir::map::Map;
 use rustc_middle::middle::privacy::AccessLevels;
 use rustc_middle::middle::stability::{DeprecationEntry, Index};
-use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::{self, query::Providers, TyCtxt};
 use rustc_session::lint;
-use rustc_session::lint::builtin::INEFFECTIVE_UNSTABLE_TRAIT_IMPL;
+use rustc_session::lint::builtin::{INEFFECTIVE_UNSTABLE_TRAIT_IMPL, USELESS_DEPRECATED};
 use rustc_session::parse::feature_err;
 use rustc_session::Session;
 use rustc_span::symbol::{sym, Symbol};
-use rustc_span::Span;
-use rustc_trait_selection::traits::misc::can_type_implement_copy;
+use rustc_span::{Span, DUMMY_SP};
 
 use std::cmp::Ordering;
 use std::mem::replace;
@@ -33,6 +31,8 @@ enum AnnotationKind {
     Required,
     // Annotation is useless, reject it
     Prohibited,
+    // Deprecation annotation is useless, reject it. (Stability attribute is still required.)
+    DeprecationProhibited,
     // Annotation itself is useless, but it can be propagated to children
     Container,
 }
@@ -85,14 +85,22 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
             did_error = self.forbid_staged_api_attrs(hir_id, attrs, inherit_deprecation.clone());
         }
 
-        let depr =
-            if did_error { None } else { attr::find_deprecation(&self.tcx.sess, attrs, item_sp) };
+        let depr = if did_error { None } else { attr::find_deprecation(&self.tcx.sess, attrs) };
         let mut is_deprecated = false;
-        if let Some(depr) = &depr {
+        if let Some((depr, span)) = &depr {
             is_deprecated = true;
 
-            if kind == AnnotationKind::Prohibited {
-                self.tcx.sess.span_err(item_sp, "This deprecation annotation is useless");
+            if kind == AnnotationKind::Prohibited || kind == AnnotationKind::DeprecationProhibited {
+                self.tcx.struct_span_lint_hir(USELESS_DEPRECATED, hir_id, *span, |lint| {
+                    lint.build("this `#[deprecated]` annotation has no effect")
+                        .span_suggestion_short(
+                            *span,
+                            "remove the unnecessary deprecation attribute",
+                            String::new(),
+                            rustc_errors::Applicability::MachineApplicable,
+                        )
+                        .emit()
+                });
             }
 
             // `Deprecation` is just two pointers, no need to intern it
@@ -116,7 +124,7 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
             }
         } else {
             self.recurse_with_stability_attrs(
-                depr.map(|d| DeprecationEntry::local(d, hir_id)),
+                depr.map(|(d, _)| DeprecationEntry::local(d, hir_id)),
                 None,
                 None,
                 visit_children,
@@ -141,11 +149,11 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
             }
         }
 
-        if depr.as_ref().map_or(false, |d| d.is_since_rustc_version) {
+        if let Some((rustc_attr::Deprecation { is_since_rustc_version: true, .. }, span)) = &depr {
             if stab.is_none() {
                 struct_span_err!(
                     self.tcx.sess,
-                    item_sp,
+                    *span,
                     E0549,
                     "rustc_deprecated attribute must be paired with \
                     either stable or unstable attribute"
@@ -168,7 +176,7 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
             // Check if deprecated_since < stable_since. If it is,
             // this is *almost surely* an accident.
             if let (&Some(dep_since), &attr::Stable { since: stab_since }) =
-                (&depr.as_ref().and_then(|d| d.since), &stab.level)
+                (&depr.as_ref().and_then(|(d, _)| d.since), &stab.level)
             {
                 // Explicit version of iter::order::lt to handle parse errors properly
                 for (dep_v, stab_v) in
@@ -214,7 +222,7 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
         }
 
         self.recurse_with_stability_attrs(
-            depr.map(|d| DeprecationEntry::local(d, hir_id)),
+            depr.map(|(d, _)| DeprecationEntry::local(d, hir_id)),
             stab,
             const_stab,
             visit_children,
@@ -324,6 +332,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Annotator<'a, 'tcx> {
             }
             hir::ItemKind::Impl { of_trait: Some(_), .. } => {
                 self.in_trait_impl = true;
+                kind = AnnotationKind::DeprecationProhibited;
             }
             hir::ItemKind::Struct(ref sd, _) => {
                 if let Some(ctor_hir_id) = sd.ctor_hir_id() {
@@ -711,27 +720,35 @@ impl Visitor<'tcx> for Checker<'tcx> {
             // so semi-randomly perform it here in stability.rs
             hir::ItemKind::Union(..) if !self.tcx.features().untagged_unions => {
                 let def_id = self.tcx.hir().local_def_id(item.hir_id);
-                let adt_def = self.tcx.adt_def(def_id);
                 let ty = self.tcx.type_of(def_id);
+                let (adt_def, substs) = match ty.kind() {
+                    ty::Adt(adt_def, substs) => (adt_def, substs),
+                    _ => bug!(),
+                };
 
-                if adt_def.has_dtor(self.tcx) {
-                    feature_err(
-                        &self.tcx.sess.parse_sess,
-                        sym::untagged_unions,
-                        item.span,
-                        "unions with `Drop` implementations are unstable",
-                    )
-                    .emit();
-                } else {
-                    let param_env = self.tcx.param_env(def_id);
-                    if can_type_implement_copy(self.tcx, param_env, ty).is_err() {
-                        feature_err(
-                            &self.tcx.sess.parse_sess,
-                            sym::untagged_unions,
-                            item.span,
-                            "unions with non-`Copy` fields are unstable",
-                        )
-                        .emit();
+                // Non-`Copy` fields are unstable, except for `ManuallyDrop`.
+                let param_env = self.tcx.param_env(def_id);
+                for field in &adt_def.non_enum_variant().fields {
+                    let field_ty = field.ty(self.tcx, substs);
+                    if !field_ty.ty_adt_def().map_or(false, |adt_def| adt_def.is_manually_drop())
+                        && !field_ty.is_copy_modulo_regions(self.tcx.at(DUMMY_SP), param_env)
+                    {
+                        if field_ty.needs_drop(self.tcx, param_env) {
+                            // Avoid duplicate error: This will error later anyway because fields
+                            // that need drop are not allowed.
+                            self.tcx.sess.delay_span_bug(
+                                item.span,
+                                "union should have been rejected due to potentially dropping field",
+                            );
+                        } else {
+                            feature_err(
+                                &self.tcx.sess.parse_sess,
+                                sym::untagged_unions,
+                                self.tcx.def_span(field.did),
+                                "unions with non-`Copy` fields other than `ManuallyDrop<T>` are unstable",
+                            )
+                            .emit();
+                        }
                     }
                 }
             }

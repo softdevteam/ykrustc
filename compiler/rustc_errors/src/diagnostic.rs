@@ -1,10 +1,10 @@
 use crate::snippet::Style;
-use crate::Applicability;
 use crate::CodeSuggestion;
 use crate::Level;
 use crate::Substitution;
 use crate::SubstitutionPart;
 use crate::SuggestionStyle;
+use rustc_lint_defs::Applicability;
 use rustc_span::{MultiSpan, Span, DUMMY_SP};
 use std::fmt;
 
@@ -27,7 +27,7 @@ pub struct Diagnostic {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Encodable, Decodable)]
 pub enum DiagnosticId {
     Error(String),
-    Lint(String),
+    Lint { name: String, has_future_breakage: bool },
 }
 
 /// For example a note attached to an error.
@@ -107,7 +107,14 @@ impl Diagnostic {
         match self.level {
             Level::Bug | Level::Fatal | Level::Error | Level::FailureNote => true,
 
-            Level::Warning | Level::Note | Level::Help | Level::Cancelled => false,
+            Level::Warning | Level::Note | Level::Help | Level::Cancelled | Level::Allow => false,
+        }
+    }
+
+    pub fn has_future_breakage(&self) -> bool {
+        match self.code {
+            Some(DiagnosticId::Lint { has_future_breakage, .. }) => has_future_breakage,
+            _ => false,
         }
     }
 
@@ -119,11 +126,6 @@ impl Diagnostic {
 
     pub fn cancelled(&self) -> bool {
         self.level == Level::Cancelled
-    }
-
-    /// Set the sorting span.
-    pub fn set_sort_span(&mut self, sp: Span) {
-        self.sort_span = sp;
     }
 
     /// Adds a span/label to be included in the resulting snippet.
@@ -533,14 +535,6 @@ impl Diagnostic {
 
     pub fn styled_message(&self) -> &Vec<(String, Style)> {
         &self.message
-    }
-
-    /// Used by a lint. Copies over all details *but* the "main
-    /// message".
-    pub fn copy_details_not_message(&mut self, from: &Diagnostic) {
-        self.span = from.span.clone();
-        self.code = from.code.clone();
-        self.children.extend(from.children.iter().cloned())
     }
 
     /// Convenience function for internal use, clients should use one of the

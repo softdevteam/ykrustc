@@ -649,6 +649,7 @@ enum class LLVMRustChecksumKind {
   None,
   MD5,
   SHA1,
+  SHA256,
 };
 
 static Optional<DIFile::ChecksumKind> fromRust(LLVMRustChecksumKind Kind) {
@@ -659,6 +660,10 @@ static Optional<DIFile::ChecksumKind> fromRust(LLVMRustChecksumKind Kind) {
     return DIFile::ChecksumKind::CSK_MD5;
   case LLVMRustChecksumKind::SHA1:
     return DIFile::ChecksumKind::CSK_SHA1;
+#if (LLVM_VERSION_MAJOR >= 11)
+  case LLVMRustChecksumKind::SHA256:
+    return DIFile::ChecksumKind::CSK_SHA256;
+#endif
   default:
     report_fatal_error("bad ChecksumKind.");
   }
@@ -734,7 +739,7 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
     const char *LinkageName, size_t LinkageNameLen,
     LLVMMetadataRef File, unsigned LineNo,
     LLVMMetadataRef Ty, unsigned ScopeLine, LLVMRustDIFlags Flags,
-    LLVMRustDISPFlags SPFlags, LLVMValueRef Fn, LLVMMetadataRef TParam,
+    LLVMRustDISPFlags SPFlags, LLVMValueRef MaybeFn, LLVMMetadataRef TParam,
     LLVMMetadataRef Decl) {
   DITemplateParameterArray TParams =
       DITemplateParameterArray(unwrap<MDTuple>(TParam));
@@ -751,7 +756,8 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
       unwrapDI<DIFile>(File), LineNo,
       unwrapDI<DISubroutineType>(Ty), ScopeLine, llvmFlags,
       llvmSPFlags, TParams, unwrapDIPtr<DISubprogram>(Decl));
-  unwrap<Function>(Fn)->setSubprogram(Sub);
+  if (MaybeFn)
+    unwrap<Function>(MaybeFn)->setSubprogram(Sub);
   return wrap(Sub);
 }
 
@@ -766,7 +772,7 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateTypedef(
     LLVMMetadataRef File, unsigned LineNo, LLVMMetadataRef Scope) {
   return wrap(Builder->createTypedef(
     unwrap<DIType>(Type), StringRef(Name, NameLen), unwrap<DIFile>(File),
-    LineNo, unwrap<DIScope>(Scope)));
+    LineNo, unwrapDIPtr<DIScope>(Scope)));
 }
 
 extern "C" LLVMMetadataRef LLVMRustDIBuilderCreatePointerType(
@@ -931,12 +937,12 @@ LLVMRustDIBuilderGetOrCreateArray(LLVMRustDIBuilderRef Builder,
 
 extern "C" LLVMValueRef LLVMRustDIBuilderInsertDeclareAtEnd(
     LLVMRustDIBuilderRef Builder, LLVMValueRef V, LLVMMetadataRef VarInfo,
-    int64_t *AddrOps, unsigned AddrOpsCount, LLVMValueRef DL,
+    int64_t *AddrOps, unsigned AddrOpsCount, LLVMMetadataRef DL,
     LLVMBasicBlockRef InsertAtEnd) {
   return wrap(Builder->insertDeclare(
       unwrap(V), unwrap<DILocalVariable>(VarInfo),
       Builder->createExpression(llvm::ArrayRef<int64_t>(AddrOps, AddrOpsCount)),
-      DebugLoc(cast<MDNode>(unwrap<MetadataAsValue>(DL)->getMetadata())),
+      DebugLoc(cast<MDNode>(unwrap(DL))),
       unwrap(InsertAtEnd)));
 }
 
@@ -1003,7 +1009,7 @@ LLVMRustDICompositeTypeReplaceArrays(LLVMRustDIBuilderRef Builder,
                          DINodeArray(unwrap<MDTuple>(Params)));
 }
 
-extern "C" LLVMValueRef
+extern "C" LLVMMetadataRef
 LLVMRustDIBuilderCreateDebugLocation(LLVMContextRef ContextRef, unsigned Line,
                                      unsigned Column, LLVMMetadataRef Scope,
                                      LLVMMetadataRef InlinedAt) {
@@ -1012,7 +1018,7 @@ LLVMRustDIBuilderCreateDebugLocation(LLVMContextRef ContextRef, unsigned Line,
   DebugLoc debug_loc = DebugLoc::get(Line, Column, unwrapDIPtr<MDNode>(Scope),
                                      unwrapDIPtr<MDNode>(InlinedAt));
 
-  return wrap(MetadataAsValue::get(Context, debug_loc.getAsMDNode()));
+  return wrap(debug_loc.getAsMDNode());
 }
 
 extern "C" int64_t LLVMRustDIBuilderCreateOpDeref() {

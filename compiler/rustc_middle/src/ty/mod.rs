@@ -7,7 +7,6 @@ pub use self::Variance::*;
 
 use crate::hir::exports::ExportMap;
 use crate::ich::StableHashingContext;
-use crate::infer::canonical::Canonical;
 use crate::middle::cstore::CrateStoreDyn;
 use crate::middle::resolve_lifetime::ObjectLifetimeDefault;
 use crate::mir::interpret::ErrorHandled;
@@ -47,7 +46,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 use std::ptr;
 use std::str;
 
@@ -88,7 +87,7 @@ pub use self::trait_def::TraitDef;
 
 pub use self::query::queries;
 
-pub use self::consts::{Const, ConstInt, ConstKind, InferConst};
+pub use self::consts::{Const, ConstInt, ConstKind, InferConst, ScalarInt};
 
 pub mod _match;
 pub mod adjustment;
@@ -126,6 +125,7 @@ mod sty;
 pub struct ResolverOutputs {
     pub definitions: rustc_hir::definitions::Definitions,
     pub cstore: Box<CrateStoreDyn>,
+    pub visibilities: FxHashMap<LocalDefId, Visibility>,
     pub extern_crate_map: FxHashMap<LocalDefId, CrateNum>,
     pub maybe_unused_trait_imports: FxHashSet<LocalDefId>,
     pub maybe_unused_extern_crates: Vec<(LocalDefId, Span)>,
@@ -264,6 +264,10 @@ impl<'tcx> AssociatedItems<'tcx> {
     /// for a known trait, make that trait a lang item instead of indexing this array.
     pub fn in_definition_order(&self) -> impl '_ + Iterator<Item = &ty::AssocItem> {
         self.items.iter().map(|(_, v)| *v)
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
 
     /// Returns an iterator over all associated items with the given name, ignoring hygiene.
@@ -656,8 +660,6 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TyS<'tcx> {
 #[rustc_diagnostic_item = "Ty"]
 pub type Ty<'tcx> = &'tcx TyS<'tcx>;
 
-pub type CanonicalTy<'tcx> = Canonical<'tcx, Ty<'tcx>>;
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
 pub struct UpvarPath {
     pub hir_id: hir::HirId,
@@ -767,10 +769,6 @@ pub enum IntVarValue {
 pub struct FloatVarValue(pub ast::FloatTy);
 
 impl ty::EarlyBoundRegion {
-    pub fn to_bound_region(&self) -> ty::BoundRegion {
-        ty::BoundRegion::BrNamed(self.def_id, self.name)
-    }
-
     /// Does this early bound region have a name? Early bound regions normally
     /// always have names except when using anonymous lifetimes (`'_`).
     pub fn has_name(&self) -> bool {
@@ -817,14 +815,6 @@ impl GenericParamDef {
     pub fn to_early_bound_region_data(&self) -> ty::EarlyBoundRegion {
         if let GenericParamDefKind::Lifetime = self.kind {
             ty::EarlyBoundRegion { def_id: self.def_id, index: self.index, name: self.name }
-        } else {
-            bug!("cannot convert a non-lifetime parameter def to an early bound region")
-        }
-    }
-
-    pub fn to_bound_region(&self) -> ty::BoundRegion {
-        if let GenericParamDefKind::Lifetime = self.kind {
-            self.to_early_bound_region_data().to_bound_region()
         } else {
             bug!("cannot convert a non-lifetime parameter def to an early bound region")
         }
@@ -1003,22 +993,6 @@ impl<'tcx> GenericPredicates<'tcx> {
         instantiated.predicates.extend(self.predicates.iter().map(|(p, _)| p));
         instantiated.spans.extend(self.predicates.iter().map(|(_, s)| s));
     }
-
-    pub fn instantiate_supertrait(
-        &self,
-        tcx: TyCtxt<'tcx>,
-        poly_trait_ref: &ty::PolyTraitRef<'tcx>,
-    ) -> InstantiatedPredicates<'tcx> {
-        assert_eq!(self.parent, None);
-        InstantiatedPredicates {
-            predicates: self
-                .predicates
-                .iter()
-                .map(|(pred, _)| pred.subst_supertrait(tcx, poly_trait_ref))
-                .collect(),
-            spans: self.predicates.iter().map(|(_, sp)| *sp).collect(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1087,9 +1061,21 @@ impl<'tcx> Predicate<'tcx> {
         }
     }
 
+    /// Converts this to a `Binder<PredicateAtom<'tcx>>`. If the value was an
+    /// `Atom`, then it is not allowed to contain escaping bound vars.
+    pub fn bound_atom(self) -> Binder<PredicateAtom<'tcx>> {
+        match self.kind() {
+            &PredicateKind::ForAll(binder) => binder,
+            &PredicateKind::Atom(atom) => {
+                debug_assert!(!atom.has_escaping_bound_vars());
+                Binder::dummy(atom)
+            }
+        }
+    }
+
     /// Allows using a `Binder<PredicateAtom<'tcx>>` even if the given predicate previously
     /// contained unbound variables by shifting these variables outwards.
-    pub fn bound_atom(self, tcx: TyCtxt<'tcx>) -> Binder<PredicateAtom<'tcx>> {
+    pub fn bound_atom_with_opt_escaping(self, tcx: TyCtxt<'tcx>) -> Binder<PredicateAtom<'tcx>> {
         match self.kind() {
             &PredicateKind::ForAll(binder) => binder,
             &PredicateKind::Atom(atom) => Binder::wrap_nonbinding(tcx, atom),
@@ -1303,7 +1289,6 @@ impl<'tcx> PolyTraitPredicate<'tcx> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct OutlivesPredicate<A, B>(pub A, pub B); // `A: B`
-pub type PolyOutlivesPredicate<A, B> = ty::Binder<OutlivesPredicate<A, B>>;
 pub type RegionOutlivesPredicate<'tcx> = OutlivesPredicate<ty::Region<'tcx>, ty::Region<'tcx>>;
 pub type TypeOutlivesPredicate<'tcx> = OutlivesPredicate<Ty<'tcx>, ty::Region<'tcx>>;
 pub type PolyRegionOutlivesPredicate<'tcx> = ty::Binder<RegionOutlivesPredicate<'tcx>>;
@@ -1656,7 +1641,7 @@ pub type PlaceholderConst = Placeholder<BoundVar>;
 #[derive(Hash, HashStable)]
 pub struct WithOptConstParam<T> {
     pub did: T,
-    /// The `DefId` of the corresponding generic paramter in case `did` is
+    /// The `DefId` of the corresponding generic parameter in case `did` is
     /// a const argument.
     ///
     /// Note that even if `did` is a const argument, this may still be `None`.
@@ -1791,8 +1776,9 @@ impl<'tcx> TypeFoldable<'tcx> for ParamEnv<'tcx> {
         ParamEnv::new(self.caller_bounds().fold_with(folder), self.reveal().fold_with(folder))
     }
 
-    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
-        self.caller_bounds().visit_with(visitor) || self.reveal().visit_with(visitor)
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<()> {
+        self.caller_bounds().visit_with(visitor)?;
+        self.reveal().visit_with(visitor)
     }
 }
 
@@ -2468,8 +2454,10 @@ impl<'tcx> AdtDef {
         self.variants.iter().flat_map(|v| v.fields.iter())
     }
 
+    /// Whether the ADT lacks fields. Note that this includes uninhabited enums,
+    /// e.g., `enum Void {}` is considered payload free as well.
     pub fn is_payloadfree(&self) -> bool {
-        !self.variants.is_empty() && self.variants.iter().all(|v| v.fields.is_empty())
+        self.variants.iter().all(|v| v.fields.is_empty())
     }
 
     /// Return a `VariantDef` given a variant id.
@@ -2807,10 +2795,50 @@ impl<'tcx> TyCtxt<'tcx> {
             .filter(|item| item.kind == AssocKind::Fn && item.defaultness.has_value())
     }
 
+    fn item_name_from_hir(self, def_id: DefId) -> Option<Ident> {
+        self.hir().get_if_local(def_id).and_then(|node| node.ident())
+    }
+
+    fn item_name_from_def_id(self, def_id: DefId) -> Option<Symbol> {
+        if def_id.index == CRATE_DEF_INDEX {
+            Some(self.original_crate_name(def_id.krate))
+        } else {
+            let def_key = self.def_key(def_id);
+            match def_key.disambiguated_data.data {
+                // The name of a constructor is that of its parent.
+                rustc_hir::definitions::DefPathData::Ctor => self.item_name_from_def_id(DefId {
+                    krate: def_id.krate,
+                    index: def_key.parent.unwrap(),
+                }),
+                _ => def_key.disambiguated_data.data.get_opt_name(),
+            }
+        }
+    }
+
+    /// Look up the name of an item across crates. This does not look at HIR.
+    ///
+    /// When possible, this function should be used for cross-crate lookups over
+    /// [`opt_item_name`] to avoid invalidating the incremental cache. If you
+    /// need to handle items without a name, or HIR items that will not be
+    /// serialized cross-crate, or if you need the span of the item, use
+    /// [`opt_item_name`] instead.
+    ///
+    /// [`opt_item_name`]: Self::opt_item_name
+    pub fn item_name(self, id: DefId) -> Symbol {
+        // Look at cross-crate items first to avoid invalidating the incremental cache
+        // unless we have to.
+        self.item_name_from_def_id(id).unwrap_or_else(|| {
+            bug!("item_name: no name for {:?}", self.def_path(id));
+        })
+    }
+
+    /// Look up the name and span of an item or [`Node`].
+    ///
+    /// See [`item_name`][Self::item_name] for more information.
     pub fn opt_item_name(self, def_id: DefId) -> Option<Ident> {
-        def_id
-            .as_local()
-            .and_then(|def_id| self.hir().get(self.hir().local_def_id_to_hir_id(def_id)).ident())
+        // Look at the HIR first so the span will be correct if this is a local item.
+        self.item_name_from_hir(def_id)
+            .or_else(|| self.item_name_from_def_id(def_id).map(Ident::with_dummy_span))
     }
 
     pub fn opt_associated_item(self, def_id: DefId) -> Option<&'tcx AssocItem> {
@@ -2933,33 +2961,10 @@ impl<'tcx> TyCtxt<'tcx> {
         }
     }
 
-    pub fn item_name(self, id: DefId) -> Symbol {
-        if id.index == CRATE_DEF_INDEX {
-            self.original_crate_name(id.krate)
-        } else {
-            let def_key = self.def_key(id);
-            match def_key.disambiguated_data.data {
-                // The name of a constructor is that of its parent.
-                rustc_hir::definitions::DefPathData::Ctor => {
-                    self.item_name(DefId { krate: id.krate, index: def_key.parent.unwrap() })
-                }
-                _ => def_key.disambiguated_data.data.get_opt_name().unwrap_or_else(|| {
-                    bug!("item_name: no name for {:?}", self.def_path(id));
-                }),
-            }
-        }
-    }
-
     /// Returns the possibly-auto-generated MIR of a `(DefId, Subst)` pair.
     pub fn instance_mir(self, instance: ty::InstanceDef<'tcx>) -> &'tcx Body<'tcx> {
         match instance {
-            ty::InstanceDef::Item(def) => {
-                if let Some((did, param_did)) = def.as_const_arg() {
-                    self.optimized_mir_of_const_arg((did, param_did))
-                } else {
-                    self.optimized_mir(def.did)
-                }
-            }
+            ty::InstanceDef::Item(def) => self.optimized_mir_opt_const_arg(def),
             ty::InstanceDef::VtableShim(..)
             | ty::InstanceDef::ReifyShim(..)
             | ty::InstanceDef::Intrinsic(..)

@@ -226,7 +226,7 @@ use crate::ptr;
 /// assert_eq!(my_struct.special_field.get(), new_value);
 /// ```
 ///
-/// See the [module-level documentation](index.html) for more.
+/// See the [module-level documentation](self) for more.
 #[stable(feature = "rust1", since = "1.0.0")]
 #[repr(transparent)]
 pub struct Cell<T: ?Sized> {
@@ -406,7 +406,8 @@ impl<T> Cell<T> {
     /// assert_eq!(five, 5);
     /// ```
     #[stable(feature = "move_cell", since = "1.17.0")]
-    pub fn into_inner(self) -> T {
+    #[rustc_const_unstable(feature = "const_cell_into_inner", issue = "78729")]
+    pub const fn into_inner(self) -> T {
         self.value.into_inner()
     }
 }
@@ -566,14 +567,14 @@ impl<T> Cell<[T]> {
 
 /// A mutable memory location with dynamically checked borrow rules
 ///
-/// See the [module-level documentation](index.html) for more.
+/// See the [module-level documentation](self) for more.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct RefCell<T: ?Sized> {
     borrow: Cell<BorrowFlag>,
     value: UnsafeCell<T>,
 }
 
-/// An error returned by [`RefCell::try_borrow`](struct.RefCell.html#method.try_borrow).
+/// An error returned by [`RefCell::try_borrow`].
 #[stable(feature = "try_borrow", since = "1.13.0")]
 pub struct BorrowError {
     _private: (),
@@ -593,7 +594,7 @@ impl Display for BorrowError {
     }
 }
 
-/// An error returned by [`RefCell::try_borrow_mut`](struct.RefCell.html#method.try_borrow_mut).
+/// An error returned by [`RefCell::try_borrow_mut`].
 #[stable(feature = "try_borrow", since = "1.13.0")]
 pub struct BorrowMutError {
     _private: (),
@@ -668,12 +669,11 @@ impl<T> RefCell<T> {
     /// let five = c.into_inner();
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_const_unstable(feature = "const_cell_into_inner", issue = "78729")]
     #[inline]
-    pub fn into_inner(self) -> T {
+    pub const fn into_inner(self) -> T {
         // Since this function takes `self` (the `RefCell`) by value, the
         // compiler statically verifies that it is not currently borrowed.
-        // Therefore the following assertion is just a `debug_assert!`.
-        debug_assert!(self.borrow.get() == UNUSED);
         self.value.into_inner()
     }
 
@@ -1203,7 +1203,7 @@ impl Clone for BorrowRef<'_> {
 /// Wraps a borrowed reference to a value in a `RefCell` box.
 /// A wrapper type for an immutably borrowed value from a `RefCell<T>`.
 ///
-/// See the [module-level documentation](index.html) for more.
+/// See the [module-level documentation](self) for more.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Ref<'b, T: ?Sized + 'b> {
     value: &'b T,
@@ -1493,7 +1493,7 @@ impl<'b> BorrowRefMut<'b> {
 
 /// A wrapper type for a mutably borrowed value from a `RefCell<T>`.
 ///
-/// See the [module-level documentation](index.html) for more.
+/// See the [module-level documentation](self) for more.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct RefMut<'b, T: ?Sized + 'b> {
     value: &'b mut T,
@@ -1682,7 +1682,8 @@ impl<T> UnsafeCell<T> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn into_inner(self) -> T {
+    #[rustc_const_unstable(feature = "const_cell_into_inner", issue = "78729")]
+    pub const fn into_inner(self) -> T {
         self.value
     }
 }
@@ -1733,8 +1734,7 @@ impl<T: ?Sized> UnsafeCell<T> {
     #[inline]
     #[unstable(feature = "unsafe_cell_get_mut", issue = "76943")]
     pub fn get_mut(&mut self) -> &mut T {
-        // SAFETY: (outer) `&mut` guarantees unique access.
-        unsafe { &mut *self.get() }
+        &mut self.value
     }
 
     /// Gets a mutable pointer to the wrapped value.

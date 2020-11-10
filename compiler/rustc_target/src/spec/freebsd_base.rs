@@ -16,6 +16,7 @@ pub fn opts() -> TargetOptions {
     );
 
     TargetOptions {
+        target_os: "freebsd".to_string(),
         dynamic_linking: true,
         executables: true,
         target_family: Some("unix".to_string()),
@@ -26,6 +27,7 @@ pub fn opts() -> TargetOptions {
         eliminate_frame_pointer: false, // FIXME 43575
         relro_level: RelroLevel::Full,
         abi_return_struct_as_int: true,
+        dwarf_version: Some(2),
         ..Default::default()
     }
 }

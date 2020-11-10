@@ -10,6 +10,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use crate::cache::{Interned, INTERNER};
 use crate::flags::Flags;
@@ -61,10 +62,11 @@ pub struct Config {
     pub profiler: bool,
     pub ignore_git: bool,
     pub exclude: Vec<PathBuf>,
+    pub include_default_paths: bool,
     pub rustc_error_format: Option<String>,
     pub json_output: bool,
     pub test_compare_mode: bool,
-    pub llvm_libunwind: bool,
+    pub llvm_libunwind: Option<LlvmLibunwind>,
 
     pub on_fail: Option<String>,
     pub stage: u32,
@@ -174,6 +176,32 @@ pub struct Config {
     pub initial_rustc: PathBuf,
     pub initial_rustfmt: Option<PathBuf>,
     pub out: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LlvmLibunwind {
+    No,
+    InTree,
+    System,
+}
+
+impl Default for LlvmLibunwind {
+    fn default() -> Self {
+        Self::No
+    }
+}
+
+impl FromStr for LlvmLibunwind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "no" => Ok(Self::No),
+            "in-tree" => Ok(Self::InTree),
+            "system" => Ok(Self::System),
+            invalid => Err(format!("Invalid value '{}' for rust.llvm-libunwind config.", invalid)),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -390,7 +418,7 @@ struct Llvm {
     use_libcxx: Option<bool>,
     use_linker: Option<String>,
     allow_old_toolchain: Option<bool>,
-    download_ci_llvm: Option<bool>,
+    download_ci_llvm: Option<StringOrBool>,
 }
 
 #[derive(Deserialize, Default, Clone, Merge)]
@@ -456,7 +484,7 @@ struct Rust {
     remap_debuginfo: Option<bool>,
     jemalloc: Option<bool>,
     test_compare_mode: Option<bool>,
-    llvm_libunwind: Option<bool>,
+    llvm_libunwind: Option<String>,
     control_flow_guard: Option<bool>,
     new_symbol_mangling: Option<bool>,
 }
@@ -532,6 +560,7 @@ impl Config {
 
         let mut config = Config::default_opts();
         config.exclude = flags.exclude;
+        config.include_default_paths = flags.include_default_paths;
         config.rustc_error_format = flags.rustc_error_format;
         config.json_output = flags.json_output;
         config.on_fail = flags.on_fail;
@@ -733,7 +762,14 @@ impl Config {
             set(&mut config.llvm_use_libcxx, llvm.use_libcxx);
             config.llvm_use_linker = llvm.use_linker.clone();
             config.llvm_allow_old_toolchain = llvm.allow_old_toolchain;
-            config.llvm_from_ci = llvm.download_ci_llvm.unwrap_or(false);
+            config.llvm_from_ci = match llvm.download_ci_llvm {
+                Some(StringOrBool::String(s)) => {
+                    assert!(s == "if-available", "unknown option `{}` for download-ci-llvm", s);
+                    config.build.triple == "x86_64-unknown-linux-gnu"
+                }
+                Some(StringOrBool::Bool(b)) => b,
+                None => false,
+            };
 
             if config.llvm_from_ci {
                 // None of the LLVM options, except assertions, are supported
@@ -790,7 +826,9 @@ impl Config {
             set(&mut config.rust_rpath, rust.rpath);
             set(&mut config.jemalloc, rust.jemalloc);
             set(&mut config.test_compare_mode, rust.test_compare_mode);
-            set(&mut config.llvm_libunwind, rust.llvm_libunwind);
+            config.llvm_libunwind = rust
+                .llvm_libunwind
+                .map(|v| v.parse().expect("failed to parse rust.llvm-libunwind"));
             set(&mut config.backtrace, rust.backtrace);
             set(&mut config.channel, rust.channel);
             set(&mut config.rust_dist_src, rust.dist_src);
@@ -875,11 +913,18 @@ impl Config {
             set(&mut config.missing_tools, t.missing_tools);
         }
 
-        // Cargo does not provide a RUSTFMT environment variable, so we
-        // synthesize it manually. Note that we also later check the config.toml
-        // and set this to that path if necessary.
-        let rustfmt = config.initial_rustc.with_file_name(exe("rustfmt", config.build));
-        config.initial_rustfmt = if rustfmt.exists() { Some(rustfmt) } else { None };
+        config.initial_rustfmt = config.initial_rustfmt.or_else({
+            let build = config.build;
+            let initial_rustc = &config.initial_rustc;
+
+            move || {
+                // Cargo does not provide a RUSTFMT environment variable, so we
+                // synthesize it manually.
+                let rustfmt = initial_rustc.with_file_name(exe("rustfmt", build));
+
+                if rustfmt.exists() { Some(rustfmt) } else { None }
+            }
+        });
 
         // Now that we've reached the end of our configuration, infer the
         // default values for all options that we haven't otherwise stored yet.

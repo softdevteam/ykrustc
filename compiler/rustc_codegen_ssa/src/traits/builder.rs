@@ -45,7 +45,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn build_sibling_block(&self, name: &str) -> Self;
     fn cx(&self) -> &Self::CodegenCx;
     fn llbb(&self) -> Self::BasicBlock;
-    fn set_span(&self, span: Span);
+    fn set_span(&mut self, span: Span);
 
     fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName<'_>, bbidx: usize);
     fn position_at_end(&mut self, llbb: Self::BasicBlock);

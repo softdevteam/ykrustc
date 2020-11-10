@@ -316,16 +316,14 @@ fn make_mirror_unadjusted<'a, 'tcx>(
         hir::ExprKind::Unary(hir::UnOp::UnNeg, ref arg) => {
             if cx.typeck_results().is_method_call(expr) {
                 overloaded_operator(cx, expr, vec![arg.to_ref()])
-            } else {
-                if let hir::ExprKind::Lit(ref lit) = arg.kind {
-                    ExprKind::Literal {
-                        literal: cx.const_eval_literal(&lit.node, expr_ty, lit.span, true),
-                        user_ty: None,
-                        const_id: None,
-                    }
-                } else {
-                    ExprKind::Unary { op: UnOp::Neg, arg: arg.to_ref() }
+            } else if let hir::ExprKind::Lit(ref lit) = arg.kind {
+                ExprKind::Literal {
+                    literal: cx.const_eval_literal(&lit.node, expr_ty, lit.span, true),
+                    user_ty: None,
+                    const_id: None,
                 }
+            } else {
+                ExprKind::Unary { op: UnOp::Neg, arg: arg.to_ref() }
             }
         }
 
@@ -511,6 +509,12 @@ fn make_mirror_unadjusted<'a, 'tcx>(
             inputs: asm.inputs_exprs.to_ref(),
         },
 
+        hir::ExprKind::ConstBlock(ref anon_const) => {
+            let anon_const_def_id = cx.tcx.hir().local_def_id(anon_const.hir_id);
+            let value = ty::Const::from_anon_const(cx.tcx, anon_const_def_id);
+
+            ExprKind::ConstBlock { value }
+        }
         // Now comes the rote stuff:
         hir::ExprKind::Repeat(ref v, ref count) => {
             let count_def_id = cx.tcx.hir().local_def_id(count.hir_id);

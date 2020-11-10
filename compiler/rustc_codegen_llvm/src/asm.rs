@@ -60,7 +60,7 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
 
         // Default per-arch clobbers
         // Basically what clang does
-        let arch_clobbers = match &self.sess().target.target.arch[..] {
+        let arch_clobbers = match &self.sess().target.arch[..] {
             "x86" | "x86_64" => vec!["~{dirflag}", "~{fpsr}", "~{flags}"],
             "mips" | "mips64" => vec!["~{$1}"],
             _ => Vec::new(),
@@ -302,13 +302,11 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
             } else if options.contains(InlineAsmOptions::READONLY) {
                 llvm::Attribute::ReadOnly.apply_callsite(llvm::AttributePlace::Function, result);
             }
+        } else if options.contains(InlineAsmOptions::NOMEM) {
+            llvm::Attribute::InaccessibleMemOnly
+                .apply_callsite(llvm::AttributePlace::Function, result);
         } else {
-            if options.contains(InlineAsmOptions::NOMEM) {
-                llvm::Attribute::InaccessibleMemOnly
-                    .apply_callsite(llvm::AttributePlace::Function, result);
-            } else {
-                // LLVM doesn't have an attribute to represent ReadOnly + SideEffect
-            }
+            // LLVM doesn't have an attribute to represent ReadOnly + SideEffect
         }
 
         // Write results to outputs

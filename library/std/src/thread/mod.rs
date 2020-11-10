@@ -137,7 +137,6 @@
 //! [`thread::current`]: current
 //! [`thread::Result`]: Result
 //! [`unpark`]: Thread::unpark
-//! [`Thread::name`]: Thread::name
 //! [`thread::park_timeout`]: park_timeout
 //! [`Cell`]: crate::cell::Cell
 //! [`RefCell`]: crate::cell::RefCell
@@ -175,8 +174,14 @@ use crate::time::Duration;
 #[macro_use]
 mod local;
 
+#[unstable(feature = "available_concurrency", issue = "74479")]
+mod available_concurrency;
+
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::local::{AccessError, LocalKey};
+
+#[unstable(feature = "available_concurrency", issue = "74479")]
+pub use available_concurrency::available_concurrency;
 
 // The types used by the thread_local! macro to access TLS keys. Note that there
 // are two types, the "OS" type and the "fast" type. The OS thread local key
@@ -451,10 +456,15 @@ impl Builder {
         let my_packet: Arc<UnsafeCell<Option<Result<T>>>> = Arc::new(UnsafeCell::new(None));
         let their_packet = my_packet.clone();
 
+        let (stdout, stderr) = crate::io::clone_io();
+
         let main = move || {
             if let Some(name) = their_thread.cname() {
                 imp::Thread::set_name(name);
             }
+
+            crate::io::set_print(stdout);
+            crate::io::set_panic(stderr);
 
             // SAFETY: the stack guard passed is the one for the current thread.
             // This means the current thread's stack and the new thread's stack

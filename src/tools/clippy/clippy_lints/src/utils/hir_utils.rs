@@ -261,14 +261,8 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
     pub fn eq_path_segment(&mut self, left: &PathSegment<'_>, right: &PathSegment<'_>) -> bool {
         // The == of idents doesn't work with different contexts,
         // we have to be explicit about hygiene
-        if left.ident.as_str() != right.ident.as_str() {
-            return false;
-        }
-        match (&left.args, &right.args) {
-            (&None, &None) => true,
-            (&Some(ref l), &Some(ref r)) => self.eq_path_parameters(l, r),
-            _ => false,
-        }
+        left.ident.as_str() == right.ident.as_str()
+            && both(&left.args, &right.args, |l, r| self.eq_path_parameters(l, r))
     }
 
     pub fn eq_ty(&mut self, left: &Ty<'_>, right: &Ty<'_>) -> bool {
@@ -558,6 +552,9 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             ExprKind::MethodCall(ref path, ref _tys, args, ref _fn_span) => {
                 self.hash_name(path.ident.name);
                 self.hash_exprs(args);
+            },
+            ExprKind::ConstBlock(ref l_id) => {
+                self.hash_body(l_id.body);
             },
             ExprKind::Repeat(ref e, ref l_id) => {
                 self.hash_expr(e);

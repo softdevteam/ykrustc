@@ -11,6 +11,7 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
+#![feature(format_args_capture)]
 #![feature(nll)]
 #![feature(or_patterns)]
 #![recursion_limit = "256"]
@@ -19,7 +20,7 @@ pub use rustc_hir::def::{Namespace, PerNS};
 
 use Determinacy::*;
 
-use rustc_arena::TypedArena;
+use rustc_arena::{DroplessArena, TypedArena};
 use rustc_ast::node_id::NodeMap;
 use rustc_ast::unwrap_or;
 use rustc_ast::visit::{self, Visitor};
@@ -218,7 +219,7 @@ enum ResolutionError<'a> {
     ParamInTyOfConstParam(Symbol),
     /// constant values inside of type parameter defaults must not depend on generic parameters.
     ParamInAnonConstInTyDefault(Symbol),
-    /// generic parameters must not be used inside of non-trivial constant values.
+    /// generic parameters must not be used inside const evaluations.
     ///
     /// This error is only emitted when using `min_const_generics`.
     ParamInNonTrivialAnonConst { name: Symbol, is_type: bool },
@@ -313,17 +314,17 @@ impl<'tcx> Visitor<'tcx> for UsePlacementFinder {
                 ItemKind::ExternCrate(_) => {}
                 // but place them before the first other item
                 _ => {
-                    if self.span.map_or(true, |span| item.span < span) {
-                        if !item.span.from_expansion() {
-                            // don't insert between attributes and an item
-                            if item.attrs.is_empty() {
-                                self.span = Some(item.span.shrink_to_lo());
-                            } else {
-                                // find the first attribute on the item
-                                for attr in &item.attrs {
-                                    if self.span.map_or(true, |span| attr.span < span) {
-                                        self.span = Some(attr.span.shrink_to_lo());
-                                    }
+                    if self.span.map_or(true, |span| item.span < span)
+                        && !item.span.from_expansion()
+                    {
+                        // don't insert between attributes and an item
+                        if item.attrs.is_empty() {
+                            self.span = Some(item.span.shrink_to_lo());
+                        } else {
+                            // find the first attribute on the item
+                            for attr in &item.attrs {
+                                if self.span.map_or(true, |span| attr.span < span) {
+                                    self.span = Some(attr.span.shrink_to_lo());
                                 }
                             }
                         }
@@ -558,17 +559,11 @@ impl<'a> ModuleData<'a> {
 
     // `self` resolves to the first module ancestor that `is_normal`.
     fn is_normal(&self) -> bool {
-        match self.kind {
-            ModuleKind::Def(DefKind::Mod, _, _) => true,
-            _ => false,
-        }
+        matches!(self.kind, ModuleKind::Def(DefKind::Mod, _, _))
     }
 
     fn is_trait(&self) -> bool {
-        match self.kind {
-            ModuleKind::Def(DefKind::Trait, _, _) => true,
-            _ => false,
-        }
+        matches!(self.kind, ModuleKind::Def(DefKind::Trait, _, _))
     }
 
     fn nearest_item_scope(&'a self) -> Module<'a> {
@@ -628,10 +623,7 @@ enum NameBindingKind<'a> {
 impl<'a> NameBindingKind<'a> {
     /// Is this a name binding of a import?
     fn is_import(&self) -> bool {
-        match *self {
-            NameBindingKind::Import { .. } => true,
-            _ => false,
-        }
+        matches!(*self, NameBindingKind::Import { .. })
     }
 }
 
@@ -750,13 +742,10 @@ impl<'a> NameBinding<'a> {
     }
 
     fn is_variant(&self) -> bool {
-        match self.kind {
-            NameBindingKind::Res(
+        matches!(self.kind, NameBindingKind::Res(
                 Res::Def(DefKind::Variant | DefKind::Ctor(CtorOf::Variant, ..), _),
                 _,
-            ) => true,
-            _ => false,
-        }
+            ))
     }
 
     fn is_extern_crate(&self) -> bool {
@@ -774,10 +763,7 @@ impl<'a> NameBinding<'a> {
     }
 
     fn is_import(&self) -> bool {
-        match self.kind {
-            NameBindingKind::Import { .. } => true,
-            _ => false,
-        }
+        matches!(self.kind, NameBindingKind::Import { .. })
     }
 
     fn is_glob_import(&self) -> bool {
@@ -788,17 +774,14 @@ impl<'a> NameBinding<'a> {
     }
 
     fn is_importable(&self) -> bool {
-        match self.res() {
-            Res::Def(DefKind::AssocConst | DefKind::AssocFn | DefKind::AssocTy, _) => false,
-            _ => true,
-        }
+        !matches!(
+            self.res(),
+            Res::Def(DefKind::AssocConst | DefKind::AssocFn | DefKind::AssocTy, _)
+        )
     }
 
     fn is_macro_def(&self) -> bool {
-        match self.kind {
-            NameBindingKind::Res(Res::Def(DefKind::Macro(..), _), _) => true,
-            _ => false,
-        }
+        matches!(self.kind, NameBindingKind::Res(Res::Def(DefKind::Macro(..), _), _))
     }
 
     fn macro_kind(&self) -> Option<MacroKind> {
@@ -944,7 +927,8 @@ pub struct Resolver<'a> {
 
     /// Maps glob imports to the names of items actually imported.
     glob_map: FxHashMap<LocalDefId, FxHashSet<Symbol>>,
-
+    /// Visibilities in "lowered" form, for all entities that have them.
+    visibilities: FxHashMap<LocalDefId, ty::Visibility>,
     used_imports: FxHashSet<(NodeId, Namespace)>,
     maybe_unused_trait_imports: FxHashSet<LocalDefId>,
     maybe_unused_extern_crates: Vec<(LocalDefId, Span)>,
@@ -1008,10 +992,6 @@ pub struct Resolver<'a> {
     /// Features enabled for this crate.
     active_features: FxHashSet<Symbol>,
 
-    /// Stores enum visibilities to properly build a reduced graph
-    /// when visiting the correspondent variants.
-    variant_vis: DefIdMap<ty::Visibility>,
-
     lint_buffer: LintBuffer,
 
     next_node_id: NodeId,
@@ -1028,6 +1008,9 @@ pub struct Resolver<'a> {
     invocation_parents: FxHashMap<ExpnId, LocalDefId>,
 
     next_disambiguator: FxHashMap<(LocalDefId, DefPathData), u32>,
+    /// Some way to know that we are in a *trait* impl in `visit_assoc_item`.
+    /// FIXME: Replace with a more general AST map (together with some other fields).
+    trait_impl_items: FxHashSet<LocalDefId>,
 }
 
 /// Nothing really interesting here; it just provides memory for the rest of the crate.
@@ -1035,12 +1018,10 @@ pub struct Resolver<'a> {
 pub struct ResolverArenas<'a> {
     modules: TypedArena<ModuleData<'a>>,
     local_modules: RefCell<Vec<Module<'a>>>,
-    name_bindings: TypedArena<NameBinding<'a>>,
     imports: TypedArena<Import<'a>>,
     name_resolutions: TypedArena<RefCell<NameResolution<'a>>>,
-    macro_rules_bindings: TypedArena<MacroRulesBinding<'a>>,
     ast_paths: TypedArena<ast::Path>,
-    pattern_spans: TypedArena<Span>,
+    dropless: DroplessArena,
 }
 
 impl<'a> ResolverArenas<'a> {
@@ -1055,7 +1036,7 @@ impl<'a> ResolverArenas<'a> {
         self.local_modules.borrow()
     }
     fn alloc_name_binding(&'a self, name_binding: NameBinding<'a>) -> &'a NameBinding<'a> {
-        self.name_bindings.alloc(name_binding)
+        self.dropless.alloc(name_binding)
     }
     fn alloc_import(&'a self, import: Import<'a>) -> &'a Import<'_> {
         self.imports.alloc(import)
@@ -1067,13 +1048,13 @@ impl<'a> ResolverArenas<'a> {
         &'a self,
         binding: MacroRulesBinding<'a>,
     ) -> &'a MacroRulesBinding<'a> {
-        self.macro_rules_bindings.alloc(binding)
+        self.dropless.alloc(binding)
     }
     fn alloc_ast_paths(&'a self, paths: &[ast::Path]) -> &'a [ast::Path] {
         self.ast_paths.alloc_from_iter(paths.iter().cloned())
     }
     fn alloc_pattern_spans(&'a self, spans: impl Iterator<Item = Span>) -> &'a [Span] {
-        self.pattern_spans.alloc_from_iter(spans)
+        self.dropless.alloc_from_iter(spans)
     }
 }
 
@@ -1195,7 +1176,8 @@ impl<'a> Resolver<'a> {
         metadata_loader: &'a MetadataLoaderDyn,
         arenas: &'a ResolverArenas<'a>,
     ) -> Resolver<'a> {
-        let root_def_id = DefId::local(CRATE_DEF_INDEX);
+        let root_local_def_id = LocalDefId { local_def_index: CRATE_DEF_INDEX };
+        let root_def_id = root_local_def_id.to_def_id();
         let root_module_kind = ModuleKind::Def(DefKind::Mod, root_def_id, kw::Invalid);
         let graph_root = arenas.alloc_module(ModuleData {
             no_implicit_prelude: session.contains_name(&krate.attrs, sym::no_implicit_prelude),
@@ -1213,10 +1195,13 @@ impl<'a> Resolver<'a> {
             )
         });
         let mut module_map = FxHashMap::default();
-        module_map.insert(LocalDefId { local_def_index: CRATE_DEF_INDEX }, graph_root);
+        module_map.insert(root_local_def_id, graph_root);
 
         let definitions = Definitions::new(crate_name, session.local_crate_disambiguator());
         let root = definitions.get_root_def();
+
+        let mut visibilities = FxHashMap::default();
+        visibilities.insert(root_local_def_id, ty::Visibility::Public);
 
         let mut def_id_to_span = IndexVec::default();
         assert_eq!(def_id_to_span.push(rustc_span::DUMMY_SP), root);
@@ -1240,9 +1225,6 @@ impl<'a> Resolver<'a> {
             extern_prelude.insert(Ident::with_dummy_span(sym::core), Default::default());
             if !session.contains_name(&krate.attrs, sym::no_std) {
                 extern_prelude.insert(Ident::with_dummy_span(sym::std), Default::default());
-                if session.rust_2018() {
-                    extern_prelude.insert(Ident::with_dummy_span(sym::meta), Default::default());
-                }
             }
         }
 
@@ -1293,7 +1275,7 @@ impl<'a> Resolver<'a> {
             ast_transform_scopes: FxHashMap::default(),
 
             glob_map: Default::default(),
-
+            visibilities,
             used_imports: FxHashSet::default(),
             maybe_unused_trait_imports: Default::default(),
             maybe_unused_extern_crates: Vec::new(),
@@ -1342,7 +1324,6 @@ impl<'a> Resolver<'a> {
                 .map(|(feat, ..)| *feat)
                 .chain(features.declared_lang_features.iter().map(|(feat, ..)| *feat))
                 .collect(),
-            variant_vis: Default::default(),
             lint_buffer: LintBuffer::default(),
             next_node_id: NodeId::from_u32(1),
             def_id_to_span,
@@ -1351,6 +1332,7 @@ impl<'a> Resolver<'a> {
             placeholder_field_indices: Default::default(),
             invocation_parents,
             next_disambiguator: Default::default(),
+            trait_impl_items: Default::default(),
         }
     }
 
@@ -1374,14 +1356,16 @@ impl<'a> Resolver<'a> {
 
     pub fn into_outputs(self) -> ResolverOutputs {
         let definitions = self.definitions;
+        let visibilities = self.visibilities;
         let extern_crate_map = self.extern_crate_map;
         let export_map = self.export_map;
         let maybe_unused_trait_imports = self.maybe_unused_trait_imports;
         let maybe_unused_extern_crates = self.maybe_unused_extern_crates;
         let glob_map = self.glob_map;
         ResolverOutputs {
-            definitions: definitions,
+            definitions,
             cstore: Box::new(self.crate_loader.into_cstore()),
+            visibilities,
             extern_crate_map,
             export_map,
             glob_map,
@@ -1399,6 +1383,7 @@ impl<'a> Resolver<'a> {
         ResolverOutputs {
             definitions: self.definitions.clone(),
             cstore: Box::new(self.cstore().clone()),
+            visibilities: self.visibilities.clone(),
             extern_crate_map: self.extern_crate_map.clone(),
             export_map: self.export_map.clone(),
             glob_map: self.glob_map.clone(),
@@ -1723,10 +1708,9 @@ impl<'a> Resolver<'a> {
                         Scope::MacroRules(binding.parent_macro_rules_scope)
                     }
                     MacroRulesScope::Invocation(invoc_id) => Scope::MacroRules(
-                        self.output_macro_rules_scopes
-                            .get(&invoc_id)
-                            .cloned()
-                            .unwrap_or(self.invocation_parent_scopes[&invoc_id].macro_rules),
+                        self.output_macro_rules_scopes.get(&invoc_id).cloned().unwrap_or_else(
+                            || self.invocation_parent_scopes[&invoc_id].macro_rules,
+                        ),
                     ),
                     MacroRulesScope::Empty => Scope::Module(module),
                 },
@@ -1991,11 +1975,12 @@ impl<'a> Resolver<'a> {
                 // The macro is a proc macro derive
                 if let Some(def_id) = module.expansion.expn_data().macro_def_id {
                     if let Some(ext) = self.get_macro_by_def_id(def_id) {
-                        if !ext.is_builtin && ext.macro_kind() == MacroKind::Derive {
-                            if parent.expansion.outer_expn_is_descendant_of(span.ctxt()) {
-                                *poisoned = Some(node_id);
-                                return module.parent;
-                            }
+                        if !ext.is_builtin
+                            && ext.macro_kind() == MacroKind::Derive
+                            && parent.expansion.outer_expn_is_descendant_of(span.ctxt())
+                        {
+                            *poisoned = Some(node_id);
+                            return module.parent;
                         }
                     }
                 }
@@ -2389,10 +2374,7 @@ impl<'a> Resolver<'a> {
                         _ => None,
                     };
                     let (label, suggestion) = if module_res == self.graph_root.res() {
-                        let is_mod = |res| match res {
-                            Res::Def(DefKind::Mod, _) => true,
-                            _ => false,
-                        };
+                        let is_mod = |res| matches!(res, Res::Def(DefKind::Mod, _));
                         // Don't look up import candidates if this is a speculative resolve
                         let mut candidates = if record_used {
                             self.lookup_import_candidates(ident, TypeNS, parent_scope, is_mod)

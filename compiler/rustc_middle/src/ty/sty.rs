@@ -210,6 +210,18 @@ impl TyKind<'tcx> {
             _ => false,
         }
     }
+
+    /// Get the article ("a" or "an") to use with this type.
+    pub fn article(&self) -> &'static str {
+        match self {
+            Int(_) | Float(_) | Array(_, _) => "an",
+            Adt(def, _) if def.is_enum() => "an",
+            // This should never happen, but ICEing and causing the user's code
+            // to not compile felt too harsh.
+            Error(_) => "a",
+            _ => "a",
+        }
+    }
 }
 
 // `TyKind` is used a lot. Make sure it doesn't unintentionally get bigger.
@@ -376,9 +388,19 @@ impl<'tcx> ClosureSubsts<'tcx> {
         self.split().parent_substs
     }
 
+    /// Returns an iterator over the list of types of captured paths by the closure.
+    /// In case there was a type error in figuring out the types of the captured path, an
+    /// empty iterator is returned.
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        self.tupled_upvars_ty().tuple_fields()
+        match self.tupled_upvars_ty().kind() {
+            TyKind::Error(_) => None,
+            TyKind::Tuple(..) => Some(self.tupled_upvars_ty().tuple_fields()),
+            TyKind::Infer(_) => bug!("upvar_tys called before capture types are inferred"),
+            ty => bug!("Unexpected representation of upvar types tuple {:?}", ty),
+        }
+        .into_iter()
+        .flatten()
     }
 
     /// Returns the tuple type representing the upvars for this closure.
@@ -503,9 +525,19 @@ impl<'tcx> GeneratorSubsts<'tcx> {
         self.split().witness.expect_ty()
     }
 
+    /// Returns an iterator over the list of types of captured paths by the generator.
+    /// In case there was a type error in figuring out the types of the captured path, an
+    /// empty iterator is returned.
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        self.tupled_upvars_ty().tuple_fields()
+        match self.tupled_upvars_ty().kind() {
+            TyKind::Error(_) => None,
+            TyKind::Tuple(..) => Some(self.tupled_upvars_ty().tuple_fields()),
+            TyKind::Infer(_) => bug!("upvar_tys called before capture types are inferred"),
+            ty => bug!("Unexpected representation of upvar types tuple {:?}", ty),
+        }
+        .into_iter()
+        .flatten()
     }
 
     /// Returns the tuple type representing the upvars for this generator.
@@ -648,13 +680,32 @@ pub enum UpvarSubsts<'tcx> {
 }
 
 impl<'tcx> UpvarSubsts<'tcx> {
+    /// Returns an iterator over the list of types of captured paths by the closure/generator.
+    /// In case there was a type error in figuring out the types of the captured path, an
+    /// empty iterator is returned.
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        let tupled_upvars_ty = match self {
-            UpvarSubsts::Closure(substs) => substs.as_closure().split().tupled_upvars_ty,
-            UpvarSubsts::Generator(substs) => substs.as_generator().split().tupled_upvars_ty,
+        let tupled_tys = match self {
+            UpvarSubsts::Closure(substs) => substs.as_closure().tupled_upvars_ty(),
+            UpvarSubsts::Generator(substs) => substs.as_generator().tupled_upvars_ty(),
         };
-        tupled_upvars_ty.expect_ty().tuple_fields()
+
+        match tupled_tys.kind() {
+            TyKind::Error(_) => None,
+            TyKind::Tuple(..) => Some(self.tupled_upvars_ty().tuple_fields()),
+            TyKind::Infer(_) => bug!("upvar_tys called before capture types are inferred"),
+            ty => bug!("Unexpected representation of upvar types tuple {:?}", ty),
+        }
+        .into_iter()
+        .flatten()
+    }
+
+    #[inline]
+    pub fn tupled_upvars_ty(self) -> Ty<'tcx> {
+        match self {
+            UpvarSubsts::Closure(substs) => substs.as_closure().tupled_upvars_ty(),
+            UpvarSubsts::Generator(substs) => substs.as_generator().tupled_upvars_ty(),
+        }
     }
 }
 
@@ -695,14 +746,16 @@ impl<'tcx> Binder<ExistentialPredicate<'tcx>> {
         use crate::ty::ToPredicate;
         match self.skip_binder() {
             ExistentialPredicate::Trait(tr) => {
-                Binder(tr).with_self_ty(tcx, self_ty).without_const().to_predicate(tcx)
+                self.rebind(tr).with_self_ty(tcx, self_ty).without_const().to_predicate(tcx)
             }
             ExistentialPredicate::Projection(p) => {
-                Binder(p.with_self_ty(tcx, self_ty)).to_predicate(tcx)
+                self.rebind(p.with_self_ty(tcx, self_ty)).to_predicate(tcx)
             }
             ExistentialPredicate::AutoTrait(did) => {
-                let trait_ref =
-                    Binder(ty::TraitRef { def_id: did, substs: tcx.mk_substs_trait(self_ty, &[]) });
+                let trait_ref = self.rebind(ty::TraitRef {
+                    def_id: did,
+                    substs: tcx.mk_substs_trait(self_ty, &[]),
+                });
                 trait_ref.without_const().to_predicate(tcx)
             }
         }
@@ -767,7 +820,7 @@ impl<'tcx> List<ExistentialPredicate<'tcx>> {
 
 impl<'tcx> Binder<&'tcx List<ExistentialPredicate<'tcx>>> {
     pub fn principal(&self) -> Option<ty::Binder<ExistentialTraitRef<'tcx>>> {
-        self.skip_binder().principal().map(Binder::bind)
+        self.map_bound(|b| b.principal()).transpose()
     }
 
     pub fn principal_def_id(&self) -> Option<DefId> {
@@ -850,8 +903,7 @@ impl<'tcx> PolyTraitRef<'tcx> {
     }
 
     pub fn to_poly_trait_predicate(&self) -> ty::PolyTraitPredicate<'tcx> {
-        // Note that we preserve binding levels
-        Binder(ty::TraitPredicate { trait_ref: self.skip_binder() })
+        self.map_bound(|trait_ref| ty::TraitPredicate { trait_ref })
     }
 }
 
@@ -991,6 +1043,19 @@ impl<T> Binder<T> {
         F: FnOnce(T) -> U,
     {
         Binder(f(self.0))
+    }
+
+    /// Wraps a `value` in a binder, using the same bound variables as the
+    /// current `Binder`. This should not be used if the new value *changes*
+    /// the bound variables. Note: the (old or new) value itself does not
+    /// necessarily need to *name* all the bound variables.
+    ///
+    /// This currently doesn't do anything different than `bind`, because we
+    /// don't actually track bound vars. However, semantically, it is different
+    /// because bound vars aren't allowed to change here, whereas they are
+    /// in `bind`. This may be (debug) asserted in the future.
+    pub fn rebind<U>(&self, value: U) -> Binder<U> {
+        Binder(value)
     }
 
     /// Unwraps and returns the value within, but only if it contains
@@ -1800,10 +1865,10 @@ impl<'tcx> TyS<'tcx> {
             }
             ty::Array(ty, len) => {
                 match len.try_eval_usize(tcx, ParamEnv::empty()) {
+                    Some(0) | None => false,
                     // If the array is definitely non-empty, it's uninhabited if
                     // the type of its elements is uninhabited.
-                    Some(n) if n != 0 => ty.conservative_is_privately_uninhabited(tcx),
-                    _ => false,
+                    Some(1..) => ty.conservative_is_privately_uninhabited(tcx),
                 }
             }
             ty::Ref(..) => {

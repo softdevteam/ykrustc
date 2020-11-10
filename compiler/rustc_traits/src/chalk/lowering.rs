@@ -42,6 +42,7 @@ use rustc_span::def_id::DefId;
 use chalk_ir::{FnSig, ForeignDefId};
 use rustc_hir::Unsafety;
 use std::collections::btree_map::{BTreeMap, Entry};
+use std::ops::ControlFlow;
 
 /// Essentially an `Into` with a `&RustInterner` parameter
 crate trait LowerInto<'tcx, T> {
@@ -81,8 +82,11 @@ impl<'tcx> LowerInto<'tcx, chalk_ir::InEnvironment<chalk_ir::Goal<RustInterner<'
         interner: &RustInterner<'tcx>,
     ) -> chalk_ir::InEnvironment<chalk_ir::Goal<RustInterner<'tcx>>> {
         let clauses = self.environment.into_iter().map(|predicate| {
-            let (predicate, binders, _named_regions) =
-                collect_bound_vars(interner, interner.tcx, &predicate.bound_atom(interner.tcx));
+            let (predicate, binders, _named_regions) = collect_bound_vars(
+                interner,
+                interner.tcx,
+                &predicate.bound_atom_with_opt_escaping(interner.tcx),
+            );
             let consequence = match predicate {
                 ty::PredicateAtom::TypeWellFormedFromEnv(ty) => {
                     chalk_ir::DomainGoal::FromEnv(chalk_ir::FromEnv::Ty(ty.lower_into(interner)))
@@ -133,8 +137,11 @@ impl<'tcx> LowerInto<'tcx, chalk_ir::InEnvironment<chalk_ir::Goal<RustInterner<'
 
 impl<'tcx> LowerInto<'tcx, chalk_ir::GoalData<RustInterner<'tcx>>> for ty::Predicate<'tcx> {
     fn lower_into(self, interner: &RustInterner<'tcx>) -> chalk_ir::GoalData<RustInterner<'tcx>> {
-        let (predicate, binders, _named_regions) =
-            collect_bound_vars(interner, interner.tcx, &self.bound_atom(interner.tcx));
+        let (predicate, binders, _named_regions) = collect_bound_vars(
+            interner,
+            interner.tcx,
+            &self.bound_atom_with_opt_escaping(interner.tcx),
+        );
 
         let value = match predicate {
             ty::PredicateAtom::Trait(predicate, _) => {
@@ -653,8 +660,11 @@ impl<'tcx> LowerInto<'tcx, Option<chalk_ir::QuantifiedWhereClause<RustInterner<'
         self,
         interner: &RustInterner<'tcx>,
     ) -> Option<chalk_ir::QuantifiedWhereClause<RustInterner<'tcx>>> {
-        let (predicate, binders, _named_regions) =
-            collect_bound_vars(interner, interner.tcx, &self.bound_atom(interner.tcx));
+        let (predicate, binders, _named_regions) = collect_bound_vars(
+            interner,
+            interner.tcx,
+            &self.bound_atom_with_opt_escaping(interner.tcx),
+        );
         let value = match predicate {
             ty::PredicateAtom::Trait(predicate, _) => {
                 Some(chalk_ir::WhereClause::Implemented(predicate.trait_ref.lower_into(interner)))
@@ -762,27 +772,22 @@ impl<'tcx> LowerInto<'tcx, Option<chalk_solve::rust_ir::QuantifiedInlineBound<Ru
         self,
         interner: &RustInterner<'tcx>,
     ) -> Option<chalk_solve::rust_ir::QuantifiedInlineBound<RustInterner<'tcx>>> {
-        match self.bound_atom(interner.tcx).skip_binder() {
-            ty::PredicateAtom::Trait(predicate, _) => {
-                let (predicate, binders, _named_regions) =
-                    collect_bound_vars(interner, interner.tcx, &ty::Binder::bind(predicate));
-
-                Some(chalk_ir::Binders::new(
-                    binders,
-                    chalk_solve::rust_ir::InlineBound::TraitBound(
-                        predicate.trait_ref.lower_into(interner),
-                    ),
-                ))
-            }
-            ty::PredicateAtom::Projection(predicate) => {
-                let (predicate, binders, _named_regions) =
-                    collect_bound_vars(interner, interner.tcx, &ty::Binder::bind(predicate));
-
-                Some(chalk_ir::Binders::new(
-                    binders,
-                    chalk_solve::rust_ir::InlineBound::AliasEqBound(predicate.lower_into(interner)),
-                ))
-            }
+        let (predicate, binders, _named_regions) = collect_bound_vars(
+            interner,
+            interner.tcx,
+            &self.bound_atom_with_opt_escaping(interner.tcx),
+        );
+        match predicate {
+            ty::PredicateAtom::Trait(predicate, _) => Some(chalk_ir::Binders::new(
+                binders,
+                chalk_solve::rust_ir::InlineBound::TraitBound(
+                    predicate.trait_ref.lower_into(interner),
+                ),
+            )),
+            ty::PredicateAtom::Projection(predicate) => Some(chalk_ir::Binders::new(
+                binders,
+                chalk_solve::rust_ir::InlineBound::AliasEqBound(predicate.lower_into(interner)),
+            )),
             ty::PredicateAtom::TypeOutlives(_predicate) => None,
             ty::PredicateAtom::WellFormed(_ty) => None,
 
@@ -893,14 +898,14 @@ impl<'tcx> BoundVarsCollector<'tcx> {
 }
 
 impl<'tcx> TypeVisitor<'tcx> for BoundVarsCollector<'tcx> {
-    fn visit_binder<T: TypeFoldable<'tcx>>(&mut self, t: &Binder<T>) -> bool {
+    fn visit_binder<T: TypeFoldable<'tcx>>(&mut self, t: &Binder<T>) -> ControlFlow<()> {
         self.binder_index.shift_in(1);
         let result = t.super_visit_with(self);
         self.binder_index.shift_out(1);
         result
     }
 
-    fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
+    fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<()> {
         match *t.kind() {
             ty::Bound(debruijn, bound_ty) if debruijn == self.binder_index => {
                 match self.parameters.entry(bound_ty.var.as_u32()) {
@@ -920,7 +925,7 @@ impl<'tcx> TypeVisitor<'tcx> for BoundVarsCollector<'tcx> {
         t.super_visit_with(self)
     }
 
-    fn visit_region(&mut self, r: Region<'tcx>) -> bool {
+    fn visit_region(&mut self, r: Region<'tcx>) -> ControlFlow<()> {
         match r {
             ty::ReLateBound(index, br) if *index == self.binder_index => match br {
                 ty::BoundRegion::BrNamed(def_id, _name) => {
@@ -1110,7 +1115,7 @@ impl PlaceholdersCollector {
 }
 
 impl<'tcx> TypeVisitor<'tcx> for PlaceholdersCollector {
-    fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
+    fn visit_ty(&mut self, t: Ty<'tcx>) -> ControlFlow<()> {
         match t.kind() {
             ty::Placeholder(p) if p.universe == self.universe_index => {
                 self.next_ty_placeholder = self.next_ty_placeholder.max(p.name.as_usize() + 1);
@@ -1122,7 +1127,7 @@ impl<'tcx> TypeVisitor<'tcx> for PlaceholdersCollector {
         t.super_visit_with(self)
     }
 
-    fn visit_region(&mut self, r: Region<'tcx>) -> bool {
+    fn visit_region(&mut self, r: Region<'tcx>) -> ControlFlow<()> {
         match r {
             ty::RePlaceholder(p) if p.universe == self.universe_index => {
                 if let ty::BoundRegion::BrAnon(anon) = p.name {

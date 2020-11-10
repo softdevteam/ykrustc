@@ -21,7 +21,6 @@ use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::{source_map, FileName, Span};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_trait_selection::traits::Obligation;
-use rustc_trait_selection::traits::SelectionContext;
 
 use std::cmp::Ordering;
 
@@ -637,9 +636,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         }
                     };
                     let mut format_pred = |pred: ty::Predicate<'tcx>| {
-                        match pred.skip_binders() {
+                        let bound_predicate = pred.bound_atom();
+                        match bound_predicate.skip_binder() {
                             ty::PredicateAtom::Projection(pred) => {
-                                let pred = ty::Binder::bind(pred);
+                                let pred = bound_predicate.rebind(pred);
                                 // `<Foo as Iterator>::Item = String`.
                                 let trait_ref =
                                     pred.skip_binder().projection_ty.trait_ref(self.tcx);
@@ -658,8 +658,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 Some((obligation, trait_ref.self_ty()))
                             }
                             ty::PredicateAtom::Trait(poly_trait_ref, _) => {
-                                let poly_trait_ref = ty::Binder::bind(poly_trait_ref);
-                                let p = poly_trait_ref.skip_binder().trait_ref;
+                                let p = poly_trait_ref.trait_ref;
                                 let self_ty = p.self_ty();
                                 let path = p.print_only_trait_path();
                                 let obligation = format!("{}: {}", self_ty, path);
@@ -870,46 +869,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         call: &hir::Expr<'_>,
         span: Span,
     ) {
-        if let ty::Opaque(def_id, _) = *ty.kind() {
-            let future_trait = self.tcx.require_lang_item(LangItem::Future, None);
-            // Future::Output
-            let item_def_id = self
-                .tcx
-                .associated_items(future_trait)
-                .in_definition_order()
-                .next()
-                .unwrap()
-                .def_id;
-
-            let projection_ty = self.tcx.projection_ty_from_predicates((def_id, item_def_id));
-            let cause = self.misc(span);
-            let mut selcx = SelectionContext::new(&self.infcx);
-            let mut obligations = vec![];
-            if let Some(projection_ty) = projection_ty {
-                let normalized_ty = rustc_trait_selection::traits::normalize_projection_type(
-                    &mut selcx,
-                    self.param_env,
-                    projection_ty,
-                    cause,
-                    0,
-                    &mut obligations,
-                );
-                debug!(
-                    "suggest_await_before_method: normalized_ty={:?}, ty_kind={:?}",
-                    self.resolve_vars_if_possible(&normalized_ty),
-                    normalized_ty.kind(),
-                );
-                let method_exists = self.method_exists(item_name, normalized_ty, call.hir_id, true);
-                debug!("suggest_await_before_method: is_method_exist={}", method_exists);
-                if method_exists {
-                    err.span_suggestion_verbose(
-                        span.shrink_to_lo(),
-                        "consider awaiting before this method call",
-                        "await.".to_string(),
-                        Applicability::MaybeIncorrect,
-                    );
-                }
-            }
+        let output_ty = match self.infcx.get_impl_future_output_ty(ty) {
+            Some(output_ty) => self.resolve_vars_if_possible(&output_ty),
+            _ => return,
+        };
+        let method_exists = self.method_exists(item_name, output_ty, call.hir_id, true);
+        debug!("suggest_await_before_method: is_method_exist={}", method_exists);
+        if method_exists {
+            err.span_suggestion_verbose(
+                span.shrink_to_lo(),
+                "consider `await`ing on the `Future` and calling the method on its `Output`",
+                "await.".to_string(),
+                Applicability::MaybeIncorrect,
+            );
         }
     }
 

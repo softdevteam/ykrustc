@@ -1357,7 +1357,8 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
         // we'll expand attributes on expressions separately
         if !stmt.is_expr() {
             let (attr, derives, after_derive) = if stmt.is_item() {
-                self.classify_item(&mut stmt)
+                // FIXME: Handle custom attributes on statements (#15701)
+                (None, vec![], false)
             } else {
                 // ignore derives on non-item statements so it falls through
                 // to the unused-attributes lint
@@ -1435,9 +1436,9 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                 item.attrs = attrs;
                 self.check_attributes(&item.attrs);
                 item.and_then(|item| match item.kind {
-                    ItemKind::MacCall(mac) => self
-                        .collect(AstFragmentKind::Items, InvocationKind::Bang { mac, span })
-                        .make_items(),
+                    ItemKind::MacCall(mac) => {
+                        self.collect_bang(mac, span, AstFragmentKind::Items).make_items()
+                    }
                     _ => unreachable!(),
                 })
             }
@@ -1785,6 +1786,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                 span: at.span,
                 id: at.id,
                 style: at.style,
+                tokens: None,
             };
         } else {
             noop_visit_attribute(at, self)

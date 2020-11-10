@@ -9,6 +9,7 @@ use rustc_data_structures::thin_vec::ThinVec;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def::Res;
+use rustc_session::parse::feature_err;
 use rustc_span::hygiene::ForLoopLoc;
 use rustc_span::source_map::{respan, DesugaringKind, Span, Spanned};
 use rustc_span::symbol::{sym, Ident, Symbol};
@@ -30,6 +31,10 @@ impl<'hir> LoweringContext<'_, 'hir> {
             let kind = match e.kind {
                 ExprKind::Box(ref inner) => hir::ExprKind::Box(self.lower_expr(inner)),
                 ExprKind::Array(ref exprs) => hir::ExprKind::Array(self.lower_exprs(exprs)),
+                ExprKind::ConstBlock(ref anon_const) => {
+                    let anon_const = self.lower_anon_const(anon_const);
+                    hir::ExprKind::ConstBlock(anon_const)
+                }
                 ExprKind::Repeat(ref expr, ref count) => {
                     let expr = self.lower_expr(expr);
                     let count = self.lower_anon_const(count);
@@ -142,7 +147,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                     hir::ExprKind::Block(self.lower_block(blk, opt_label.is_some()), opt_label)
                 }
                 ExprKind::Assign(ref el, ref er, span) => {
-                    hir::ExprKind::Assign(self.lower_expr(el), self.lower_expr(er), span)
+                    self.lower_expr_assign(el, er, span, e.span)
                 }
                 ExprKind::AssignOp(op, ref el, ref er) => hir::ExprKind::AssignOp(
                     self.lower_binop(op),
@@ -206,9 +211,9 @@ impl<'hir> LoweringContext<'_, 'hir> {
                         ex.span = e.span;
                     }
                     // Merge attributes into the inner expression.
-                    let mut attrs = e.attrs.clone();
+                    let mut attrs: Vec<_> = e.attrs.iter().map(|a| self.lower_attr(a)).collect();
                     attrs.extend::<Vec<_>>(ex.attrs.into());
-                    ex.attrs = attrs;
+                    ex.attrs = attrs.into();
                     return ex;
                 }
 
@@ -836,6 +841,134 @@ impl<'hir> LoweringContext<'_, 'hir> {
         })
     }
 
+    /// Destructure the LHS of complex assignments.
+    /// For instance, lower `(a, b) = t` to `{ let (lhs1, lhs2) = t; a = lhs1; b = lhs2; }`.
+    fn lower_expr_assign(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        eq_sign_span: Span,
+        whole_span: Span,
+    ) -> hir::ExprKind<'hir> {
+        // Return early in case of an ordinary assignment.
+        fn is_ordinary(lhs: &Expr) -> bool {
+            match &lhs.kind {
+                ExprKind::Tup(..) => false,
+                ExprKind::Paren(e) => {
+                    match e.kind {
+                        // We special-case `(..)` for consistency with patterns.
+                        ExprKind::Range(None, None, RangeLimits::HalfOpen) => false,
+                        _ => is_ordinary(e),
+                    }
+                }
+                _ => true,
+            }
+        }
+        if is_ordinary(lhs) {
+            return hir::ExprKind::Assign(self.lower_expr(lhs), self.lower_expr(rhs), eq_sign_span);
+        }
+        if !self.sess.features_untracked().destructuring_assignment {
+            feature_err(
+                &self.sess.parse_sess,
+                sym::destructuring_assignment,
+                eq_sign_span,
+                "destructuring assignments are unstable",
+            )
+            .span_label(lhs.span, "cannot assign to this expression")
+            .emit();
+        }
+
+        let mut assignments = vec![];
+
+        // The LHS becomes a pattern: `(lhs1, lhs2)`.
+        let pat = self.destructure_assign(lhs, eq_sign_span, &mut assignments);
+        let rhs = self.lower_expr(rhs);
+
+        // Introduce a `let` for destructuring: `let (lhs1, lhs2) = t`.
+        let destructure_let = self.stmt_let_pat(
+            ThinVec::new(),
+            whole_span,
+            Some(rhs),
+            pat,
+            hir::LocalSource::AssignDesugar(eq_sign_span),
+        );
+
+        // `a = lhs1; b = lhs2;`.
+        let stmts = self
+            .arena
+            .alloc_from_iter(std::iter::once(destructure_let).chain(assignments.into_iter()));
+
+        // Wrap everything in a block.
+        hir::ExprKind::Block(&self.block_all(whole_span, stmts, None), None)
+    }
+
+    /// Convert the LHS of a destructuring assignment to a pattern.
+    /// Each sub-assignment is recorded in `assignments`.
+    fn destructure_assign(
+        &mut self,
+        lhs: &Expr,
+        eq_sign_span: Span,
+        assignments: &mut Vec<hir::Stmt<'hir>>,
+    ) -> &'hir hir::Pat<'hir> {
+        match &lhs.kind {
+            // Tuples.
+            ExprKind::Tup(elements) => {
+                let (pats, rest) =
+                    self.destructure_sequence(elements, "tuple", eq_sign_span, assignments);
+                let tuple_pat = hir::PatKind::Tuple(pats, rest.map(|r| r.0));
+                return self.pat_without_dbm(lhs.span, tuple_pat);
+            }
+            ExprKind::Paren(e) => {
+                // We special-case `(..)` for consistency with patterns.
+                if let ExprKind::Range(None, None, RangeLimits::HalfOpen) = e.kind {
+                    let tuple_pat = hir::PatKind::Tuple(&[], Some(0));
+                    return self.pat_without_dbm(lhs.span, tuple_pat);
+                } else {
+                    return self.destructure_assign(e, eq_sign_span, assignments);
+                }
+            }
+            _ => {}
+        }
+        // Treat all other cases as normal lvalue.
+        let ident = Ident::new(sym::lhs, lhs.span);
+        let (pat, binding) = self.pat_ident(lhs.span, ident);
+        let ident = self.expr_ident(lhs.span, ident, binding);
+        let assign = hir::ExprKind::Assign(self.lower_expr(lhs), ident, eq_sign_span);
+        let expr = self.expr(lhs.span, assign, ThinVec::new());
+        assignments.push(self.stmt_expr(lhs.span, expr));
+        pat
+    }
+
+    /// Destructure a sequence of expressions occurring on the LHS of an assignment.
+    /// Such a sequence occurs in a tuple (struct)/slice.
+    /// Return a sequence of corresponding patterns, and the index and the span of `..` if it
+    /// exists.
+    /// Each sub-assignment is recorded in `assignments`.
+    fn destructure_sequence(
+        &mut self,
+        elements: &[AstP<Expr>],
+        ctx: &str,
+        eq_sign_span: Span,
+        assignments: &mut Vec<hir::Stmt<'hir>>,
+    ) -> (&'hir [&'hir hir::Pat<'hir>], Option<(usize, Span)>) {
+        let mut rest = None;
+        let elements =
+            self.arena.alloc_from_iter(elements.iter().enumerate().filter_map(|(i, e)| {
+                // Check for `..` pattern.
+                if let ExprKind::Range(None, None, RangeLimits::HalfOpen) = e.kind {
+                    if let Some((_, prev_span)) = rest {
+                        self.ban_extra_rest_pat(e.span, prev_span, ctx);
+                    } else {
+                        rest = Some((i, e.span));
+                    }
+                    None
+                } else {
+                    Some(self.destructure_assign(e, eq_sign_span, assignments))
+                }
+            }));
+        (elements, rest)
+    }
+
     /// Desugar `<start>..=<end>` into `std::ops::RangeInclusive::new(<start>, <end>)`.
     fn lower_expr_range_closed(&mut self, span: Span, e1: &Expr, e2: &Expr) -> hir::ExprKind<'hir> {
         let e1 = self.lower_expr_mut(e1);
@@ -985,7 +1118,7 @@ impl<'hir> LoweringContext<'_, 'hir> {
                             asm::InlineAsmReg::parse(
                                 sess.asm_arch?,
                                 |feature| sess.target_features.contains(&Symbol::intern(feature)),
-                                &sess.target.target,
+                                &sess.target,
                                 s,
                             )
                             .map_err(|e| {
@@ -1186,52 +1319,47 @@ impl<'hir> LoweringContext<'_, 'hir> {
                                          input| {
                             match used_regs.entry(r) {
                                 Entry::Occupied(o) => {
-                                    if !skip {
-                                        skip = true;
-
-                                        let idx2 = *o.get();
-                                        let op2 = &operands[idx2];
-                                        let op_sp2 = asm.operands[idx2].1;
-                                        let reg2 = match op2.reg() {
-                                            Some(asm::InlineAsmRegOrRegClass::Reg(r)) => r,
-                                            _ => unreachable!(),
-                                        };
-
-                                        let msg = format!(
-                                            "register `{}` conflicts with register `{}`",
-                                            reg.name(),
-                                            reg2.name()
-                                        );
-                                        let mut err = sess.struct_span_err(op_sp, &msg);
-                                        err.span_label(
-                                            op_sp,
-                                            &format!("register `{}`", reg.name()),
-                                        );
-                                        err.span_label(
-                                            op_sp2,
-                                            &format!("register `{}`", reg2.name()),
-                                        );
-
-                                        match (op, op2) {
-                                            (
-                                                hir::InlineAsmOperand::In { .. },
-                                                hir::InlineAsmOperand::Out { late, .. },
-                                            )
-                                            | (
-                                                hir::InlineAsmOperand::Out { late, .. },
-                                                hir::InlineAsmOperand::In { .. },
-                                            ) => {
-                                                assert!(!*late);
-                                                let out_op_sp = if input { op_sp2 } else { op_sp };
-                                                let msg = "use `lateout` instead of \
-                                                     `out` to avoid conflict";
-                                                err.span_help(out_op_sp, msg);
-                                            }
-                                            _ => {}
-                                        }
-
-                                        err.emit();
+                                    if skip {
+                                        return;
                                     }
+                                    skip = true;
+
+                                    let idx2 = *o.get();
+                                    let op2 = &operands[idx2];
+                                    let op_sp2 = asm.operands[idx2].1;
+                                    let reg2 = match op2.reg() {
+                                        Some(asm::InlineAsmRegOrRegClass::Reg(r)) => r,
+                                        _ => unreachable!(),
+                                    };
+
+                                    let msg = format!(
+                                        "register `{}` conflicts with register `{}`",
+                                        reg.name(),
+                                        reg2.name()
+                                    );
+                                    let mut err = sess.struct_span_err(op_sp, &msg);
+                                    err.span_label(op_sp, &format!("register `{}`", reg.name()));
+                                    err.span_label(op_sp2, &format!("register `{}`", reg2.name()));
+
+                                    match (op, op2) {
+                                        (
+                                            hir::InlineAsmOperand::In { .. },
+                                            hir::InlineAsmOperand::Out { late, .. },
+                                        )
+                                        | (
+                                            hir::InlineAsmOperand::Out { late, .. },
+                                            hir::InlineAsmOperand::In { .. },
+                                        ) => {
+                                            assert!(!*late);
+                                            let out_op_sp = if input { op_sp2 } else { op_sp };
+                                            let msg = "use `lateout` instead of \
+                                                    `out` to avoid conflict";
+                                            err.span_help(out_op_sp, msg);
+                                        }
+                                        _ => {}
+                                    }
+
+                                    err.emit();
                                 }
                                 Entry::Vacant(v) => {
                                     v.insert(idx);
@@ -1472,13 +1600,15 @@ impl<'hir> LoweringContext<'_, 'hir> {
             hir::MatchSource::ForLoopDesugar,
         ));
 
+        let attrs: Vec<_> = e.attrs.iter().map(|a| self.lower_attr(a)).collect();
+
         // This is effectively `{ let _result = ...; _result }`.
         // The construct was introduced in #21984 and is necessary to make sure that
         // temporaries in the `head` expression are dropped and do not leak to the
         // surrounding scope of the `match` since the `match` is not a terminating scope.
         //
         // Also, add the attributes to the outer returned expr node.
-        self.expr_drop_temps_mut(desugared_span, match_expr, e.attrs.clone())
+        self.expr_drop_temps_mut(desugared_span, match_expr, attrs.into())
     }
 
     /// Desugar `ExprKind::Try` from: `<expr>?` into:

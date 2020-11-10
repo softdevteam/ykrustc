@@ -124,6 +124,15 @@ impl Candidate {
             Candidate::Argument { .. } | Candidate::InlineAsm { .. } => true,
         }
     }
+
+    fn source_info(&self, body: &Body<'_>) -> SourceInfo {
+        match self {
+            Candidate::Ref(location) | Candidate::Repeat(location) => *body.source_info(*location),
+            Candidate::Argument { bb, .. } | Candidate::InlineAsm { bb, .. } => {
+                *body.source_info(body.terminator_loc(*bb))
+            }
+        }
+    }
 }
 
 fn args_required_const(tcx: TyCtxt<'_>, def_id: DefId) -> Option<Vec<usize>> {
@@ -292,17 +301,6 @@ impl std::ops::Deref for Validator<'a, 'tcx> {
 struct Unpromotable;
 
 impl<'tcx> Validator<'_, 'tcx> {
-    /// Determines if this code could be executed at runtime and thus is subject to codegen.
-    /// That means even unused constants need to be evaluated.
-    ///
-    /// `const_kind` should not be used in this file other than through this method!
-    fn maybe_runtime(&self) -> bool {
-        match self.const_kind {
-            None | Some(hir::ConstContext::ConstFn) => true,
-            Some(hir::ConstContext::Static(_) | hir::ConstContext::Const) => false,
-        }
-    }
-
     fn validate_candidate(&self, candidate: Candidate) -> Result<(), Unpromotable> {
         match candidate {
             Candidate::Ref(loc) => {
@@ -553,14 +551,12 @@ impl<'tcx> Validator<'_, 'tcx> {
                     }
 
                     ProjectionElem::Field(..) => {
-                        if self.maybe_runtime() {
-                            let base_ty =
-                                Place::ty_from(place.local, proj_base, self.body, self.tcx).ty;
-                            if let Some(def) = base_ty.ty_adt_def() {
-                                // No promotion of union field accesses.
-                                if def.is_union() {
-                                    return Err(Unpromotable);
-                                }
+                        let base_ty =
+                            Place::ty_from(place.local, proj_base, self.body, self.tcx).ty;
+                        if let Some(def) = base_ty.ty_adt_def() {
+                            // No promotion of union field accesses.
+                            if def.is_union() {
+                                return Err(Unpromotable);
                             }
                         }
                     }
@@ -742,7 +738,14 @@ impl<'tcx> Validator<'_, 'tcx> {
     ) -> Result<(), Unpromotable> {
         let fn_ty = callee.ty(self.body, self.tcx);
 
-        if !self.explicit && self.maybe_runtime() {
+        // When doing explicit promotion and inside const/static items, we promote all (eligible) function calls.
+        // Everywhere else, we require `#[rustc_promotable]` on the callee.
+        let promote_all_const_fn = self.explicit
+            || matches!(
+                self.const_kind,
+                Some(hir::ConstContext::Static(_) | hir::ConstContext::Const)
+            );
+        if !promote_all_const_fn {
             if let ty::FnDef(def_id, _) = *fn_ty.kind() {
                 // Never promote runtime `const fn` calls of
                 // functions without `#[rustc_promotable]`.
@@ -953,6 +956,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                             from_hir_call,
                             fn_span,
                         },
+                        source_info: SourceInfo::outermost(terminator.source_info.span),
                         ..terminator
                     };
                 }
@@ -1163,12 +1167,13 @@ pub fn promote_candidates<'tcx>(
         // Declare return place local so that `mir::Body::new` doesn't complain.
         let initial_locals = iter::once(LocalDecl::new(tcx.types.never, body.span)).collect();
 
-        let mut promoted = Body::new(
+        let mut scope = body.source_scopes[candidate.source_info(body).scope].clone();
+        scope.parent_scope = None;
+
+        let promoted = Body::new(
             body.source, // `promoted` gets filled in below
             IndexVec::new(),
-            // FIXME: maybe try to filter this to avoid blowing up
-            // memory usage?
-            body.source_scopes.clone(),
+            IndexVec::from_elem_n(scope, 1),
             initial_locals,
             IndexVec::new(),
             0,
@@ -1176,7 +1181,6 @@ pub fn promote_candidates<'tcx>(
             body.span,
             body.generator_kind,
         );
-        promoted.ignore_interior_mut_in_const_validation = true;
 
         let promoter = Promoter {
             promoted,

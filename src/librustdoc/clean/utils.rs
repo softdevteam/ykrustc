@@ -3,17 +3,18 @@ use crate::clean::blanket_impl::BlanketImplFinder;
 use crate::clean::{
     inline, Clean, Crate, Deprecation, ExternalCrate, FnDecl, FnRetTy, Generic, GenericArg,
     GenericArgs, GenericBound, Generics, GetDefId, ImportSource, Item, ItemEnum, Lifetime,
-    MacroKind, Path, PathSegment, Primitive, PrimitiveType, ResolvedPath, Span, Stability, Type,
-    TypeBinding, TypeKind, Visibility, WherePredicate,
+    MacroKind, Path, PathSegment, Primitive, PrimitiveType, ResolvedPath, Span, Type, TypeBinding,
+    TypeKind, Visibility, WherePredicate,
 };
 use crate::core::DocContext;
 
 use itertools::Itertools;
+use rustc_attr::Stability;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
-use rustc_middle::mir::interpret::{sign_extend, ConstValue, Scalar};
+use rustc_middle::mir::interpret::ConstValue;
 use rustc_middle::ty::subst::{GenericArgKind, SubstsRef};
 use rustc_middle::ty::{self, DefIdTree, Ty};
 use rustc_span::symbol::{kw, sym, Symbol};
@@ -102,14 +103,14 @@ pub fn krate(mut cx: &mut DocContext<'_>) -> Crate {
 
 // extract the stability index for a node from tcx, if possible
 pub fn get_stability(cx: &DocContext<'_>, def_id: DefId) -> Option<Stability> {
-    cx.tcx.lookup_stability(def_id).clean(cx)
+    cx.tcx.lookup_stability(def_id).cloned()
 }
 
 pub fn get_deprecation(cx: &DocContext<'_>, def_id: DefId) -> Option<Deprecation> {
     cx.tcx.lookup_deprecation(def_id).clean(cx)
 }
 
-pub fn external_generic_args(
+fn external_generic_args(
     cx: &DocContext<'_>,
     trait_did: Option<DefId>,
     has_self: bool,
@@ -159,7 +160,7 @@ pub fn external_generic_args(
 
 // trait_did should be set to a trait's DefId if called on a TraitRef, in order to sugar
 // from Fn<(A, B,), C> to Fn(A, B) -> C
-pub fn external_path(
+pub(super) fn external_path(
     cx: &DocContext<'_>,
     name: Symbol,
     trait_did: Option<DefId>,
@@ -498,13 +499,14 @@ fn print_const_with_custom_print_scalar(cx: &DocContext<'_>, ct: &'tcx ty::Const
     // Use a slightly different format for integer types which always shows the actual value.
     // For all other types, fallback to the original `pretty_print_const`.
     match (ct.val, ct.ty.kind()) {
-        (ty::ConstKind::Value(ConstValue::Scalar(Scalar::Raw { data, .. })), ty::Uint(ui)) => {
-            format!("{}{}", format_integer_with_underscore_sep(&data.to_string()), ui.name_str())
+        (ty::ConstKind::Value(ConstValue::Scalar(int)), ty::Uint(ui)) => {
+            format!("{}{}", format_integer_with_underscore_sep(&int.to_string()), ui.name_str())
         }
-        (ty::ConstKind::Value(ConstValue::Scalar(Scalar::Raw { data, .. })), ty::Int(i)) => {
-            let ty = cx.tcx.lift(&ct.ty).unwrap();
+        (ty::ConstKind::Value(ConstValue::Scalar(int)), ty::Int(i)) => {
+            let ty = cx.tcx.lift(ct.ty).unwrap();
             let size = cx.tcx.layout_of(ty::ParamEnv::empty().and(ty)).unwrap().size;
-            let sign_extended_data = sign_extend(data, size) as i128;
+            let data = int.assert_bits(size);
+            let sign_extended_data = size.sign_extend(data) as i128;
 
             format!(
                 "{}{}",

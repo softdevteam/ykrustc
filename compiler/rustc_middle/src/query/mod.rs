@@ -1168,7 +1168,7 @@ rustc_queries! {
     }
 
     Other {
-        query foreign_modules(_: CrateNum) -> &'tcx [ForeignModule] {
+        query foreign_modules(_: CrateNum) -> Lrc<FxHashMap<DefId, ForeignModule>> {
             desc { "looking up the foreign modules of a linked crate" }
         }
 
@@ -1267,6 +1267,7 @@ rustc_queries! {
 
     TypeChecking {
         query visibility(def_id: DefId) -> ty::Visibility {
+            eval_always
             desc { |tcx| "computing visibility of `{}`", tcx.def_path_str(def_id) }
         }
     }

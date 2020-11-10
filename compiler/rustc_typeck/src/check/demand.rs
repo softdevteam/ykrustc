@@ -33,7 +33,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return;
         }
         self.suggest_boxing_when_appropriate(err, expr, expected, expr_ty);
-        self.suggest_missing_await(err, expr, expected, expr_ty);
         self.suggest_missing_parentheses(err, expr);
         self.note_need_for_fn_pointer(err, expected, expr_ty);
         self.note_internal_mutation_in_method(err, expr, expected, expr_ty);
@@ -751,8 +750,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         }
 
-        let msg = format!("you can convert an `{}` to `{}`", checked_ty, expected_ty);
-        let cast_msg = format!("you can cast an `{} to `{}`", checked_ty, expected_ty);
+        let msg = format!(
+            "you can convert {} `{}` to {} `{}`",
+            checked_ty.kind().article(),
+            checked_ty,
+            expected_ty.kind().article(),
+            expected_ty,
+        );
+        let cast_msg = format!(
+            "you can cast {} `{}` to {} `{}`",
+            checked_ty.kind().article(),
+            checked_ty,
+            expected_ty.kind().article(),
+            expected_ty,
+        );
         let lit_msg = format!(
             "change the type of the numeric literal from `{}` to `{}`",
             checked_ty, expected_ty,
@@ -814,7 +825,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let suggestion = format!("{}::from({})", checked_ty, lhs_src);
                     (lhs_expr.span, msg, suggestion)
                 } else {
-                    let msg = format!("{} and panic if the converted value wouldn't fit", msg);
+                    let msg = format!("{} and panic if the converted value doesn't fit", msg);
                     let suggestion =
                         format!("{}{}.try_into().unwrap()", prefix, with_opt_paren(&src));
                     (expr.span, msg, suggestion)

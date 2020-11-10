@@ -15,7 +15,7 @@ use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
 use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::RangeEnd;
 use rustc_index::vec::Idx;
-use rustc_middle::mir::interpret::{get_slice_bytes, sign_extend, ConstValue};
+use rustc_middle::mir::interpret::{get_slice_bytes, ConstValue};
 use rustc_middle::mir::interpret::{ErrorHandled, LitToConstError, LitToConstInput};
 use rustc_middle::mir::UserTypeProjection;
 use rustc_middle::mir::{BorrowKind, Field, Mutability};
@@ -158,6 +158,13 @@ crate enum PatKind<'tcx> {
         subpattern: Pat<'tcx>,
     },
 
+    /// One of the following:
+    /// * `&str`, which will be handled as a string pattern and thus exhaustiveness
+    ///   checking will detect if you use the same string twice in different patterns.
+    /// * integer, bool, char or float, which will be handled by exhaustivenes to cover exactly
+    ///   its own value, similar to `&str`, but these values are much simpler.
+    /// * Opaque constants, that must not be matched structurally. So anything that does not derive
+    ///   `PartialEq` and `Eq`.
     Constant {
         value: &'tcx ty::Const<'tcx>,
     },
@@ -216,10 +223,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                     BindingMode::ByValue => mutability == Mutability::Mut,
                     BindingMode::ByRef(bk) => {
                         write!(f, "ref ")?;
-                        match bk {
-                            BorrowKind::Mut { .. } => true,
-                            _ => false,
-                        }
+                        matches!(bk, BorrowKind::Mut { .. })
                     }
                 };
                 if is_mut {
@@ -856,6 +860,11 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             *self.lower_path(qpath, expr.hir_id, expr.span).kind
         } else {
             let (lit, neg) = match expr.kind {
+                hir::ExprKind::ConstBlock(ref anon_const) => {
+                    let anon_const_def_id = self.tcx.hir().local_def_id(anon_const.hir_id);
+                    let value = ty::Const::from_anon_const(self.tcx, anon_const_def_id);
+                    return *self.const_to_pat(value, expr.hir_id, expr.span, false).kind;
+                }
                 hir::ExprKind::Lit(ref lit) => (lit, false),
                 hir::ExprKind::Unary(hir::UnOp::UnNeg, ref expr) => {
                     let lit = match expr.kind {
@@ -1060,21 +1069,21 @@ crate fn compare_const_vals<'tcx>(
         use rustc_apfloat::Float;
         return match *ty.kind() {
             ty::Float(ast::FloatTy::F32) => {
-                let l = ::rustc_apfloat::ieee::Single::from_bits(a);
-                let r = ::rustc_apfloat::ieee::Single::from_bits(b);
+                let l = rustc_apfloat::ieee::Single::from_bits(a);
+                let r = rustc_apfloat::ieee::Single::from_bits(b);
                 l.partial_cmp(&r)
             }
             ty::Float(ast::FloatTy::F64) => {
-                let l = ::rustc_apfloat::ieee::Double::from_bits(a);
-                let r = ::rustc_apfloat::ieee::Double::from_bits(b);
+                let l = rustc_apfloat::ieee::Double::from_bits(a);
+                let r = rustc_apfloat::ieee::Double::from_bits(b);
                 l.partial_cmp(&r)
             }
             ty::Int(ity) => {
                 use rustc_attr::SignedInt;
                 use rustc_middle::ty::layout::IntegerExt;
                 let size = rustc_target::abi::Integer::from_attr(&tcx, SignedInt(ity)).size();
-                let a = sign_extend(a, size);
-                let b = sign_extend(b, size);
+                let a = size.sign_extend(a);
+                let b = size.sign_extend(b);
                 Some((a as i128).cmp(&(b as i128)))
             }
             _ => Some(a.cmp(&b)),

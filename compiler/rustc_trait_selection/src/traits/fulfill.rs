@@ -1,6 +1,6 @@
 use crate::infer::{InferCtxt, TyOrConstInferVar};
 use rustc_data_structures::obligation_forest::ProcessResult;
-use rustc_data_structures::obligation_forest::{DoCompleted, Error, ForestObligation};
+use rustc_data_structures::obligation_forest::{Error, ForestObligation, Outcome};
 use rustc_data_structures::obligation_forest::{ObligationForest, ObligationProcessor};
 use rustc_errors::ErrorReported;
 use rustc_infer::traits::{TraitEngine, TraitEngineExt as _, TraitObligation};
@@ -120,7 +120,8 @@ impl<'a, 'tcx> FulfillmentContext<'tcx> {
         &mut self,
         selcx: &mut SelectionContext<'a, 'tcx>,
     ) -> Result<(), Vec<FulfillmentError<'tcx>>> {
-        debug!("select(obligation-forest-size={})", self.predicates.len());
+        let span = debug_span!("select", obligation_forest_size = ?self.predicates.len());
+        let _enter = span.enter();
 
         let mut errors = Vec::new();
 
@@ -128,13 +129,11 @@ impl<'a, 'tcx> FulfillmentContext<'tcx> {
             debug!("select: starting another iteration");
 
             // Process pending obligations.
-            let outcome = self.predicates.process_obligations(
-                &mut FulfillProcessor {
+            let outcome: Outcome<_, _> =
+                self.predicates.process_obligations(&mut FulfillProcessor {
                     selcx,
                     register_region_obligations: self.register_region_obligations,
-                },
-                DoCompleted::No,
-            );
+                });
             debug!("select: outcome={:#?}", outcome);
 
             // FIXME: if we kept the original cache key, we could mark projection
@@ -173,7 +172,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         projection_ty: ty::ProjectionTy<'tcx>,
         cause: ObligationCause<'tcx>,
     ) -> Ty<'tcx> {
-        debug!("normalize_projection_type(projection_ty={:?})", projection_ty);
+        debug!(?projection_ty, "normalize_projection_type");
 
         debug_assert!(!projection_ty.has_escaping_bound_vars());
 
@@ -191,7 +190,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         );
         self.register_predicate_obligations(infcx, obligations);
 
-        debug!("normalize_projection_type: result={:?}", normalized_ty);
+        debug!(?normalized_ty);
 
         normalized_ty
     }
@@ -205,7 +204,7 @@ impl<'tcx> TraitEngine<'tcx> for FulfillmentContext<'tcx> {
         // debug output much nicer to read and so on.
         let obligation = infcx.resolve_vars_if_possible(&obligation);
 
-        debug!("register_predicate_obligation(obligation={:?})", obligation);
+        debug!(?obligation, "register_predicate_obligation");
 
         assert!(!infcx.is_in_snapshot() || self.usable_in_snapshot);
 
@@ -342,7 +341,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 self.selcx.infcx().resolve_vars_if_possible(&obligation.predicate);
         }
 
-        debug!("process_obligation: obligation = {:?} cause = {:?}", obligation, obligation.cause);
+        debug!(?obligation, ?obligation.cause, "process_obligation");
 
         let infcx = self.selcx.infcx();
 
@@ -352,7 +351,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 // This means we need to pass it the bound version of our
                 // predicate.
                 ty::PredicateAtom::Trait(trait_ref, _constness) => {
-                    let trait_obligation = obligation.with(Binder::bind(trait_ref));
+                    let trait_obligation = obligation.with(binder.rebind(trait_ref));
 
                     self.process_trait_obligation(
                         obligation,
@@ -361,7 +360,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                     )
                 }
                 ty::PredicateAtom::Projection(data) => {
-                    let project_obligation = obligation.with(Binder::bind(data));
+                    let project_obligation = obligation.with(binder.rebind(data));
 
                     self.process_projection_obligation(
                         project_obligation,
@@ -500,7 +499,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                         Err(ErrorHandled::TooGeneric) => {
                             pending_obligation.stalled_on = substs
                                 .iter()
-                                .filter_map(|ty| TyOrConstInferVar::maybe_from_generic_arg(ty))
+                                .filter_map(TyOrConstInferVar::maybe_from_generic_arg)
                                 .collect();
                             ProcessResult::Unchanged
                         }
@@ -509,7 +508,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 }
 
                 ty::PredicateAtom::ConstEquate(c1, c2) => {
-                    debug!("equating consts: c1={:?} c2={:?}", c1, c2);
+                    debug!(?c1, ?c2, "equating consts");
                     if self.selcx.tcx().features().const_evaluatable_checked {
                         // FIXME: we probably should only try to unify abstract constants
                         // if the constants depend on generic parameters.
@@ -601,6 +600,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
         }
     }
 
+    #[instrument(level = "debug", skip(self, obligation, stalled_on))]
     fn process_trait_obligation(
         &mut self,
         obligation: &PredicateObligation<'tcx>,
@@ -613,8 +613,8 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
             // FIXME: consider caching errors too.
             if infcx.predicate_must_hold_considering_regions(obligation) {
                 debug!(
-                    "selecting trait `{:?}` at depth {} evaluated to holds",
-                    obligation.predicate, obligation.recursion_depth
+                    "selecting trait at depth {} evaluated to holds",
+                    obligation.recursion_depth
                 );
                 return ProcessResult::Changed(vec![]);
             }
@@ -622,17 +622,11 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
 
         match self.selcx.select(&trait_obligation) {
             Ok(Some(impl_source)) => {
-                debug!(
-                    "selecting trait `{:?}` at depth {} yielded Ok(Some)",
-                    trait_obligation.predicate, obligation.recursion_depth
-                );
+                debug!("selecting trait at depth {} yielded Ok(Some)", obligation.recursion_depth);
                 ProcessResult::Changed(mk_pending(impl_source.nested_obligations()))
             }
             Ok(None) => {
-                debug!(
-                    "selecting trait `{:?}` at depth {} yielded Ok(None)",
-                    trait_obligation.predicate, obligation.recursion_depth
-                );
+                debug!("selecting trait at depth {} yielded Ok(None)", obligation.recursion_depth);
 
                 // This is a bit subtle: for the most part, the
                 // only reason we can fail to make progress on
@@ -652,10 +646,7 @@ impl<'a, 'b, 'tcx> FulfillProcessor<'a, 'b, 'tcx> {
                 ProcessResult::Unchanged
             }
             Err(selection_err) => {
-                info!(
-                    "selecting trait `{:?}` at depth {} yielded Err",
-                    trait_obligation.predicate, obligation.recursion_depth
-                );
+                info!("selecting trait at depth {} yielded Err", obligation.recursion_depth);
 
                 ProcessResult::Error(CodeSelectionError(selection_err))
             }

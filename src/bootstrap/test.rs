@@ -737,6 +737,7 @@ impl Step for Tidy {
         let mut cmd = builder.tool_cmd(Tool::Tidy);
         cmd.arg(&builder.src);
         cmd.arg(&builder.initial_cargo);
+        cmd.arg(&builder.out);
         if builder.is_verbose() {
             cmd.arg("--verbose");
         }
@@ -966,6 +967,16 @@ impl Step for Compiletest {
     /// compiletest `mode` and `suite` arguments. For example `mode` can be
     /// "run-pass" or `suite` can be something like `debuginfo`.
     fn run(self, builder: &Builder<'_>) {
+        if builder.top_stage == 0 && env::var("COMPILETEST_FORCE_STAGE0").is_err() {
+            eprintln!("\
+error: `--stage 0` runs compiletest on the beta compiler, not your local changes, and will almost always cause tests to fail
+help: to test the compiler, use `--stage 1` instead
+help: to test the standard library, use `--stage 0 library/std` instead
+note: if you're sure you want to do this, please open an issue as to why. In the meantime, you can override this with `COMPILETEST_FORCE_STAGE0=1`."
+            );
+            std::process::exit(1);
+        }
+
         let compiler = self.compiler;
         let target = self.target;
         let mode = self.mode;
@@ -1029,6 +1040,7 @@ impl Step for Compiletest {
         cmd.arg("--src-base").arg(builder.src.join("src/test").join(suite));
         cmd.arg("--build-base").arg(testdir(builder, compiler.host).join(suite));
         cmd.arg("--stage-id").arg(format!("stage{}-{}", compiler.stage, target));
+        cmd.arg("--suite").arg(suite);
         cmd.arg("--mode").arg(mode);
         cmd.arg("--target").arg(target.rustc_target_arg());
         cmd.arg("--host").arg(&*compiler.host.triple);
@@ -1192,18 +1204,7 @@ impl Step for Compiletest {
 
             // Only pass correct values for these flags for the `run-make` suite as it
             // requires that a C++ compiler was configured which isn't always the case.
-            if !builder.config.dry_run && suite == "run-make-fulldeps" {
-                cmd.arg("--cc")
-                    .arg(builder.cc(target))
-                    .arg("--cxx")
-                    .arg(builder.cxx(target).unwrap())
-                    .arg("--cflags")
-                    .arg(builder.cflags(target, GitRepo::Rustc).join(" "));
-                copts_passed = true;
-                if let Some(ar) = builder.ar(target) {
-                    cmd.arg("--ar").arg(ar);
-                }
-
+            if !builder.config.dry_run && matches!(suite, "run-make" | "run-make-fulldeps") {
                 // The llvm/bin directory contains many useful cross-platform
                 // tools. Pass the path to run-make tests so they can use them.
                 let llvm_bin_path = llvm_config
@@ -1226,6 +1227,21 @@ impl Step for Compiletest {
                     .expect("Could not add LLD bin path to PATH");
                     cmd.env("PATH", new_path);
                 }
+            }
+        }
+
+        // Only pass correct values for these flags for the `run-make` suite as it
+        // requires that a C++ compiler was configured which isn't always the case.
+        if !builder.config.dry_run && matches!(suite, "run-make" | "run-make-fulldeps") {
+            cmd.arg("--cc")
+                .arg(builder.cc(target))
+                .arg("--cxx")
+                .arg(builder.cxx(target).unwrap())
+                .arg("--cflags")
+                .arg(builder.cflags(target, GitRepo::Rustc).join(" "));
+            copts_passed = true;
+            if let Some(ar) = builder.ar(target) {
+                cmd.arg("--ar").arg(ar);
             }
         }
 

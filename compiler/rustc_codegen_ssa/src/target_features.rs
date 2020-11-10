@@ -1,3 +1,5 @@
+use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_middle::ty::query::Providers;
 use rustc_session::Session;
 use rustc_span::symbol::sym;
 use rustc_span::symbol::Symbol;
@@ -61,6 +63,7 @@ const X86_ALLOWED_FEATURES: &[(&str, Option<Symbol>)] = &[
     ("bmi1", None),
     ("bmi2", None),
     ("cmpxchg16b", Some(sym::cmpxchg16b_target_feature)),
+    ("ermsb", Some(sym::ermsb_target_feature)),
     ("f16c", Some(sym::f16c_target_feature)),
     ("fma", None),
     ("fxsr", None),
@@ -136,7 +139,7 @@ pub fn all_known_features() -> impl Iterator<Item = (&'static str, Option<Symbol
 }
 
 pub fn supported_target_features(sess: &Session) -> &'static [(&'static str, Option<Symbol>)] {
-    match &*sess.target.target.arch {
+    match &*sess.target.arch {
         "arm" => ARM_ALLOWED_FEATURES,
         "aarch64" => AARCH64_ALLOWED_FEATURES,
         "x86" | "x86_64" => X86_ALLOWED_FEATURES,
@@ -147,4 +150,17 @@ pub fn supported_target_features(sess: &Session) -> &'static [(&'static str, Opt
         "wasm32" => WASM_ALLOWED_FEATURES,
         _ => &[],
     }
+}
+
+pub(crate) fn provide(providers: &mut Providers) {
+    providers.supported_target_features = |tcx, cnum| {
+        assert_eq!(cnum, LOCAL_CRATE);
+        if tcx.sess.opts.actually_rustdoc {
+            // rustdoc needs to be able to document functions that use all the features, so
+            // whitelist them all
+            all_known_features().map(|(a, b)| (a.to_string(), b)).collect()
+        } else {
+            supported_target_features(tcx.sess).iter().map(|&(a, b)| (a.to_string(), b)).collect()
+        }
+    };
 }
