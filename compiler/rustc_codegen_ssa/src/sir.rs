@@ -126,10 +126,18 @@ impl SirFuncCx<'tcx> {
                 flags |= ykpack::bodyflags::DO_NOT_TRACE;
             } else if tcx.sess.check_name(attr, sym::interp_step) {
                 // Check various properties of the interp_step at compile time.
+                if !tcx.upvars_mentioned(instance.def_id()).is_none() {
+                    tcx.sess.span_fatal(
+                        tcx.def_span(instance.def_id()),
+                        "The #[interp_step] function must not capture from its environment",
+                    );
+                }
+
                 if mir.args_iter().count() != 1 {
-                    tcx.sess
-                        .struct_err("The #[interp_step] function must accept only one argument")
-                        .emit();
+                    tcx.sess.span_fatal(
+                        tcx.def_span(instance.def_id()),
+                        "The #[interp_step] function must accept only one argument",
+                    );
                 }
 
                 let arg_ok = if let ty::Ref(_, inner_ty, rustc_hir::Mutability::Mut) =
@@ -140,23 +148,17 @@ impl SirFuncCx<'tcx> {
                     false
                 };
                 if !arg_ok {
-                    tcx.sess
-                        .struct_err(
-                            "The #[interp_step] function must accept a mutable reference to a struct"
-                        )
-                        .emit();
+                    tcx.sess.span_err(
+                        tcx.def_span(instance.def_id()),
+                        "The #[interp_step] function must accept a mutable reference to a struct",
+                    );
                 }
 
                 if !mir.return_ty().is_unit() {
-                    tcx.sess.struct_err("The #[interp_step] function must return unit").emit();
-                }
-
-                if !tcx.upvars_mentioned(instance.def_id()).is_none() {
-                    tcx.sess
-                        .struct_err(
-                            "The #[interp_step] function must not capture from its environment",
-                        )
-                        .emit();
+                    tcx.sess.span_err(
+                        tcx.def_span(instance.def_id()),
+                        "The #[interp_step] function must return unit",
+                    );
                 }
 
                 flags |= ykpack::bodyflags::INTERP_STEP;
