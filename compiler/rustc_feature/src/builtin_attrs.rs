@@ -236,6 +236,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // Yorick-related stuff.
     ungated!(do_not_trace, AssumedUsed, template!(Word)),
     ungated!(interp_step, AssumedUsed, template!(Word)),
+    ungated!(trace_debug, AssumedUsed, template!(Word)),
 
     ungated!(used, AssumedUsed, template!(Word)),
 

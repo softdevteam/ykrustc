@@ -1115,6 +1115,7 @@ symbols! {
         thread_local,
         tool_attributes,
         tool_lints,
+        trace_debug,
         trace_macros,
         track_caller,
         trait_alias,

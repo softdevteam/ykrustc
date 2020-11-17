@@ -564,22 +564,56 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let def = instance.map(|i| i.def);
 
         if let Some(sfcx) = &mut self.sir_func_cx {
+            let mut is_trace_debug = false;
             let operand = match instance {
                 Some(inst) => {
+                    if bx.tcx().has_attr(inst.def_id(), sym::trace_debug) {
+                        is_trace_debug = true;
+                    }
                     let sym = (&*bx.tcx().symbol_name(inst).name).to_owned();
                     ykpack::CallOperand::Fn(sym)
                 }
                 None => ykpack::CallOperand::Unknown,
             };
 
-            let term = ykpack::Terminator::Call {
-                operand,
-                args: args.iter().map(|a| sfcx.lower_operand(&bx, bb.as_u32(), a)).collect(),
-                destination: destination.map(|(ret_val, ret_bb)| {
-                    (sfcx.lower_place(&bx, bb.as_u32(), &ret_val), ret_bb.as_u32())
-                }),
-            };
-            sfcx.set_terminator(bb.as_u32(), term);
+            if is_trace_debug {
+                // It's a call to yktrace::trace_debug. We insert a special terminator which the
+                // TIR compiler recognises at runtime.
+                debug_assert!(args.len() == 1);
+                let mut str_arg = None;
+                if let mir::Operand::Constant(box mir::Constant {
+                    literal: ty::Const { ty: const_ty, val: ty::ConstKind::Value(const_val) },
+                    ..
+                }) = args[0]
+                {
+                    if let ty::Ref(_, rty, _) = const_ty.kind() {
+                        if let ty::Str = rty.kind() {
+                            use rustc_middle::mir::interpret::get_slice_bytes;
+                            let bytes = get_slice_bytes(bx.cx(), *const_val);
+                            str_arg = Some(core::str::from_utf8(bytes).unwrap());
+                        }
+                    }
+                }
+
+                if let Some(sval) = str_arg {
+                    let term = ykpack::Terminator::TraceDebugCall {
+                        msg: sval.to_owned(),
+                        destination: destination.unwrap().1.into(),
+                    };
+                    sfcx.set_terminator(bb.as_u32(), term);
+                } else {
+                    panic!("Argument to yktrace::trace_debug is not a constant &str");
+                }
+            } else {
+                let term = ykpack::Terminator::Call {
+                    operand,
+                    args: args.iter().map(|a| sfcx.lower_operand(&bx, bb.as_u32(), a)).collect(),
+                    destination: destination.map(|(ret_val, ret_bb)| {
+                        (sfcx.lower_place(&bx, bb.as_u32(), &ret_val), ret_bb.as_u32())
+                    }),
+                };
+                sfcx.set_terminator(bb.as_u32(), term);
+            }
         }
 
         if let Some(ty::InstanceDef::DropGlue(_, None)) = def {
