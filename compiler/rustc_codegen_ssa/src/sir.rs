@@ -162,6 +162,8 @@ impl SirFuncCx<'tcx> {
                 }
 
                 flags |= ykpack::bodyflags::INTERP_STEP;
+            } else if tcx.sess.check_name(attr, sym::trace_debug) {
+                flags |= ykpack::bodyflags::TRACE_DEBUG;
             }
         }
 
