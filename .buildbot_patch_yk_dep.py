@@ -20,7 +20,7 @@ CARGO_TOML = "Cargo.toml"
 
 
 def get_pr_no():
-    repo = pygit2.Repository(".git")
+    repo = pygit2.Repository(".")
     walker = repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL)
     commit = walker.__next__()
     line1 = commit.message.split('\n', maxsplit=1)[0].strip()
