@@ -109,3 +109,6 @@ backtrace = { path = "library/backtrace" }
 
 [patch."https://github.com/rust-lang/rust-clippy"]
 clippy_lints = { path = "src/tools/clippy/clippy_lints" }
+
+[patch.'https://github.com/softdevteam/yk']
+ykpack = { git = 'https://github.com/vext01/yk', branch='broken-branch' }

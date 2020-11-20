@@ -10,12 +10,26 @@ ci-yk: <github-user> <branch>'
 
 import sys
 import github3 as gh3
+import pygit2
 
 SOFTDEV_USER = "softdevteam"
 YKRUSTC_REPO = "ykrustc"
 YK_REPO = "yk"
 DEFAULT_BRANCH = "master"
 CARGO_TOML = "Cargo.toml"
+
+
+def get_pr_no():
+    repo = pygit2.Repository(".git")
+    walker = repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL)
+    commit = walker.__next__()
+    line1 = commit.message.split('\n', maxsplit=1)[0].strip()
+    assert line1.startswith(('Merge #', 'Try #'))
+    pr_no = line1.split(" ", maxsplit=1)[1]
+    pr_no = pr_no.rstrip(":")  # Colon present on Try only it seems.
+    assert pr_no.startswith('#')
+    pr_no = int(pr_no[1:])
+    return pr_no
 
 
 def bogus_line():
@@ -55,16 +69,8 @@ def write_cargo_toml(git_url, branch):
 
 
 if __name__ == "__main__":
-    try:
-        (_, pr_no) = sys.argv
-    except ValueError:
-        print(f"usage: {__file__} <pull-req-no>", file=sys.stderr)
-        sys.exit(1)
-
-    # As a sanity check that we correctly extracted the PR number from the
-    # bors merge commit, we leave the leading hash in and check it here.
-    assert(pr_no.startswith("#"))
-    url, branch = get_yk_branch(pr_no[1:])
+    pr_no = get_pr_no()
+    url, branch = get_yk_branch(pr_no)
 
     # x.py gets upset if you try to patch the dep to the default path:
     # "patch for `ykpack` in `https://github.com/softdevteam/yk` points to the
