@@ -60,7 +60,11 @@ if __name__ == "__main__":
     except ValueError:
         print(f"usage: {__file__} <pull-req-no>", file=sys.stderr)
         sys.exit(1)
-    url, branch = get_yk_branch(pr_no)
+
+    # As a sanity check that we correctly extracted the PR number from the
+    # bors merge commit, we leave the leading hash in and check it here.
+    assert(pr_no.startswith("#"))
+    url, branch = get_yk_branch(pr_no[1:])
 
     # x.py gets upset if you try to patch the dep to the default path:
     # "patch for `ykpack` in `https://github.com/softdevteam/yk` points to the
