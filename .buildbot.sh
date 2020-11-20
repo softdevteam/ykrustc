@@ -2,7 +2,7 @@
 #
 # Build script for continuous integration.
 
-set -e
+set -ex
 
 export PATH=PATH=/opt/gdb-8.2/bin:${PATH}
 
@@ -17,6 +17,7 @@ ulimit -d $((1024 * 1024 * 10)) # 10 GiB
 
 # Patch the yk dependency if necessary.
 # This step requires the 'github3.py' python module.
+git show # XXX debug
 pr_no=`git show HEAD | awk  '/(Merge #|Try #)/ {gsub(/ /, "", $2); gsub (/:/, "", $2); print substr($2, 1, length($2) - 1)}'`
 /opt/buildbot/bin/python3 .buildbot_patch_yk_dep.py ${pr_no}
 exit 1
