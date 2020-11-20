@@ -10,7 +10,7 @@ ci-yk: <github-user> <branch>'
 
 import sys
 import github3 as gh3
-import pygit2
+import subprocess
 
 SOFTDEV_USER = "softdevteam"
 YKRUSTC_REPO = "ykrustc"
@@ -20,13 +20,13 @@ CARGO_TOML = "Cargo.toml"
 
 
 def get_pr_no():
-    repo = pygit2.Repository(".")
-    walker = repo.walk(repo.head.target, pygit2.GIT_SORT_TOPOLOGICAL)
-    commit = walker.__next__()
-    line1 = commit.message.split('\n', maxsplit=1)[0].strip()
-    assert line1.startswith(('Merge #', 'Try #'))
-    pr_no = line1.split(" ", maxsplit=1)[1]
-    pr_no = pr_no.rstrip(":")  # Colon present on Try only it seems.
+    # Get the first line of the commit.
+    proc = subprocess.run(["git", "log", "-1", "--pretty=format:%s"],
+                          capture_output=True, check=True)
+    line = proc.stdout.decode('utf-8')
+    assert line.startswith(('Merge #', 'Try #'))
+    pr_no = line.split(" ", maxsplit=1)[1]
+    pr_no = pr_no.rstrip(":")  # Colon present on 'Try' only it seems.
     assert pr_no.startswith('#')
     pr_no = int(pr_no[1:])
     return pr_no
@@ -40,7 +40,6 @@ def bogus_line():
 def get_yk_branch(pr_no):
     gh = gh3.GitHub()
     issue = gh.issue(SOFTDEV_USER, YKRUSTC_REPO, pr_no)
-    issue.body += "\nci-yk: vext01 xxx"
 
     # Look for a 'ci-yk' line in the body of the PR.
     user = SOFTDEV_USER

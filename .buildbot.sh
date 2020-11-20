@@ -16,7 +16,7 @@ SNAP_DIR=/opt/ykrustc-bin-snapshots
 ulimit -d $((1024 * 1024 * 10)) # 10 GiB
 
 # Patch the yk dependency if necessary.
-# This step requires the 'github3.py' and 'github2' Python modules.
+# This step requires the 'github3.py' module.
 /opt/buildbot/bin/python3 .buildbot_patch_yk_dep.py
 
 # Note that the gdb must be Python enabled.
