@@ -16,8 +16,9 @@ SNAP_DIR=/opt/ykrustc-bin-snapshots
 ulimit -d $((1024 * 1024 * 10)) # 10 GiB
 
 # Patch the yk dependency if necessary.
+# This step requires the 'github3.py' python module.
 pr_no=`git show HEAD | awk '/(Merge #|Try #)/ {print substr($2, 2)}'`
-echo `python3 .buildbot_patch_yk_dep.py ${pr_no}`
+/opt/buildbot/bin/python3 .buildbot_patch_yk_dep.py ${pr_no}
 
 # Note that the gdb must be Python enabled.
 /usr/bin/time -v ./x.py test --config .buildbot.config.toml --stage 2
