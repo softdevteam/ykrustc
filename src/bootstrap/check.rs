@@ -108,7 +108,7 @@ impl Step for Std {
             // Explicitly pass -p for all dependencies krates -- this will force cargo
             // to also check the tests/benches/examples for these crates, rather
             // than just the leaf crate.
-            for krate in builder.in_tree_crates("test") {
+            for krate in builder.in_tree_crates("test", Some(target)) {
                 cargo.arg("-p").arg(krate.name);
             }
 
@@ -172,7 +172,7 @@ impl Step for Rustc {
         // Explicitly pass -p for all compiler krates -- this will force cargo
         // to also check the tests/benches/examples for these crates, rather
         // than just the leaf crate.
-        for krate in builder.in_tree_crates("rustc-main") {
+        for krate in builder.in_tree_crates("rustc-main", Some(target)) {
             cargo.arg("-p").arg(krate.name);
         }
 
@@ -231,6 +231,11 @@ impl Step for CodegenBackend {
             .arg("--manifest-path")
             .arg(builder.src.join(format!("compiler/rustc_codegen_{}/Cargo.toml", backend)));
         rustc_cargo_env(builder, &mut cargo, target);
+
+        builder.info(&format!(
+            "Checking {} artifacts ({} -> {})",
+            backend, &compiler.host.triple, target.triple
+        ));
 
         run_cargo(
             builder,

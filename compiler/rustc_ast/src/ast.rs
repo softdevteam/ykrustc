@@ -1061,7 +1061,7 @@ pub struct Expr {
 
 // `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-rustc_data_structures::static_assert_size!(Expr, 112);
+rustc_data_structures::static_assert_size!(Expr, 120);
 
 impl Expr {
     /// Returns `true` if this expression would be valid somewhere that expects a value;
@@ -1192,6 +1192,7 @@ impl Expr {
             ExprKind::Field(..) => ExprPrecedence::Field,
             ExprKind::Index(..) => ExprPrecedence::Index,
             ExprKind::Range(..) => ExprPrecedence::Range,
+            ExprKind::Underscore => ExprPrecedence::Path,
             ExprKind::Path(..) => ExprPrecedence::Path,
             ExprKind::AddrOf(..) => ExprPrecedence::AddrOf,
             ExprKind::Break(..) => ExprPrecedence::Break,
@@ -1216,6 +1217,16 @@ pub enum RangeLimits {
     HalfOpen,
     /// Inclusive at the beginning and end
     Closed,
+}
+
+#[derive(Clone, Encodable, Decodable, Debug)]
+pub enum StructRest {
+    /// `..x`.
+    Base(P<Expr>),
+    /// `..`.
+    Rest(Span),
+    /// No trailing `..` or expression.
+    None,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]
@@ -1312,8 +1323,10 @@ pub enum ExprKind {
     Field(P<Expr>, Ident),
     /// An indexing operation (e.g., `foo[2]`).
     Index(P<Expr>, P<Expr>),
-    /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`).
+    /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`; and `..` in destructuring assingment).
     Range(Option<P<Expr>>, Option<P<Expr>>, RangeLimits),
+    /// An underscore, used in destructuring assignment to ignore a value.
+    Underscore,
 
     /// Variable reference, possibly containing `::` and/or type
     /// parameters (e.g., `foo::bar::<baz>`).
@@ -1340,9 +1353,8 @@ pub enum ExprKind {
 
     /// A struct literal expression.
     ///
-    /// E.g., `Foo {x: 1, y: 2}`, or `Foo {x: 1, .. base}`,
-    /// where `base` is the `Option<Expr>`.
-    Struct(Path, Vec<Field>, Option<P<Expr>>),
+    /// E.g., `Foo {x: 1, y: 2}`, or `Foo {x: 1, .. rest}`.
+    Struct(Path, Vec<Field>, StructRest),
 
     /// An array literal constructed from one repeated element.
     ///
@@ -2439,13 +2451,12 @@ pub struct Attribute {
     /// or the construct this attribute is contained within (inner).
     pub style: AttrStyle,
     pub span: Span,
-    pub tokens: Option<LazyTokenStream>,
 }
 
 #[derive(Clone, Encodable, Decodable, Debug)]
 pub enum AttrKind {
     /// A normal attribute.
-    Normal(AttrItem),
+    Normal(AttrItem, Option<LazyTokenStream>),
 
     /// A doc comment (e.g. `/// ...`, `//! ...`, `/** ... */`, `/*! ... */`).
     /// Doc attributes (e.g. `#[doc="..."]`) are represented with the `Normal`

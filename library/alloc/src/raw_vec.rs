@@ -1,7 +1,7 @@
 #![unstable(feature = "raw_vec_internals", reason = "implementation detail", issue = "none")]
 #![doc(hidden)]
 
-use core::alloc::LayoutErr;
+use core::alloc::LayoutError;
 use core::cmp;
 use core::intrinsics;
 use core::mem::{self, ManuallyDrop, MaybeUninit};
@@ -116,8 +116,7 @@ impl<T> RawVec<T, Global> {
 impl<T, A: AllocRef> RawVec<T, A> {
     /// Like `new`, but parameterized over the choice of allocator for
     /// the returned `RawVec`.
-    #[cfg_attr(not(bootstrap), rustc_allow_const_fn_unstable(const_fn))]
-    #[cfg_attr(bootstrap, allow_internal_unstable(const_fn))]
+    #[rustc_allow_const_fn_unstable(const_fn)]
     pub const fn new_in(alloc: A) -> Self {
         // `cap: 0` means "unallocated". zero-sized types are ignored.
         Self { ptr: Unique::dangling(), cap: 0, alloc }
@@ -233,13 +232,8 @@ impl<T, A: AllocRef> RawVec<T, A> {
     }
 
     /// Returns a shared reference to the allocator backing this `RawVec`.
-    pub fn alloc(&self) -> &A {
+    pub fn alloc_ref(&self) -> &A {
         &self.alloc
-    }
-
-    /// Returns a mutable reference to the allocator backing this `RawVec`.
-    pub fn alloc_mut(&mut self) -> &mut A {
-        &mut self.alloc
     }
 
     fn current_memory(&self) -> Option<(NonNull<u8>, Layout)> {
@@ -472,7 +466,7 @@ impl<T, A: AllocRef> RawVec<T, A> {
 // significant, because the number of different `A` types seen in practice is
 // much smaller than the number of `T` types.)
 fn finish_grow<A>(
-    new_layout: Result<Layout, LayoutErr>,
+    new_layout: Result<Layout, LayoutError>,
     current_memory: Option<(NonNull<u8>, Layout)>,
     alloc: &mut A,
 ) -> Result<NonNull<[u8]>, TryReserveError>

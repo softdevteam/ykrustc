@@ -50,7 +50,7 @@ impl<'tcx> DebugContext<'tcx> {
             // TODO: this should be configurable
             // macOS doesn't seem to support DWARF > 3
             // 5 version is required for md5 file hash
-            version: if tcx.sess.target.options.is_like_osx {
+            version: if tcx.sess.target.is_like_osx {
                 3
             } else {
                 // FIXME change to version 5 once the gdb and lldb shipping with the latest debian
@@ -365,7 +365,7 @@ impl<'tcx> DebugContext<'tcx> {
                 let ty = self.tcx.subst_and_normalize_erasing_regions(
                     instance.substs,
                     ty::ParamEnv::reveal_all(),
-                    &mir.local_decls[local].ty,
+                    mir.local_decls[local].ty,
                 );
                 let var_id = self.define_local(entry_id, format!("{:?}", local), ty);
 

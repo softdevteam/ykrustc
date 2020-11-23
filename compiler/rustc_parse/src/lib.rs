@@ -1,6 +1,5 @@
 //! The main parser interface.
 
-#![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(bindings_after_at)]
 #![feature(iter_order_by)]
@@ -616,12 +615,7 @@ fn prepend_attrs(
         if attr.style == ast::AttrStyle::Inner {
             return None;
         }
-        builder.push(
-            attr.tokens
-                .as_ref()
-                .unwrap_or_else(|| panic!("Attribute {:?} is missing tokens!", attr))
-                .create_token_stream(),
-        );
+        builder.push(attr.tokens());
     }
     builder.push(tokens);
     Some(builder.build())

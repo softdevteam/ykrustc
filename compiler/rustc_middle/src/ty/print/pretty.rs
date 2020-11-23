@@ -63,7 +63,7 @@ thread_local! {
 /// Avoids running any queries during any prints that occur
 /// during the closure. This may alter the appearance of some
 /// types (e.g. forcing verbose printing for opaque types).
-/// This method is used during some queries (e.g. `predicates_of`
+/// This method is used during some queries (e.g. `explicit_item_bounds`
 /// for opaque types), to ensure that any debug printing that
 /// occurs during the query computation does not end up recursively
 /// calling the same query.
@@ -1750,7 +1750,7 @@ impl<F: fmt::Write> FmtPrinter<'_, 'tcx, F> {
         define_scoped_cx!(self);
 
         let mut region_index = self.region_index;
-        let new_value = self.tcx.replace_late_bound_regions(value, |br| {
+        let new_value = self.tcx.replace_late_bound_regions(value.clone(), |br| {
             let _ = start_or_continue(&mut self, "for<", ", ");
             let br = match br {
                 ty::BrNamed(_, name) => {
@@ -1796,7 +1796,7 @@ impl<F: fmt::Write> FmtPrinter<'_, 'tcx, F> {
     {
         struct LateBoundRegionNameCollector<'a>(&'a mut FxHashSet<Symbol>);
         impl<'tcx> ty::fold::TypeVisitor<'tcx> for LateBoundRegionNameCollector<'_> {
-            fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<()> {
+            fn visit_region(&mut self, r: ty::Region<'tcx>) -> ControlFlow<Self::BreakTy> {
                 if let ty::ReLateBound(_, ty::BrNamed(_, name)) = *r {
                     self.0.insert(name);
                 }

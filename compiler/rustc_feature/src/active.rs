@@ -613,6 +613,12 @@ declare_features! (
     /// Allows the use of destructuring assignments.
     (active, destructuring_assignment, "1.49.0", Some(71126), None),
 
+    /// Enables `#[cfg(panic = "...")]` config key.
+    (active, cfg_panic, "1.49.0", Some(77443), None),
+
+    /// Allows capturing disjoint fields in a closure/generator (RFC 2229).
+    (active, capture_disjoint_fields, "1.49.0", Some(53488), None),
+
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
     // -------------------------------------------------------------------------
@@ -636,6 +642,7 @@ pub const INCOMPLETE_FEATURES: &[Symbol] = &[
     sym::inline_const,
     sym::repr128,
     sym::unsized_locals,
+    sym::capture_disjoint_fields,
 ];
 
 /// Some features are not allowed to be used together at the same time, if

@@ -19,11 +19,10 @@ pub fn opts() -> TargetOptions {
     );
 
     TargetOptions {
-        target_os: "linux".to_string(),
-        target_env: "gnu".to_string(),
+        os: "linux".to_string(),
         dynamic_linking: true,
         executables: true,
-        target_family: Some("unix".to_string()),
+        os_family: Some("unix".to_string()),
         linker_is_gnu: true,
         has_rpath: true,
         pre_link_args: args,

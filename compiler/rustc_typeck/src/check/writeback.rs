@@ -70,6 +70,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         debug!("used_trait_imports({:?}) = {:?}", item_def_id, used_trait_imports);
         wbcx.typeck_results.used_trait_imports = used_trait_imports;
 
+        wbcx.typeck_results.treat_byte_string_as_slice =
+            mem::take(&mut self.typeck_results.borrow_mut().treat_byte_string_as_slice);
+
         wbcx.typeck_results.closure_captures =
             mem::take(&mut self.typeck_results.borrow_mut().closure_captures);
 
@@ -136,7 +139,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         match e.kind {
             hir::ExprKind::Unary(hir::UnOp::UnNeg | hir::UnOp::UnNot, ref inner) => {
                 let inner_ty = self.fcx.node_ty(inner.hir_id);
-                let inner_ty = self.fcx.resolve_vars_if_possible(&inner_ty);
+                let inner_ty = self.fcx.resolve_vars_if_possible(inner_ty);
 
                 if inner_ty.is_scalar() {
                     let mut typeck_results = self.fcx.typeck_results.borrow_mut();
@@ -147,10 +150,10 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             hir::ExprKind::Binary(ref op, ref lhs, ref rhs)
             | hir::ExprKind::AssignOp(ref op, ref lhs, ref rhs) => {
                 let lhs_ty = self.fcx.node_ty(lhs.hir_id);
-                let lhs_ty = self.fcx.resolve_vars_if_possible(&lhs_ty);
+                let lhs_ty = self.fcx.resolve_vars_if_possible(lhs_ty);
 
                 let rhs_ty = self.fcx.node_ty(rhs.hir_id);
-                let rhs_ty = self.fcx.resolve_vars_if_possible(&rhs_ty);
+                let rhs_ty = self.fcx.resolve_vars_if_possible(rhs_ty);
 
                 if lhs_ty.is_scalar() && rhs_ty.is_scalar() {
                     let mut typeck_results = self.fcx.typeck_results.borrow_mut();
@@ -209,7 +212,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                         &format!("bad index {:?} for base: `{:?}`", index, base),
                     )
                 });
-                let index_ty = self.fcx.resolve_vars_if_possible(&index_ty);
+                let index_ty = self.fcx.resolve_vars_if_possible(index_ty);
 
                 if base_ty.builtin_index().is_some() && index_ty == self.fcx.tcx.types.usize {
                     // Remove the method call record
@@ -313,14 +316,14 @@ impl<'cx, 'tcx> Visitor<'tcx> for WritebackCx<'cx, 'tcx> {
     fn visit_local(&mut self, l: &'tcx hir::Local<'tcx>) {
         intravisit::walk_local(self, l);
         let var_ty = self.fcx.local_ty(l.span, l.hir_id).decl_ty;
-        let var_ty = self.resolve(&var_ty, &l.span);
+        let var_ty = self.resolve(var_ty, &l.span);
         self.write_ty_to_typeck_results(l.hir_id, var_ty);
     }
 
     fn visit_ty(&mut self, hir_ty: &'tcx hir::Ty<'tcx>) {
         intravisit::walk_ty(self, hir_ty);
         let ty = self.fcx.node_ty(hir_ty.hir_id);
-        let ty = self.resolve(&ty, &hir_ty.span);
+        let ty = self.resolve(ty, &hir_ty.span);
         self.write_ty_to_typeck_results(hir_ty.hir_id, ty);
     }
 }
@@ -432,7 +435,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
     fn visit_opaque_types(&mut self, span: Span) {
         for (&def_id, opaque_defn) in self.fcx.opaque_types.borrow().iter() {
             let hir_id = self.tcx().hir().local_def_id_to_hir_id(def_id.expect_local());
-            let instantiated_ty = self.resolve(&opaque_defn.concrete_ty, &hir_id);
+            let instantiated_ty = self.resolve(opaque_defn.concrete_ty, &hir_id);
 
             debug_assert!(!instantiated_ty.has_escaping_bound_vars());
 
@@ -522,13 +525,13 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
         // Resolve the type of the node with id `node_id`
         let n_ty = self.fcx.node_ty(hir_id);
-        let n_ty = self.resolve(&n_ty, &span);
+        let n_ty = self.resolve(n_ty, &span);
         self.write_ty_to_typeck_results(hir_id, n_ty);
         debug!("node {:?} has type {:?}", hir_id, n_ty);
 
         // Resolve any substitutions
         if let Some(substs) = self.fcx.typeck_results.borrow().node_substs_opt(hir_id) {
-            let substs = self.resolve(&substs, &span);
+            let substs = self.resolve(substs, &span);
             debug!("write_substs_to_tcx({:?}, {:?})", hir_id, substs);
             assert!(!substs.needs_infer() && !substs.has_placeholders());
             self.typeck_results.node_substs_mut().insert(hir_id, substs);
@@ -543,7 +546,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             }
 
             Some(adjustment) => {
-                let resolved_adjustment = self.resolve(&adjustment, &span);
+                let resolved_adjustment = self.resolve(adjustment, &span);
                 debug!("adjustments for node {:?}: {:?}", hir_id, resolved_adjustment);
                 self.typeck_results.adjustments_mut().insert(hir_id, resolved_adjustment);
             }
@@ -558,7 +561,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             }
 
             Some(adjustment) => {
-                let resolved_adjustment = self.resolve(&adjustment, &span);
+                let resolved_adjustment = self.resolve(adjustment, &span);
                 debug!("pat_adjustments for node {:?}: {:?}", hir_id, resolved_adjustment);
                 self.typeck_results.pat_adjustments_mut().insert(hir_id, resolved_adjustment);
             }
@@ -570,7 +573,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
         assert_eq!(fcx_typeck_results.hir_owner, self.typeck_results.hir_owner);
         let common_hir_owner = fcx_typeck_results.hir_owner;
 
-        for (&local_id, fn_sig) in fcx_typeck_results.liberated_fn_sigs().iter() {
+        for (&local_id, &fn_sig) in fcx_typeck_results.liberated_fn_sigs().iter() {
             let hir_id = hir::HirId { owner: common_hir_owner, local_id };
             let fn_sig = self.resolve(fn_sig, &hir_id);
             self.typeck_results.liberated_fn_sigs_mut().insert(hir_id, fn_sig);
@@ -584,12 +587,12 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
         for (&local_id, ftys) in fcx_typeck_results.fru_field_types().iter() {
             let hir_id = hir::HirId { owner: common_hir_owner, local_id };
-            let ftys = self.resolve(ftys, &hir_id);
+            let ftys = self.resolve(ftys.clone(), &hir_id);
             self.typeck_results.fru_field_types_mut().insert(hir_id, ftys);
         }
     }
 
-    fn resolve<T>(&mut self, x: &T, span: &dyn Locatable) -> T
+    fn resolve<T>(&mut self, x: T, span: &dyn Locatable) -> T
     where
         T: TypeFoldable<'tcx>,
     {
@@ -681,8 +684,8 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for Resolver<'cx, 'tcx> {
     }
 
     fn fold_ty(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
-        match self.infcx.fully_resolve(&t) {
-            Ok(t) => self.infcx.tcx.erase_regions(&t),
+        match self.infcx.fully_resolve(t) {
+            Ok(t) => self.infcx.tcx.erase_regions(t),
             Err(_) => {
                 debug!("Resolver::fold_ty: input type `{:?}` not fully resolvable", t);
                 self.report_type_error(t);
@@ -698,8 +701,8 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for Resolver<'cx, 'tcx> {
     }
 
     fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
-        match self.infcx.fully_resolve(&ct) {
-            Ok(ct) => self.infcx.tcx.erase_regions(&ct),
+        match self.infcx.fully_resolve(ct) {
+            Ok(ct) => self.infcx.tcx.erase_regions(ct),
             Err(_) => {
                 debug!("Resolver::fold_const: input const `{:?}` not fully resolvable", ct);
                 self.report_const_error(ct);

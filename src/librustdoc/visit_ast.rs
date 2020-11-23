@@ -34,7 +34,7 @@ fn def_id_to_path(tcx: TyCtxt<'_>, did: DefId) -> Vec<String> {
 // Also, is there some reason that this doesn't use the 'visit'
 // framework from syntax?.
 
-pub struct RustdocVisitor<'a, 'tcx> {
+crate struct RustdocVisitor<'a, 'tcx> {
     cx: &'a mut core::DocContext<'tcx>,
     view_item_stack: FxHashSet<hir::HirId>,
     inlining: bool,
@@ -44,7 +44,7 @@ pub struct RustdocVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
-    pub fn new(cx: &'a mut core::DocContext<'tcx>) -> RustdocVisitor<'a, 'tcx> {
+    crate fn new(cx: &'a mut core::DocContext<'tcx>) -> RustdocVisitor<'a, 'tcx> {
         // If the root is re-exported, terminate all recursion.
         let mut stack = FxHashSet::default();
         stack.insert(hir::CRATE_HIR_ID);
@@ -62,7 +62,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         self.exact_paths.entry(did).or_insert_with(|| def_id_to_path(tcx, did));
     }
 
-    pub fn visit(mut self, krate: &'tcx hir::Crate<'_>) -> Module<'tcx> {
+    crate fn visit(mut self, krate: &'tcx hir::Crate<'_>) -> Module<'tcx> {
         let mut module = self.visit_mod_contents(
             krate.item.span,
             krate.item.attrs,
@@ -80,77 +80,6 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         self.cx.renderinfo.get_mut().exact_paths = self.exact_paths;
 
         module
-    }
-
-    fn visit_variant_data(
-        &mut self,
-        item: &'tcx hir::Item<'_>,
-        name: Symbol,
-        sd: &'tcx hir::VariantData<'_>,
-        generics: &'tcx hir::Generics<'_>,
-    ) -> Struct<'tcx> {
-        debug!("visiting struct");
-        let struct_type = struct_type_from_def(&*sd);
-        Struct {
-            id: item.hir_id,
-            struct_type,
-            name,
-            vis: &item.vis,
-            attrs: &item.attrs,
-            generics,
-            fields: sd.fields(),
-            span: item.span,
-        }
-    }
-
-    fn visit_union_data(
-        &mut self,
-        item: &'tcx hir::Item<'_>,
-        name: Symbol,
-        sd: &'tcx hir::VariantData<'_>,
-        generics: &'tcx hir::Generics<'_>,
-    ) -> Union<'tcx> {
-        debug!("visiting union");
-        let struct_type = struct_type_from_def(&*sd);
-        Union {
-            id: item.hir_id,
-            struct_type,
-            name,
-            vis: &item.vis,
-            attrs: &item.attrs,
-            generics,
-            fields: sd.fields(),
-            span: item.span,
-        }
-    }
-
-    fn visit_enum_def(
-        &mut self,
-        it: &'tcx hir::Item<'_>,
-        name: Symbol,
-        def: &'tcx hir::EnumDef<'_>,
-        generics: &'tcx hir::Generics<'_>,
-    ) -> Enum<'tcx> {
-        debug!("visiting enum");
-        Enum {
-            name,
-            variants: def
-                .variants
-                .iter()
-                .map(|v| Variant {
-                    name: v.ident.name,
-                    id: v.id,
-                    attrs: &v.attrs,
-                    def: &v.data,
-                    span: v.span,
-                })
-                .collect(),
-            vis: &it.vis,
-            generics,
-            attrs: &it.attrs,
-            id: it.hir_id,
-            span: it.span,
-        }
     }
 
     fn visit_fn(
@@ -202,27 +131,10 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                     }
                 }
 
-                om.proc_macros.push(ProcMacro {
-                    name,
-                    id: item.hir_id,
-                    kind,
-                    helpers,
-                    attrs: &item.attrs,
-                    span: item.span,
-                });
+                om.proc_macros.push(ProcMacro { name, id: item.hir_id, kind, helpers });
             }
             None => {
-                om.fns.push(Function {
-                    id: item.hir_id,
-                    vis: &item.vis,
-                    attrs: &item.attrs,
-                    decl,
-                    name,
-                    span: item.span,
-                    generics,
-                    header,
-                    body,
-                });
+                om.fns.push(Function { id: item.hir_id, decl, name, generics, header, body });
             }
         }
     }
@@ -236,7 +148,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         m: &'tcx hir::Mod<'tcx>,
         name: Option<Symbol>,
     ) -> Module<'tcx> {
-        let mut om = Module::new(name, attrs, vis);
+        let mut om = Module::new(name, attrs);
         om.where_outer = span;
         om.where_inner = m.inner;
         om.id = id;
@@ -251,7 +163,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         om
     }
 
-    /// Tries to resolve the target of a `pub use` statement and inlines the
+    /// Tries to resolve the target of a `crate use` statement and inlines the
     /// target if it is defined locally and would not be documented otherwise,
     /// or when it is specifically requested with `please_inline`.
     /// (the latter is the case when the import is marked `doc(inline)`)
@@ -458,68 +370,21 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                     Some(ident.name),
                 ));
             }
-            hir::ItemKind::Enum(ref ed, ref gen) => {
-                om.enums.push(self.visit_enum_def(item, ident.name, ed, gen))
-            }
-            hir::ItemKind::Struct(ref sd, ref gen) => {
-                om.structs.push(self.visit_variant_data(item, ident.name, sd, gen))
-            }
-            hir::ItemKind::Union(ref sd, ref gen) => {
-                om.unions.push(self.visit_union_data(item, ident.name, sd, gen))
-            }
             hir::ItemKind::Fn(ref sig, ref gen, body) => {
                 self.visit_fn(om, item, ident.name, &sig.decl, sig.header, gen, body)
             }
-            hir::ItemKind::TyAlias(ty, ref gen) => {
-                let t = Typedef {
-                    ty,
-                    gen,
-                    name: ident.name,
-                    id: item.hir_id,
-                    attrs: &item.attrs,
-                    span: item.span,
-                    vis: &item.vis,
-                };
-                om.typedefs.push(t);
-            }
-            hir::ItemKind::OpaqueTy(ref opaque_ty) => {
-                let t = OpaqueTy {
-                    opaque_ty,
-                    name: ident.name,
-                    id: item.hir_id,
-                    attrs: &item.attrs,
-                    span: item.span,
-                    vis: &item.vis,
-                };
-                om.opaque_tys.push(t);
-            }
-            hir::ItemKind::Static(type_, mutability, expr) => {
-                let s = Static {
-                    type_,
-                    mutability,
-                    expr,
-                    id: item.hir_id,
-                    name: ident.name,
-                    attrs: &item.attrs,
-                    span: item.span,
-                    vis: &item.vis,
-                };
-                om.statics.push(s);
-            }
-            hir::ItemKind::Const(type_, expr) => {
+            hir::ItemKind::Enum(..)
+            | hir::ItemKind::Struct(..)
+            | hir::ItemKind::Union(..)
+            | hir::ItemKind::TyAlias(..)
+            | hir::ItemKind::OpaqueTy(..)
+            | hir::ItemKind::Static(..)
+            | hir::ItemKind::TraitAlias(..) => om.items.push((item, renamed)),
+            hir::ItemKind::Const(..) => {
                 // Underscore constants do not correspond to a nameable item and
                 // so are never useful in documentation.
                 if ident.name != kw::Underscore {
-                    let s = Constant {
-                        type_,
-                        expr,
-                        id: item.hir_id,
-                        name: ident.name,
-                        attrs: &item.attrs,
-                        span: item.span,
-                        vis: &item.vis,
-                    };
-                    om.constants.push(s);
+                    om.items.push((item, renamed));
                 }
             }
             hir::ItemKind::Trait(is_auto, unsafety, ref generics, ref bounds, ref item_ids) => {
@@ -533,24 +398,9 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                     bounds,
                     id: item.hir_id,
                     attrs: &item.attrs,
-                    span: item.span,
-                    vis: &item.vis,
                 };
                 om.traits.push(t);
             }
-            hir::ItemKind::TraitAlias(ref generics, ref bounds) => {
-                let t = TraitAlias {
-                    name: ident.name,
-                    generics,
-                    bounds,
-                    id: item.hir_id,
-                    attrs: &item.attrs,
-                    span: item.span,
-                    vis: &item.vis,
-                };
-                om.trait_aliases.push(t);
-            }
-
             hir::ItemKind::Impl {
                 unsafety,
                 polarity,
@@ -602,29 +452,19 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             id: item.hir_id,
             name: renamed.unwrap_or(item.ident).name,
             kind: &item.kind,
-            vis: &item.vis,
-            attrs: &item.attrs,
-            span: item.span,
         });
     }
 
     // Convert each `exported_macro` into a doc item.
-    fn visit_local_macro(
-        &self,
-        def: &'tcx hir::MacroDef<'_>,
-        renamed: Option<Symbol>,
-    ) -> Macro<'tcx> {
+    fn visit_local_macro(&self, def: &'tcx hir::MacroDef<'_>, renamed: Option<Symbol>) -> Macro {
         debug!("visit_local_macro: {}", def.ident);
         let tts = def.ast.body.inner_tokens().trees().collect::<Vec<_>>();
         // Extract the spans of all matchers. They represent the "interface" of the macro.
         let matchers = tts.chunks(4).map(|arm| arm[0].span()).collect();
 
         Macro {
-            hid: def.hir_id,
             def_id: self.cx.tcx.hir().local_def_id(def.hir_id).to_def_id(),
-            attrs: &def.attrs,
             name: renamed.unwrap_or(def.ident.name),
-            span: def.span,
             matchers,
             imported_from: None,
         }

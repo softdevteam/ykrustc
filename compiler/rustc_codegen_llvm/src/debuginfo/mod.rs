@@ -126,12 +126,12 @@ pub fn finalize(cx: &CodegenCx<'_, '_>) {
         // for macOS to understand. For more info see #11352
         // This can be overridden using --llvm-opts -dwarf-version,N.
         // Android has the same issue (#22398)
-        if let Some(version) = cx.sess().target.options.dwarf_version {
+        if let Some(version) = cx.sess().target.dwarf_version {
             llvm::LLVMRustAddModuleFlag(cx.llmod, "Dwarf Version\0".as_ptr().cast(), version)
         }
 
         // Indicate that we want CodeView debug information on MSVC
-        if cx.sess().target.options.is_like_msvc {
+        if cx.sess().target.is_like_msvc {
             llvm::LLVMRustAddModuleFlag(cx.llmod, "CodeView\0".as_ptr().cast(), 1)
         }
 
@@ -255,7 +255,7 @@ impl CodegenCx<'ll, '_> {
         // For MSVC, omit the column number.
         // Otherwise, emit it. This mimics clang behaviour.
         // See discussion in https://github.com/rust-lang/rust/issues/42921
-        if self.sess().target.options.is_like_msvc {
+        if self.sess().target.is_like_msvc {
             DebugLoc { file, line, col: None }
         } else {
             DebugLoc { file, line, col }
@@ -391,7 +391,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
             });
 
             // Arguments types
-            if cx.sess().target.options.is_like_msvc {
+            if cx.sess().target.is_like_msvc {
                 // FIXME(#42800):
                 // There is a bug in MSDIA that leads to a crash when it encounters
                 // a fixed-size array of `u8` or something zero-sized in a
@@ -505,7 +505,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                     let impl_self_ty = cx.tcx.subst_and_normalize_erasing_regions(
                         instance.substs,
                         ty::ParamEnv::reveal_all(),
-                        &cx.tcx.type_of(impl_def_id),
+                        cx.tcx.type_of(impl_def_id),
                     );
 
                     // Only "class" methods are generally understood by LLVM,

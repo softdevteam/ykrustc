@@ -1,7 +1,7 @@
 use crate::spec::{Target, TargetOptions};
 
 pub fn target() -> Target {
-    let mut base = super::linux_base::opts();
+    let mut base = super::linux_gnu_base::opts();
     base.max_atomic_width = Some(128);
 
     Target {
@@ -11,7 +11,7 @@ pub fn target() -> Target {
         arch: "aarch64".to_string(),
         options: TargetOptions {
             unsupported_abis: super::arm_base::unsupported_abis(),
-            target_mcount: "\u{1}_mcount".to_string(),
+            mcount: "\u{1}_mcount".to_string(),
             ..base
         },
     }

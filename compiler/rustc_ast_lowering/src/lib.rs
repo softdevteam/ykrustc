@@ -53,7 +53,6 @@ use rustc_hir::definitions::{DefKey, DefPathData, Definitions};
 use rustc_hir::intravisit;
 use rustc_hir::{ConstArg, GenericArg, ParamName};
 use rustc_index::vec::{Idx, IndexVec};
-use rustc_session::config::nightly_options;
 use rustc_session::lint::{builtin::BARE_TRAIT_OBJECTS, BuiltinLintDiagnostics, LintBuffer};
 use rustc_session::parse::ParseSess;
 use rustc_session::Session;
@@ -966,17 +965,20 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         // Note that we explicitly do not walk the path. Since we don't really
         // lower attributes (we use the AST version) there is nowhere to keep
         // the `HirId`s. We don't actually need HIR version of attributes anyway.
+        // Tokens are also not needed after macro expansion and parsing.
         let kind = match attr.kind {
-            AttrKind::Normal(ref item) => AttrKind::Normal(AttrItem {
-                path: item.path.clone(),
-                args: self.lower_mac_args(&item.args),
-                tokens: None,
-            }),
+            AttrKind::Normal(ref item, _) => AttrKind::Normal(
+                AttrItem {
+                    path: item.path.clone(),
+                    args: self.lower_mac_args(&item.args),
+                    tokens: None,
+                },
+                None,
+            ),
             AttrKind::DocComment(comment_kind, data) => AttrKind::DocComment(comment_kind, data),
         };
 
-        // Tokens aren't needed after macro expansion and parsing
-        Attribute { kind, id: attr.id, style: attr.style, span: attr.span, tokens: None }
+        Attribute { kind, id: attr.id, style: attr.style, span: attr.span }
     }
 
     fn lower_mac_args(&mut self, args: &MacArgs) -> MacArgs {
@@ -1395,8 +1397,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                             "`impl Trait` not allowed outside of {}",
                             allowed_in,
                         );
-                        if pos == ImplTraitPosition::Binding && nightly_options::is_nightly_build()
-                        {
+                        if pos == ImplTraitPosition::Binding && self.sess.is_nightly_build() {
                             err.help(
                                 "add `#![feature(impl_trait_in_bindings)]` to the crate \
                                    attributes to enable",
@@ -2008,17 +2009,17 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         //
         // For the "output" lifetime parameters, we just want to
         // generate `'_`.
-        let mut generic_args: Vec<_> = lifetime_params[..input_lifetimes_count]
-            .iter()
-            .map(|&(span, hir_name)| {
+        let mut generic_args = Vec::with_capacity(lifetime_params.len());
+        generic_args.extend(lifetime_params[..input_lifetimes_count].iter().map(
+            |&(span, hir_name)| {
                 // Input lifetime like `'a` or `'1`:
                 GenericArg::Lifetime(hir::Lifetime {
                     hir_id: self.next_id(),
                     span,
                     name: hir::LifetimeName::Param(hir_name),
                 })
-            })
-            .collect();
+            },
+        ));
         generic_args.extend(lifetime_params[input_lifetimes_count..].iter().map(|&(span, _)|
             // Output lifetime like `'_`.
             GenericArg::Lifetime(hir::Lifetime {
@@ -2309,29 +2310,30 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     }
 
     fn lower_block_noalloc(&mut self, b: &Block, targeted_by_break: bool) -> hir::Block<'hir> {
-        let mut stmts = vec![];
         let mut expr: Option<&'hir _> = None;
 
-        for (index, stmt) in b.stmts.iter().enumerate() {
-            if index == b.stmts.len() - 1 {
-                if let StmtKind::Expr(ref e) = stmt.kind {
-                    expr = Some(self.lower_expr(e));
-                } else {
-                    stmts.extend(self.lower_stmt(stmt));
-                }
-            } else {
-                stmts.extend(self.lower_stmt(stmt));
-            }
-        }
+        let stmts = self.arena.alloc_from_iter(
+            b.stmts
+                .iter()
+                .enumerate()
+                .filter_map(|(index, stmt)| {
+                    if index == b.stmts.len() - 1 {
+                        if let StmtKind::Expr(ref e) = stmt.kind {
+                            expr = Some(self.lower_expr(e));
+                            None
+                        } else {
+                            Some(self.lower_stmt(stmt))
+                        }
+                    } else {
+                        Some(self.lower_stmt(stmt))
+                    }
+                })
+                .flatten(),
+        );
+        let rules = self.lower_block_check_mode(&b.rules);
+        let hir_id = self.lower_node_id(b.id);
 
-        hir::Block {
-            hir_id: self.lower_node_id(b.id),
-            stmts: self.arena.alloc_from_iter(stmts),
-            expr,
-            rules: self.lower_block_check_mode(&b.rules),
-            span: b.span,
-            targeted_by_break,
-        }
+        hir::Block { hir_id, stmts, expr, rules, span: b.span, targeted_by_break }
     }
 
     /// Lowers a block directly to an expression, presuming that it

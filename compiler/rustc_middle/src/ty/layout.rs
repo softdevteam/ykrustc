@@ -15,7 +15,7 @@ use rustc_session::{DataTypeKind, FieldInfo, SizeKind, VariantInfo};
 use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::DUMMY_SP;
 use rustc_target::abi::call::{
-    ArgAbi, ArgAttribute, ArgAttributes, Conv, FnAbi, PassMode, Reg, RegKind,
+    ArgAbi, ArgAttribute, ArgAttributes, ArgExtension, Conv, FnAbi, PassMode, Reg, RegKind,
 };
 use rustc_target::abi::*;
 use rustc_target::spec::{abi::Abi as SpecAbi, HasTargetSpec, PanicStrategy};
@@ -176,7 +176,7 @@ impl<'tcx> fmt::Display for LayoutError<'tcx> {
         match *self {
             LayoutError::Unknown(ty) => write!(f, "the type `{}` has an unknown layout", ty),
             LayoutError::SizeOverflow(ty) => {
-                write!(f, "the type `{}` is too big for the current architecture", ty)
+                write!(f, "values of the type `{}` are too big for the current architecture", ty)
             }
         }
     }
@@ -1756,7 +1756,7 @@ impl<'tcx> SizeSkeleton<'tcx> {
                 match tail.kind() {
                     ty::Param(_) | ty::Projection(_) => {
                         debug_assert!(tail.has_param_types_or_consts());
-                        Ok(SizeSkeleton::Pointer { non_zero, tail: tcx.erase_regions(&tail) })
+                        Ok(SizeSkeleton::Pointer { non_zero, tail: tcx.erase_regions(tail) })
                     }
                     _ => bug!(
                         "SizeSkeleton::compute({}): layout errored ({}), yet \
@@ -2545,7 +2545,7 @@ where
     ) -> Self {
         debug!("FnAbi::new_internal({:?}, {:?})", sig, extra_args);
 
-        let sig = cx.tcx().normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &sig);
+        let sig = cx.tcx().normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), sig);
 
         use rustc_target::spec::abi::Abi::*;
         let conv = match cx.tcx().sess.target.adjust_abi(sig.abi) {
@@ -2601,15 +2601,14 @@ where
         };
 
         let target = &cx.tcx().sess.target;
-        let target_env_gnu_like = matches!(&target.target_env[..], "gnu" | "musl");
-        let win_x64_gnu =
-            target.target_os == "windows" && target.arch == "x86_64" && target.target_env == "gnu";
+        let target_env_gnu_like = matches!(&target.env[..], "gnu" | "musl");
+        let win_x64_gnu = target.os == "windows" && target.arch == "x86_64" && target.env == "gnu";
         let linux_s390x_gnu_like =
-            target.target_os == "linux" && target.arch == "s390x" && target_env_gnu_like;
+            target.os == "linux" && target.arch == "s390x" && target_env_gnu_like;
         let linux_sparc64_gnu_like =
-            target.target_os == "linux" && target.arch == "sparc64" && target_env_gnu_like;
+            target.os == "linux" && target.arch == "sparc64" && target_env_gnu_like;
         let linux_powerpc_gnu_like =
-            target.target_os == "linux" && target.arch == "powerpc" && target_env_gnu_like;
+            target.os == "linux" && target.arch == "powerpc" && target_env_gnu_like;
         let rust_abi = matches!(sig.abi, RustIntrinsic | PlatformIntrinsic | Rust | RustCall);
 
         // Handle safe Rust thin and fat pointers.
@@ -2620,7 +2619,7 @@ where
                                       is_return: bool| {
             // Booleans are always an i1 that needs to be zero-extended.
             if scalar.is_bool() {
-                attrs.set(ArgAttribute::ZExt);
+                attrs.ext(ArgExtension::Zext);
                 return;
             }
 
@@ -2775,7 +2774,7 @@ where
                     // anyway, we control all calls to it in libstd.
                     Abi::Vector { .. }
                         if abi != SpecAbi::PlatformIntrinsic
-                            && cx.tcx().sess.target.options.simd_types_indirect =>
+                            && cx.tcx().sess.target.simd_types_indirect =>
                     {
                         arg.make_indirect();
                         return;
@@ -2801,9 +2800,6 @@ where
             fixup(&mut self.ret, true);
             for arg in &mut self.args {
                 fixup(arg, false);
-            }
-            if let PassMode::Indirect(ref mut attrs, _) = self.ret.mode {
-                attrs.set(ArgAttribute::StructRet);
             }
             return;
         }

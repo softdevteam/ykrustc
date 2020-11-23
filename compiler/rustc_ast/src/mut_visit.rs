@@ -210,11 +210,8 @@ pub trait MutVisitor: Sized {
         noop_visit_local(l, self);
     }
 
-    fn visit_mac(&mut self, _mac: &mut MacCall) {
-        panic!("visit_mac disabled by default");
-        // N.B., see note about macros above. If you really want a visitor that
-        // works on macros, use this definition in your trait impl:
-        //   mut_visit::noop_visit_mac(_mac, self);
+    fn visit_mac_call(&mut self, mac: &mut MacCall) {
+        noop_visit_mac(mac, self);
     }
 
     fn visit_macro_def(&mut self, def: &mut MacroDef) {
@@ -494,7 +491,7 @@ pub fn noop_visit_ty<T: MutVisitor>(ty: &mut P<Ty>, vis: &mut T) {
             vis.visit_id(id);
             visit_vec(bounds, |bound| vis.visit_param_bound(bound));
         }
-        TyKind::MacCall(mac) => vis.visit_mac(mac),
+        TyKind::MacCall(mac) => vis.visit_mac_call(mac),
     }
     vis.visit_span(span);
     visit_lazy_tts(tokens, vis);
@@ -589,17 +586,17 @@ pub fn noop_visit_local<T: MutVisitor>(local: &mut P<Local>, vis: &mut T) {
 }
 
 pub fn noop_visit_attribute<T: MutVisitor>(attr: &mut Attribute, vis: &mut T) {
-    let Attribute { kind, id: _, style: _, span, tokens } = attr;
+    let Attribute { kind, id: _, style: _, span } = attr;
     match kind {
-        AttrKind::Normal(AttrItem { path, args, tokens }) => {
+        AttrKind::Normal(AttrItem { path, args, tokens }, attr_tokens) => {
             vis.visit_path(path);
             visit_mac_args(args, vis);
             visit_lazy_tts(tokens, vis);
+            visit_lazy_tts(attr_tokens, vis);
         }
         AttrKind::DocComment(..) => {}
     }
     vis.visit_span(span);
-    visit_lazy_tts(tokens, vis);
 }
 
 pub fn noop_visit_mac<T: MutVisitor>(mac: &mut MacCall, vis: &mut T) {
@@ -962,7 +959,7 @@ pub fn noop_visit_item_kind<T: MutVisitor>(kind: &mut ItemKind, vis: &mut T) {
             vis.visit_generics(generics);
             visit_bounds(bounds, vis);
         }
-        ItemKind::MacCall(m) => vis.visit_mac(m),
+        ItemKind::MacCall(m) => vis.visit_mac_call(m),
         ItemKind::MacroDef(def) => vis.visit_macro_def(def),
     }
 }
@@ -991,7 +988,7 @@ pub fn noop_flat_map_assoc_item<T: MutVisitor>(
             visit_bounds(bounds, visitor);
             visit_opt(ty, |ty| visitor.visit_ty(ty));
         }
-        AssocItemKind::MacCall(mac) => visitor.visit_mac(mac),
+        AssocItemKind::MacCall(mac) => visitor.visit_mac_call(mac),
     }
     visitor.visit_span(span);
     visit_lazy_tts(tokens, visitor);
@@ -1081,7 +1078,7 @@ pub fn noop_flat_map_foreign_item<T: MutVisitor>(
             visit_bounds(bounds, visitor);
             visit_opt(ty, |ty| visitor.visit_ty(ty));
         }
-        ForeignItemKind::MacCall(mac) => visitor.visit_mac(mac),
+        ForeignItemKind::MacCall(mac) => visitor.visit_mac_call(mac),
     }
     visitor.visit_span(span);
     visit_lazy_tts(tokens, visitor);
@@ -1121,7 +1118,7 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
             visit_vec(elems, |elem| vis.visit_pat(elem))
         }
         PatKind::Paren(inner) => vis.visit_pat(inner),
-        PatKind::MacCall(mac) => vis.visit_mac(mac),
+        PatKind::MacCall(mac) => vis.visit_mac_call(mac),
     }
     vis.visit_span(span);
     visit_lazy_tts(tokens, vis);
@@ -1235,6 +1232,7 @@ pub fn noop_visit_expr<T: MutVisitor>(
             visit_opt(e1, |e1| vis.visit_expr(e1));
             visit_opt(e2, |e2| vis.visit_expr(e2));
         }
+        ExprKind::Underscore => {}
         ExprKind::Path(qself, path) => {
             vis.visit_qself(qself);
             vis.visit_path(path);
@@ -1287,11 +1285,15 @@ pub fn noop_visit_expr<T: MutVisitor>(
             }
             visit_vec(inputs, |(_c, expr)| vis.visit_expr(expr));
         }
-        ExprKind::MacCall(mac) => vis.visit_mac(mac),
+        ExprKind::MacCall(mac) => vis.visit_mac_call(mac),
         ExprKind::Struct(path, fields, expr) => {
             vis.visit_path(path);
             fields.flat_map_in_place(|field| vis.flat_map_field(field));
-            visit_opt(expr, |expr| vis.visit_expr(expr));
+            match expr {
+                StructRest::Base(expr) => vis.visit_expr(expr),
+                StructRest::Rest(_span) => {}
+                StructRest::None => {}
+            }
         }
         ExprKind::Paren(expr) => {
             vis.visit_expr(expr);
@@ -1350,7 +1352,7 @@ pub fn noop_flat_map_stmt_kind<T: MutVisitor>(
         StmtKind::Empty => smallvec![StmtKind::Empty],
         StmtKind::MacCall(mut mac) => {
             let MacCallStmt { mac: mac_, style: _, attrs } = mac.deref_mut();
-            vis.visit_mac(mac_);
+            vis.visit_mac_call(mac_);
             visit_thin_attrs(attrs, vis);
             smallvec![StmtKind::MacCall(mac)]
         }

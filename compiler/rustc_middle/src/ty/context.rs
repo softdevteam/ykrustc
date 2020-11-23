@@ -14,7 +14,6 @@ use crate::mir::interpret::{self, Allocation, ConstValue, Scalar};
 use crate::mir::{Body, Field, Local, Place, PlaceElem, ProjectionKind, Promoted};
 use crate::traits;
 use crate::ty::query::{self, TyCtxtAt};
-use crate::ty::steal::Steal;
 use crate::ty::subst::{GenericArg, GenericArgKind, InternalSubsts, Subst, SubstsRef, UserSubsts};
 use crate::ty::TyKind::*;
 use crate::ty::{
@@ -33,6 +32,7 @@ use rustc_data_structures::sharded::{IntoPointer, ShardedHashMap};
 use rustc_data_structures::stable_hasher::{
     hash_stable_hashmap, HashStable, StableHasher, StableVec,
 };
+use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{self, Lock, Lrc, WorkerLocal};
 use rustc_data_structures::unhash::UnhashMap;
 use rustc_errors::ErrorReported;
@@ -83,7 +83,7 @@ pub struct CtxtInterners<'tcx> {
     type_: InternedSet<'tcx, TyS<'tcx>>,
     type_list: InternedSet<'tcx, List<Ty<'tcx>>>,
     substs: InternedSet<'tcx, InternalSubsts<'tcx>>,
-    canonical_var_infos: InternedSet<'tcx, List<CanonicalVarInfo>>,
+    canonical_var_infos: InternedSet<'tcx, List<CanonicalVarInfo<'tcx>>>,
     region: InternedSet<'tcx, RegionKind>,
     existential_predicates: InternedSet<'tcx, List<ExistentialPredicate<'tcx>>>,
     predicate: InternedSet<'tcx, PredicateInner<'tcx>>,
@@ -415,9 +415,19 @@ pub struct TypeckResults<'tcx> {
     /// entire variable.
     pub closure_captures: ty::UpvarListMap,
 
+    /// Tracks the minimum captures required for a closure;
+    /// see `MinCaptureInformationMap` for more details.
+    pub closure_min_captures: ty::MinCaptureInformationMap<'tcx>,
+
     /// Stores the type, expression, span and optional scope span of all types
     /// that are live across the yield of this generator (if a generator).
     pub generator_interior_types: Vec<GeneratorInteriorTypeCause<'tcx>>,
+
+    /// We sometimes treat byte string literals (which are of type `&[u8; N]`)
+    /// as `&[u8]`, depending on the pattern  in which they are used.
+    /// This hashset records all instances where we behave
+    /// like this to allow `const_to_pat` to reliably handle this situation.
+    pub treat_byte_string_as_slice: ItemLocalSet,
 }
 
 impl<'tcx> TypeckResults<'tcx> {
@@ -442,7 +452,9 @@ impl<'tcx> TypeckResults<'tcx> {
             tainted_by_errors: None,
             concrete_opaque_types: Default::default(),
             closure_captures: Default::default(),
+            closure_min_captures: Default::default(),
             generator_interior_types: Default::default(),
+            treat_byte_string_as_slice: Default::default(),
         }
     }
 
@@ -676,7 +688,9 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckResults<'tcx> {
             tainted_by_errors,
             ref concrete_opaque_types,
             ref closure_captures,
+            ref closure_min_captures,
             ref generator_interior_types,
+            ref treat_byte_string_as_slice,
         } = *self;
 
         hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
@@ -709,7 +723,9 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TypeckResults<'tcx> {
             tainted_by_errors.hash_stable(hcx, hasher);
             concrete_opaque_types.hash_stable(hcx, hasher);
             closure_captures.hash_stable(hcx, hasher);
+            closure_min_captures.hash_stable(hcx, hasher);
             generator_interior_types.hash_stable(hcx, hasher);
+            treat_byte_string_as_slice.hash_stable(hcx, hasher);
         })
     }
 }
@@ -1495,7 +1511,7 @@ impl<'tcx> TyCtxt<'tcx> {
         match ret_ty.kind() {
             ty::FnDef(_, _) => {
                 let sig = ret_ty.fn_sig(self);
-                let output = self.erase_late_bound_regions(&sig.output());
+                let output = self.erase_late_bound_regions(sig.output());
                 if output.is_impl_trait() {
                     let fn_decl = self.hir().fn_decl_by_hir_id(hir_id).unwrap();
                     Some((output, fn_decl.output.span()))
@@ -1613,7 +1629,7 @@ nop_lift! {predicate; &'a PredicateInner<'a> => &'tcx PredicateInner<'tcx>}
 nop_list_lift! {type_list; Ty<'a> => Ty<'tcx>}
 nop_list_lift! {existential_predicates; ExistentialPredicate<'a> => ExistentialPredicate<'tcx>}
 nop_list_lift! {predicates; Predicate<'a> => Predicate<'tcx>}
-nop_list_lift! {canonical_var_infos; CanonicalVarInfo => CanonicalVarInfo}
+nop_list_lift! {canonical_var_infos; CanonicalVarInfo<'a> => CanonicalVarInfo<'tcx>}
 nop_list_lift! {projs; ProjectionKind => ProjectionKind}
 
 // This is the impl for `&'a InternalSubsts<'a>`.
@@ -2049,7 +2065,7 @@ macro_rules! slice_interners {
 slice_interners!(
     type_list: _intern_type_list(Ty<'tcx>),
     substs: _intern_substs(GenericArg<'tcx>),
-    canonical_var_infos: _intern_canonical_var_infos(CanonicalVarInfo),
+    canonical_var_infos: _intern_canonical_var_infos(CanonicalVarInfo<'tcx>),
     existential_predicates: _intern_existential_predicates(ExistentialPredicate<'tcx>),
     predicates: _intern_predicates(Predicate<'tcx>),
     projs: _intern_projs(ProjectionKind),
@@ -2448,7 +2464,10 @@ impl<'tcx> TyCtxt<'tcx> {
         if ts.is_empty() { List::empty() } else { self._intern_place_elems(ts) }
     }
 
-    pub fn intern_canonical_var_infos(self, ts: &[CanonicalVarInfo]) -> CanonicalVarInfos<'tcx> {
+    pub fn intern_canonical_var_infos(
+        self,
+        ts: &[CanonicalVarInfo<'tcx>],
+    ) -> CanonicalVarInfos<'tcx> {
         if ts.is_empty() { List::empty() } else { self._intern_canonical_var_infos(ts) }
     }
 

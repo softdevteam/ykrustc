@@ -1,7 +1,7 @@
 use crate::spec::{Target, TargetOptions};
 
 pub fn target() -> Target {
-    let mut base = super::linux_base::opts();
+    let mut base = super::linux_gnu_base::opts();
     base.max_atomic_width = Some(64);
     Target {
         llvm_target: "arm-unknown-linux-gnueabihf".to_string(),
@@ -12,7 +12,7 @@ pub fn target() -> Target {
         options: TargetOptions {
             features: "+strict-align,+v6,+vfp2,-d32".to_string(),
             unsupported_abis: super::arm_base::unsupported_abis(),
-            target_mcount: "\u{1}__gnu_mcount_nc".to_string(),
+            mcount: "\u{1}__gnu_mcount_nc".to_string(),
             ..base
         },
     }

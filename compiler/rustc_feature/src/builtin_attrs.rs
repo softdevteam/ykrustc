@@ -33,6 +33,7 @@ const GATED_CFGS: &[GatedCfg] = &[
     ),
     (sym::sanitize, sym::cfg_sanitize, cfg_fn!(cfg_sanitize)),
     (sym::version, sym::cfg_version, cfg_fn!(cfg_version)),
+    (sym::panic, sym::cfg_panic, cfg_fn!(cfg_panic)),
 ];
 
 /// Find a gated cfg determined by the `pred`icate which is given the cfg's name.
@@ -552,6 +553,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // ==========================================================================
 
     rustc_attr!(TEST, rustc_outlives, Normal, template!(Word)),
+    rustc_attr!(TEST, rustc_capture_analysis, Normal, template!(Word)),
     rustc_attr!(TEST, rustc_variance, Normal, template!(Word)),
     rustc_attr!(TEST, rustc_layout, Normal, template!(List: "field1, field2, ...")),
     rustc_attr!(TEST, rustc_regions, Normal, template!(Word)),

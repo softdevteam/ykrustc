@@ -298,9 +298,7 @@ impl<'a> PathSource<'a> {
                     _,
                 )
                 | Res::SelfCtor(..)),
-            PathSource::TupleStruct(..) => {
-                matches!(res, Res::Def(DefKind::Ctor(_, CtorKind::Fn), _) | Res::SelfCtor(..))
-            }
+            PathSource::TupleStruct(..) => res.expected_in_tuple_struct_pat(),
             PathSource::Struct => matches!(res, Res::Def(
                     DefKind::Struct
                     | DefKind::Union
@@ -677,7 +675,7 @@ impl<'a: 'ast, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         // During late resolution we only track the module component of the parent scope,
         // although it may be useful to track other components as well for diagnostics.
         let graph_root = resolver.graph_root;
-        let parent_scope = ParentScope::module(graph_root);
+        let parent_scope = ParentScope::module(graph_root, resolver);
         let start_rib_kind = ModuleRibKind(graph_root);
         LateResolutionVisitor {
             r: resolver,

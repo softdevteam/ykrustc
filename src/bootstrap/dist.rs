@@ -1040,6 +1040,30 @@ impl Step for Src {
             builder.copy(&builder.src.join(file), &dst_src.join(file));
         }
 
+        // libtest includes std and everything else, so vendoring it
+        // creates exactly what's needed for `cargo -Zbuild-std` or any
+        // other analysis of the stdlib's source. Cargo also needs help
+        // finding the lock, so we copy it to libtest temporarily.
+        //
+        // Note that this requires std to only have one version of each
+        // crate. e.g. two versions of getopts won't be patchable.
+        let dst_libtest = dst_src.join("library/test");
+        let dst_vendor = dst_src.join("vendor");
+        let root_lock = dst_src.join("Cargo.lock");
+        let temp_lock = dst_libtest.join("Cargo.lock");
+
+        // `cargo vendor` will delete everything from the lockfile that
+        // isn't used by libtest, so we need to not use any links!
+        builder.really_copy(&root_lock, &temp_lock);
+
+        let mut cmd = Command::new(&builder.initial_cargo);
+        cmd.arg("vendor").arg(dst_vendor).current_dir(&dst_libtest);
+        builder.info("Dist src");
+        let _time = timeit(builder);
+        builder.run(&mut cmd);
+
+        builder.remove(&temp_lock);
+
         // Create source tarball in rust-installer format
         let mut cmd = rust_installer(builder);
         cmd.arg("generate")
@@ -1056,8 +1080,6 @@ impl Step for Src {
             .arg("--component-name=rust-src")
             .arg("--legacy-manifest-dirs=rustlib,cargo");
 
-        builder.info("Dist src");
-        let _time = timeit(builder);
         builder.run(&mut cmd);
 
         builder.remove_dir(&image);
@@ -2333,6 +2355,25 @@ fn maybe_install_llvm(builder: &Builder<'_>, target: TargetSelection, dst_libdir
         // dynamically linked; it is already included into librustc_llvm
         // statically.
         return;
+    }
+
+    if let Some(config) = builder.config.target_config.get(&target) {
+        if config.llvm_config.is_some() && !builder.config.llvm_from_ci {
+            // If the LLVM was externally provided, then we don't currently copy
+            // artifacts into the sysroot. This is not necessarily the right
+            // choice (in particular, it will require the LLVM dylib to be in
+            // the linker's load path at runtime), but the common use case for
+            // external LLVMs is distribution provided LLVMs, and in that case
+            // they're usually in the standard search path (e.g., /usr/lib) and
+            // copying them here is going to cause problems as we may end up
+            // with the wrong files and isn't what distributions want.
+            //
+            // This behavior may be revisited in the future though.
+            //
+            // If the LLVM is coming from ourselves (just from CI) though, we
+            // still want to install it, as it otherwise won't be available.
+            return;
+        }
     }
 
     // On macOS, rustc (and LLVM tools) link to an unversioned libLLVM.dylib
