@@ -1089,6 +1089,9 @@ impl<'a> Parser<'a> {
             self.parse_yield_expr(attrs)
         } else if self.eat_keyword(kw::Let) {
             self.parse_let_expr(attrs)
+        } else if self.eat_keyword(kw::Underscore) {
+            self.sess.gated_spans.gate(sym::destructuring_assignment, self.prev_token.span);
+            Ok(self.mk_expr(self.prev_token.span, ExprKind::Underscore, attrs))
         } else if !self.unclosed_delims.is_empty() && self.check(&token::Semi) {
             // Don't complain about bare semicolons after unclosed braces
             // recovery in order to keep the error count down. Fixing the
@@ -2087,7 +2090,7 @@ impl<'a> Parser<'a> {
         recover: bool,
     ) -> PResult<'a, P<Expr>> {
         let mut fields = Vec::new();
-        let mut base = None;
+        let mut base = ast::StructRest::None;
         let mut recover_async = false;
 
         attrs.extend(self.parse_inner_attributes()?);
@@ -2102,8 +2105,14 @@ impl<'a> Parser<'a> {
         while self.token != token::CloseDelim(token::Brace) {
             if self.eat(&token::DotDot) {
                 let exp_span = self.prev_token.span;
+                // We permit `.. }` on the left-hand side of a destructuring assignment.
+                if self.check(&token::CloseDelim(token::Brace)) {
+                    self.sess.gated_spans.gate(sym::destructuring_assignment, self.prev_token.span);
+                    base = ast::StructRest::Rest(self.prev_token.span.shrink_to_hi());
+                    break;
+                }
                 match self.parse_expr() {
-                    Ok(e) => base = Some(e),
+                    Ok(e) => base = ast::StructRest::Base(e),
                     Err(mut e) if recover => {
                         e.emit();
                         self.recover_stmt();

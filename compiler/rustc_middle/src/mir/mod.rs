@@ -420,7 +420,9 @@ impl<'tcx> Body<'tcx> {
     /// Returns an iterator over all user-defined variables and compiler-generated temporaries (all
     /// locals that are neither arguments nor the return place).
     #[inline]
-    pub fn vars_and_temps_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+    pub fn vars_and_temps_iter(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = Local> + ExactSizeIterator {
         let arg_count = self.arg_count;
         let local_count = self.local_decls.len();
         (arg_count + 1..local_count).map(Local::new)
@@ -742,7 +744,7 @@ pub enum ImplicitSelfKind {
     None,
 }
 
-CloneTypeFoldableAndLiftImpls! { BindingForm<'tcx>, }
+TrivialTypeFoldableAndLiftImpls! { BindingForm<'tcx>, }
 
 mod binding_form_impl {
     use crate::ich::StableHashingContext;
@@ -2452,32 +2454,20 @@ impl UserTypeProjection {
     }
 }
 
-CloneTypeFoldableAndLiftImpls! { ProjectionKind, }
+TrivialTypeFoldableAndLiftImpls! { ProjectionKind, }
 
 impl<'tcx> TypeFoldable<'tcx> for UserTypeProjection {
-    fn super_fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> Self {
-        use crate::mir::ProjectionElem::*;
-
-        let base = self.base.fold_with(folder);
-        let projs: Vec<_> = self
-            .projs
-            .iter()
-            .map(|&elem| match elem {
-                Deref => Deref,
-                Field(f, ()) => Field(f, ()),
-                Index(()) => Index(()),
-                Downcast(symbol, variantidx) => Downcast(symbol, variantidx),
-                ConstantIndex { offset, min_length, from_end } => {
-                    ConstantIndex { offset, min_length, from_end }
-                }
-                Subslice { from, to, from_end } => Subslice { from, to, from_end },
-            })
-            .collect();
-
-        UserTypeProjection { base, projs }
+    fn super_fold_with<F: TypeFolder<'tcx>>(self, folder: &mut F) -> Self {
+        UserTypeProjection {
+            base: self.base.fold_with(folder),
+            projs: self.projs.fold_with(folder),
+        }
     }
 
-    fn super_visit_with<Vs: TypeVisitor<'tcx>>(&self, visitor: &mut Vs) -> ControlFlow<()> {
+    fn super_visit_with<Vs: TypeVisitor<'tcx>>(
+        &self,
+        visitor: &mut Vs,
+    ) -> ControlFlow<Vs::BreakTy> {
         self.base.visit_with(visitor)
         // Note: there's nothing in `self.proj` to visit.
     }

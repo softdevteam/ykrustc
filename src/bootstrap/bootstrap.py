@@ -187,8 +187,23 @@ def format_build_time(duration):
     return str(datetime.timedelta(seconds=int(duration)))
 
 
-def default_build_triple():
+def default_build_triple(verbose):
     """Build triple as in LLVM"""
+    # If the user already has a host build triple with an existing `rustc`
+    # install, use their preference. This fixes most issues with Windows builds
+    # being detected as GNU instead of MSVC.
+    try:
+        version = subprocess.check_output(["rustc", "--version", "--verbose"])
+        host = next(x for x in version.split('\n') if x.startswith("host: "))
+        triple = host.split("host: ")[1]
+        if verbose:
+            print("detected default triple {}".format(triple))
+        return triple
+    except Exception as e:
+        if verbose:
+            print("rustup not detected: {}".format(e))
+            print("falling back to auto-detect")
+
     default_encoding = sys.getdefaultencoding()
     required = sys.platform != 'win32'
     ostype = require(["uname", "-s"], exit=required)
@@ -345,7 +360,6 @@ def output(filepath):
 class RustBuild(object):
     """Provide all the methods required to build Rust"""
     def __init__(self):
-        self.cargo_channel = ''
         self.date = ''
         self._download_url = ''
         self.rustc_channel = ''
@@ -372,7 +386,6 @@ class RustBuild(object):
         will move all the content to the right place.
         """
         rustc_channel = self.rustc_channel
-        cargo_channel = self.cargo_channel
         rustfmt_channel = self.rustfmt_channel
 
         if self.rustc().startswith(self.bin_root()) and \
@@ -385,29 +398,21 @@ class RustBuild(object):
                 rustc_channel, self.build, tarball_suffix)
             pattern = "rust-std-{}".format(self.build)
             self._download_stage0_helper(filename, pattern, tarball_suffix)
-
             filename = "rustc-{}-{}{}".format(rustc_channel, self.build,
                                               tarball_suffix)
             self._download_stage0_helper(filename, "rustc", tarball_suffix)
+            filename = "cargo-{}-{}{}".format(rustc_channel, self.build,
+                                              tarball_suffix)
+            self._download_stage0_helper(filename, "cargo", tarball_suffix)
             self.fix_bin_or_dylib("{}/bin/rustc".format(self.bin_root()))
             self.fix_bin_or_dylib("{}/bin/rustdoc".format(self.bin_root()))
+            self.fix_bin_or_dylib("{}/bin/cargo".format(self.bin_root()))
             lib_dir = "{}/lib".format(self.bin_root())
             for lib in os.listdir(lib_dir):
                 if lib.endswith(".so"):
                     self.fix_bin_or_dylib("{}/{}".format(lib_dir, lib))
             with output(self.rustc_stamp()) as rust_stamp:
                 rust_stamp.write(self.date)
-
-        if self.cargo().startswith(self.bin_root()) and \
-                (not os.path.exists(self.cargo()) or
-                 self.program_out_of_date(self.cargo_stamp())):
-            tarball_suffix = '.tar.xz' if support_xz() else '.tar.gz'
-            filename = "cargo-{}-{}{}".format(cargo_channel, self.build,
-                                              tarball_suffix)
-            self._download_stage0_helper(filename, "cargo", tarball_suffix)
-            self.fix_bin_or_dylib("{}/bin/cargo".format(self.bin_root()))
-            with output(self.cargo_stamp()) as cargo_stamp:
-                cargo_stamp.write(self.date)
 
         if self.rustfmt() and self.rustfmt().startswith(self.bin_root()) and (
             not os.path.exists(self.rustfmt())
@@ -432,12 +437,15 @@ class RustBuild(object):
             #
             # This works even in a repository that has not yet initialized
             # submodules.
+            top_level = subprocess.check_output([
+                "git", "rev-parse", "--show-toplevel",
+            ]).decode(sys.getdefaultencoding()).strip()
             llvm_sha = subprocess.check_output([
                 "git", "log", "--author=bors", "--format=%H", "-n1",
                 "-m", "--first-parent",
                 "--",
-                "src/llvm-project",
-                "src/bootstrap/download-ci-llvm-stamp",
+                "{}/src/llvm-project".format(top_level),
+                "{}/src/bootstrap/download-ci-llvm-stamp".format(top_level),
             ]).decode(sys.getdefaultencoding()).strip()
             llvm_assertions = self.get_toml('assertions', 'llvm') == 'true'
             if self.program_out_of_date(self.llvm_stamp(), llvm_sha + str(llvm_assertions)):
@@ -585,16 +593,6 @@ class RustBuild(object):
         True
         """
         return os.path.join(self.bin_root(), '.rustc-stamp')
-
-    def cargo_stamp(self):
-        """Return the path for .cargo-stamp
-
-        >>> rb = RustBuild()
-        >>> rb.build_dir = "build"
-        >>> rb.cargo_stamp() == os.path.join("build", "stage0", ".cargo-stamp")
-        True
-        """
-        return os.path.join(self.bin_root(), '.cargo-stamp')
 
     def rustfmt_stamp(self):
         """Return the path for .rustfmt-stamp
@@ -831,7 +829,7 @@ class RustBuild(object):
         config = self.get_toml('build')
         if config:
             return config
-        return default_build_triple()
+        return default_build_triple(self.verbose)
 
     def check_submodule(self, module, slow_submodules):
         if not slow_submodules:
@@ -1041,7 +1039,6 @@ def bootstrap(help_triggered):
     data = stage0_data(build.rust_root)
     build.date = data['date']
     build.rustc_channel = data['rustc']
-    build.cargo_channel = data['cargo']
 
     if "rustfmt" in data:
         build.rustfmt_channel = data['rustfmt']

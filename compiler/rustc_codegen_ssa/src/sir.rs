@@ -401,7 +401,7 @@ impl SirFuncCx<'tcx> {
         self.instance.subst_mir_and_normalize_erasing_regions(
             self.tcx,
             ty::ParamEnv::reveal_all(),
-            value,
+            *value,
         )
     }
 

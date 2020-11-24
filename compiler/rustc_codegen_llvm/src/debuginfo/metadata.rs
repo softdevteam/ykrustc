@@ -189,7 +189,7 @@ impl TypeMap<'ll, 'tcx> {
         // something that provides more than the 64 bits of the DefaultHasher.
         let mut hasher = StableHasher::new();
         let mut hcx = cx.tcx.create_stable_hashing_context();
-        let type_ = cx.tcx.erase_regions(&type_);
+        let type_ = cx.tcx.erase_regions(type_);
         hcx.while_hashing_spans(false, |hcx| {
             hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
                 type_.hash_stable(hcx, &mut hasher);
@@ -427,7 +427,7 @@ fn subroutine_type_metadata(
     span: Span,
 ) -> MetadataCreationResult<'ll> {
     let signature =
-        cx.tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &signature);
+        cx.tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), signature);
 
     let signature_metadata: Vec<_> = iter::once(
         // return type
@@ -870,7 +870,7 @@ fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
 
     // When targeting MSVC, emit MSVC style type names for compatibility with
     // .natvis visualizers (and perhaps other existing native debuggers?)
-    let msvc_like_names = cx.tcx.sess.target.options.is_like_msvc;
+    let msvc_like_names = cx.tcx.sess.target.is_like_msvc;
 
     let (name, encoding) = match t.kind() {
         ty::Never => ("!", DW_ATE_unsigned),
@@ -981,7 +981,7 @@ pub fn compile_unit_metadata(
     // if multiple object files with the same `DW_AT_name` are linked together.
     // As a workaround we generate unique names for each object file. Those do
     // not correspond to an actual source file but that should be harmless.
-    if tcx.sess.target.options.is_like_osx {
+    if tcx.sess.target.is_like_osx {
         name_in_debuginfo.push("@");
         name_in_debuginfo.push(codegen_unit_name);
     }
@@ -1397,7 +1397,7 @@ fn prepare_union_metadata(
 /// on MSVC we have to use the fallback mode, because LLVM doesn't
 /// lower variant parts to PDB.
 fn use_enum_fallback(cx: &CodegenCx<'_, '_>) -> bool {
-    cx.sess().target.options.is_like_msvc
+    cx.sess().target.is_like_msvc
 }
 
 // FIXME(eddyb) maybe precompute this? Right now it's computed once

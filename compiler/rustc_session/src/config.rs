@@ -771,15 +771,15 @@ pub const fn default_lib_output() -> CrateType {
 }
 
 pub fn default_configuration(sess: &Session) -> CrateConfig {
-    let end = &sess.target.target_endian;
+    let end = &sess.target.endian;
     let arch = &sess.target.arch;
     let wordsz = sess.target.pointer_width.to_string();
-    let os = &sess.target.target_os;
-    let env = &sess.target.target_env;
-    let vendor = &sess.target.target_vendor;
+    let os = &sess.target.os;
+    let env = &sess.target.env;
+    let vendor = &sess.target.vendor;
     let min_atomic_width = sess.target.min_atomic_width();
     let max_atomic_width = sess.target.max_atomic_width();
-    let atomic_cas = sess.target.options.atomic_cas;
+    let atomic_cas = sess.target.atomic_cas;
     let layout = TargetDataLayout::parse(&sess.target).unwrap_or_else(|err| {
         sess.fatal(&err);
     });
@@ -788,7 +788,7 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     ret.reserve(6); // the minimum number of insertions
     // Target bindings.
     ret.insert((sym::target_os, Some(Symbol::intern(os))));
-    if let Some(ref fam) = sess.target.options.target_family {
+    if let Some(ref fam) = sess.target.os_family {
         ret.insert((sym::target_family, Some(Symbol::intern(fam))));
         if fam == "windows" {
             ret.insert((sym::windows, None));
@@ -801,7 +801,7 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     ret.insert((sym::target_pointer_width, Some(Symbol::intern(&wordsz))));
     ret.insert((sym::target_env, Some(Symbol::intern(env))));
     ret.insert((sym::target_vendor, Some(Symbol::intern(vendor))));
-    if sess.target.options.has_elf_tls {
+    if sess.target.has_elf_tls {
         ret.insert((sym::target_thread_local, None));
     }
     for &(i, align) in &[
@@ -828,6 +828,9 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
             }
         }
     }
+
+    let panic_strategy = sess.panic_strategy();
+    ret.insert((sym::panic, Some(panic_strategy.desc_symbol())));
 
     for s in sess.opts.debugging_opts.sanitizer {
         let symbol = Symbol::intern(&s.to_string());
@@ -1294,7 +1297,7 @@ fn parse_crate_edition(matches: &getopts::Matches) -> Edition {
         None => DEFAULT_EDITION,
     };
 
-    if !edition.is_stable() && !nightly_options::is_nightly_build() {
+    if !edition.is_stable() && !nightly_options::match_is_nightly_build(matches) {
         early_error(
             ErrorOutputType::default(),
             &format!(
@@ -1591,7 +1594,9 @@ fn parse_libs(
                     );
                 }
             };
-            if kind == NativeLibKind::StaticNoBundle && !nightly_options::is_nightly_build() {
+            if kind == NativeLibKind::StaticNoBundle
+                && !nightly_options::match_is_nightly_build(matches)
+            {
                 early_error(
                     error_format,
                     "the library kind 'static-nobundle' is only \
@@ -1887,10 +1892,10 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         cg,
         error_format,
         externs,
+        unstable_features: UnstableFeatures::from_environment(crate_name.as_deref()),
         crate_name,
         alt_std_name: None,
         libs,
-        unstable_features: UnstableFeatures::from_environment(),
         debug_assertions,
         actually_rustdoc: false,
         trimmed_def_paths: TrimmedDefPaths::default(),
@@ -2011,17 +2016,21 @@ pub mod nightly_options {
     use rustc_feature::UnstableFeatures;
 
     pub fn is_unstable_enabled(matches: &getopts::Matches) -> bool {
-        is_nightly_build() && matches.opt_strs("Z").iter().any(|x| *x == "unstable-options")
+        match_is_nightly_build(matches)
+            && matches.opt_strs("Z").iter().any(|x| *x == "unstable-options")
     }
 
-    pub fn is_nightly_build() -> bool {
-        UnstableFeatures::from_environment().is_nightly_build()
+    pub fn match_is_nightly_build(matches: &getopts::Matches) -> bool {
+        is_nightly_build(matches.opt_str("crate-name").as_deref())
+    }
+
+    pub fn is_nightly_build(krate: Option<&str>) -> bool {
+        UnstableFeatures::from_environment(krate).is_nightly_build()
     }
 
     pub fn check_nightly_options(matches: &getopts::Matches, flags: &[RustcOptGroup]) {
         let has_z_unstable_option = matches.opt_strs("Z").iter().any(|x| *x == "unstable-options");
-        let really_allows_unstable_options =
-            UnstableFeatures::from_environment().is_nightly_build();
+        let really_allows_unstable_options = match_is_nightly_build(matches);
 
         for opt in flags.iter() {
             if opt.stability == OptionStability::Stable {

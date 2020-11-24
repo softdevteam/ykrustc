@@ -363,7 +363,7 @@ pub fn implements_trait<'tcx>(
     if ty.has_infer_types() {
         return false;
     }
-    let ty = cx.tcx.erase_regions(&ty);
+    let ty = cx.tcx.erase_regions(ty);
     let ty_params = cx.tcx.mk_substs(ty_params.iter());
     cx.tcx.type_implements_trait((trait_id, ty, ty_params, cx.param_env))
 }
@@ -887,7 +887,7 @@ pub fn is_direct_expn_of(span: Span, name: &str) -> Option<Span> {
 pub fn return_ty<'tcx>(cx: &LateContext<'tcx>, fn_item: hir::HirId) -> Ty<'tcx> {
     let fn_def_id = cx.tcx.hir().local_def_id(fn_item);
     let ret_ty = cx.tcx.fn_sig(fn_def_id).output();
-    cx.tcx.erase_late_bound_regions(&ret_ty)
+    cx.tcx.erase_late_bound_regions(ret_ty)
 }
 
 /// Walks into `ty` and returns `true` if any inner type is the same as `other_ty`
@@ -1196,7 +1196,7 @@ pub fn has_iter_method(cx: &LateContext<'_>, probably_ref_ty: Ty<'_>) -> Option<
 /// Usage:
 ///
 /// ```rust,ignore
-/// if let Some(args) = match_function_call(cx, begin_panic_call, &paths::BEGIN_PANIC);
+/// if let Some(args) = match_function_call(cx, cmp_max_call, &paths::CMP_MAX);
 /// ```
 pub fn match_function_call<'tcx>(
     cx: &LateContext<'tcx>,
@@ -1220,7 +1220,7 @@ pub fn match_function_call<'tcx>(
 pub fn is_normalizable<'tcx>(cx: &LateContext<'tcx>, param_env: ty::ParamEnv<'tcx>, ty: Ty<'tcx>) -> bool {
     cx.tcx.infer_ctxt().enter(|infcx| {
         let cause = rustc_middle::traits::ObligationCause::dummy();
-        infcx.at(&cause, param_env).normalize(&ty).is_ok()
+        infcx.at(&cause, param_env).normalize(ty).is_ok()
     })
 }
 
@@ -1229,6 +1229,24 @@ pub fn match_def_path<'tcx>(cx: &LateContext<'tcx>, did: DefId, syms: &[&str]) -
     // accepts only that. We should probably move to Symbols in Clippy as well.
     let syms = syms.iter().map(|p| Symbol::intern(p)).collect::<Vec<Symbol>>();
     cx.match_def_path(did, &syms)
+}
+
+pub fn match_panic_call<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<&'tcx [Expr<'tcx>]> {
+    match_function_call(cx, expr, &paths::BEGIN_PANIC)
+        .or_else(|| match_function_call(cx, expr, &paths::BEGIN_PANIC_FMT))
+        .or_else(|| match_function_call(cx, expr, &paths::PANIC_ANY))
+        .or_else(|| match_function_call(cx, expr, &paths::PANICKING_PANIC))
+        .or_else(|| match_function_call(cx, expr, &paths::PANICKING_PANIC_FMT))
+        .or_else(|| match_function_call(cx, expr, &paths::PANICKING_PANIC_STR))
+}
+
+pub fn match_panic_def_id(cx: &LateContext<'_>, did: DefId) -> bool {
+    match_def_path(cx, did, &paths::BEGIN_PANIC)
+        || match_def_path(cx, did, &paths::BEGIN_PANIC_FMT)
+        || match_def_path(cx, did, &paths::PANIC_ANY)
+        || match_def_path(cx, did, &paths::PANICKING_PANIC)
+        || match_def_path(cx, did, &paths::PANICKING_PANIC_FMT)
+        || match_def_path(cx, did, &paths::PANICKING_PANIC_STR)
 }
 
 /// Returns the list of condition expressions and the list of blocks in a
@@ -1349,7 +1367,7 @@ pub fn is_must_use_func_call(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
 
 pub fn is_no_std_crate(krate: &Crate<'_>) -> bool {
     krate.item.attrs.iter().any(|attr| {
-        if let ast::AttrKind::Normal(ref attr) = attr.kind {
+        if let ast::AttrKind::Normal(ref attr, _) = attr.kind {
             attr.path == symbol::sym::no_std
         } else {
             false

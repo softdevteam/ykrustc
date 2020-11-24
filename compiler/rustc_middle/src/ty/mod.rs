@@ -6,6 +6,7 @@ pub use self::IntVarValue::*;
 pub use self::Variance::*;
 
 use crate::hir::exports::ExportMap;
+use crate::hir::place::Place as HirPlace;
 use crate::ich::StableHashingContext;
 use crate::middle::cstore::CrateStoreDyn;
 use crate::middle::resolve_lifetime::ObjectLifetimeDefault;
@@ -106,7 +107,6 @@ pub mod outlives;
 pub mod print;
 pub mod query;
 pub mod relate;
-pub mod steal;
 pub mod subst;
 pub mod trait_def;
 pub mod util;
@@ -611,6 +611,18 @@ pub struct TyS<'tcx> {
     outer_exclusive_binder: ty::DebruijnIndex,
 }
 
+impl<'tcx> TyS<'tcx> {
+    /// A constructor used only for internal testing.
+    #[allow(rustc::usage_of_ty_tykind)]
+    pub fn make_for_test(
+        kind: TyKind<'tcx>,
+        flags: TypeFlags,
+        outer_exclusive_binder: ty::DebruijnIndex,
+    ) -> TyS<'tcx> {
+        TyS { kind, flags, outer_exclusive_binder }
+    }
+}
+
 // `TyS` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
 static_assert_size!(TyS<'_>, 32);
@@ -672,6 +684,12 @@ pub struct UpvarPath {
 pub struct UpvarId {
     pub var_path: UpvarPath,
     pub closure_expr_id: LocalDefId,
+}
+
+impl UpvarId {
+    pub fn new(var_hir_id: hir::HirId, closure_def_id: LocalDefId) -> UpvarId {
+        UpvarId { var_path: UpvarPath { hir_id: var_hir_id }, closure_expr_id: closure_def_id }
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, TyEncodable, TyDecodable, Copy, HashStable)]
@@ -754,6 +772,56 @@ pub struct UpvarBorrow<'tcx> {
 
     /// Region of the resulting reference.
     pub region: ty::Region<'tcx>,
+}
+
+/// Given the closure DefId this map provides a map of root variables to minimum
+/// set of `CapturedPlace`s that need to be tracked to support all captures of that closure.
+pub type MinCaptureInformationMap<'tcx> = FxHashMap<DefId, RootVariableMinCaptureList<'tcx>>;
+
+/// Part of `MinCaptureInformationMap`; Maps a root variable to the list of `CapturedPlace`.
+/// Used to track the minimum set of `Place`s that need to be captured to support all
+/// Places captured by the closure starting at a given root variable.
+///
+/// This provides a convenient and quick way of checking if a variable being used within
+/// a closure is a capture of a local variable.
+pub type RootVariableMinCaptureList<'tcx> = FxIndexMap<hir::HirId, MinCaptureList<'tcx>>;
+
+/// Part of `MinCaptureInformationMap`; List of `CapturePlace`s.
+pub type MinCaptureList<'tcx> = Vec<CapturedPlace<'tcx>>;
+
+/// A `Place` and the corresponding `CaptureInfo`.
+#[derive(PartialEq, Clone, Debug, TyEncodable, TyDecodable, HashStable)]
+pub struct CapturedPlace<'tcx> {
+    pub place: HirPlace<'tcx>,
+    pub info: CaptureInfo<'tcx>,
+}
+
+/// Part of `MinCaptureInformationMap`; describes the capture kind (&, &mut, move)
+/// for a particular capture as well as identifying the part of the source code
+/// that triggered this capture to occur.
+#[derive(PartialEq, Clone, Debug, Copy, TyEncodable, TyDecodable, HashStable)]
+pub struct CaptureInfo<'tcx> {
+    /// Expr Id pointing to use that resulted in selecting the current capture kind
+    ///
+    /// If the user doesn't enable feature `capture_disjoint_fields` (RFC 2229) then, it is
+    /// possible that we don't see the use of a particular place resulting in expr_id being
+    /// None. In such case we fallback on uvpars_mentioned for span.
+    ///
+    /// Eg:
+    /// ```rust,no_run
+    /// let x = 5;
+    ///
+    /// let c = || {
+    ///     let _ = x
+    /// };
+    /// ```
+    ///
+    /// In this example, if `capture_disjoint_fields` is **not** set, then x will be captured,
+    /// but we won't see it being used during capture analysis, since it's essentially a discard.
+    pub expr_id: Option<hir::HirId>,
+
+    /// Capture mode that was selected
+    pub capture_kind: UpvarCapture<'tcx>,
 }
 
 pub type UpvarListMap = FxHashMap<DefId, FxIndexMap<hir::HirId, UpvarId>>;
@@ -1580,11 +1648,9 @@ impl UniverseIndex {
     }
 }
 
-/// The "placeholder index" fully defines a placeholder region.
-/// Placeholder regions are identified by both a **universe** as well
-/// as a "bound-region" within that universe. The `bound_region` is
-/// basically a name -- distinct bound regions within the same
-/// universe are just two regions with an unknown relationship to one
+/// The "placeholder index" fully defines a placeholder region, type, or const. Placeholders are
+/// identified by both a universe, as well as a name residing within that universe. Distinct bound
+/// regions/types/consts within the same universe simply have an unknown relationship to one
 /// another.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, PartialOrd, Ord)]
 pub struct Placeholder<T> {
@@ -1606,7 +1672,14 @@ pub type PlaceholderRegion = Placeholder<BoundRegion>;
 
 pub type PlaceholderType = Placeholder<BoundVar>;
 
-pub type PlaceholderConst = Placeholder<BoundVar>;
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable)]
+#[derive(TyEncodable, TyDecodable, PartialOrd, Ord)]
+pub struct BoundConst<'tcx> {
+    pub var: BoundVar,
+    pub ty: Ty<'tcx>,
+}
+
+pub type PlaceholderConst<'tcx> = Placeholder<BoundConst<'tcx>>;
 
 /// A `DefId` which is potentially bundled with its corresponding generic parameter
 /// in case `did` is a const argument.
@@ -1772,11 +1845,11 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ParamEnv<'tcx> {
 }
 
 impl<'tcx> TypeFoldable<'tcx> for ParamEnv<'tcx> {
-    fn super_fold_with<F: ty::fold::TypeFolder<'tcx>>(&self, folder: &mut F) -> Self {
+    fn super_fold_with<F: ty::fold::TypeFolder<'tcx>>(self, folder: &mut F) -> Self {
         ParamEnv::new(self.caller_bounds().fold_with(folder), self.reveal().fold_with(folder))
     }
 
-    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<()> {
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> ControlFlow<V::BreakTy> {
         self.caller_bounds().visit_with(visitor)?;
         self.reveal().visit_with(visitor)
     }

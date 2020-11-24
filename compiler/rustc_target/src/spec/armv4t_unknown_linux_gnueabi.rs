@@ -1,7 +1,7 @@
 use crate::spec::{Target, TargetOptions};
 
 pub fn target() -> Target {
-    let base = super::linux_base::opts();
+    let base = super::linux_gnu_base::opts();
     Target {
         llvm_target: "armv4t-unknown-linux-gnueabi".to_string(),
         pointer_width: 32,
@@ -13,7 +13,7 @@ pub fn target() -> Target {
             // Atomic operations provided by compiler-builtins
             max_atomic_width: Some(32),
             unsupported_abis: super::arm_base::unsupported_abis(),
-            target_mcount: "\u{1}__gnu_mcount_nc".to_string(),
+            mcount: "\u{1}__gnu_mcount_nc".to_string(),
             has_thumb_interworking: true,
             ..base
         },

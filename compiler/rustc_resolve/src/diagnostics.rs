@@ -609,7 +609,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Scope::DeriveHelpersCompat => {
-                    let res = Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper);
+                    let res = Res::NonMacroAttr(NonMacroAttrKind::DeriveHelperCompat);
                     if filter_fn(res) {
                         for derive in parent_scope.derives {
                             let parent_scope = &ParentScope { derives: &[], ..*parent_scope };
@@ -630,7 +630,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Scope::MacroRules(macro_rules_scope) => {
-                    if let MacroRulesScope::Binding(macro_rules_binding) = macro_rules_scope {
+                    if let MacroRulesScope::Binding(macro_rules_binding) = macro_rules_scope.get() {
                         let res = macro_rules_binding.binding.res();
                         if filter_fn(res) {
                             suggestions

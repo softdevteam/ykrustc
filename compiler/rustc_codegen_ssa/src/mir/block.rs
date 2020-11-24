@@ -266,7 +266,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             return;
         }
         let llval = match self.fn_abi.ret.mode {
-            PassMode::Ignore | PassMode::Indirect(..) => {
+            PassMode::Ignore | PassMode::Indirect { .. } => {
                 bx.ret_void();
                 return;
             }
@@ -317,7 +317,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         unwind: Option<mir::BasicBlock>,
     ) {
         let ty = location.ty(self.mir, bx.tcx()).ty;
-        let ty = self.monomorphize(&ty);
+        let ty = self.monomorphize(ty);
         let drop_fn = Instance::resolve_drop_in_place(bx.tcx(), ty);
 
         if let ty::InstanceDef::DropGlue(_, None) = drop_fn.def {
@@ -641,7 +641,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             .iter()
             .map(|op_arg| {
                 let op_ty = op_arg.ty(self.mir, bx.tcx());
-                self.monomorphize(&op_ty)
+                self.monomorphize(op_ty)
             })
             .collect::<Vec<_>>();
 
@@ -965,7 +965,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     }
                 }
                 mir::InlineAsmOperand::SymFn { ref value } => {
-                    let literal = self.monomorphize(&value.literal);
+                    let literal = self.monomorphize(value.literal);
                     if let ty::FnDef(def_id, substs) = *literal.ty.kind() {
                         let instance = ty::Instance::resolve_for_fn_ptr(
                             bx.tcx(),
@@ -1192,7 +1192,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // Force by-ref if we have to load through a cast pointer.
         let (mut llval, align, by_ref) = match op.val {
             Immediate(_) | Pair(..) => match arg.mode {
-                PassMode::Indirect(..) | PassMode::Cast(_) => {
+                PassMode::Indirect { .. } | PassMode::Cast(_) => {
                     let scratch = PlaceRef::alloca(bx, arg.layout);
                     op.val.store(bx, scratch);
                     (scratch.llval, scratch.align, true)
