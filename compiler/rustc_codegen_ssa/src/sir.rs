@@ -120,10 +120,10 @@ impl SirFuncCx<'tcx> {
         instance: &Instance<'tcx>,
         mir: &'tcx mir::Body<'tcx>,
     ) -> Self {
-        let mut flags = 0;
+        let mut flags = ykpack::BodyFlags::empty();
         for attr in tcx.get_attrs(instance.def_id()).iter() {
             if tcx.sess.check_name(attr, sym::do_not_trace) {
-                flags |= ykpack::bodyflags::DO_NOT_TRACE;
+                flags |= ykpack::BodyFlags::DO_NOT_TRACE;
             } else if tcx.sess.check_name(attr, sym::interp_step) {
                 // Check various properties of the interp_step at compile time.
                 if !tcx.upvars_mentioned(instance.def_id()).is_none() {
@@ -161,9 +161,9 @@ impl SirFuncCx<'tcx> {
                     );
                 }
 
-                flags |= ykpack::bodyflags::INTERP_STEP;
+                flags |= ykpack::BodyFlags::INTERP_STEP;
             } else if tcx.sess.check_name(attr, sym::trace_debug) {
-                flags |= ykpack::bodyflags::TRACE_DEBUG;
+                flags |= ykpack::BodyFlags::TRACE_DEBUG;
             }
         }
 
@@ -183,7 +183,7 @@ impl SirFuncCx<'tcx> {
 
         let crate_name = tcx.crate_name(instance.def_id().krate).as_str();
         if crate_name == "core" || crate_name == "alloc" {
-            flags |= ykpack::bodyflags::DO_NOT_TRACE;
+            flags |= ykpack::BodyFlags::DO_NOT_TRACE;
         }
         let var_map: FxHashMap<mir::Local, ykpack::IPlace> = FxHashMap::default();
 
