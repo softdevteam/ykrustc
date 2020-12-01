@@ -192,6 +192,7 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     // Yorick.
     "bincode",
     "fallible-iterator",
+    "fxhash",
     "num-traits",
     "ykpack",
 ];

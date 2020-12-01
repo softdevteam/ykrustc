@@ -35,24 +35,30 @@ pub fn write_sir<'tcx>(
     sir_types: rustc_codegen_ssa::sir::SirTypes,
     sir_funcs: Vec<ykpack::Body>,
 ) {
-    let mut buf = Vec::new();
-    let mut encoder = ykpack::Encoder::from(&mut buf);
+    let mut data_buf = Vec::new();
+    let mut encoder = ykpack::Encoder::from(&mut data_buf);
+    let mut hdr = ykpack::SirHeader::new(sir_types.cgu_hash);
 
     // First we serialise the types which will be referenced in the body packs that will follow.
     // The serialisation order matters here, as the load order (in the runtime) corresponds with
     // the type indices, hence use of `IndexMap` for insertion order.
-    encoder
-        .serialise(ykpack::Pack::Types(ykpack::Types {
-            cgu_hash: sir_types.cgu_hash,
-            types: sir_types.map.into_iter().map(|(k, _)| k).collect::<Vec<ykpack::Ty>>(),
-        }))
-        .unwrap();
+    for (typ, typ_idx) in sir_types.map {
+        debug_assert!(usize::try_from(typ_idx).unwrap() == hdr.types.len());
+        hdr.types.push(encoder.tell());
+        encoder.serialise(ykpack::Pack::Type(typ)).unwrap();
+    }
 
     for func in sir_funcs {
+        hdr.bodies.insert(func.symbol_name.clone(), encoder.tell());
         encoder.serialise(ykpack::Pack::Body(func)).unwrap();
     }
 
-    encoder.done().unwrap();
+    // Now we encode the header and prepend it to what we encoded above.
+    // All offsets are therefore relative to the end of the header.
+    let mut buf = Vec::new();
+    let mut hdr_encoder = ykpack::Encoder::from(&mut buf);
+    hdr_encoder.serialise(ykpack::Pack::Header(hdr)).unwrap();
+    buf.append(&mut data_buf);
 
     let (sir_llcx, sir_llmod) = (&*llvm_module.llcx, llvm_module.llmod());
     let llmeta = common::bytes_in_context(sir_llcx, &buf);
