@@ -477,7 +477,7 @@ pub(super) fn check_opaque_for_inheriting_lifetimes(
     struct ProhibitOpaqueVisitor<'tcx> {
         opaque_identity_ty: Ty<'tcx>,
         generics: &'tcx ty::Generics,
-    };
+    }
 
     impl<'tcx> ty::fold::TypeVisitor<'tcx> for ProhibitOpaqueVisitor<'tcx> {
         type BreakTy = Option<Ty<'tcx>>;
@@ -746,20 +746,22 @@ pub fn check_item_type<'tcx>(tcx: TyCtxt<'tcx>, it: &'tcx hir::Item<'tcx>) {
             let generics = tcx.generics_of(def_id);
             check_type_params_are_used(tcx, &generics, pty_ty);
         }
-        hir::ItemKind::ForeignMod(ref m) => {
-            check_abi(tcx, it.span, m.abi);
+        hir::ItemKind::ForeignMod { abi, items } => {
+            check_abi(tcx, it.span, abi);
 
-            if m.abi == Abi::RustIntrinsic {
-                for item in m.items {
+            if abi == Abi::RustIntrinsic {
+                for item in items {
+                    let item = tcx.hir().foreign_item(item.id);
                     intrinsic::check_intrinsic_type(tcx, item);
                 }
-            } else if m.abi == Abi::PlatformIntrinsic {
-                for item in m.items {
+            } else if abi == Abi::PlatformIntrinsic {
+                for item in items {
+                    let item = tcx.hir().foreign_item(item.id);
                     intrinsic::check_platform_intrinsic_type(tcx, item);
                 }
             } else {
-                for item in m.items {
-                    let def_id = tcx.hir().local_def_id(item.hir_id);
+                for item in items {
+                    let def_id = tcx.hir().local_def_id(item.id.hir_id);
                     let generics = tcx.generics_of(def_id);
                     let own_counts = generics.own_counts();
                     if generics.params.len() - own_counts.lifetimes != 0 {
@@ -791,9 +793,10 @@ pub fn check_item_type<'tcx>(tcx: TyCtxt<'tcx>, it: &'tcx hir::Item<'tcx>) {
                         .emit();
                     }
 
+                    let item = tcx.hir().foreign_item(item.id);
                     match item.kind {
                         hir::ForeignItemKind::Fn(ref fn_decl, _, _) => {
-                            require_c_abi_if_c_variadic(tcx, fn_decl, m.abi, item.span);
+                            require_c_abi_if_c_variadic(tcx, fn_decl, abi, item.span);
                         }
                         hir::ForeignItemKind::Static(..) => {
                             check_static_inhabited(tcx, def_id, item.span);
@@ -1095,12 +1098,14 @@ pub fn check_simd(tcx: TyCtxt<'_>, sp: Span, def_id: LocalDefId) {
             match e.kind() {
                 ty::Param(_) => { /* struct<T>(T, T, T, T) is ok */ }
                 _ if e.is_machine() => { /* struct(u8, u8, u8, u8) is ok */ }
+                ty::Array(ty, _c) if ty.is_machine() => { /* struct([f32; 4]) */ }
                 _ => {
                     struct_span_err!(
                         tcx.sess,
                         sp,
                         E0077,
-                        "SIMD vector element type should be machine type"
+                        "SIMD vector element type should be a \
+                         primitive scalar (integer/float/pointer) type"
                     )
                     .emit();
                     return;

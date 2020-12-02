@@ -124,7 +124,7 @@ crate fn try_inline(
     let attrs = merge_attrs(cx, Some(parent_module), target_attrs, attrs_clone);
 
     cx.renderinfo.borrow_mut().inlined.insert(did);
-    let what_rustc_thinks = clean::Item::from_def_id_and_parts(did, Some(name), kind, cx);
+    let what_rustc_thinks = clean::Item::from_def_id_and_parts(did, Some(name.clean(cx)), kind, cx);
     ret.push(clean::Item { attrs, ..what_rustc_thinks });
     Some(ret)
 }
@@ -483,6 +483,7 @@ fn build_module(cx: &DocContext<'_>, did: DefId, visited: &mut FxHashSet<DefId>)
                         def_id: DefId::local(CRATE_DEF_INDEX),
                         visibility: clean::Public,
                         stability: None,
+                        const_stability: None,
                         deprecation: None,
                         kind: clean::ImportItem(clean::Import::new_simple(
                             item.ident.to_string(),

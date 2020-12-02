@@ -1,7 +1,6 @@
 from sys import version_info
 
 import gdb
-from gdb import lookup_type
 
 if version_info[0] >= 3:
     xrange = range
@@ -213,9 +212,13 @@ def children_of_btree_map(map):
     def children_of_node(node_ptr, height):
         def cast_to_internal(node):
             internal_type_name = node.type.target().name.replace("LeafNode", "InternalNode", 1)
-            internal_type = lookup_type(internal_type_name)
+            internal_type = gdb.lookup_type(internal_type_name)
             return node.cast(internal_type.pointer())
 
+        if node_ptr.type.name.startswith("alloc::collections::btree::node::BoxedNode<"):
+            # BACKCOMPAT: rust 1.49
+            node_ptr = node_ptr["ptr"]
+        node_ptr = unwrap_unique_or_non_null(node_ptr)
         leaf = node_ptr.dereference()
         keys = leaf["keys"]
         vals = leaf["vals"]
@@ -224,14 +227,15 @@ def children_of_btree_map(map):
 
         for i in xrange(0, length + 1):
             if height > 0:
-                boxed_child_node = edges[i]["value"]["value"]
-                child_node = unwrap_unique_or_non_null(boxed_child_node["ptr"])
-                for child in children_of_node(child_node, height - 1):
+                child_ptr = edges[i]["value"]["value"]
+                for child in children_of_node(child_ptr, height - 1):
                     yield child
             if i < length:
                 # Avoid "Cannot perform pointer math on incomplete type" on zero-sized arrays.
-                key = keys[i]["value"]["value"] if keys.type.sizeof > 0 else "()"
-                val = vals[i]["value"]["value"] if vals.type.sizeof > 0 else "()"
+                key_type_size = keys.type.sizeof
+                val_type_size = vals.type.sizeof
+                key = keys[i]["value"]["value"] if key_type_size > 0 else gdb.parse_and_eval("()")
+                val = vals[i]["value"]["value"] if val_type_size > 0 else gdb.parse_and_eval("()")
                 yield key, val
 
     if map["length"] > 0:
@@ -239,9 +243,6 @@ def children_of_btree_map(map):
         if root.type.name.startswith("core::option::Option<"):
             root = root.cast(gdb.lookup_type(root.type.name[21:-1]))
         node_ptr = root["node"]
-        if node_ptr.type.name.startswith("alloc::collections::btree::node::BoxedNode<"):
-            node_ptr = node_ptr["ptr"]
-        node_ptr = unwrap_unique_or_non_null(node_ptr)
         height = root["height"]
         for child in children_of_node(node_ptr, height):
             yield child
@@ -352,7 +353,7 @@ class StdHashMapProvider:
         ctrl = table["ctrl"]["pointer"]
 
         self.size = int(table["items"])
-        self.pair_type = table.type.template_argument(0)
+        self.pair_type = table.type.template_argument(0).strip_typedefs()
 
         self.new_layout = not table.type.has_key("data")
         if self.new_layout:

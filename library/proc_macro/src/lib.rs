@@ -28,7 +28,8 @@
 #![feature(extern_types)]
 #![feature(in_band_lifetimes)]
 #![feature(negative_impls)]
-#![feature(optin_builtin_traits)]
+#![cfg_attr(bootstrap, feature(optin_builtin_traits))]
+#![cfg_attr(not(bootstrap), feature(auto_traits))]
 #![feature(restricted_std)]
 #![feature(rustc_attrs)]
 #![feature(min_specialization)]
@@ -839,6 +840,13 @@ impl fmt::Debug for Punct {
             .field("spacing", &self.spacing())
             .field("span", &self.span())
             .finish()
+    }
+}
+
+#[stable(feature = "proc_macro_punct_eq", since = "1.49.0")]
+impl PartialEq<char> for Punct {
+    fn eq(&self, rhs: &char) -> bool {
+        self.as_char() == *rhs
     }
 }
 

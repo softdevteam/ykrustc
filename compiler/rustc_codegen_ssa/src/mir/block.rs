@@ -48,12 +48,9 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
     /// `funclet_bb` member if it is not `None`.
     fn funclet<'b, Bx: BuilderMethods<'a, 'tcx>>(
         &self,
-        fx: &'b mut FunctionCx<'a, 'tcx, Bx>,
+        fx: &'b FunctionCx<'a, 'tcx, Bx>,
     ) -> Option<&'b Bx::Funclet> {
-        match self.funclet_bb {
-            Some(funcl) => fx.funclets[funcl].as_ref(),
-            None => None,
-        }
+        self.funclet_bb.and_then(|funcl| fx.funclets[funcl].as_ref())
     }
 
     fn lltarget<Bx: BuilderMethods<'a, 'tcx>>(
@@ -465,7 +462,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             Inhabited,
             ZeroValid,
             UninitValid,
-        };
+        }
         let panic_intrinsic = intrinsic.and_then(|i| match i {
             sym::assert_inhabited => Some(AssertIntrinsic::Inhabited),
             sym::assert_zero_valid => Some(AssertIntrinsic::ZeroValid),

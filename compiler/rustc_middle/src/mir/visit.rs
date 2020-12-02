@@ -254,7 +254,7 @@ macro_rules! make_mir_visitor {
                 macro_rules! basic_blocks {
                     (mut) => (body.basic_blocks_mut().iter_enumerated_mut());
                     () => (body.basic_blocks().iter_enumerated());
-                };
+                }
                 for (bb, data) in basic_blocks!($($mutability)?) {
                     self.visit_basic_block_data(bb, data);
                 }
@@ -275,7 +275,7 @@ macro_rules! make_mir_visitor {
                 macro_rules! type_annotations {
                     (mut) => (body.user_type_annotations.iter_enumerated_mut());
                     () => (body.user_type_annotations.iter_enumerated());
-                };
+                }
 
                 for (index, annotation) in type_annotations!($($mutability)?) {
                     self.visit_user_type_annotation(
@@ -909,7 +909,7 @@ macro_rules! make_mir_visitor {
                 macro_rules! basic_blocks {
                     (mut) => (body.basic_blocks_mut());
                     () => (body.basic_blocks());
-                };
+                }
                 let basic_block = & $($mutability)? basic_blocks!($($mutability)?)[location.block];
                 if basic_block.statements.len() == location.statement_index {
                     if let Some(ref $($mutability)? terminator) = basic_block.terminator {
@@ -1017,11 +1017,14 @@ macro_rules! visit_place_fns {
             let mut context = context;
 
             if !place.projection.is_empty() {
-                context = if context.is_mutating_use() {
-                    PlaceContext::MutatingUse(MutatingUseContext::Projection)
-                } else {
-                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Projection)
-                };
+                if context.is_use() {
+                    // ^ Only change the context if it is a real use, not a "use" in debuginfo.
+                    context = if context.is_mutating_use() {
+                        PlaceContext::MutatingUse(MutatingUseContext::Projection)
+                    } else {
+                        PlaceContext::NonMutatingUse(NonMutatingUseContext::Projection)
+                    };
+                }
             }
 
             self.visit_local(&place.local, context, location);

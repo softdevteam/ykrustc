@@ -1,7 +1,7 @@
 //! Type context book-keeping.
 
 use crate::arena::Arena;
-use crate::dep_graph::{self, DepConstructor, DepGraph};
+use crate::dep_graph::{self, DepGraph, DepKind, DepNode, DepNodeExt};
 use crate::hir::exports::ExportMap;
 use crate::ich::{NodeIdHashingMode, StableHashingContext};
 use crate::infer::canonical::{Canonical, CanonicalVarInfo, CanonicalVarInfos};
@@ -34,22 +34,24 @@ use rustc_data_structures::stable_hasher::{
 };
 use rustc_data_structures::steal::Steal;
 use rustc_data_structures::sync::{self, Lock, Lrc, WorkerLocal};
-use rustc_data_structures::unhash::UnhashMap;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, LOCAL_CRATE};
-use rustc_hir::definitions::{DefPathHash, Definitions};
+use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId};
+use rustc_hir::def_id::{CRATE_DEF_INDEX, LOCAL_CRATE};
+use rustc_hir::definitions::Definitions;
 use rustc_hir::intravisit::Visitor;
 use rustc_hir::lang_items::LangItem;
-use rustc_hir::{HirId, ItemKind, ItemLocalId, ItemLocalMap, ItemLocalSet, Node, TraitCandidate};
+use rustc_hir::{
+    Constness, HirId, ItemKind, ItemLocalId, ItemLocalMap, ItemLocalSet, Node, TraitCandidate,
+};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_macros::HashStable;
 use rustc_session::config::{BorrowckMode, CrateType, OutputFilenames};
 use rustc_session::lint::{Level, Lint};
 use rustc_session::Session;
 use rustc_span::source_map::MultiSpan;
-use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 use rustc_target::abi::{Layout, TargetDataLayout, VariantIdx};
 use rustc_target::spec::abi;
@@ -943,10 +945,6 @@ pub struct GlobalCtxt<'tcx> {
     pub(crate) untracked_crate: &'tcx hir::Crate<'tcx>,
     pub(crate) definitions: &'tcx Definitions,
 
-    /// A map from `DefPathHash` -> `DefId`. Includes `DefId`s from the local crate
-    /// as well as all upstream crates. Only populated in incremental mode.
-    pub def_path_hash_to_def_id: Option<UnhashMap<DefPathHash, DefId>>,
-
     pub queries: query::Queries<'tcx>,
 
     maybe_unused_trait_imports: FxHashSet<LocalDefId>,
@@ -1094,7 +1092,7 @@ impl<'tcx> TyCtxt<'tcx> {
         krate: &'tcx hir::Crate<'tcx>,
         definitions: &'tcx Definitions,
         dep_graph: DepGraph,
-        on_disk_query_result_cache: query::OnDiskCache<'tcx>,
+        on_disk_query_result_cache: Option<query::OnDiskCache<'tcx>>,
         crate_name: &str,
         output_filenames: &OutputFilenames,
     ) -> GlobalCtxt<'tcx> {
@@ -1110,21 +1108,6 @@ impl<'tcx> TyCtxt<'tcx> {
         let max_cnum = crates.iter().map(|c| c.as_usize()).max().unwrap_or(0);
         let mut providers = IndexVec::from_elem_n(extern_providers, max_cnum + 1);
         providers[LOCAL_CRATE] = local_providers;
-
-        let def_path_hash_to_def_id = if s.opts.build_dep_graph() {
-            let capacity = definitions.def_path_table().num_def_ids()
-                + crates.iter().map(|cnum| cstore.num_def_ids(*cnum)).sum::<usize>();
-            let mut map = UnhashMap::with_capacity_and_hasher(capacity, Default::default());
-
-            map.extend(definitions.def_path_table().all_def_path_hashes_and_def_ids(LOCAL_CRATE));
-            for cnum in &crates {
-                map.extend(cstore.all_def_path_hashes_and_def_ids(*cnum).into_iter());
-            }
-
-            Some(map)
-        } else {
-            None
-        };
 
         let mut trait_map: FxHashMap<_, FxHashMap<_, _>> = FxHashMap::default();
         for (hir_id, v) in krate.trait_map.iter() {
@@ -1153,7 +1136,6 @@ impl<'tcx> TyCtxt<'tcx> {
             extern_prelude: resolutions.extern_prelude,
             untracked_crate: krate,
             definitions,
-            def_path_hash_to_def_id,
             queries: query::Queries::new(providers, extern_providers, on_disk_query_result_cache),
             ty_rcache: Default::default(),
             pred_rcache: Default::default(),
@@ -1327,7 +1309,8 @@ impl<'tcx> TyCtxt<'tcx> {
         // We cannot use the query versions of crates() and crate_hash(), since
         // those would need the DepNodes that we are allocating here.
         for cnum in self.cstore.crates_untracked() {
-            let dep_node = DepConstructor::CrateMetadata(self, cnum);
+            let def_path_hash = self.def_path_hash(DefId { krate: cnum, index: CRATE_DEF_INDEX });
+            let dep_node = DepNode::from_def_path_hash(def_path_hash, DepKind::CrateMetadata);
             let crate_hash = self.cstore.crate_hash_untracked(cnum);
             self.dep_graph.with_task(
                 dep_node,
@@ -1343,7 +1326,7 @@ impl<'tcx> TyCtxt<'tcx> {
     where
         E: ty::codec::OpaqueEncoder,
     {
-        self.queries.on_disk_cache.serialize(self, encoder)
+        self.queries.on_disk_cache.as_ref().map(|c| c.serialize(self, encoder)).unwrap_or(Ok(()))
     }
 
     /// If `true`, we should use the MIR-based borrowck, but also
@@ -1634,6 +1617,8 @@ nop_list_lift! {projs; ProjectionKind => ProjectionKind}
 
 // This is the impl for `&'a InternalSubsts<'a>`.
 nop_list_lift! {substs; GenericArg<'a> => GenericArg<'tcx>}
+
+CloneLiftImpls! { for<'tcx> { Constness, } }
 
 pub mod tls {
     use super::{ptr_eq, GlobalCtxt, TyCtxt};
@@ -2079,6 +2064,42 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn safe_to_unsafe_fn_ty(self, sig: PolyFnSig<'tcx>) -> Ty<'tcx> {
         assert_eq!(sig.unsafety(), hir::Unsafety::Normal);
         self.mk_fn_ptr(sig.map_bound(|sig| ty::FnSig { unsafety: hir::Unsafety::Unsafe, ..sig }))
+    }
+
+    /// Given the def_id of a Trait `trait_def_id` and the name of an associated item `assoc_name`
+    /// returns true if the `trait_def_id` defines an associated item of name `assoc_name`.
+    pub fn trait_may_define_assoc_type(self, trait_def_id: DefId, assoc_name: Ident) -> bool {
+        self.super_traits_of(trait_def_id).any(|trait_did| {
+            self.associated_items(trait_did)
+                .find_by_name_and_kind(self, assoc_name, ty::AssocKind::Type, trait_did)
+                .is_some()
+        })
+    }
+
+    /// Computes the def-ids of the transitive super-traits of `trait_def_id`. This (intentionally)
+    /// does not compute the full elaborated super-predicates but just the set of def-ids. It is used
+    /// to identify which traits may define a given associated type to help avoid cycle errors.
+    /// Returns a `DefId` iterator.
+    fn super_traits_of(self, trait_def_id: DefId) -> impl Iterator<Item = DefId> + 'tcx {
+        let mut set = FxHashSet::default();
+        let mut stack = vec![trait_def_id];
+
+        set.insert(trait_def_id);
+
+        iter::from_fn(move || -> Option<DefId> {
+            let trait_did = stack.pop()?;
+            let generic_predicates = self.super_predicates_of(trait_did);
+
+            for (predicate, _) in generic_predicates.predicates {
+                if let ty::PredicateAtom::Trait(data, _) = predicate.skip_binders() {
+                    if set.insert(data.def_id()) {
+                        stack.push(data.def_id());
+                    }
+                }
+            }
+
+            Some(trait_did)
+        })
     }
 
     /// Given a closure signature, returns an equivalent fn signature. Detuples

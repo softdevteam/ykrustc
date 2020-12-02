@@ -1692,13 +1692,13 @@ fn print_item(cx: &Context, item: &clean::Item, buf: &mut Buffer, cache: &Cache)
     debug_assert!(!item.is_stripped());
     // Write the breadcrumb trail header for the top
     write!(buf, "<h1 class=\"fqn\"><span class=\"out-of-band\">");
-    if let Some(version) = item.stable_since() {
-        write!(
-            buf,
-            "<span class=\"since\" title=\"Stable since Rust version {0}\">{0}</span>",
-            version
-        );
-    }
+    render_stability_since_raw(
+        buf,
+        item.stable_since().as_deref(),
+        item.const_stable_since().as_deref(),
+        None,
+        None,
+    );
     write!(
         buf,
         "<span id=\"render-detail\">\
@@ -1844,7 +1844,7 @@ fn document(w: &mut Buffer, cx: &Context, item: &clean::Item, parent: Option<&cl
     if let Some(ref name) = item.name {
         info!("Documenting {}", name);
     }
-    document_stability(w, cx, item, false, parent);
+    document_item_info(w, cx, item, false, parent);
     document_full(w, item, cx, "", false);
 }
 
@@ -1880,10 +1880,17 @@ fn render_markdown(
 fn document_short(
     w: &mut Buffer,
     item: &clean::Item,
+    cx: &Context,
     link: AssocItemLink<'_>,
     prefix: &str,
     is_hidden: bool,
+    parent: Option<&clean::Item>,
+    show_def_docs: bool,
 ) {
+    document_item_info(w, cx, item, is_hidden, parent);
+    if !show_def_docs {
+        return;
+    }
     if let Some(s) = item.doc_value() {
         let mut summary_html = MarkdownSummaryLine(s, &item.links()).into_string();
 
@@ -1928,18 +1935,23 @@ fn document_full(w: &mut Buffer, item: &clean::Item, cx: &Context, prefix: &str,
     }
 }
 
-fn document_stability(
+/// Add extra information about an item such as:
+///
+/// * Stability
+/// * Deprecated
+/// * Required features (through the `doc_cfg` feature)
+fn document_item_info(
     w: &mut Buffer,
     cx: &Context,
     item: &clean::Item,
     is_hidden: bool,
     parent: Option<&clean::Item>,
 ) {
-    let stabilities = short_stability(item, cx, parent);
-    if !stabilities.is_empty() {
-        write!(w, "<div class=\"stability{}\">", if is_hidden { " hidden" } else { "" });
-        for stability in stabilities {
-            write!(w, "{}", stability);
+    let item_infos = short_item_info(item, cx, parent);
+    if !item_infos.is_empty() {
+        write!(w, "<div class=\"item-info{}\">", if is_hidden { " hidden" } else { "" });
+        for info in item_infos {
+            write!(w, "{}", info);
         }
         write!(w, "</div>");
     }
@@ -2194,7 +2206,7 @@ fn item_module(w: &mut Buffer, cx: &Context, item: &clean::Item, items: &[clean:
                          <td class=\"docblock-short\">{stab_tags}{docs}</td>\
                      </tr>",
                     name = *myitem.name.as_ref().unwrap(),
-                    stab_tags = stability_tags(myitem, item),
+                    stab_tags = extra_info_tags(myitem, item),
                     docs = MarkdownSummaryLine(doc_value, &myitem.links()).into_string(),
                     class = myitem.type_(),
                     add = add,
@@ -2216,9 +2228,9 @@ fn item_module(w: &mut Buffer, cx: &Context, item: &clean::Item, items: &[clean:
     }
 }
 
-/// Render the stability and deprecation tags that are displayed in the item's summary at the
-/// module level.
-fn stability_tags(item: &clean::Item, parent: &clean::Item) -> String {
+/// Render the stability, deprecation and portability tags that are displayed in the item's summary
+/// at the module level.
+fn extra_info_tags(item: &clean::Item, parent: &clean::Item) -> String {
     let mut tags = String::new();
 
     fn tag_html(class: &str, title: &str, contents: &str) -> String {
@@ -2271,10 +2283,10 @@ fn portability(item: &clean::Item, parent: Option<&clean::Item>) -> Option<Strin
     Some(format!("<div class=\"stab portability\">{}</div>", cfg?.render_long_html()))
 }
 
-/// Render the stability and/or deprecation warning that is displayed at the top of the item's
-/// documentation.
-fn short_stability(item: &clean::Item, cx: &Context, parent: Option<&clean::Item>) -> Vec<String> {
-    let mut stability = vec![];
+/// Render the stability, deprecation and portability information that is displayed at the top of
+/// the item's documentation.
+fn short_item_info(item: &clean::Item, cx: &Context, parent: Option<&clean::Item>) -> Vec<String> {
+    let mut extra_info = vec![];
     let error_codes = cx.shared.codes;
 
     if let Some(Deprecation { ref note, ref since, is_since_rustc_version }) = item.deprecation {
@@ -2301,7 +2313,7 @@ fn short_stability(item: &clean::Item, cx: &Context, parent: Option<&clean::Item
             );
             message.push_str(&format!(": {}", html.into_string()));
         }
-        stability.push(format!(
+        extra_info.push(format!(
             "<div class=\"stab deprecated\"><span class=\"emoji\">👎</span> {}</div>",
             message,
         ));
@@ -2345,14 +2357,14 @@ fn short_stability(item: &clean::Item, cx: &Context, parent: Option<&clean::Item
             );
         }
 
-        stability.push(format!("<div class=\"stab unstable\">{}</div>", message));
+        extra_info.push(format!("<div class=\"stab unstable\">{}</div>", message));
     }
 
     if let Some(portability) = portability(item, parent) {
-        stability.push(portability);
+        extra_info.push(portability);
     }
 
-    stability
+    extra_info
 }
 
 fn item_constant(w: &mut Buffer, cx: &Context, it: &clean::Item, c: &clean::Constant) {
@@ -2464,6 +2476,7 @@ fn render_implementor(
         AssocItemLink::Anchor(None),
         RenderMode::Normal,
         implementor.impl_item.stable_since().as_deref(),
+        implementor.impl_item.const_stable_since().as_deref(),
         false,
         Some(use_absolute),
         false,
@@ -2494,6 +2507,7 @@ fn render_impls(
                 assoc_link,
                 RenderMode::Normal,
                 containing_item.stable_since().as_deref(),
+                containing_item.const_stable_since().as_deref(),
                 true,
                 None,
                 false,
@@ -2744,6 +2758,7 @@ fn item_trait(w: &mut Buffer, cx: &Context, it: &clean::Item, t: &clean::Trait, 
                     assoc_link,
                     RenderMode::Normal,
                     implementor.impl_item.stable_since().as_deref(),
+                    implementor.impl_item.const_stable_since().as_deref(),
                     false,
                     None,
                     true,
@@ -2886,10 +2901,40 @@ fn assoc_type(
     }
 }
 
-fn render_stability_since_raw(w: &mut Buffer, ver: Option<&str>, containing_ver: Option<&str>) {
+fn render_stability_since_raw(
+    w: &mut Buffer,
+    ver: Option<&str>,
+    const_ver: Option<&str>,
+    containing_ver: Option<&str>,
+    containing_const_ver: Option<&str>,
+) {
+    let ver = ver.and_then(|inner| if !inner.is_empty() { Some(inner) } else { None });
+
+    let const_ver = const_ver.and_then(|inner| if !inner.is_empty() { Some(inner) } else { None });
+
     if let Some(v) = ver {
-        if containing_ver != ver && !v.is_empty() {
-            write!(w, "<span class=\"since\" title=\"Stable since Rust version {0}\">{0}</span>", v)
+        if let Some(cv) = const_ver {
+            if const_ver != containing_const_ver {
+                write!(
+                    w,
+                    "<span class=\"since\" title=\"Stable since Rust version {0}, const since {1}\">{0} (const: {1})</span>",
+                    v, cv
+                );
+            } else if ver != containing_ver {
+                write!(
+                    w,
+                    "<span class=\"since\" title=\"Stable since Rust version {0}\">{0}</span>",
+                    v
+                );
+            }
+        } else {
+            if ver != containing_ver {
+                write!(
+                    w,
+                    "<span class=\"since\" title=\"Stable since Rust version {0}\">{0}</span>",
+                    v
+                );
+            }
         }
     }
 }
@@ -2898,7 +2943,9 @@ fn render_stability_since(w: &mut Buffer, item: &clean::Item, containing_item: &
     render_stability_since_raw(
         w,
         item.stable_since().as_deref(),
+        item.const_stable_since().as_deref(),
         containing_item.stable_since().as_deref(),
+        containing_item.const_stable_since().as_deref(),
     )
 }
 
@@ -3450,6 +3497,7 @@ fn render_assoc_items(
                 AssocItemLink::Anchor(None),
                 render_mode,
                 containing_item.stable_since().as_deref(),
+                containing_item.const_stable_since().as_deref(),
                 true,
                 None,
                 false,
@@ -3642,6 +3690,7 @@ fn render_impl(
     link: AssocItemLink<'_>,
     render_mode: RenderMode,
     outer_version: Option<&str>,
+    outer_const_version: Option<&str>,
     show_def_docs: bool,
     use_absolute: Option<bool>,
     is_on_foreign_type: bool,
@@ -3693,17 +3742,19 @@ fn render_impl(
             );
         }
         write!(w, "<a href=\"#{}\" class=\"anchor\"></a>", id);
-        let since = i.impl_item.stability.as_ref().and_then(|s| match s.level {
-            StabilityLevel::Stable { since } => Some(since.as_str()),
-            StabilityLevel::Unstable { .. } => None,
-        });
-        render_stability_since_raw(w, since.as_deref(), outer_version);
+        render_stability_since_raw(
+            w,
+            i.impl_item.stable_since().as_deref(),
+            i.impl_item.const_stable_since().as_deref(),
+            outer_version,
+            outer_const_version,
+        );
         write_srclink(cx, &i.impl_item, w, cache);
         write!(w, "</h3>");
 
         if trait_.is_some() {
             if let Some(portability) = portability(&i.impl_item, Some(parent)) {
-                write!(w, "<div class=\"stability\">{}</div>", portability);
+                write!(w, "<div class=\"item-info\">{}</div>", portability);
             }
         }
 
@@ -3734,6 +3785,7 @@ fn render_impl(
         render_mode: RenderMode,
         is_default_item: bool,
         outer_version: Option<&str>,
+        outer_const_version: Option<&str>,
         trait_: Option<&clean::Trait>,
         show_def_docs: bool,
         cache: &Cache,
@@ -3763,7 +3815,13 @@ fn render_impl(
                     write!(w, "<code>");
                     render_assoc_item(w, item, link.anchor(&id), ItemType::Impl);
                     write!(w, "</code>");
-                    render_stability_since_raw(w, item.stable_since().as_deref(), outer_version);
+                    render_stability_since_raw(
+                        w,
+                        item.stable_since().as_deref(),
+                        item.const_stable_since().as_deref(),
+                        outer_version,
+                        outer_const_version,
+                    );
                     write_srclink(cx, item, w, cache);
                     write!(w, "</h4>");
                 }
@@ -3779,7 +3837,13 @@ fn render_impl(
                 write!(w, "<h4 id=\"{}\" class=\"{}{}\"><code>", id, item_type, extra_class);
                 assoc_const(w, item, ty, default.as_ref(), link.anchor(&id), "");
                 write!(w, "</code>");
-                render_stability_since_raw(w, item.stable_since().as_deref(), outer_version);
+                render_stability_since_raw(
+                    w,
+                    item.stable_since().as_deref(),
+                    item.const_stable_since().as_deref(),
+                    outer_version,
+                    outer_const_version,
+                );
                 write_srclink(cx, item, w, cache);
                 write!(w, "</h4>");
             }
@@ -3801,26 +3865,32 @@ fn render_impl(
                     if let Some(it) = t.items.iter().find(|i| i.name == item.name) {
                         // We need the stability of the item from the trait
                         // because impls can't have a stability.
-                        document_stability(w, cx, it, is_hidden, Some(parent));
                         if item.doc_value().is_some() {
+                            document_item_info(w, cx, it, is_hidden, Some(parent));
                             document_full(w, item, cx, "", is_hidden);
-                        } else if show_def_docs {
+                        } else {
                             // In case the item isn't documented,
                             // provide short documentation from the trait.
-                            document_short(w, it, link, "", is_hidden);
+                            document_short(
+                                w,
+                                it,
+                                cx,
+                                link,
+                                "",
+                                is_hidden,
+                                Some(parent),
+                                show_def_docs,
+                            );
                         }
                     }
                 } else {
-                    document_stability(w, cx, item, is_hidden, Some(parent));
+                    document_item_info(w, cx, item, is_hidden, Some(parent));
                     if show_def_docs {
                         document_full(w, item, cx, "", is_hidden);
                     }
                 }
             } else {
-                document_stability(w, cx, item, is_hidden, Some(parent));
-                if show_def_docs {
-                    document_short(w, item, link, "", is_hidden);
-                }
+                document_short(w, item, cx, link, "", is_hidden, Some(parent), show_def_docs);
             }
         }
     }
@@ -3836,6 +3906,7 @@ fn render_impl(
             render_mode,
             false,
             outer_version,
+            outer_const_version,
             trait_,
             show_def_docs,
             cache,
@@ -3850,6 +3921,7 @@ fn render_impl(
         parent: &clean::Item,
         render_mode: RenderMode,
         outer_version: Option<&str>,
+        outer_const_version: Option<&str>,
         show_def_docs: bool,
         cache: &Cache,
     ) {
@@ -3870,6 +3942,7 @@ fn render_impl(
                 render_mode,
                 true,
                 outer_version,
+                outer_const_version,
                 None,
                 show_def_docs,
                 cache,
@@ -3891,6 +3964,7 @@ fn render_impl(
                 &i.impl_item,
                 render_mode,
                 outer_version,
+                outer_const_version,
                 show_def_docs,
                 cache,
             );

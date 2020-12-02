@@ -234,6 +234,15 @@ impl Annotatable {
 
     pub fn derive_allowed(&self) -> bool {
         match *self {
+            Annotatable::Stmt(ref stmt) => match stmt.kind {
+                ast::StmtKind::Item(ref item) => match item.kind {
+                    ast::ItemKind::Struct(..)
+                    | ast::ItemKind::Enum(..)
+                    | ast::ItemKind::Union(..) => true,
+                    _ => false,
+                },
+                _ => false,
+            },
             Annotatable::Item(ref item) => match item.kind {
                 ast::ItemKind::Struct(..) | ast::ItemKind::Enum(..) | ast::ItemKind::Union(..) => {
                     true
@@ -365,7 +374,6 @@ macro_rules! make_stmts_default {
                 id: ast::DUMMY_NODE_ID,
                 span: e.span,
                 kind: ast::StmtKind::Expr(e),
-                tokens: None
             }]
         })
     };
@@ -608,7 +616,6 @@ impl MacResult for DummyResult {
             id: ast::DUMMY_NODE_ID,
             kind: ast::StmtKind::Expr(DummyResult::raw_expr(self.span, self.is_error)),
             span: self.span,
-            tokens: None
         }])
     }
 

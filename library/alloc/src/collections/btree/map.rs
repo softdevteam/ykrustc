@@ -458,7 +458,7 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for RangeMut<'_, K, V> {
 }
 
 impl<K: Ord, V> BTreeMap<K, V> {
-    /// Makes a new empty BTreeMap.
+    /// Makes a new, empty `BTreeMap`.
     ///
     /// Does not allocate anything on its own.
     ///
@@ -1551,12 +1551,12 @@ where
     pred: F,
     inner: DrainFilterInner<'a, K, V>,
 }
-/// Most of the implementation of DrainFilter, independent of the type
+/// Most of the implementation of DrainFilter are generic over the type
 /// of the predicate, thus also serving for BTreeSet::DrainFilter.
 pub(super) struct DrainFilterInner<'a, K: 'a, V: 'a> {
     /// Reference to the length field in the borrowed map, updated live.
     length: &'a mut usize,
-    /// Burried reference to the root field in the borrowed map.
+    /// Buried reference to the root field in the borrowed map.
     /// Wrapped in `Option` to allow drop handler to `take` it.
     dormant_root: Option<DormantMutRef<'a, Root<K, V>>>,
     /// Contains a leaf edge preceding the next element to be returned, or the last leaf edge.
@@ -1924,7 +1924,7 @@ impl<K: Hash, V: Hash> Hash for BTreeMap<K, V> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<K: Ord, V> Default for BTreeMap<K, V> {
-    /// Creates an empty `BTreeMap<K, V>`.
+    /// Creates an empty `BTreeMap`.
     fn default() -> BTreeMap<K, V> {
         BTreeMap::new()
     }

@@ -54,7 +54,6 @@ mod apple_base;
 mod apple_sdk_base;
 mod arm_base;
 mod avr_gnu_base;
-mod cloudabi_base;
 mod dragonfly_base;
 mod freebsd_base;
 mod fuchsia_base;
@@ -505,6 +504,7 @@ supported_targets! {
     ("armv4t-unknown-linux-gnueabi", armv4t_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-gnueabi", armv5te_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-musleabi", armv5te_unknown_linux_musleabi),
+    ("armv5te-unknown-linux-uclibceabi", armv5te_unknown_linux_uclibceabi),
     ("armv7-unknown-linux-gnueabi", armv7_unknown_linux_gnueabi),
     ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
     ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
@@ -580,6 +580,7 @@ supported_targets! {
     ("armv7-apple-ios", armv7_apple_ios),
     ("armv7s-apple-ios", armv7s_apple_ios),
     ("x86_64-apple-ios-macabi", x86_64_apple_ios_macabi),
+    ("aarch64-apple-ios-macabi", aarch64_apple_ios_macabi),
     ("aarch64-apple-tvos", aarch64_apple_tvos),
     ("x86_64-apple-tvos", x86_64_apple_tvos),
 
@@ -627,11 +628,6 @@ supported_targets! {
     ("armv7a-none-eabihf", armv7a_none_eabihf),
 
     ("msp430-none-elf", msp430_none_elf),
-
-    ("aarch64-unknown-cloudabi", aarch64_unknown_cloudabi),
-    ("armv7-unknown-cloudabi-eabihf", armv7_unknown_cloudabi_eabihf),
-    ("i686-unknown-cloudabi", i686_unknown_cloudabi),
-    ("x86_64-unknown-cloudabi", x86_64_unknown_cloudabi),
 
     ("aarch64-unknown-hermit", aarch64_unknown_hermit),
     ("x86_64-unknown-hermit", x86_64_unknown_hermit),
