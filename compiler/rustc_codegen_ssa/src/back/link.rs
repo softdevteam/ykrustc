@@ -96,6 +96,15 @@ pub fn link_binary<'a, B: ArchiveBuilder<'a>>(
                         path.as_ref(),
                         target_cpu,
                     );
+
+                    // If we have emitted SIR labels into DWARF then we now extract them into a
+                    // faster (to load at runtime) ELF section.
+                    if sess.opts.cg.tracer.sir_labels()
+                        && crate_name != crate::sir::BUILD_SCRIPT_CRATE
+                        && crate_type == CrateType::Executable
+                    {
+                        crate::sir::labels::add_yk_label_section(&out_filename);
+                    }
                 }
             }
             if sess.opts.json_artifact_notifications {
