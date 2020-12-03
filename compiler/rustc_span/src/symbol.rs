@@ -285,6 +285,7 @@ symbols! {
         attr_literals,
         attributes,
         augmented_assignments,
+        auto_traits,
         automatically_derived,
         avx512_target_feature,
         await_macro,
@@ -1590,11 +1591,6 @@ impl Symbol {
 
     fn is_unused_keyword_2018(self) -> bool {
         self == kw::Try
-    }
-
-    /// Used for sanity checking rustdoc keyword sections.
-    pub fn is_doc_keyword(self) -> bool {
-        self <= kw::Union
     }
 
     /// A keyword or reserved identifier that can be used as a path segment.

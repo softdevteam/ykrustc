@@ -485,6 +485,9 @@ pub fn walk_assoc_ty_constraint<'a, V: Visitor<'a>>(
     constraint: &'a AssocTyConstraint,
 ) {
     visitor.visit_ident(constraint.ident);
+    if let Some(ref gen_args) = constraint.gen_args {
+        visitor.visit_generic_args(gen_args.span(), gen_args);
+    }
     match constraint.kind {
         AssocTyConstraintKind::Equality { ref ty } => {
             visitor.visit_ty(ty);
@@ -686,7 +689,7 @@ pub fn walk_stmt<'a, V: Visitor<'a>>(visitor: &mut V, statement: &'a Stmt) {
         StmtKind::Expr(ref expr) | StmtKind::Semi(ref expr) => visitor.visit_expr(expr),
         StmtKind::Empty => {}
         StmtKind::MacCall(ref mac) => {
-            let MacCallStmt { ref mac, style: _, ref attrs } = **mac;
+            let MacCallStmt { ref mac, style: _, ref attrs, tokens: _ } = **mac;
             visitor.visit_mac_call(mac);
             for attr in attrs.iter() {
                 visitor.visit_attribute(attr);

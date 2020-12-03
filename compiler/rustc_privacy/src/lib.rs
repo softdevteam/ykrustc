@@ -592,7 +592,7 @@ impl Visitor<'tcx> for EmbargoVisitor<'tcx> {
                 Option::<AccessLevel>::of_impl(item.hir_id, self.tcx, &self.access_levels)
             }
             // Foreign modules inherit level from parents.
-            hir::ItemKind::ForeignMod(..) => self.prev_level,
+            hir::ItemKind::ForeignMod { .. } => self.prev_level,
             // Other `pub` items inherit levels from parents.
             hir::ItemKind::Const(..)
             | hir::ItemKind::Enum(..)
@@ -654,10 +654,10 @@ impl Visitor<'tcx> for EmbargoVisitor<'tcx> {
                     }
                 }
             }
-            hir::ItemKind::ForeignMod(ref foreign_mod) => {
-                for foreign_item in foreign_mod.items {
+            hir::ItemKind::ForeignMod { items, .. } => {
+                for foreign_item in items {
                     if foreign_item.vis.node.is_pub() {
-                        self.update(foreign_item.hir_id, item_level);
+                        self.update(foreign_item.id.hir_id, item_level);
                     }
                 }
             }
@@ -691,7 +691,7 @@ impl Visitor<'tcx> for EmbargoVisitor<'tcx> {
             hir::ItemKind::GlobalAsm(..) => {}
             hir::ItemKind::OpaqueTy(..) => {
                 // HACK(jynelson): trying to infer the type of `impl trait` breaks `async-std` (and `pub async fn` in general)
-                // Since rustdoc never need to do codegen and doesn't care about link-time reachability,
+                // Since rustdoc never needs to do codegen and doesn't care about link-time reachability,
                 // mark this as unreachable.
                 // See https://github.com/rust-lang/rust/issues/75100
                 if !self.tcx.sess.opts.actually_rustdoc {
@@ -770,11 +770,11 @@ impl Visitor<'tcx> for EmbargoVisitor<'tcx> {
                 }
             }
             // Visit everything, but foreign items have their own levels.
-            hir::ItemKind::ForeignMod(ref foreign_mod) => {
-                for foreign_item in foreign_mod.items {
-                    let foreign_item_level = self.get(foreign_item.hir_id);
+            hir::ItemKind::ForeignMod { items, .. } => {
+                for foreign_item in items {
+                    let foreign_item_level = self.get(foreign_item.id.hir_id);
                     if foreign_item_level.is_some() {
-                        self.reach(foreign_item.hir_id, foreign_item_level)
+                        self.reach(foreign_item.id.hir_id, foreign_item_level)
                             .generics()
                             .predicates()
                             .ty();
@@ -1430,7 +1430,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ObsoleteVisiblePrivateTypesVisitor<'a, 'tcx> {
 
             // An `extern {}` doesn't introduce a new privacy
             // namespace (the contents have their own privacies).
-            hir::ItemKind::ForeignMod(_) => {}
+            hir::ItemKind::ForeignMod { .. } => {}
 
             hir::ItemKind::Trait(.., ref bounds, _) => {
                 if !self.trait_is_public(item.hir_id) {
@@ -1948,10 +1948,10 @@ impl<'a, 'tcx> Visitor<'tcx> for PrivateItemsInPublicInterfacesVisitor<'a, 'tcx>
                 }
             }
             // Subitems of foreign modules have their own publicity.
-            hir::ItemKind::ForeignMod(ref foreign_mod) => {
-                for foreign_item in foreign_mod.items {
-                    let vis = tcx.visibility(tcx.hir().local_def_id(foreign_item.hir_id));
-                    self.check(foreign_item.hir_id, vis).generics().predicates().ty();
+            hir::ItemKind::ForeignMod { items, .. } => {
+                for foreign_item in items {
+                    let vis = tcx.visibility(tcx.hir().local_def_id(foreign_item.id.hir_id));
+                    self.check(foreign_item.id.hir_id, vis).generics().predicates().ty();
                 }
             }
             // Subitems of structs and unions have their own publicity.

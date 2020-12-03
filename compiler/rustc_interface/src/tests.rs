@@ -499,7 +499,6 @@ fn test_debugging_options_tracking_hash() {
     untracked!(no_parallel_llvm, true);
     untracked!(parse_only, true);
     untracked!(perf_stats, true);
-    untracked!(polonius, true);
     // `pre_link_arg` is omitted because it just forwards to `pre_link_args`.
     untracked!(pre_link_args, vec![String::from("abc"), String::from("def")]);
     untracked!(print_link_args, true);
@@ -548,7 +547,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(debug_macros, true);
     tracked!(dep_info_omit_d_target, true);
     tracked!(dual_proc_macros, true);
-    tracked!(fewer_names, true);
+    tracked!(fewer_names, Some(true));
     tracked!(force_overflow_checks, Some(true));
     tracked!(force_unstable_if_unmarked, true);
     tracked!(fuel, Some(("abc".to_string(), 99)));
@@ -573,6 +572,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(osx_rpath_install_name, true);
     tracked!(panic_abort_tests, true);
     tracked!(plt, Some(true));
+    tracked!(polonius, true);
     tracked!(precise_enum_drop_elaboration, false);
     tracked!(print_fuel, Some("abc".to_string()));
     tracked!(profile, true);
@@ -593,6 +593,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(thinlto, Some(true));
     tracked!(tune_cpu, Some(String::from("abc")));
     tracked!(tls_model, Some(TlsModel::GeneralDynamic));
+    tracked!(trap_unreachable, Some(false));
     tracked!(treat_err_as_bug, Some(1));
     tracked!(unleash_the_miri_inside_of_you, true);
     tracked!(use_ctors_section, Some(true));

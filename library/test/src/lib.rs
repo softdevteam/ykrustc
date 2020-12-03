@@ -20,7 +20,7 @@
 #![crate_name = "test"]
 #![unstable(feature = "test", issue = "50297")]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
-#![cfg_attr(any(unix, target_os = "cloudabi"), feature(libc))]
+#![cfg_attr(unix, feature(libc))]
 #![feature(rustc_private)]
 #![feature(nll)]
 #![feature(available_concurrency)]
@@ -265,14 +265,14 @@ where
             running_tests.remove(test);
         }
         timed_out
-    };
+    }
 
     fn calc_timeout(running_tests: &TestMap) -> Option<Duration> {
         running_tests.values().min().map(|next_timeout| {
             let now = Instant::now();
             if *next_timeout >= now { *next_timeout - now } else { Duration::new(0, 0) }
         })
-    };
+    }
 
     if concurrency == 1 {
         while !remaining.is_empty() {

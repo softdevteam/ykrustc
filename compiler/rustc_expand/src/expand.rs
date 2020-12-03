@@ -795,7 +795,14 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             | Annotatable::TraitItem(_)
             | Annotatable::ImplItem(_)
             | Annotatable::ForeignItem(_) => return,
-            Annotatable::Stmt(_) => "statements",
+            Annotatable::Stmt(stmt) => {
+                // Attributes are stable on item statements,
+                // but unstable on all other kinds of statements
+                if stmt.is_item() {
+                    return;
+                }
+                "statements"
+            }
             Annotatable::Expr(_) => "expressions",
             Annotatable::Arm(..)
             | Annotatable::Field(..)
@@ -1266,9 +1273,13 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
 
         // we'll expand attributes on expressions separately
         if !stmt.is_expr() {
-            // FIXME: Handle custom attributes on statements (#15701).
-            let attr =
-                if stmt.is_item() { None } else { self.take_first_attr_no_derive(&mut stmt) };
+            let attr = if stmt.is_item() {
+                self.take_first_attr(&mut stmt)
+            } else {
+                // Ignore derives on non-item statements for backwards compatibility.
+                // This will result in a unused attribute warning
+                self.take_first_attr_no_derive(&mut stmt)
+            };
 
             if let Some(attr) = attr {
                 return self
@@ -1278,7 +1289,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
         }
 
         if let StmtKind::MacCall(mac) = stmt.kind {
-            let MacCallStmt { mac, style, attrs } = mac.into_inner();
+            let MacCallStmt { mac, style, attrs, tokens: _ } = mac.into_inner();
             self.check_attributes(&attrs);
             let mut placeholder =
                 self.collect_bang(mac, stmt.span, AstFragmentKind::Stmts).make_stmts();
@@ -1295,10 +1306,10 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
         }
 
         // The placeholder expander gives ids to statements, so we avoid folding the id here.
-        let ast::Stmt { id, kind, span, tokens } = stmt;
+        let ast::Stmt { id, kind, span } = stmt;
         noop_flat_map_stmt_kind(kind, self)
             .into_iter()
-            .map(|kind| ast::Stmt { id, kind, span, tokens: tokens.clone() })
+            .map(|kind| ast::Stmt { id, kind, span })
             .collect()
     }
 
@@ -1592,23 +1603,22 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
                             items.push(ast::NestedMetaItem::MetaItem(item));
                         }
                         Err(e) => {
-                            let lit =
-                                it.meta_item().and_then(|item| item.name_value_literal()).unwrap();
+                            let lit_span = it.name_value_literal_span().unwrap();
 
                             if e.kind() == ErrorKind::InvalidData {
                                 self.cx
                                     .struct_span_err(
-                                        lit.span,
+                                        lit_span,
                                         &format!("{} wasn't a utf-8 file", filename.display()),
                                     )
-                                    .span_label(lit.span, "contains invalid utf-8")
+                                    .span_label(lit_span, "contains invalid utf-8")
                                     .emit();
                             } else {
                                 let mut err = self.cx.struct_span_err(
-                                    lit.span,
+                                    lit_span,
                                     &format!("couldn't read {}: {}", filename.display(), e),
                                 );
-                                err.span_label(lit.span, "couldn't read file");
+                                err.span_label(lit_span, "couldn't read file");
 
                                 err.emit();
                             }

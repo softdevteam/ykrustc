@@ -77,6 +77,10 @@ crate struct CrateMetadata {
     raw_proc_macros: Option<&'static [ProcMacro]>,
     /// Source maps for code from the crate.
     source_map_import_info: OnceCell<Vec<ImportedSourceFile>>,
+    /// For every definition in this crate, maps its `DefPathHash` to its
+    /// `DefIndex`. See `raw_def_id_to_def_id` for more details about how
+    /// this is used.
+    def_path_hash_map: OnceCell<FxHashMap<DefPathHash, DefIndex>>,
     /// Used for decoding interpret::AllocIds in a cached & thread-safe manner.
     alloc_decoding_state: AllocDecodingState,
     /// The `DepNodeIndex` of the `DepNode` representing this upstream crate.
@@ -644,6 +648,7 @@ impl EntryKind {
             EntryKind::TraitAlias => DefKind::TraitAlias,
             EntryKind::Enum(..) => DefKind::Enum,
             EntryKind::MacroDef(_) => DefKind::Macro(MacroKind::Bang),
+            EntryKind::ProcMacro(kind) => DefKind::Macro(kind),
             EntryKind::ForeignType => DefKind::ForeignTy,
             EntryKind::Impl(_) => DefKind::Impl,
             EntryKind::Closure => DefKind::Closure,
@@ -685,20 +690,11 @@ impl CrateRoot<'_> {
 }
 
 impl<'a, 'tcx> CrateMetadataRef<'a> {
-    fn is_proc_macro(&self, id: DefIndex) -> bool {
-        self.root
-            .proc_macro_data
-            .as_ref()
-            .and_then(|data| data.macros.decode(self).find(|x| *x == id))
-            .is_some()
-    }
-
     fn maybe_kind(&self, item_id: DefIndex) -> Option<EntryKind> {
         self.root.tables.kind.get(self, item_id).map(|k| k.decode(self))
     }
 
     fn kind(&self, item_id: DefIndex) -> EntryKind {
-        assert!(!self.is_proc_macro(item_id));
         self.maybe_kind(item_id).unwrap_or_else(|| {
             bug!(
                 "CrateMetadata::kind({:?}): id not found, in crate {:?} with number {}",
@@ -725,35 +721,24 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     }
 
     fn item_ident(&self, item_index: DefIndex, sess: &Session) -> Ident {
-        if !self.is_proc_macro(item_index) {
-            let name = self
-                .def_key(item_index)
-                .disambiguated_data
-                .data
-                .get_opt_name()
-                .expect("no name in item_ident");
-            let span = self
-                .root
-                .tables
-                .ident_span
-                .get(self, item_index)
-                .map(|data| data.decode((self, sess)))
-                .unwrap_or_else(|| panic!("Missing ident span for {:?} ({:?})", name, item_index));
-            Ident::new(name, span)
-        } else {
-            Ident::new(
-                Symbol::intern(self.raw_proc_macro(item_index).name()),
-                self.get_span(item_index, sess),
-            )
-        }
+        let name = self
+            .def_key(item_index)
+            .disambiguated_data
+            .data
+            .get_opt_name()
+            .expect("no name in item_ident");
+        let span = self
+            .root
+            .tables
+            .ident_span
+            .get(self, item_index)
+            .map(|data| data.decode((self, sess)))
+            .unwrap_or_else(|| panic!("Missing ident span for {:?} ({:?})", name, item_index));
+        Ident::new(name, span)
     }
 
     fn def_kind(&self, index: DefIndex) -> DefKind {
-        if !self.is_proc_macro(index) {
-            self.kind(index).def_kind()
-        } else {
-            DefKind::Macro(macro_kind(self.raw_proc_macro(index)))
-        }
+        self.kind(index).def_kind()
     }
 
     fn get_span(&self, index: DefIndex, sess: &Session) -> Span {
@@ -956,10 +941,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     }
 
     fn get_stability(&self, id: DefIndex) -> Option<attr::Stability> {
-        match self.is_proc_macro(id) {
-            true => self.root.proc_macro_data.as_ref().unwrap().stability,
-            false => self.root.tables.stability.get(self, id).map(|stab| stab.decode(self)),
-        }
+        self.root.tables.stability.get(self, id).map(|stab| stab.decode(self))
     }
 
     fn get_const_stability(&self, id: DefIndex) -> Option<attr::ConstStability> {
@@ -967,19 +949,11 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     }
 
     fn get_deprecation(&self, id: DefIndex) -> Option<attr::Deprecation> {
-        self.root
-            .tables
-            .deprecation
-            .get(self, id)
-            .filter(|_| !self.is_proc_macro(id))
-            .map(|depr| depr.decode(self))
+        self.root.tables.deprecation.get(self, id).map(|depr| depr.decode(self))
     }
 
     fn get_visibility(&self, id: DefIndex) -> ty::Visibility {
-        match self.is_proc_macro(id) {
-            true => ty::Visibility::Public,
-            false => self.root.tables.visibility.get(self, id).unwrap().decode(self),
-        }
+        self.root.tables.visibility.get(self, id).unwrap().decode(self)
     }
 
     fn get_impl_data(&self, id: DefIndex) -> ImplData {
@@ -1191,7 +1165,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     }
 
     fn is_item_mir_available(&self, id: DefIndex) -> bool {
-        !self.is_proc_macro(id) && self.root.tables.mir.get(self, id).is_some()
+        self.root.tables.mir.get(self, id).is_some()
     }
 
     fn module_expansion(&self, id: DefIndex, sess: &Session) -> ExpnId {
@@ -1207,7 +1181,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .mir
             .get(self, id)
-            .filter(|_| !self.is_proc_macro(id))
             .unwrap_or_else(|| {
                 bug!("get_optimized_mir: missing MIR for `{:?}`", self.local_def_id(id))
             })
@@ -1223,7 +1196,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .mir_abstract_consts
             .get(self, id)
-            .filter(|_| !self.is_proc_macro(id))
             .map_or(Ok(None), |v| Ok(Some(v.decode((self, tcx)))))
     }
 
@@ -1232,7 +1204,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .unused_generic_params
             .get(self, id)
-            .filter(|_| !self.is_proc_macro(id))
             .map(|params| params.decode(self))
             .unwrap_or_default()
     }
@@ -1242,7 +1213,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .promoted_mir
             .get(self, id)
-            .filter(|_| !self.is_proc_macro(id))
             .unwrap_or_else(|| {
                 bug!("get_promoted_mir: missing MIR for `{:?}`", self.local_def_id(id))
             })
@@ -1546,14 +1516,58 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
 
     #[inline]
     fn def_key(&self, index: DefIndex) -> DefKey {
-        *self.def_key_cache.lock().entry(index).or_insert_with(|| {
-            let mut key = self.root.tables.def_keys.get(self, index).unwrap().decode(self);
-            if self.is_proc_macro(index) {
-                let name = self.raw_proc_macro(index).name();
-                key.disambiguated_data.data = DefPathData::MacroNs(Symbol::intern(name));
+        *self
+            .def_key_cache
+            .lock()
+            .entry(index)
+            .or_insert_with(|| self.root.tables.def_keys.get(self, index).unwrap().decode(self))
+    }
+
+    /// Finds the corresponding `DefId` for the provided `DefPathHash`, if it exists.
+    /// This is used by incremental compilation to map a serialized `DefPathHash` to
+    /// its `DefId` in the current session.
+    /// Normally, only one 'main' crate will change between incremental compilation sessions:
+    /// all dependencies will be completely unchanged. In this case, we can avoid
+    /// decoding every `DefPathHash` in the crate, since the `DefIndex` from the previous
+    /// session will still be valid. If our 'guess' is wrong (the `DefIndex` no longer exists,
+    /// or has a different `DefPathHash`, then we need to decode all `DefPathHashes` to determine
+    /// the correct mapping).
+    fn def_path_hash_to_def_id(
+        &self,
+        krate: CrateNum,
+        index_guess: u32,
+        hash: DefPathHash,
+    ) -> Option<DefId> {
+        let def_index_guess = DefIndex::from_u32(index_guess);
+        let old_hash = self
+            .root
+            .tables
+            .def_path_hashes
+            .get(self, def_index_guess)
+            .map(|lazy| lazy.decode(self));
+
+        // Fast path: the definition and its index is unchanged from the
+        // previous compilation session. There is no need to decode anything
+        // else
+        if old_hash == Some(hash) {
+            return Some(DefId { krate, index: def_index_guess });
+        }
+
+        // Slow path: We need to find out the new `DefIndex` of the provided
+        // `DefPathHash`, if its still exists. This requires decoding every `DefPathHash`
+        // stored in this crate.
+        let map = self.cdata.def_path_hash_map.get_or_init(|| {
+            let end_id = self.root.tables.def_path_hashes.size() as u32;
+            let mut map = FxHashMap::with_capacity_and_hasher(end_id as usize, Default::default());
+            for i in 0..end_id {
+                let def_index = DefIndex::from_u32(i);
+                let hash =
+                    self.root.tables.def_path_hashes.get(self, def_index).unwrap().decode(self);
+                map.insert(hash, def_index);
             }
-            key
-        })
+            map
+        });
+        map.get(&hash).map(|index| DefId { krate, index: *index })
     }
 
     // Returns the path leading to the thing with this `id`.
@@ -1834,6 +1848,7 @@ impl CrateMetadata {
             trait_impls,
             raw_proc_macros,
             source_map_import_info: OnceCell::new(),
+            def_path_hash_map: Default::default(),
             alloc_decoding_state,
             dep_node_index: AtomicCell::new(DepNodeIndex::INVALID),
             cnum,

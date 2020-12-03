@@ -214,13 +214,15 @@ impl<T: fmt::Debug> fmt::Debug for Union<'_, T> {
 // This constant is used by functions that compare two sets.
 // It estimates the relative size at which searching performs better
 // than iterating, based on the benchmarks in
-// https://github.com/ssomers/rust_bench_btreeset_intersection;
+// https://github.com/ssomers/rust_bench_btreeset_intersection.
 // It's used to divide rather than multiply sizes, to rule out overflow,
 // and it's a power of two to make that division cheap.
 const ITER_PERFORMANCE_TIPPING_SIZE_DIFF: usize = 16;
 
 impl<T: Ord> BTreeSet<T> {
-    /// Makes a new `BTreeSet` with a reasonable choice of B.
+    /// Makes a new, empty `BTreeSet`.
+    ///
+    /// Does not allocate anything on its own.
     ///
     /// # Examples
     ///
@@ -1121,7 +1123,7 @@ impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BTreeSet<T> {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T: Ord> Default for BTreeSet<T> {
-    /// Makes an empty `BTreeSet<T>` with a reasonable choice of B.
+    /// Creates an empty `BTreeSet`.
     fn default() -> BTreeSet<T> {
         BTreeSet::new()
     }

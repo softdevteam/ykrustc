@@ -643,15 +643,16 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
         }
     }
 
+    fn escape_string(s: &[u8]) -> String {
+        str::from_utf8(s).map(|s| s.to_owned()).unwrap_or_else(|_| {
+            let mut x = "Non-UTF-8 output: ".to_string();
+            x.extend(s.iter().flat_map(|&b| ascii::escape_default(b)).map(char::from));
+            x
+        })
+    }
+
     match prog {
         Ok(prog) => {
-            fn escape_string(s: &[u8]) -> String {
-                str::from_utf8(s).map(|s| s.to_owned()).unwrap_or_else(|_| {
-                    let mut x = "Non-UTF-8 output: ".to_string();
-                    x.extend(s.iter().flat_map(|&b| ascii::escape_default(b)).map(char::from));
-                    x
-                })
-            }
             if !prog.status.success() {
                 let mut output = prog.stderr.clone();
                 output.extend_from_slice(&prog.stdout);
@@ -760,8 +761,21 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(
         && sess.opts.debuginfo != DebugInfo::None
         && !preserve_objects_for_their_debuginfo(sess)
     {
-        if let Err(e) = Command::new("dsymutil").arg(out_filename).output() {
-            sess.fatal(&format!("failed to run dsymutil: {}", e))
+        let prog = Command::new("dsymutil").arg(out_filename).output();
+        match prog {
+            Ok(prog) => {
+                if !prog.status.success() {
+                    let mut output = prog.stderr.clone();
+                    output.extend_from_slice(&prog.stdout);
+                    sess.struct_warn(&format!(
+                        "processing debug info with `dsymutil` failed: {}",
+                        prog.status
+                    ))
+                    .note(&escape_string(&output))
+                    .emit();
+                }
+            }
+            Err(e) => sess.fatal(&format!("unable to run `dsymutil`: {}", e)),
         }
     }
 }
@@ -2096,9 +2110,10 @@ fn add_apple_sdk(cmd: &mut dyn Linker, sess: &Session, flavor: LinkerFlavor) {
         ("aarch64", "tvos") => "appletvos",
         ("x86_64", "tvos") => "appletvsimulator",
         ("arm", "ios") => "iphoneos",
+        ("aarch64", "ios") if llvm_target.contains("macabi") => "macosx",
         ("aarch64", "ios") => "iphoneos",
         ("x86", "ios") => "iphonesimulator",
-        ("x86_64", "ios") if llvm_target.contains("macabi") => "macosx10.15",
+        ("x86_64", "ios") if llvm_target.contains("macabi") => "macosx",
         ("x86_64", "ios") => "iphonesimulator",
         _ => {
             sess.err(&format!("unsupported arch `{}` for os `{}`", arch, os));

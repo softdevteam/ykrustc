@@ -130,8 +130,8 @@ rustc_queries! {
             storage(ArenaCacheSelector<'tcx>)
             cache_on_disk_if { key.is_local() }
             load_cached(tcx, id) {
-                let generics: Option<ty::Generics> = tcx.queries.on_disk_cache
-                                                        .try_load_query_result(tcx, id);
+                let generics: Option<ty::Generics> = tcx.queries.on_disk_cache.as_ref()
+                                                        .and_then(|c| c.try_load_query_result(tcx, id));
                 generics
             }
         }
@@ -433,12 +433,23 @@ rustc_queries! {
         /// full predicates are available (note that supertraits have
         /// additional acyclicity requirements).
         query super_predicates_of(key: DefId) -> ty::GenericPredicates<'tcx> {
-            desc { |tcx| "computing the supertraits of `{}`", tcx.def_path_str(key) }
+            desc { |tcx| "computing the super predicates of `{}`", tcx.def_path_str(key) }
+        }
+
+        /// The `Option<Ident>` is the name of an associated type. If it is `None`, then this query
+        /// returns the full set of predicates. If `Some<Ident>`, then the query returns only the
+        /// subset of super-predicates that reference traits that define the given associated type.
+        /// This is used to avoid cycles in resolving types like `T::Item`.
+        query super_predicates_that_define_assoc_type(key: (DefId, Option<rustc_span::symbol::Ident>)) -> ty::GenericPredicates<'tcx> {
+            desc { |tcx| "computing the super traits of `{}`{}",
+                tcx.def_path_str(key.0),
+                if let Some(assoc_name) = key.1 { format!(" with associated type name `{}`", assoc_name) } else { "".to_string() },
+            }
         }
 
         /// To avoid cycles within the predicates of a single item we compute
         /// per-type-parameter predicates for resolving `T::AssocTy`.
-        query type_param_predicates(key: (DefId, LocalDefId)) -> ty::GenericPredicates<'tcx> {
+        query type_param_predicates(key: (DefId, LocalDefId, rustc_span::symbol::Ident)) -> ty::GenericPredicates<'tcx> {
             desc { |tcx| "computing the bounds for type parameter `{}`", {
                 let id = tcx.hir().local_def_id_to_hir_id(key.1);
                 tcx.hir().ty_param_name(id)
@@ -635,6 +646,10 @@ rustc_queries! {
             desc { |tcx| "checking loops in {}", describe_as_module(key, tcx) }
         }
 
+        query check_mod_naked_functions(key: LocalDefId) -> () {
+            desc { |tcx| "checking naked functions in {}", describe_as_module(key, tcx) }
+        }
+
         query check_mod_item_types(key: LocalDefId) -> () {
             desc { |tcx| "checking item types in {}", describe_as_module(key, tcx) }
         }
@@ -688,8 +703,8 @@ rustc_queries! {
             cache_on_disk_if { true }
             load_cached(tcx, id) {
                 let typeck_results: Option<ty::TypeckResults<'tcx>> = tcx
-                    .queries.on_disk_cache
-                    .try_load_query_result(tcx, id);
+                    .queries.on_disk_cache.as_ref()
+                    .and_then(|c| c.try_load_query_result(tcx, id));
 
                 typeck_results.map(|x| &*tcx.arena.alloc(x))
             }
