@@ -936,7 +936,7 @@ pub mod labels {
     }
 
     /// Walks the DWARF tree of the specified executable and extracts Yorick location mapping
-    /// labels. The labels are returned in a vector sorted by the file offset in the executable.
+    /// labels. Returns an list of labels ordered by file offset (ascending).
     fn extract_dwarf_labels(exe_filename: &Path) -> Result<Vec<ykpack::SirLabel>, gimli::Error> {
         let file = fs::File::open(exe_filename).unwrap();
         let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
@@ -976,7 +976,7 @@ pub mod labels {
                                 // We thus simply remember the subprogram's address so we can later
                                 // assign it to the first block (ending with '_0') of this
                                 // subprogram.
-                                subaddr = Some(v as u64);
+                                subaddr = Some(u64::try_from(v).unwrap());
                             } else {
                                 panic!("Error reading dwarf information. Expected type 'Addr'.")
                             }
@@ -1002,7 +1002,8 @@ pub mod labels {
                                         let (fsym, bb) = split_label_name(s);
                                         if let gimli::AttributeValue::Addr(v) = lowpc {
                                             labels.push(ykpack::SirLabel {
-                                                off: usize::try_from(v as u64).unwrap(),
+                                                off: usize::try_from(u64::try_from(v).unwrap())
+                                                    .unwrap(),
                                                 symbol_name: fsym,
                                                 bb,
                                             });
