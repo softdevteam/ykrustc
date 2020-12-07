@@ -1322,8 +1322,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6503fe142514ca4799d4c26297c4248239fe8838d827db6bd6065c6ed29a6ce"
 dependencies = [
  "compiler_builtins",
+ "fallible-iterator",
+ "indexmap",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -3568,13 +3571,16 @@ dependencies = [
 name = "rustc_codegen_ssa"
 version = "0.0.0"
 dependencies = [
+ "bincode",
  "bitflags",
  "cc",
+ "gimli",
  "indexmap",
  "jobserver",
  "libc",
  "memmap",
  "num_cpus",
+ "object",
  "pathdiff",
  "rustc_apfloat",
  "rustc_ast",
@@ -5638,7 +5644,6 @@ dependencies = [
 [[package]]
 name = "ykpack"
 version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#bf9f42278be72f072a34e95d3f671bdcf19ed048"
 dependencies = [
  "bincode",
  "bitflags",
