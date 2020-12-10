@@ -162,9 +162,6 @@ impl Clean<ExternalCrate> for CrateNum {
                 .collect()
         };
 
-        let get_span =
-            |attr: &ast::NestedMetaItem| Some(attr.meta_item()?.name_value_literal()?.span);
-
         let as_keyword = |res: Res| {
             if let Res::Def(DefKind::Mod, def_id) = res {
                 let attrs = cx.tcx.get_attrs(def_id).clean(cx);
@@ -172,19 +169,7 @@ impl Clean<ExternalCrate> for CrateNum {
                 for attr in attrs.lists(sym::doc) {
                     if attr.has_name(sym::keyword) {
                         if let Some(v) = attr.value_str() {
-                            let k = v.to_string();
-                            if !rustc_lexer::is_ident(&k) {
-                                let sp = get_span(&attr).unwrap_or_else(|| attr.span());
-                                cx.tcx
-                                    .sess
-                                    .struct_span_err(
-                                        sp,
-                                        &format!("`{}` is not a valid identifier", v),
-                                    )
-                                    .emit();
-                            } else {
-                                keyword = Some(k);
-                            }
+                            keyword = Some(v.to_string());
                             break;
                         }
                     }
@@ -1015,7 +1000,7 @@ impl<'tcx> Clean<FnDecl> for (DefId, ty::PolyFnSig<'tcx>) {
                     .iter()
                     .map(|t| Argument {
                         type_: t.clean(cx),
-                        name: names.next().map_or(String::new(), |name| name.to_string()),
+                        name: names.next().map_or_else(|| String::new(), |name| name.to_string()),
                     })
                     .collect(),
             },
@@ -1989,16 +1974,13 @@ impl Clean<BareFunctionDecl> for hir::BareFnTy<'_> {
     }
 }
 
-impl Clean<Vec<Item>> for (&hir::Item<'_>, Option<Ident>) {
+impl Clean<Vec<Item>> for (&hir::Item<'_>, Option<Symbol>) {
     fn clean(&self, cx: &DocContext<'_>) -> Vec<Item> {
         use hir::ItemKind;
 
         let (item, renamed) = self;
         let def_id = cx.tcx.hir().local_def_id(item.hir_id).to_def_id();
-        let mut name = match renamed {
-            Some(ident) => ident.name,
-            None => cx.tcx.hir().name(item.hir_id),
-        };
+        let mut name = renamed.unwrap_or_else(|| cx.tcx.hir().name(item.hir_id));
         cx.with_param_env(def_id, || {
             let kind = match item.kind {
                 ItemKind::Static(ty, mutability, body_id) => StaticItem(Static {
@@ -2281,7 +2263,7 @@ impl Clean<Vec<Item>> for doctree::Import<'_> {
             name: None,
             attrs: self.attrs.clean(cx),
             source: self.span.clean(cx),
-            def_id: DefId::local(CRATE_DEF_INDEX),
+            def_id: cx.tcx.hir().local_def_id(self.id).to_def_id(),
             visibility: self.vis.clean(cx),
             stability: None,
             const_stability: None,
@@ -2291,7 +2273,7 @@ impl Clean<Vec<Item>> for doctree::Import<'_> {
     }
 }
 
-impl Clean<Item> for (&hir::ForeignItem<'_>, Option<Ident>) {
+impl Clean<Item> for (&hir::ForeignItem<'_>, Option<Symbol>) {
     fn clean(&self, cx: &DocContext<'_>) -> Item {
         let (item, renamed) = self;
         cx.with_param_env(cx.tcx.hir().local_def_id(item.hir_id).to_def_id(), || {
@@ -2325,7 +2307,7 @@ impl Clean<Item> for (&hir::ForeignItem<'_>, Option<Ident>) {
 
             Item::from_hir_id_and_parts(
                 item.hir_id,
-                Some(renamed.unwrap_or(item.ident).name),
+                Some(renamed.unwrap_or(item.ident.name)),
                 kind,
                 cx,
             )
@@ -2333,10 +2315,10 @@ impl Clean<Item> for (&hir::ForeignItem<'_>, Option<Ident>) {
     }
 }
 
-impl Clean<Item> for (&hir::MacroDef<'_>, Option<Ident>) {
+impl Clean<Item> for (&hir::MacroDef<'_>, Option<Symbol>) {
     fn clean(&self, cx: &DocContext<'_>) -> Item {
         let (item, renamed) = self;
-        let name = renamed.unwrap_or(item.ident).name;
+        let name = renamed.unwrap_or(item.ident.name);
         let tts = item.ast.body.inner_tokens().trees().collect::<Vec<_>>();
         // Extract the spans of all matchers. They represent the "interface" of the macro.
         let matchers = tts.chunks(4).map(|arm| arm[0].span()).collect::<Vec<_>>();

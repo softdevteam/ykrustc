@@ -1553,6 +1553,8 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             return Some(DefId { krate, index: def_index_guess });
         }
 
+        let is_proc_macro = self.is_proc_macro_crate();
+
         // Slow path: We need to find out the new `DefIndex` of the provided
         // `DefPathHash`, if its still exists. This requires decoding every `DefPathHash`
         // stored in this crate.
@@ -1561,9 +1563,12 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             let mut map = FxHashMap::with_capacity_and_hasher(end_id as usize, Default::default());
             for i in 0..end_id {
                 let def_index = DefIndex::from_u32(i);
-                let hash =
-                    self.root.tables.def_path_hashes.get(self, def_index).unwrap().decode(self);
-                map.insert(hash, def_index);
+                // There may be gaps in the encoded table if we're decoding a proc-macro crate
+                if let Some(hash) = self.root.tables.def_path_hashes.get(self, def_index) {
+                    map.insert(hash.decode(self), def_index);
+                } else if !is_proc_macro {
+                    panic!("Missing def_path_hashes entry for {:?}", def_index);
+                }
             }
             map
         });
@@ -1590,23 +1595,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     fn def_path_hash(&self, index: DefIndex) -> DefPathHash {
         let mut def_path_hashes = self.def_path_hash_cache.lock();
         self.def_path_hash_unlocked(index, &mut def_path_hashes)
-    }
-
-    fn all_def_path_hashes_and_def_ids(&self) -> Vec<(DefPathHash, DefId)> {
-        let mut def_path_hashes = self.def_path_hash_cache.lock();
-        let mut def_index_to_data = |index| {
-            (self.def_path_hash_unlocked(index, &mut def_path_hashes), self.local_def_id(index))
-        };
-        if let Some(data) = &self.root.proc_macro_data {
-            std::iter::once(CRATE_DEF_INDEX)
-                .chain(data.macros.decode(self))
-                .map(def_index_to_data)
-                .collect()
-        } else {
-            (0..self.num_def_ids())
-                .map(|index| def_index_to_data(DefIndex::from_usize(index)))
-                .collect()
-        }
     }
 
     /// Get the `DepNodeIndex` corresponding this crate. The result of this

@@ -2143,7 +2143,7 @@ impl<'hir> InlineAsmOperand<'hir> {
 #[derive(Debug, HashStable_Generic)]
 pub struct InlineAsm<'hir> {
     pub template: &'hir [InlineAsmTemplatePiece],
-    pub operands: &'hir [InlineAsmOperand<'hir>],
+    pub operands: &'hir [(InlineAsmOperand<'hir>, Span)],
     pub options: InlineAsmOptions,
     pub line_spans: &'hir [Span],
 }
@@ -2401,7 +2401,7 @@ impl StructField<'_> {
     // Still necessary in couple of places
     pub fn is_positional(&self) -> bool {
         let first = self.ident.as_str().as_bytes()[0];
-        first >= b'0' && first <= b'9'
+        (b'0'..=b'9').contains(&first)
     }
 }
 

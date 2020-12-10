@@ -346,6 +346,21 @@ rustc_queries! {
             cache_on_disk_if { key.is_local() }
         }
 
+        /// Returns the name of the file that contains the function body, if instrumented for coverage.
+        query covered_file_name(key: DefId) -> Option<Symbol> {
+            desc { |tcx| "retrieving the covered file name, if instrumented, for `{}`", tcx.def_path_str(key) }
+            storage(ArenaCacheSelector<'tcx>)
+            cache_on_disk_if { key.is_local() }
+        }
+
+        /// Returns the `CodeRegions` for a function that has instrumented coverage, in case the
+        /// function was optimized out before codegen, and before being added to the Coverage Map.
+        query covered_code_regions(key: DefId) -> Vec<&'tcx mir::coverage::CodeRegion> {
+            desc { |tcx| "retrieving the covered `CodeRegion`s, if instrumented, for `{}`", tcx.def_path_str(key) }
+            storage(ArenaCacheSelector<'tcx>)
+            cache_on_disk_if { key.is_local() }
+        }
+
         /// The `DefId` is the `DefId` of the containing MIR body. Promoteds do not have their own
         /// `DefId`. This function returns all promoteds in the specified body. The body references
         /// promoteds by the `DefId` and the `mir::Promoted` index. This is necessary, because
@@ -433,23 +448,12 @@ rustc_queries! {
         /// full predicates are available (note that supertraits have
         /// additional acyclicity requirements).
         query super_predicates_of(key: DefId) -> ty::GenericPredicates<'tcx> {
-            desc { |tcx| "computing the super predicates of `{}`", tcx.def_path_str(key) }
-        }
-
-        /// The `Option<Ident>` is the name of an associated type. If it is `None`, then this query
-        /// returns the full set of predicates. If `Some<Ident>`, then the query returns only the
-        /// subset of super-predicates that reference traits that define the given associated type.
-        /// This is used to avoid cycles in resolving types like `T::Item`.
-        query super_predicates_that_define_assoc_type(key: (DefId, Option<rustc_span::symbol::Ident>)) -> ty::GenericPredicates<'tcx> {
-            desc { |tcx| "computing the super traits of `{}`{}",
-                tcx.def_path_str(key.0),
-                if let Some(assoc_name) = key.1 { format!(" with associated type name `{}`", assoc_name) } else { "".to_string() },
-            }
+            desc { |tcx| "computing the supertraits of `{}`", tcx.def_path_str(key) }
         }
 
         /// To avoid cycles within the predicates of a single item we compute
         /// per-type-parameter predicates for resolving `T::AssocTy`.
-        query type_param_predicates(key: (DefId, LocalDefId, rustc_span::symbol::Ident)) -> ty::GenericPredicates<'tcx> {
+        query type_param_predicates(key: (DefId, LocalDefId)) -> ty::GenericPredicates<'tcx> {
             desc { |tcx| "computing the bounds for type parameter `{}`", {
                 let id = tcx.hir().local_def_id_to_hir_id(key.1);
                 tcx.hir().ty_param_name(id)
