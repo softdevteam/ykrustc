@@ -68,7 +68,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "mode",
             "which sort of compile tests to run",
             "compile-fail | run-fail | run-pass-valgrind | pretty | debug-info | codegen | rustdoc \
-             codegen-units | incremental | run-make | ui | js-doc-test | mir-opt | assembly",
+            | rustdoc-json | codegen-units | incremental | run-make | ui | js-doc-test | mir-opt | assembly",
         )
         .reqopt(
             "",
@@ -508,8 +508,6 @@ fn common_inputs_stamp(config: &Config) -> Stamp {
         stamp.add_path(&rustdoc_path);
         stamp.add_path(&rust_src_dir.join("src/etc/htmldocck.py"));
     }
-    // FIXME(richkadel): Do I need to add an `if let Some(rust_demangler_path) contribution to the
-    // stamp here as well?
 
     // Compiletest itself.
     stamp.add_dir(&rust_src_dir.join("src/tools/compiletest/"));

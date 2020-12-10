@@ -14,6 +14,8 @@
 #![feature(crate_visibility_modifier)]
 #![feature(never_type)]
 #![feature(once_cell)]
+#![feature(type_ascription)]
+#![feature(split_inclusive)]
 #![recursion_limit = "256"]
 
 #[macro_use]

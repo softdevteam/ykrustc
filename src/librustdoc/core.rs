@@ -13,7 +13,6 @@ use rustc_hir::{
 };
 use rustc_interface::interface;
 use rustc_middle::hir::map::Map;
-use rustc_middle::middle::cstore::CrateStore;
 use rustc_middle::middle::privacy::AccessLevels;
 use rustc_middle::ty::{ParamEnv, Ty, TyCtxt};
 use rustc_resolve as resolve;
@@ -371,6 +370,7 @@ crate fn run_core(
         error_format,
         edition,
         describe_lints,
+        crate_name,
         ..Options::default()
     };
 
@@ -384,7 +384,6 @@ crate fn run_core(
         file_loader: None,
         diagnostic_output: DiagnosticOutput::Default,
         stderr: None,
-        crate_name,
         lint_caps,
         register_lints: None,
         override_queries: Some(|_sess, providers, _external_providers| {
@@ -412,9 +411,7 @@ crate fn run_core(
                 let hir = tcx.hir();
                 let body = hir.body(hir.body_owned_by(hir.local_def_id_to_hir_id(def_id)));
                 debug!("visiting body for {:?}", def_id);
-                tcx.sess.time("emit_ignored_resolution_errors", || {
-                    EmitIgnoredResolutionErrors::new(tcx).visit_body(body);
-                });
+                EmitIgnoredResolutionErrors::new(tcx).visit_body(body);
                 (rustc_interface::DEFAULT_QUERY_PROVIDERS.typeck)(tcx, def_id)
             };
         }),

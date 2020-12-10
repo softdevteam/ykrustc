@@ -212,6 +212,7 @@
     all(target_vendor = "fortanix", target_env = "sgx"),
     feature(slice_index_methods, coerce_unsized, sgx_platform)
 )]
+#![deny(rustc::existing_doc_keyword)]
 #![cfg_attr(all(test, target_vendor = "fortanix", target_env = "sgx"), feature(fixed_size_array))]
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
@@ -301,6 +302,7 @@
 #![feature(rustc_private)]
 #![feature(shrink_to)]
 #![feature(slice_concat_ext)]
+#![feature(slice_fill)]
 #![feature(slice_internals)]
 #![feature(slice_ptr_get)]
 #![feature(slice_ptr_len)]
