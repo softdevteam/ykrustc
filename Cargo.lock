@@ -5655,15 +5655,3 @@ checksum = "39f0c922f1a334134dc2f7a8b67dc5d25f0735263feec974345ff706bcf20b0d"
 dependencies = [
  "linked-hash-map",
 ]
-
-[[package]]
-name = "ykpack"
-version = "0.1.0"
-source = "git+https://github.com/softdevteam/yk#204fa46244b291fafb597c0e1d2a68db2ef5b2fd"
-dependencies = [
- "bincode",
- "bitflags",
- "fallible-iterator",
- "fxhash",
- "serde",
-]

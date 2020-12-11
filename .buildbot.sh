@@ -15,6 +15,9 @@ SNAP_DIR=/opt/ykrustc-bin-snapshots
 # Ensure the build fails if it uses excessive amounts of memory.
 ulimit -d $((1024 * 1024 * 10)) # 10 GiB
 
+# Check for some common developer mistakes.
+/opt/buildbot/bin/python3 .buildbot_prechecks.py
+
 # Patch the yk dependency if necessary.
 # This step requires the 'github3.py' module.
 /opt/buildbot/bin/python3 .buildbot_patch_yk_dep.py
