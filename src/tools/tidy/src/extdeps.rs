@@ -28,7 +28,7 @@ pub fn check(root: &Path, bad: &mut bool) {
         }
 
         // Extract source value.
-        let source = line.splitn(2, '=').nth(1).unwrap().trim();
+        let source = line.split_once('=').unwrap().1.trim();
 
         // Allow all soft-dev repos.
         // We also allow our personal forks for scenarios where we are breaking a CI cycle and need
