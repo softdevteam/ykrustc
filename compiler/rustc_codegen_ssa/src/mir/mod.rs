@@ -281,12 +281,13 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         }
     }
 
-    if let Some(sfcx) = fx.sir_func_cx {
+    if let Some(mut sfcx) = fx.sir_func_cx {
         // Often there are function declarations with no blocks. I think these are call targets
         // from other crates or compilation units, which have to be declared to keep LLVM happy.
         // There's no use in serialising these "empty functions" and they clash with the real
         // declarations.
         if !sfcx.is_empty() {
+            sfcx.compute_layout_and_offsets();
             cx.define_function_sir(sfcx.func);
         }
     }
