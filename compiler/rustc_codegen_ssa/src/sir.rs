@@ -777,55 +777,52 @@ impl SirFuncCx<'tcx> {
         bx: &Bx,
         ty_layout: &TyAndLayout<'tcx>,
     ) -> ykpack::TypeId {
-        let align = usize::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
         let size = usize::try_from(ty_layout.layout.size.bytes()).unwrap();
-        let sir_ty = match ty_layout.ty.kind() {
+        let align = usize::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
+        let sir_tykind = match ty_layout.ty.kind() {
             ty::Int(si) => self.lower_signed_int_ty(*si),
             ty::Uint(ui) => self.lower_unsigned_int_ty(*ui),
             ty::Adt(adt_def, ..) => self.lower_adt_ty(bx, adt_def, &ty_layout),
-            ty::Array(elem_ty, len) => ykpack::Ty::Array {
+            ty::Array(elem_ty, len) => ykpack::TyKind::Array {
                 elem_ty: self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, elem_ty)),
                 len: usize::try_from(len.eval_usize(self.tcx, ty::ParamEnv::reveal_all())).unwrap(),
-                size_align: ykpack::SizeAndAlign {
-                    size: size.try_into().unwrap(),
-                    align: align.try_into().unwrap(),
-                },
             },
             ty::Slice(typ) => {
-                ykpack::Ty::Slice(self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, typ)))
+                ykpack::TyKind::Slice(self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, typ)))
             }
             ty::Ref(_, typ, _) => {
-                ykpack::Ty::Ref(self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, typ)))
+                ykpack::TyKind::Ref(self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, typ)))
             }
-            ty::Bool => ykpack::Ty::Bool,
-            ty::Char => ykpack::Ty::Char,
+            ty::Bool => ykpack::TyKind::Bool,
+            ty::Char => ykpack::TyKind::Char,
             ty::Tuple(..) => self.lower_tuple_ty(bx, ty_layout),
-            _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
+            _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
         };
+        let sir_ty = ykpack::Ty { size, align, kind: sir_tykind };
         let tyid = bx.cx().define_sir_type(sir_ty);
         self.layout_map.insert(tyid, (size, align));
         tyid
     }
 
-    fn lower_signed_int_ty(&mut self, si: IntTy) -> ykpack::Ty {
+    fn lower_signed_int_ty(&mut self, si: IntTy) -> ykpack::TyKind {
         match si {
-            IntTy::Isize => ykpack::Ty::SignedInt(ykpack::SignedIntTy::Isize),
-            IntTy::I8 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I8),
-            IntTy::I16 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I16),
-            IntTy::I32 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I32),
-            IntTy::I64 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I64),
-            IntTy::I128 => ykpack::Ty::SignedInt(ykpack::SignedIntTy::I128),
+            IntTy::Isize => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::Isize),
+            IntTy::I8 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I8),
+            IntTy::I16 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I16),
+            IntTy::I32 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I32),
+            IntTy::I64 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I64),
+            IntTy::I128 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I128),
         }
     }
 
-    fn lower_unsigned_int_ty(&mut self, ui: UintTy) -> ykpack::Ty {
+    fn lower_unsigned_int_ty(&mut self, ui: UintTy) -> ykpack::TyKind {
         match ui {
-            UintTy::Usize => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::Usize),
-            UintTy::U8 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U8),
-            UintTy::U16 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U16),
-            UintTy::U32 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U32),
-            UintTy::U64 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U64),
-            UintTy::U128 => ykpack::Ty::UnsignedInt(ykpack::UnsignedIntTy::U128),
+            UintTy::Usize => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::Usize),
+            UintTy::U8 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U8),
+            UintTy::U16 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U16),
+            UintTy::U32 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U32),
+            UintTy::U64 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U64),
+            UintTy::U128 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U128),
         }
     }
 
@@ -833,10 +830,7 @@ impl SirFuncCx<'tcx> {
         &mut self,
         bx: &Bx,
         ty_layout: &TyAndLayout<'tcx>,
-    ) -> ykpack::Ty {
-        let align = i32::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
-        let size = i32::try_from(ty_layout.layout.size.bytes()).unwrap();
-
+    ) -> ykpack::TyKind {
         match &ty_layout.fields {
             FieldsShape::Arbitrary { offsets, .. } => {
                 let mut sir_offsets = Vec::new();
@@ -846,12 +840,11 @@ impl SirFuncCx<'tcx> {
                     sir_offsets.push(off.bytes().try_into().unwrap());
                 }
 
-                ykpack::Ty::Tuple(ykpack::TupleTy {
+                ykpack::TyKind::Tuple(ykpack::TupleTy {
                     fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
-                    size_align: ykpack::SizeAndAlign { size, align },
                 })
             }
-            _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
+            _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
         }
     }
 
@@ -860,10 +853,7 @@ impl SirFuncCx<'tcx> {
         bx: &Bx,
         adt_def: &AdtDef,
         ty_layout: &TyAndLayout<'tcx>,
-    ) -> ykpack::Ty {
-        let align = i32::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
-        let size = i32::try_from(ty_layout.layout.size.bytes()).unwrap();
-
+    ) -> ykpack::TyKind {
         if adt_def.variants.len() == 1 {
             // Plain old struct-like thing.
             let struct_layout = ty_layout.for_variant(bx, VariantIdx::from_u32(0));
@@ -877,16 +867,15 @@ impl SirFuncCx<'tcx> {
                         sir_offsets.push(off.bytes().try_into().unwrap());
                     }
 
-                    ykpack::Ty::Struct(ykpack::StructTy {
+                    ykpack::TyKind::Struct(ykpack::StructTy {
                         fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
-                        size_align: ykpack::SizeAndAlign { align, size },
                     })
                 }
-                _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
+                _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
             }
         } else {
             // An enum with variants.
-            ykpack::Ty::Unimplemented(format!("{:?}", ty_layout))
+            ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout))
         }
     }
 }
