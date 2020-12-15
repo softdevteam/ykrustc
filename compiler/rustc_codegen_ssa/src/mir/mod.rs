@@ -287,7 +287,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         // There's no use in serialising these "empty functions" and they clash with the real
         // declarations.
         if !sfcx.is_empty() {
-            sfcx.compute_layout_and_offsets();
+            sfcx.compute_layout_and_offsets(&bx);
             cx.define_function_sir(sfcx.func);
         }
     }

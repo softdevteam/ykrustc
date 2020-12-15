@@ -104,4 +104,10 @@ impl SirMethods for CodegenCx<'b, 'tcx> {
     fn define_function_sir(&self, sir: ykpack::Body) {
         self.sir.as_ref().unwrap().funcs.borrow_mut().push(sir);
     }
+
+    fn get_size_align(&self, tyid: ykpack::TypeId) -> (usize, usize) {
+        let types = self.sir.as_ref().unwrap().types.borrow();
+        let ty = types.get(tyid);
+        (ty.size, ty.align)
+    }
 }
