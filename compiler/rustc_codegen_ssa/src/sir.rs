@@ -108,8 +108,6 @@ pub struct SirFuncCx<'tcx> {
     pub func: ykpack::Body,
     /// Maps each MIR local to a SIR IPlace.
     var_map: FxHashMap<mir::Local, ykpack::IPlace>,
-    /// Maps TypeIds to their layout.
-    layout_map: FxHashMap<ykpack::TypeId, (usize, usize)>,
     /// The next SIR local variable index to be allocated.
     next_sir_local: ykpack::LocalIndex,
     /// The compiler's type context.
@@ -203,7 +201,6 @@ impl SirFuncCx<'tcx> {
                 offsets: Vec::new(),
             },
             var_map,
-            layout_map: FxHashMap::default(),
             next_sir_local: 0,
             tcx,
         };
@@ -228,11 +225,11 @@ impl SirFuncCx<'tcx> {
     }
 
     /// Compute layout and offsets required for blackholing.
-    pub fn compute_layout_and_offsets(&mut self) {
+    pub fn compute_layout_and_offsets<Bx: BuilderMethods<'a, 'tcx>>(&mut self, bx: &Bx) {
         let mut layout = Layout::from_size_align(0, 1).unwrap();
         for ld in &self.func.local_decls {
-            let (size, align) = self.layout_map.get(&ld.ty).unwrap();
-            let l = Layout::from_size_align(*size, *align).unwrap();
+            let (size, align) = bx.cx().get_size_align(ld.ty);
+            let l = Layout::from_size_align(size, align).unwrap();
             let (nl, off) = layout.extend(l).unwrap();
             self.func.offsets.push(off);
             layout = nl;
@@ -800,7 +797,6 @@ impl SirFuncCx<'tcx> {
         };
         let sir_ty = ykpack::Ty { size, align, kind: sir_tykind };
         let tyid = bx.cx().define_sir_type(sir_ty);
-        self.layout_map.insert(tyid, (size, align));
         tyid
     }
 
@@ -902,6 +898,11 @@ impl SirTypes {
             *next_idx += 1;
             idx
         })
+    }
+
+    /// Given a type id return the corresponding type.
+    pub fn get(&self, tyid: ykpack::TypeId) -> &ykpack::Ty {
+        self.map.get_index(usize::try_from(tyid.1).unwrap()).unwrap().0
     }
 }
 
