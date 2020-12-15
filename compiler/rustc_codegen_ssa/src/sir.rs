@@ -18,6 +18,7 @@ use rustc_middle::ty::{Instance, Ty};
 use rustc_span::sym;
 use rustc_target::abi::FieldsShape;
 use rustc_target::abi::VariantIdx;
+use std::alloc::Layout;
 use std::cell::RefCell;
 use std::convert::{TryFrom, TryInto};
 use std::default::Default;
@@ -107,6 +108,8 @@ pub struct SirFuncCx<'tcx> {
     pub func: ykpack::Body,
     /// Maps each MIR local to a SIR IPlace.
     var_map: FxHashMap<mir::Local, ykpack::IPlace>,
+    /// Maps TypeIds to their layout.
+    layout_map: FxHashMap<ykpack::TypeId, (usize, usize)>,
     /// The next SIR local variable index to be allocated.
     next_sir_local: ykpack::LocalIndex,
     /// The compiler's type context.
@@ -190,8 +193,17 @@ impl SirFuncCx<'tcx> {
         let mut this = Self {
             instance: instance.clone(),
             mir,
-            func: ykpack::Body { symbol_name, blocks, flags, local_decls, num_args: mir.arg_count },
+            func: ykpack::Body {
+                symbol_name,
+                blocks,
+                flags,
+                local_decls,
+                num_args: mir.arg_count,
+                layout: (0, 0),
+                offsets: Vec::new(),
+            },
             var_map,
+            layout_map: FxHashMap::default(),
             next_sir_local: 0,
             tcx,
         };
@@ -213,6 +225,20 @@ impl SirFuncCx<'tcx> {
             this.next_sir_local += 1;
         }
         this
+    }
+
+    /// Compute layout and offsets required for blackholing.
+    pub fn compute_layout_and_offsets(&mut self) {
+        let mut layout = Layout::from_size_align(0, 1).unwrap();
+        for ld in &self.func.local_decls {
+            let (size, align) = self.layout_map.get(&ld.ty).unwrap();
+            let l = Layout::from_size_align(*size, *align).unwrap();
+            let (nl, off) = layout.extend(l).unwrap();
+            self.func.offsets.push(off);
+            layout = nl;
+        }
+        layout = layout.pad_to_align();
+        self.func.layout = (layout.size(), layout.align());
     }
 
     /// Returns the IPlace corresponding with MIR local `ml`. A new IPlace is constructed if we've
@@ -751,23 +777,20 @@ impl SirFuncCx<'tcx> {
         bx: &Bx,
         ty_layout: &TyAndLayout<'tcx>,
     ) -> ykpack::TypeId {
+        let align = usize::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
+        let size = usize::try_from(ty_layout.layout.size.bytes()).unwrap();
         let sir_ty = match ty_layout.ty.kind() {
             ty::Int(si) => self.lower_signed_int_ty(*si),
             ty::Uint(ui) => self.lower_unsigned_int_ty(*ui),
             ty::Adt(adt_def, ..) => self.lower_adt_ty(bx, adt_def, &ty_layout),
-            ty::Array(elem_ty, len) => {
-                let align = usize::try_from(ty_layout.layout.align.abi.bytes()).unwrap();
-                let size = usize::try_from(ty_layout.layout.size.bytes()).unwrap();
-                ykpack::Ty::Array {
-                    elem_ty: self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, elem_ty)),
-                    len: usize::try_from(len.eval_usize(self.tcx, ty::ParamEnv::reveal_all()))
-                        .unwrap(),
-                    size_align: ykpack::SizeAndAlign {
-                        size: size.try_into().unwrap(),
-                        align: align.try_into().unwrap(),
-                    },
-                }
-            }
+            ty::Array(elem_ty, len) => ykpack::Ty::Array {
+                elem_ty: self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, elem_ty)),
+                len: usize::try_from(len.eval_usize(self.tcx, ty::ParamEnv::reveal_all())).unwrap(),
+                size_align: ykpack::SizeAndAlign {
+                    size: size.try_into().unwrap(),
+                    align: align.try_into().unwrap(),
+                },
+            },
             ty::Slice(typ) => {
                 ykpack::Ty::Slice(self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, typ)))
             }
@@ -779,7 +802,9 @@ impl SirFuncCx<'tcx> {
             ty::Tuple(..) => self.lower_tuple_ty(bx, ty_layout),
             _ => ykpack::Ty::Unimplemented(format!("{:?}", ty_layout)),
         };
-        bx.cx().define_sir_type(sir_ty)
+        let tyid = bx.cx().define_sir_type(sir_ty);
+        self.layout_map.insert(tyid, (size, align));
+        tyid
     }
 
     fn lower_signed_int_ty(&mut self, si: IntTy) -> ykpack::Ty {
