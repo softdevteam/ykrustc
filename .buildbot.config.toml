@@ -1,8 +1,9 @@
 # Config file for continuous integration.
 
 [rust]
-codegen-units = 0           # Use many compilation units.
-debug-assertions = true     # Turn on assertions in rustc.
+codegen-units = 0            # Use many compilation units.
+debug-assertions = true      # Turn on assertions in rustc.
+debug-assertions-std = false # Assertions in libstd cause too much overhead.
 
 [build]
 docs = false
@@ -10,7 +11,7 @@ extended = true
 tools = ["cargo", "rustdoc"]
 
 [llvm]
-assertions = true           # Turn on assertions in LLVM.
+assertions = true            # Turn on assertions in LLVM.
 
 [install]
 prefix = "build/ykrustc-stage2-latest"
