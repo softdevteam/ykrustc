@@ -523,16 +523,19 @@ impl Step for Rustc {
             // component for now.
             maybe_install_llvm_runtime(builder, host, image);
 
+            let src_dir = builder.sysroot_libdir(compiler, host).parent().unwrap().join("bin");
+            let dst_dir = image.join("lib/rustlib").join(&*host.triple).join("bin");
+            t!(fs::create_dir_all(&dst_dir));
+
             // Copy over lld if it's there
             if builder.config.lld_enabled {
                 let exe = exe("rust-lld", compiler.host);
-                let src =
-                    builder.sysroot_libdir(compiler, host).parent().unwrap().join("bin").join(&exe);
-                // for the rationale about this rename check `compile::copy_lld_to_sysroot`
-                let dst = image.join("lib/rustlib").join(&*host.triple).join("bin").join(&exe);
-                t!(fs::create_dir_all(&dst.parent().unwrap()));
-                builder.copy(&src, &dst);
+                builder.copy(&src_dir.join(&exe), &dst_dir.join(&exe));
             }
+
+            // Copy over llvm-dwp if it's there
+            let exe = exe("rust-llvm-dwp", compiler.host);
+            builder.copy(&src_dir.join(&exe), &dst_dir.join(&exe));
 
             // Man pages
             t!(fs::create_dir_all(image.join("share/man/man1")));
@@ -1040,30 +1043,6 @@ impl Step for Src {
             builder.copy(&builder.src.join(file), &dst_src.join(file));
         }
 
-        // libtest includes std and everything else, so vendoring it
-        // creates exactly what's needed for `cargo -Zbuild-std` or any
-        // other analysis of the stdlib's source. Cargo also needs help
-        // finding the lock, so we copy it to libtest temporarily.
-        //
-        // Note that this requires std to only have one version of each
-        // crate. e.g. two versions of getopts won't be patchable.
-        let dst_libtest = dst_src.join("library/test");
-        let dst_vendor = dst_src.join("vendor");
-        let root_lock = dst_src.join("Cargo.lock");
-        let temp_lock = dst_libtest.join("Cargo.lock");
-
-        // `cargo vendor` will delete everything from the lockfile that
-        // isn't used by libtest, so we need to not use any links!
-        builder.really_copy(&root_lock, &temp_lock);
-
-        let mut cmd = Command::new(&builder.initial_cargo);
-        cmd.arg("vendor").arg(dst_vendor).current_dir(&dst_libtest);
-        builder.info("Dist src");
-        let _time = timeit(builder);
-        builder.run(&mut cmd);
-
-        builder.remove(&temp_lock);
-
         // Create source tarball in rust-installer format
         let mut cmd = rust_installer(builder);
         cmd.arg("generate")
@@ -1080,6 +1059,8 @@ impl Step for Src {
             .arg("--component-name=rust-src")
             .arg("--legacy-manifest-dirs=rustlib,cargo");
 
+        builder.info("Dist src");
+        let _time = timeit(builder);
         builder.run(&mut cmd);
 
         builder.remove_dir(&image);
@@ -1186,7 +1167,7 @@ pub fn sanitize_sh(path: &Path) -> String {
     return change_drive(unc_to_lfs(&path)).unwrap_or(path);
 
     fn unc_to_lfs(s: &str) -> &str {
-        if s.starts_with("//?/") { &s[4..] } else { s }
+        s.strip_prefix("//?/").unwrap_or(s)
     }
 
     fn change_drive(s: &str) -> Option<String> {
@@ -1247,6 +1228,12 @@ impl Step for Cargo {
         builder.create_dir(&image.join("etc/bash_completion.d"));
         let cargo = builder.ensure(tool::Cargo { compiler, target });
         builder.install(&cargo, &image.join("bin"), 0o755);
+        for dirent in fs::read_dir(cargo.parent().unwrap()).expect("read_dir") {
+            let dirent = dirent.expect("read dir entry");
+            if dirent.file_name().to_str().expect("utf8").starts_with("cargo-credential-") {
+                builder.install(&dirent.path(), &image.join("libexec"), 0o755);
+            }
+        }
         for man in t!(etc.join("man").read_dir()) {
             let man = t!(man);
             builder.install(&man.path(), &image.join("share/man/man1"), 0o644);
@@ -2550,6 +2537,7 @@ impl Step for RustDev {
         install_bin("llvm-profdata");
         install_bin("llvm-bcanalyzer");
         install_bin("llvm-cov");
+        install_bin("llvm-dwp");
         builder.install(&builder.llvm_filecheck(target), &dst_bindir, 0o755);
 
         // Copy the include directory as well; needed mostly to build

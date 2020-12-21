@@ -68,7 +68,7 @@ crate fn krate(mut cx: &mut DocContext<'_>) -> Crate {
         m.items.extend(primitives.iter().map(|&(def_id, prim)| {
             Item::from_def_id_and_parts(
                 def_id,
-                Some(prim.to_url_str().to_owned()),
+                Some(prim.as_sym()),
                 ItemKind::PrimitiveItem(prim),
                 cx,
             )
@@ -104,7 +104,9 @@ fn external_generic_args(
         .iter()
         .filter_map(|kind| match kind.unpack() {
             GenericArgKind::Lifetime(lt) => match lt {
-                ty::ReLateBound(_, ty::BrAnon(_)) => Some(GenericArg::Lifetime(Lifetime::elided())),
+                ty::ReLateBound(_, ty::BoundRegion { kind: ty::BrAnon(_) }) => {
+                    Some(GenericArg::Lifetime(Lifetime::elided()))
+                }
                 _ => lt.clean(cx).map(GenericArg::Lifetime),
             },
             GenericArgKind::Type(_) if skip_self => {
@@ -153,7 +155,7 @@ pub(super) fn external_path(
         global: false,
         res: Res::Err,
         segments: vec![PathSegment {
-            name: name.to_string(),
+            name,
             args: external_generic_args(cx, trait_did, has_self, bindings, substs),
         }],
     }
@@ -170,13 +172,13 @@ crate fn get_real_types(
     cx: &DocContext<'_>,
     recurse: i32,
 ) -> FxHashSet<(Type, TypeKind)> {
-    let arg_s = arg.print().to_string();
     let mut res = FxHashSet::default();
     if recurse >= 10 {
         // FIXME: remove this whole recurse thing when the recursion bug is fixed
         return res;
     }
     if arg.is_full_generic() {
+        let arg_s = Symbol::intern(&arg.print().to_string());
         if let Some(where_pred) = generics.where_predicates.iter().find(|g| match g {
             &WherePredicate::BoundPredicate { ref ty, .. } => ty.def_id() == arg.def_id(),
             _ => false,
@@ -375,13 +377,13 @@ impl ToSource for rustc_span::Span {
     }
 }
 
-crate fn name_from_pat(p: &hir::Pat<'_>) -> String {
+crate fn name_from_pat(p: &hir::Pat<'_>) -> Symbol {
     use rustc_hir::*;
     debug!("trying to get a name from pattern: {:?}", p);
 
-    match p.kind {
-        PatKind::Wild => "_".to_string(),
-        PatKind::Binding(_, _, ident, _) => ident.to_string(),
+    Symbol::intern(&match p.kind {
+        PatKind::Wild => return kw::Underscore,
+        PatKind::Binding(_, _, ident, _) => return ident.name,
         PatKind::TupleStruct(ref p, ..) | PatKind::Path(ref p) => qpath_to_string(p),
         PatKind::Struct(ref name, ref fields, etc) => format!(
             "{} {{ {}{} }}",
@@ -393,32 +395,37 @@ crate fn name_from_pat(p: &hir::Pat<'_>) -> String {
                 .join(", "),
             if etc { ", .." } else { "" }
         ),
-        PatKind::Or(ref pats) => {
-            pats.iter().map(|p| name_from_pat(&**p)).collect::<Vec<String>>().join(" | ")
-        }
+        PatKind::Or(ref pats) => pats
+            .iter()
+            .map(|p| name_from_pat(&**p).to_string())
+            .collect::<Vec<String>>()
+            .join(" | "),
         PatKind::Tuple(ref elts, _) => format!(
             "({})",
-            elts.iter().map(|p| name_from_pat(&**p)).collect::<Vec<String>>().join(", ")
+            elts.iter()
+                .map(|p| name_from_pat(&**p).to_string())
+                .collect::<Vec<String>>()
+                .join(", ")
         ),
-        PatKind::Box(ref p) => name_from_pat(&**p),
-        PatKind::Ref(ref p, _) => name_from_pat(&**p),
+        PatKind::Box(ref p) => return name_from_pat(&**p),
+        PatKind::Ref(ref p, _) => return name_from_pat(&**p),
         PatKind::Lit(..) => {
             warn!(
                 "tried to get argument name from PatKind::Lit, which is silly in function arguments"
             );
-            "()".to_string()
+            return Symbol::intern("()");
         }
         PatKind::Range(..) => panic!(
             "tried to get argument name from PatKind::Range, \
              which is not allowed in function arguments"
         ),
         PatKind::Slice(ref begin, ref mid, ref end) => {
-            let begin = begin.iter().map(|p| name_from_pat(&**p));
+            let begin = begin.iter().map(|p| name_from_pat(&**p).to_string());
             let mid = mid.as_ref().map(|p| format!("..{}", name_from_pat(&**p))).into_iter();
-            let end = end.iter().map(|p| name_from_pat(&**p));
+            let end = end.iter().map(|p| name_from_pat(&**p).to_string());
             format!("[{}]", begin.chain(mid).chain(end).collect::<Vec<_>>().join(", "))
         }
-    }
+    })
 }
 
 crate fn print_const(cx: &DocContext<'_>, n: &'tcx ty::Const<'_>) -> String {
@@ -534,10 +541,10 @@ crate fn resolve_type(cx: &DocContext<'_>, path: Path, id: hir::HirId) -> Type {
     let is_generic = match path.res {
         Res::PrimTy(p) => return Primitive(PrimitiveType::from(p)),
         Res::SelfTy(..) if path.segments.len() == 1 => {
-            return Generic(kw::SelfUpper.to_string());
+            return Generic(kw::SelfUpper);
         }
         Res::Def(DefKind::TyParam, _) if path.segments.len() == 1 => {
-            return Generic(format!("{:#}", path.print()));
+            return Generic(Symbol::intern(&format!("{:#}", path.print())));
         }
         Res::SelfTy(..) | Res::Def(DefKind::TyParam | DefKind::AssocTy, _) => true,
         _ => false,

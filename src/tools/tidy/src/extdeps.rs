@@ -44,8 +44,7 @@ pub fn check(root: &Path, bad: &mut bool) {
 
         // Ensure source is whitelisted.
         if !ALLOWED_SOURCES.contains(&&*source) {
-            println!("invalid source: {}", source);
-            *bad = true;
+            tidy_error!(bad, "invalid source: {}", source);
         }
     }
 }

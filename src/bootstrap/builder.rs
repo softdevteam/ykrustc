@@ -732,10 +732,13 @@ impl<'a> Builder<'a> {
             .env("CFG_RELEASE_CHANNEL", &self.config.channel)
             .env("RUSTDOC_REAL", self.rustdoc(compiler))
             .env("RUSTC_BOOTSTRAP", "1")
-            .arg("-Znormalize_docs")
             .arg("-Winvalid_codeblock_attributes");
         if self.config.deny_warnings {
             cmd.arg("-Dwarnings");
+        }
+        // cfg(not(bootstrap)), can be removed on the next beta bump
+        if compiler.stage != 0 {
+            cmd.arg("-Znormalize-docs");
         }
 
         // Remove make-related flags that can cause jobserver problems.
@@ -1122,6 +1125,19 @@ impl<'a> Builder<'a> {
                 self.config.rust_debug_assertions.to_string()
             },
         );
+
+        // `dsymutil` adds time to builds on Apple platforms for no clear benefit, and also makes
+        // it more difficult for debuggers to find debug info. The compiler currently defaults to
+        // running `dsymutil` to preserve its historical default, but when compiling the compiler
+        // itself, we skip it by default since we know it's safe to do so in that case.
+        // See https://github.com/rust-lang/rust/issues/79361 for more info on this flag.
+        if target.contains("apple") {
+            if self.config.rust_run_dsymutil {
+                rustflags.arg("-Zrun-dsymutil=yes");
+            } else {
+                rustflags.arg("-Zrun-dsymutil=no");
+            }
+        }
 
         if self.config.cmd.bless() {
             // Bless `expect!` tests.
