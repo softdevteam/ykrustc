@@ -1,4 +1,4 @@
-//! Serialised Intermideiate Representation (SIR).
+//! Serialised Intermediate Representation (SIR).
 //!
 //! SIR is built in-memory during LLVM code-generation, and finally placed into an ELF section at
 //! link time.
