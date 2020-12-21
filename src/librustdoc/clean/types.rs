@@ -12,20 +12,21 @@ use rustc_ast::attr;
 use rustc_ast::util::comments::beautify_doc_string;
 use rustc_ast::{self as ast, AttrStyle};
 use rustc_ast::{FloatTy, IntTy, UintTy};
-use rustc_attr::{ConstStability, Stability, StabilityLevel};
+use rustc_attr::{ConstStability, Deprecation, Stability, StabilityLevel};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_feature::UnstableFeatures;
 use rustc_hir as hir;
 use rustc_hir::def::Res;
-use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
+use rustc_hir::def_id::{CrateNum, DefId};
 use rustc_hir::lang_items::LangItem;
 use rustc_hir::Mutability;
 use rustc_index::vec::IndexVec;
-use rustc_middle::ty::{AssocKind, TyCtxt};
+use rustc_middle::ty::TyCtxt;
+use rustc_session::Session;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::DUMMY_SP;
 use rustc_span::symbol::{kw, sym, Ident, Symbol, SymbolStr};
-use rustc_span::{self, FileName};
+use rustc_span::{self, FileName, Loc};
 use rustc_target::abi::VariantIdx;
 use rustc_target::spec::abi::Abi;
 use smallvec::{smallvec, SmallVec};
@@ -50,7 +51,7 @@ thread_local!(crate static MAX_DEF_ID: RefCell<FxHashMap<CrateNum, DefId>> = Def
 
 #[derive(Clone, Debug)]
 crate struct Crate {
-    crate name: String,
+    crate name: Symbol,
     crate version: Option<String>,
     crate src: FileName,
     crate module: Option<Item>,
@@ -65,11 +66,11 @@ crate struct Crate {
 
 #[derive(Clone, Debug)]
 crate struct ExternalCrate {
-    crate name: String,
+    crate name: Symbol,
     crate src: FileName,
     crate attrs: Attributes,
     crate primitives: Vec<(DefId, PrimitiveType)>,
-    crate keywords: Vec<(DefId, String)>,
+    crate keywords: Vec<(DefId, Symbol)>,
 }
 
 /// Anything with a source location and set of attributes and, optionally, a
@@ -80,7 +81,7 @@ crate struct Item {
     /// Stringified span
     crate source: Span,
     /// Not everything has a name. E.g., impls
-    crate name: Option<String>,
+    crate name: Option<Symbol>,
     crate attrs: Attributes,
     crate visibility: Visibility,
     crate kind: ItemKind,
@@ -122,17 +123,12 @@ impl Item {
         kind: ItemKind,
         cx: &DocContext<'_>,
     ) -> Item {
-        Item::from_def_id_and_parts(
-            cx.tcx.hir().local_def_id(hir_id).to_def_id(),
-            name.clean(cx),
-            kind,
-            cx,
-        )
+        Item::from_def_id_and_parts(cx.tcx.hir().local_def_id(hir_id).to_def_id(), name, kind, cx)
     }
 
     pub fn from_def_id_and_parts(
         def_id: DefId,
-        name: Option<String>,
+        name: Option<Symbol>,
         kind: ItemKind,
         cx: &DocContext<'_>,
     ) -> Item {
@@ -155,7 +151,7 @@ impl Item {
             attrs: cx.tcx.get_attrs(def_id).clean(cx),
             visibility: cx.tcx.visibility(def_id).clean(cx),
             stability: cx.tcx.lookup_stability(def_id).cloned(),
-            deprecation: cx.tcx.lookup_deprecation(def_id).clean(cx),
+            deprecation: cx.tcx.lookup_deprecation(def_id),
             const_stability: cx.tcx.lookup_const_stability(def_id).cloned(),
         }
     }
@@ -299,7 +295,7 @@ impl Item {
 
 #[derive(Clone, Debug)]
 crate enum ItemKind {
-    ExternCrateItem(String, Option<String>),
+    ExternCrateItem(Symbol, Option<Symbol>),
     ImportItem(Import),
     StructItem(Struct),
     UnionItem(Union),
@@ -333,7 +329,7 @@ crate enum ItemKind {
     AssocTypeItem(Vec<GenericBound>, Option<Type>),
     /// An item that has been stripped by a rustdoc pass
     StrippedItem(Box<ItemKind>),
-    KeywordItem(String),
+    KeywordItem(Symbol),
 }
 
 impl ItemKind {
@@ -377,15 +373,6 @@ impl ItemKind {
         match *self {
             ItemKind::TypedefItem(_, _) | ItemKind::AssocTypeItem(_, _) => true,
             _ => false,
-        }
-    }
-
-    crate fn as_assoc_kind(&self) -> Option<AssocKind> {
-        match *self {
-            ItemKind::AssocConstItem(..) => Some(AssocKind::Const),
-            ItemKind::AssocTypeItem(..) => Some(AssocKind::Type),
-            ItemKind::TyMethodItem(..) | ItemKind::MethodItem(..) => Some(AssocKind::Fn),
-            _ => None,
         }
     }
 }
@@ -890,21 +877,19 @@ impl GenericBound {
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
-crate struct Lifetime(pub String);
+crate struct Lifetime(pub Symbol);
 
 impl Lifetime {
-    crate fn get_ref<'a>(&'a self) -> &'a str {
-        let Lifetime(ref s) = *self;
-        let s: &'a str = s;
-        s
+    crate fn get_ref(&self) -> SymbolStr {
+        self.0.as_str()
     }
 
     crate fn statik() -> Lifetime {
-        Lifetime("'static".to_string())
+        Lifetime(kw::StaticLifetime)
     }
 
     crate fn elided() -> Lifetime {
-        Lifetime("'_".to_string())
+        Lifetime(kw::UnderscoreLifetime)
     }
 }
 
@@ -962,7 +947,7 @@ impl GenericParamDefKind {
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 crate struct GenericParamDef {
-    crate name: String,
+    crate name: Symbol,
     crate kind: GenericParamDefKind,
 }
 
@@ -1050,7 +1035,7 @@ crate struct Arguments {
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 crate struct Argument {
     crate type_: Type,
-    crate name: String,
+    crate name: Symbol,
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -1062,7 +1047,7 @@ crate enum SelfTy {
 
 impl Argument {
     crate fn to_self(&self) -> Option<SelfTy> {
-        if self.name != "self" {
+        if self.name != kw::SelfLower {
             return None;
         }
         if self.type_.is_self_type() {
@@ -1130,7 +1115,7 @@ crate enum Type {
     },
     /// For parameterized types, so the consumer of the JSON don't go
     /// looking for types which don't exist anywhere.
-    Generic(String),
+    Generic(Symbol),
     /// Primitives are the fixed-size numeric types (plus int/usize/float), char,
     /// arrays, slices, and tuples.
     Primitive(PrimitiveType),
@@ -1149,7 +1134,7 @@ crate enum Type {
 
     // `<Type as Trait>::Name`
     QPath {
-        name: String,
+        name: Symbol,
         self_type: Box<Type>,
         trait_: Box<Type>,
     },
@@ -1162,6 +1147,8 @@ crate enum Type {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Copy, Debug)]
+/// N.B. this has to be different from `hir::PrimTy` because it also includes types that aren't
+/// paths, like `Unit`.
 crate enum PrimitiveType {
     Isize,
     I8,
@@ -1248,7 +1235,7 @@ impl Type {
 
     crate fn is_self_type(&self) -> bool {
         match *self {
-            Generic(ref name) => name == "Self",
+            Generic(name) => name == kw::SelfUpper,
             _ => false,
         }
     }
@@ -1293,16 +1280,16 @@ impl Type {
         }
     }
 
-    crate fn projection(&self) -> Option<(&Type, DefId, &str)> {
+    crate fn projection(&self) -> Option<(&Type, DefId, Symbol)> {
         let (self_, trait_, name) = match self {
-            QPath { ref self_type, ref trait_, ref name } => (self_type, trait_, name),
+            QPath { ref self_type, ref trait_, name } => (self_type, trait_, name),
             _ => return None,
         };
         let trait_did = match **trait_ {
             ResolvedPath { did, .. } => did,
             _ => return None,
         };
-        Some((&self_, trait_did, name))
+        Some((&self_, trait_did, *name))
     }
 }
 
@@ -1501,6 +1488,37 @@ impl PrimitiveType {
     crate fn to_url_str(&self) -> &'static str {
         self.as_str()
     }
+
+    crate fn as_sym(&self) -> Symbol {
+        use PrimitiveType::*;
+        match self {
+            Isize => sym::isize,
+            I8 => sym::i8,
+            I16 => sym::i16,
+            I32 => sym::i32,
+            I64 => sym::i64,
+            I128 => sym::i128,
+            Usize => sym::usize,
+            U8 => sym::u8,
+            U16 => sym::u16,
+            U32 => sym::u32,
+            U64 => sym::u64,
+            U128 => sym::u128,
+            F32 => sym::f32,
+            F64 => sym::f64,
+            Str => sym::str,
+            Bool => sym::bool,
+            Char => sym::char,
+            Array => sym::array,
+            Slice => sym::slice,
+            Tuple => sym::tuple,
+            Unit => sym::unit,
+            RawPointer => sym::pointer,
+            Reference => sym::reference,
+            Fn => kw::Fn,
+            Never => sym::never,
+        }
+    }
 }
 
 impl From<ast::IntTy> for PrimitiveType {
@@ -1609,32 +1627,41 @@ crate enum VariantKind {
     Struct(VariantStruct),
 }
 
+/// Small wrapper around `rustc_span::Span` that adds helper methods and enforces calling `source_callsite`.
 #[derive(Clone, Debug)]
-crate struct Span {
-    crate filename: FileName,
-    crate cnum: CrateNum,
-    crate loline: usize,
-    crate locol: usize,
-    crate hiline: usize,
-    crate hicol: usize,
-    crate original: rustc_span::Span,
-}
+crate struct Span(rustc_span::Span);
 
 impl Span {
-    crate fn empty() -> Span {
-        Span {
-            filename: FileName::Anon(0),
-            cnum: LOCAL_CRATE,
-            loline: 0,
-            locol: 0,
-            hiline: 0,
-            hicol: 0,
-            original: rustc_span::DUMMY_SP,
-        }
+    crate fn from_rustc_span(sp: rustc_span::Span) -> Self {
+        // Get the macro invocation instead of the definition,
+        // in case the span is result of a macro expansion.
+        // (See rust-lang/rust#39726)
+        Self(sp.source_callsite())
+    }
+
+    crate fn dummy() -> Self {
+        Self(rustc_span::DUMMY_SP)
     }
 
     crate fn span(&self) -> rustc_span::Span {
-        self.original
+        self.0
+    }
+
+    crate fn filename(&self, sess: &Session) -> FileName {
+        sess.source_map().span_to_filename(self.0)
+    }
+
+    crate fn lo(&self, sess: &Session) -> Loc {
+        sess.source_map().lookup_char_pos(self.0.lo())
+    }
+
+    crate fn hi(&self, sess: &Session) -> Loc {
+        sess.source_map().lookup_char_pos(self.0.hi())
+    }
+
+    crate fn cnum(&self, sess: &Session) -> CrateNum {
+        // FIXME: is there a time when the lo and hi crate would be different?
+        self.lo(sess).file.cnum
     }
 }
 
@@ -1646,13 +1673,17 @@ crate struct Path {
 }
 
 impl Path {
-    crate fn last_name(&self) -> &str {
+    crate fn last(&self) -> Symbol {
+        self.segments.last().expect("segments were empty").name
+    }
+
+    crate fn last_name(&self) -> SymbolStr {
         self.segments.last().expect("segments were empty").name.as_str()
     }
 
     crate fn whole_name(&self) -> String {
         String::from(if self.global { "::" } else { "" })
-            + &self.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::")
+            + &self.segments.iter().map(|s| s.name.to_string()).collect::<Vec<_>>().join("::")
     }
 }
 
@@ -1671,7 +1702,7 @@ crate enum GenericArgs {
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 crate struct PathSegment {
-    crate name: String,
+    crate name: Symbol,
     crate args: GenericArgs,
 }
 
@@ -1731,7 +1762,7 @@ crate enum ImplPolarity {
 crate struct Impl {
     crate unsafety: hir::Unsafety,
     crate generics: Generics,
-    crate provided_trait_methods: FxHashSet<String>,
+    crate provided_trait_methods: FxHashSet<Symbol>,
     crate trait_: Option<Type>,
     crate for_: Type,
     crate items: Vec<Item>,
@@ -1748,7 +1779,7 @@ crate struct Import {
 }
 
 impl Import {
-    crate fn new_simple(name: String, source: ImportSource, should_be_displayed: bool) -> Self {
+    crate fn new_simple(name: Symbol, source: ImportSource, should_be_displayed: bool) -> Self {
         Self { kind: ImportKind::Simple(name), source, should_be_displayed }
     }
 
@@ -1760,7 +1791,7 @@ impl Import {
 #[derive(Clone, Debug)]
 crate enum ImportKind {
     // use source as str;
-    Simple(String),
+    Simple(Symbol),
     // use source::*;
     Glob,
 }
@@ -1774,27 +1805,20 @@ crate struct ImportSource {
 #[derive(Clone, Debug)]
 crate struct Macro {
     crate source: String,
-    crate imported_from: Option<String>,
+    crate imported_from: Option<Symbol>,
 }
 
 #[derive(Clone, Debug)]
 crate struct ProcMacro {
     crate kind: MacroKind,
-    crate helpers: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-crate struct Deprecation {
-    crate since: Option<String>,
-    crate note: Option<String>,
-    crate is_since_rustc_version: bool,
+    crate helpers: Vec<Symbol>,
 }
 
 /// An type binding on an associated type (e.g., `A = Bar` in `Foo<A = Bar>` or
 /// `A: Send + Sync` in `Foo<A: Send + Sync>`).
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 crate struct TypeBinding {
-    crate name: String,
+    crate name: Symbol,
     crate kind: TypeBindingKind,
 }
 

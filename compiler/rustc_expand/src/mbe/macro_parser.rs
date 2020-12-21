@@ -1,4 +1,4 @@
-//! This is an NFA-based parser, which calls out to the main rust parser for named non-terminals
+//! This is an NFA-based parser, which calls out to the main Rust parser for named non-terminals
 //! (which it commits to fully when it hits one in a grammar). There's a set of current NFA threads
 //! and a set of next ones. Instead of NTs, we have a special case for Kleene star. The big-O, in
 //! pathological cases, is worse than traditional use of NFA or Earley parsing, but it's an easier
@@ -77,9 +77,9 @@ use TokenTreeOrTokenTreeSlice::*;
 use crate::mbe::{self, TokenTree};
 
 use rustc_ast::token::{self, DocComment, Nonterminal, Token};
-use rustc_parse::parser::Parser;
+use rustc_parse::parser::{OrPatNonterminalMode, Parser};
 use rustc_session::parse::ParseSess;
-use rustc_span::symbol::MacroRulesNormalizedIdent;
+use rustc_span::{edition::Edition, symbol::MacroRulesNormalizedIdent};
 
 use smallvec::{smallvec, SmallVec};
 
@@ -414,6 +414,18 @@ fn token_name_eq(t1: &Token, t2: &Token) -> bool {
     }
 }
 
+/// In edition 2015/18, `:pat` can only match `pat<no_top_alt>` because otherwise, we have
+/// breakage. As of edition 2021, `:pat` matches `top_pat`.
+///
+/// See <https://github.com/rust-lang/rust/issues/54883> for more info.
+fn or_pat_mode(edition: Edition) -> OrPatNonterminalMode {
+    match edition {
+        Edition::Edition2015 | Edition::Edition2018 => OrPatNonterminalMode::NoTopAlt,
+        // FIXME(mark-i-m): uncomment this when edition 2021 machinery is added.
+        // Edition::Edition2021 =>  OrPatNonterminalMode::TopPat,
+    }
+}
+
 /// Process the matcher positions of `cur_items` until it is empty. In the process, this will
 /// produce more items in `next_items`, `eof_items`, and `bb_items`.
 ///
@@ -422,7 +434,6 @@ fn token_name_eq(t1: &Token, t2: &Token) -> bool {
 ///
 /// # Parameters
 ///
-/// - `sess`: the parsing session into which errors are emitted.
 /// - `cur_items`: the set of current items to be processed. This should be empty by the end of a
 ///   successful execution of this function.
 /// - `next_items`: the set of newly generated items. These are used to replenish `cur_items` in
@@ -430,8 +441,6 @@ fn token_name_eq(t1: &Token, t2: &Token) -> bool {
 /// - `eof_items`: the set of items that would be valid if this was the EOF.
 /// - `bb_items`: the set of items that are waiting for the black-box parser.
 /// - `token`: the current token of the parser.
-/// - `span`: the `Span` in the source code corresponding to the token trees we are trying to match
-///   against the matcher positions in `cur_items`.
 ///
 /// # Returns
 ///
@@ -556,10 +565,14 @@ fn inner_parse_loop<'root, 'tt>(
 
                 // We need to match a metavar with a valid ident... call out to the black-box
                 // parser by adding an item to `bb_items`.
-                TokenTree::MetaVarDecl(_, _, kind) => {
-                    // Built-in nonterminals never start with these tokens,
-                    // so we can eliminate them from consideration.
-                    if Parser::nonterminal_may_begin_with(kind, token) {
+                TokenTree::MetaVarDecl(span, _, kind) => {
+                    // Built-in nonterminals never start with these tokens, so we can eliminate
+                    // them from consideration.
+                    //
+                    // We use the span of the metavariable declaration to determine any
+                    // edition-specific matching behavior for non-terminals.
+                    if Parser::nonterminal_may_begin_with(kind, token, or_pat_mode(span.edition()))
+                    {
                         bb_items.push(item);
                     }
                 }
@@ -720,7 +733,10 @@ pub(super) fn parse_tt(parser: &mut Cow<'_, Parser<'_>>, ms: &[TokenTree]) -> Na
             let mut item = bb_items.pop().unwrap();
             if let TokenTree::MetaVarDecl(span, _, kind) = item.top_elts.get_tt(item.idx) {
                 let match_cur = item.match_cur;
-                let nt = match parser.to_mut().parse_nonterminal(kind) {
+                // We use the span of the metavariable declaration to determine any
+                // edition-specific matching behavior for non-terminals.
+                let nt = match parser.to_mut().parse_nonterminal(kind, or_pat_mode(span.edition()))
+                {
                     Err(mut err) => {
                         err.span_label(
                             span,

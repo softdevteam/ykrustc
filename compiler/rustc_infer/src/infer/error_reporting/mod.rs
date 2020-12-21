@@ -165,7 +165,9 @@ fn msg_span_from_early_bound_and_free_regions(
             }
             (format!("the lifetime `{}` as defined on", br.name), sp)
         }
-        ty::ReFree(ty::FreeRegion { bound_region: ty::BoundRegion::BrNamed(_, name), .. }) => {
+        ty::ReFree(ty::FreeRegion {
+            bound_region: ty::BoundRegionKind::BrNamed(_, name), ..
+        }) => {
             let mut sp = sm.guess_head_span(tcx.hir().span(node));
             if let Some(param) =
                 tcx.hir().get_generics(scope).and_then(|generics| generics.get_named(name))
@@ -496,7 +498,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
             fn print_dyn_existential(
                 self,
-                _predicates: &'tcx ty::List<ty::ExistentialPredicate<'tcx>>,
+                _predicates: &'tcx ty::List<ty::Binder<ty::ExistentialPredicate<'tcx>>>,
             ) -> Result<Self::DynExistential, Self::Error> {
                 Err(NonTrivialPath)
             }
@@ -1622,7 +1624,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                     }
                 }
                 (TypeError::ObjectUnsafeCoercion(_), _) => {
-                    diag.note_unsuccessfull_coercion(found, expected);
+                    diag.note_unsuccessful_coercion(found, expected);
                 }
                 (_, _) => {
                     debug!(
@@ -2279,7 +2281,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         &self,
         var_origin: RegionVariableOrigin,
     ) -> DiagnosticBuilder<'tcx> {
-        let br_string = |br: ty::BoundRegion| {
+        let br_string = |br: ty::BoundRegionKind| {
             let mut s = match br {
                 ty::BrNamed(_, name) => name.to_string(),
                 _ => String::new(),

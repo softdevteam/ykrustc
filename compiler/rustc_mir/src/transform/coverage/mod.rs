@@ -78,6 +78,14 @@ impl<'tcx> MirPass<'tcx> for InstrumentCoverage {
             return;
         }
 
+        match mir_body.basic_blocks()[mir::START_BLOCK].terminator().kind {
+            TerminatorKind::Unreachable => {
+                trace!("InstrumentCoverage skipped for unreachable `START_BLOCK`");
+                return;
+            }
+            _ => {}
+        }
+
         trace!("InstrumentCoverage starting for {:?}", mir_source.def_id());
         Instrumentor::new(&self.name(), tcx, mir_body).inject_counters();
         trace!("InstrumentCoverage starting for {:?}", mir_source.def_id());
@@ -302,7 +310,7 @@ impl<'a, 'tcx> Instrumentor<'a, 'tcx> {
             inject_statement(
                 self.mir_body,
                 counter_kind,
-                self.bcb_last_bb(bcb),
+                self.bcb_leader_bb(bcb),
                 Some(make_code_region(file_name, &self.source_file, span, body_span)),
             );
         }
@@ -462,7 +470,7 @@ fn inject_statement(
             code_region: some_code_region,
         }),
     };
-    data.statements.push(statement);
+    data.statements.insert(0, statement);
 }
 
 // Non-code expressions are injected into the coverage map, without generating executable code.

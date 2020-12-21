@@ -993,9 +993,15 @@ pub fn compile_unit_metadata(
     let producer = format!("clang LLVM ({})", rustc_producer);
 
     let name_in_debuginfo = name_in_debuginfo.to_string_lossy();
-    let work_dir = tcx.sess.working_dir.0.to_string_lossy();
     let flags = "\0";
-    let split_name = "";
+
+    let out_dir = &tcx.output_filenames(LOCAL_CRATE).out_directory;
+    let split_name = tcx
+        .output_filenames(LOCAL_CRATE)
+        .split_dwarf_filename(tcx.sess.opts.debugging_opts.split_dwarf, Some(codegen_unit_name))
+        .unwrap_or_default();
+    let out_dir = out_dir.to_str().unwrap();
+    let split_name = split_name.to_str().unwrap();
 
     // FIXME(#60020):
     //
@@ -1020,8 +1026,8 @@ pub fn compile_unit_metadata(
             debug_context.builder,
             name_in_debuginfo.as_ptr().cast(),
             name_in_debuginfo.len(),
-            work_dir.as_ptr().cast(),
-            work_dir.len(),
+            out_dir.as_ptr().cast(),
+            out_dir.len(),
             llvm::ChecksumKind::None,
             ptr::null(),
             0,
@@ -1039,6 +1045,8 @@ pub fn compile_unit_metadata(
             split_name.as_ptr().cast(),
             split_name.len(),
             kind,
+            0,
+            tcx.sess.opts.debugging_opts.split_dwarf_inlining,
         );
 
         if tcx.sess.opts.debugging_opts.profile {
@@ -1409,10 +1417,11 @@ fn generator_layout_and_saved_local_names(
 
     let state_arg = mir::Local::new(1);
     for var in &body.var_debug_info {
-        if var.place.local != state_arg {
+        let place = if let mir::VarDebugInfoContents::Place(p) = var.value { p } else { continue };
+        if place.local != state_arg {
             continue;
         }
-        match var.place.projection[..] {
+        match place.projection[..] {
             [
                 // Deref of the `Pin<&mut Self>` state argument.
                 mir::ProjectionElem::Field(..),
