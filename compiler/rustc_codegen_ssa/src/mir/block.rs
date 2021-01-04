@@ -1062,7 +1062,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     helper.maybe_sideeffect(self.mir, &mut bx, &[target]);
                 }
                 helper.funclet_br(self, &mut bx, target);
-                set_unimplemented_sir_term!(self, bb, terminator);
+                if let Some(sfcx) = &mut self.sir_func_cx {
+                    sfcx.set_term_goto(bb, target);
+                }
             }
 
             mir::TerminatorKind::SwitchInt { ref discr, switch_ty, ref targets } => {

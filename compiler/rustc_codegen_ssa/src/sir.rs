@@ -313,6 +313,10 @@ impl SirFuncCx<'tcx> {
         self.set_terminator(bb, new_term);
     }
 
+    pub fn set_term_goto(&mut self, bb: mir::BasicBlock, target: mir::BasicBlock) {
+        self.set_terminator(bb.as_u32(), ykpack::Terminator::Goto(target.as_u32()));
+    }
+
     pub fn set_term_assert<Bx: BuilderMethods<'a, 'tcx>>(
         &mut self,
         bx: &Bx,
