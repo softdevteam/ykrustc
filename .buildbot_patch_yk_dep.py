@@ -24,7 +24,12 @@ def get_pr_no():
     proc = subprocess.run(["git", "log", "-1", "--pretty=format:%s"],
                           capture_output=True, check=True)
     line = proc.stdout.decode('utf-8')
-    assert line.startswith(('Merge #', 'Try #'))
+
+    # If the build is manual or forced from the web interface there may not be
+    # a bors merge commit, in which case we don't do any patching.
+    if not line.startswith(('Merge #', 'Try #')):
+        return None
+
     pr_no = line.split(" ", maxsplit=1)[1]
     pr_no = pr_no.rstrip(":")  # Colon present on 'Try' only it seems.
     assert pr_no.startswith('#')
@@ -69,13 +74,14 @@ def write_cargo_toml(git_url, branch):
 
 if __name__ == "__main__":
     pr_no = get_pr_no()
-    url, branch = get_yk_branch(pr_no)
+    if pr_no is not None:
+        url, branch = get_yk_branch(pr_no)
 
-    # x.py gets upset if you try to patch the dep to the default path:
-    # "patch for `ykpack` in `https://github.com/softdevteam/yk` points to the
-    # same source, but patches must point to different sources"
-    if (url, branch) != (f"https://github.com/{SOFTDEV_USER}/{YK_REPO}",
-                         DEFAULT_BRANCH):
-        # For the sake of the CI logs, print the override.
-        print(f"Patching yk dependency to: {url} {branch}")
-        write_cargo_toml(url, branch)
+        # x.py gets upset if you try to patch the dep to the default path:
+        # "patch for `ykpack` in `https://github.com/softdevteam/yk` points to
+        # the same source, but patches must point to different sources"
+        if (url, branch) != (f"https://github.com/{SOFTDEV_USER}/{YK_REPO}",
+                             DEFAULT_BRANCH):
+            # For the sake of the CI logs, print the override.
+            print(f"Patching yk dependency to: {url} {branch}")
+            write_cargo_toml(url, branch)
