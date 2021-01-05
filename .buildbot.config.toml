@@ -12,6 +12,8 @@ tools = ["cargo", "rustdoc"]
 [llvm]
 assertions = true           # Turn on assertions in LLVM.
 
-[install]
-prefix = "build/ykrustc-stage2-latest"
-sysconfdir = "etc"
+# `x.py install` is currently broken.
+# https://github.com/rust-lang/rust/issues/80683
+#[install]
+#prefix = "build/ykrustc-stage2-latest"
+#sysconfdir = "etc"
