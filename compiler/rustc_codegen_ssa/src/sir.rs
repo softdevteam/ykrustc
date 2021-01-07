@@ -411,6 +411,27 @@ impl SirFuncCx<'tcx> {
                 self.lower_binop(bx, bb, dest_ty, *op, opnd1, opnd2, true)
             }
             mir::Rvalue::Cast(mir::CastKind::Misc, op, ty) => self.lower_cast_misc(bx, bb, op, ty),
+            mir::Rvalue::Len(p) => {
+                let ip = self.lower_place(bx, bb, p);
+                match p.ty(&self.mir.local_decls, self.tcx).ty.kind() {
+                    ty::Array(_elem_ty, len) => {
+                        let raw_val =
+                            usize::try_from(len.eval_usize(self.tcx, ty::ParamEnv::reveal_all()))
+                                .unwrap();
+                        let val = ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(
+                            ykpack::UnsignedInt::Usize(raw_val),
+                        ));
+                        ykpack::IPlace::Const { val, ty: ip.ty() }
+                    }
+                    ty::Slice(_elem_ty) => self.offset_iplace(
+                        bx,
+                        ip,
+                        i32::try_from(self.tcx.data_layout.pointer_size.bits()).unwrap(),
+                        dest_ty,
+                    ),
+                    _ => unreachable!(),
+                }
+            }
             _ => ykpack::IPlace::Unimplemented(with_no_trimmed_paths(|| {
                 format!("unimplemented rvalue: {:?}", rvalue)
             })),
@@ -536,8 +557,8 @@ impl SirFuncCx<'tcx> {
                         }
                     }
                 }
-                mir::ProjectionElem::Index(idx) => {
-                    if let ty::Array(elem_ty, ..) = cur_mirty.kind() {
+                mir::ProjectionElem::Index(idx) => match cur_mirty.kind() {
+                    ty::Array(elem_ty, ..) | ty::Slice(elem_ty) => {
                         let arr_lay = self.mono_layout_of(bx, cur_mirty);
                         let elem_size = match &arr_lay.fields {
                             FieldsShape::Array { stride, .. } => {
@@ -559,30 +580,38 @@ impl SirFuncCx<'tcx> {
                         self.push_stmt(bb, stmt);
                         cur_iplace = dest.to_indirect(dest_ty);
                         elem_ty
-                    } else {
+                    }
+                    _ => {
                         return ykpack::IPlace::Unimplemented(format!("index on {:?}", cur_mirty));
                     }
-                }
+                },
                 mir::ProjectionElem::Deref => {
-                    if let ty::Ref(_, ty, _) = cur_mirty.kind() {
-                        if let ykpack::IPlace::Indirect { ty: dty, .. } = cur_iplace {
-                            // We are dereffing an already indirect place, so we emit an
-                            // intermediate store to strip away one level of indirection.
-                            let dest = self.new_sir_local(dty);
-                            let deref = ykpack::Statement::Store(dest.clone(), cur_iplace.clone());
-                            self.push_stmt(bb, deref);
-                            cur_iplace = dest;
-                        }
+                    match cur_mirty.kind() {
+                        ty::Ref(_, ty, _) | ty::RawPtr(ty::TypeAndMut { ty, .. }) => {
+                            if let ykpack::IPlace::Indirect { ty: dty, .. } = cur_iplace {
+                                // We are dereffing an already indirect place, so we emit an
+                                // intermediate store to strip away one level of indirection.
+                                let dest = self.new_sir_local(dty);
+                                let deref =
+                                    ykpack::Statement::Store(dest.clone(), cur_iplace.clone());
+                                self.push_stmt(bb, deref);
+                                cur_iplace = dest;
+                            }
 
-                        if let Some(l) = cur_iplace.local() {
-                            self.notify_referenced(l);
-                        }
+                            if let Some(l) = cur_iplace.local() {
+                                self.notify_referenced(l);
+                            }
 
-                        let tyid = self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, ty));
-                        cur_iplace = cur_iplace.to_indirect(tyid);
-                        ty
-                    } else {
-                        return ykpack::IPlace::Unimplemented(format!("deref non-ref"));
+                            let tyid = self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, ty));
+                            cur_iplace = cur_iplace.to_indirect(tyid);
+                            ty
+                        }
+                        _ => {
+                            return ykpack::IPlace::Unimplemented(format!(
+                                "invalid deref: {:?}",
+                                cur_mirty.kind()
+                            ));
+                        }
                     }
                 }
                 _ => return ykpack::IPlace::Unimplemented(format!("projection: {:?}", pj)),
