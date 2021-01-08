@@ -301,7 +301,7 @@ impl SirFuncCx<'tcx> {
         let mut values = Vec::new();
         let mut target_bbs = Vec::new();
         for (v, t) in targets.iter() {
-            values.push(ykpack::SerU128::new(v));
+            values.push(v);
             target_bbs.push(t.as_u32());
         }
         let new_term = ykpack::Terminator::SwitchInt {
