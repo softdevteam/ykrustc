@@ -343,8 +343,14 @@ impl SirFuncCx<'tcx> {
             mir::StatementKind::Assign(box (ref place, ref rvalue)) => {
                 self.lower_assign_stmt(bx, bb, place, rvalue)
             }
-            // We compute our own liveness in Yorick, so these are ignored.
-            mir::StatementKind::StorageLive(_) | mir::StatementKind::StorageDead(_) => {}
+            mir::StatementKind::StorageLive(local) => {
+                let local = self.sir_local(bx, &local).local().unwrap();
+                self.push_stmt(bb, ykpack::Statement::StorageLive(local))
+            }
+            mir::StatementKind::StorageDead(local) => {
+                let local = self.sir_local(bx, &local).local().unwrap();
+                self.push_stmt(bb, ykpack::Statement::StorageDead(local))
+            }
             _ => self.push_stmt(bb, ykpack::Statement::Unimplemented(format!("{:?}", stmt))),
         }
     }
