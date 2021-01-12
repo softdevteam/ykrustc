@@ -440,12 +440,6 @@ impl MiscMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         }
     }
 
-    fn push_sir_func(&self, func_cx: sir::SirFuncCx<'_>) {
-        if let Some(sir) = &self.sir {
-            sir.funcs.borrow_mut().push(func_cx.func);
-        }
-    }
-
     fn declare_c_main(&self, fn_type: Self::Type) -> Option<Self::Function> {
         if self.get_declared_value("main").is_none() {
             Some(self.declare_cfn("main", fn_type))
