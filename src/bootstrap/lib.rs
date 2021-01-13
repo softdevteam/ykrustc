@@ -142,6 +142,7 @@ mod native;
 mod run;
 mod sanity;
 mod setup;
+mod tarball;
 mod test;
 mod tool;
 mod toolstate;
@@ -1072,10 +1073,6 @@ impl Build {
         self.package_vers(&self.version)
     }
 
-    fn llvm_tools_vers(&self) -> String {
-        self.rust_version()
-    }
-
     fn llvm_link_tools_dynamically(&self, target: TargetSelection) -> bool {
         target.contains("linux-gnu") || target.contains("apple-darwin")
     }
@@ -1090,7 +1087,7 @@ impl Build {
         if let Some(ref s) = self.config.description {
             version.push_str(" (");
             version.push_str(s);
-            version.push_str(")");
+            version.push(')');
         }
         version
     }
@@ -1154,7 +1151,7 @@ impl Build {
                     && (dep != "profiler_builtins"
                         || target
                             .map(|t| self.config.profiler_enabled(t))
-                            .unwrap_or(self.config.any_profiler_enabled()))
+                            .unwrap_or_else(|| self.config.any_profiler_enabled()))
                     && (dep != "rustc_codegen_llvm" || self.config.llvm_enabled())
                 {
                     list.push(*dep);

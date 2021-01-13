@@ -112,10 +112,7 @@ impl<'a, 'tcx> BlanketImplFinder<'a, 'tcx> {
                     attrs: Default::default(),
                     visibility: Inherited,
                     def_id: self.cx.next_def_id(impl_def_id.krate),
-                    stability: None,
-                    const_stability: None,
-                    deprecation: None,
-                    kind: ImplItem(Impl {
+                    kind: box ImplItem(Impl {
                         unsafety: hir::Unsafety::Normal,
                         generics: (
                             self.cx.tcx.generics_of(impl_def_id),
@@ -134,7 +131,7 @@ impl<'a, 'tcx> BlanketImplFinder<'a, 'tcx> {
                             .in_definition_order()
                             .collect::<Vec<_>>()
                             .clean(self.cx),
-                        polarity: None,
+                        negative_polarity: false,
                         synthetic: false,
                         blanket_impl: Some(trait_ref.self_ty().clean(self.cx)),
                     }),

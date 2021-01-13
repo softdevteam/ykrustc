@@ -367,10 +367,7 @@ impl<'tcx> Visitor<'tcx> for IrMaps<'tcx> {
     }
 
     fn visit_param(&mut self, param: &'tcx hir::Param<'tcx>) {
-        let is_shorthand = match param.pat.kind {
-            rustc_hir::PatKind::Struct(..) => true,
-            _ => false,
-        };
+        let is_shorthand = matches!(param.pat.kind, rustc_hir::PatKind::Struct(..));
         param.pat.each_binding(|_bm, hir_id, _x, ident| {
             let var = if is_shorthand {
                 Local(LocalInfo { id: hir_id, name: ident.name, is_shorthand: true })
@@ -1385,7 +1382,7 @@ impl<'tcx> Liveness<'_, 'tcx> {
 
     fn should_warn(&self, var: Variable) -> Option<String> {
         let name = self.ir.variable_name(var);
-        if name == kw::Invalid {
+        if name == kw::Empty {
             return None;
         }
         let name: &str = &name.as_str();

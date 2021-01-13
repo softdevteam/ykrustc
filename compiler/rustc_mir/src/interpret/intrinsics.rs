@@ -141,9 +141,11 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             }
 
             sym::min_align_of_val | sym::size_of_val => {
-                let place = self.deref_operand(args[0])?;
+                // Avoid `deref_operand` -- this is not a deref, the ptr does not have to be
+                // dereferencable!
+                let place = self.ref_to_mplace(self.read_immediate(args[0])?)?;
                 let (size, align) = self
-                    .size_and_align_of(place.meta, place.layout)?
+                    .size_and_align_of_mplace(place)?
                     .ok_or_else(|| err_unsup_format!("`extern type` does not have known layout"))?;
 
                 let result = match intrinsic_name {
@@ -321,6 +323,29 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let truncated_bits = self.truncate(result_bits, layout);
                 let result = Scalar::from_uint(truncated_bits, layout.size);
                 self.write_scalar(result, dest)?;
+            }
+            sym::copy | sym::copy_nonoverlapping => {
+                let elem_ty = instance.substs.type_at(0);
+                let elem_layout = self.layout_of(elem_ty)?;
+                let count = self.read_scalar(args[2])?.to_machine_usize(self)?;
+                let elem_align = elem_layout.align.abi;
+
+                let size = elem_layout.size.checked_mul(count, self).ok_or_else(|| {
+                    err_ub_format!("overflow computing total size of `{}`", intrinsic_name)
+                })?;
+                let src = self.read_scalar(args[0])?.check_init()?;
+                let src = self.memory.check_ptr_access(src, size, elem_align)?;
+                let dest = self.read_scalar(args[1])?.check_init()?;
+                let dest = self.memory.check_ptr_access(dest, size, elem_align)?;
+
+                if let (Some(src), Some(dest)) = (src, dest) {
+                    self.memory.copy(
+                        src,
+                        dest,
+                        size,
+                        intrinsic_name == sym::copy_nonoverlapping,
+                    )?;
+                }
             }
             sym::offset => {
                 let ptr = self.read_scalar(args[0])?.check_init()?;

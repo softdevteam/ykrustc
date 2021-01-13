@@ -180,7 +180,7 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
             (
                 format!("cannot find {} `{}` in {}{}", expected, item_str, mod_prefix, mod_str),
                 if path_str == "async" && expected.starts_with("struct") {
-                    "`async` blocks are only allowed in the 2018 edition".to_string()
+                    "`async` blocks are only allowed in Rust 2018 or later".to_string()
                 } else {
                     format!("not found in {}", mod_str)
                 },
@@ -904,7 +904,7 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
                     Applicability::MaybeIncorrect,
                 );
                 if path_str == "try" && span.rust_2015() {
-                    err.note("if you want the `try` keyword, you need to be in the 2018 edition");
+                    err.note("if you want the `try` keyword, you need Rust 2018 or later");
                 }
             }
             (Res::Def(DefKind::TyAlias, def_id), PathSource::Trait(_)) => {
@@ -1653,17 +1653,14 @@ impl<'tcx> LifetimeContext<'_, 'tcx> {
         for missing in &self.missing_named_lifetime_spots {
             match missing {
                 MissingLifetimeSpot::Generics(generics) => {
-                    let (span, sugg) = if let Some(param) =
-                        generics.params.iter().find(|p| match p.kind {
-                            hir::GenericParamKind::Type {
-                                synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
-                                ..
-                            } => false,
-                            hir::GenericParamKind::Lifetime {
-                                kind: hir::LifetimeParamKind::Elided,
-                            } => false,
-                            _ => true,
-                        }) {
+                    let (span, sugg) = if let Some(param) = generics.params.iter().find(|p| {
+                        !matches!(p.kind, hir::GenericParamKind::Type {
+                            synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
+                            ..
+                        } | hir::GenericParamKind::Lifetime {
+                            kind: hir::LifetimeParamKind::Elided,
+                        })
+                    }) {
                         (param.span.shrink_to_lo(), format!("{}, ", lifetime_ref))
                     } else {
                         suggests_in_band = true;
@@ -1985,8 +1982,8 @@ impl<'tcx> LifetimeContext<'_, 'tcx> {
         }
     }
 
-    /// Non-static lifetimes are prohibited in anonymous constants under `min_const_generics` so
-    /// this function will emit an error if `min_const_generics` is enabled, the body identified by
+    /// Non-static lifetimes are prohibited in anonymous constants under `min_const_generics`.
+    /// This function will emit an error if `const_generics` is not enabled, the body identified by
     /// `body_id` is an anonymous constant and `lifetime_ref` is non-static.
     crate fn maybe_emit_forbidden_non_static_lifetime_error(
         &self,
@@ -2002,7 +1999,7 @@ impl<'tcx> LifetimeContext<'_, 'tcx> {
             hir::LifetimeName::Implicit | hir::LifetimeName::Static | hir::LifetimeName::Underscore
         );
 
-        if self.tcx.features().min_const_generics && is_anon_const && !is_allowed_lifetime {
+        if !self.tcx.lazy_normalization() && is_anon_const && !is_allowed_lifetime {
             feature_err(
                 &self.tcx.sess.parse_sess,
                 sym::const_generics,

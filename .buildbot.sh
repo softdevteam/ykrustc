@@ -11,7 +11,6 @@ TARBALL_TOPDIR=`pwd`/build/ykrustc-stage2-latest
 TARBALL_NAME=ykrustc-${STD_TRACER_MODE}-stage2-${COMMIT_HASH}.tar.bz2
 SYMLINK_NAME=ykrustc-${STD_TRACER_MODE}-stage2-latest.tar.bz2
 SNAP_DIR=/opt/ykrustc-bin-snapshots
-PLATFORM_BUILD_DIR=build/x86_64-unknown-linux-gnu
 
 # Ensure the build fails if it uses excessive amounts of memory.
 ulimit -d $((1024 * 1024 * 10)) # 10 GiB
@@ -28,12 +27,12 @@ ulimit -d $((1024 * 1024 * 10)) # 10 GiB
 
 # Build extended tools and install into TARBALL_TOPDIR.
 mkdir -p ${TARBALL_TOPDIR}
-# `x.py install` is currently broken, so we use a workaround for now.
-# https://github.com/rust-lang/rust/issues/80683
-#/usr/bin/time -v ./x.py install --config .buildbot.config.toml
-/usr/bin/time -v ./x.py build --stage 2 --config .buildbot.config.toml library/std rustdoc cargo
-cp -r ${PLATFORM_BUILD_DIR}/stage2/* ${TARBALL_TOPDIR}
-cp -r ${PLATFORM_BUILD_DIR}/stage2-tools-bin/cargo ${TARBALL_TOPDIR}/bin
+/usr/bin/time -v ./x.py install --config .buildbot.config.toml
+
+# Check that the install looks feasible.
+for i in rustc cargo rustdoc; do
+    test -e ${TARBALL_TOPDIR}/bin/${i}
+done
 
 # Archive the build and put it in /opt
 git show -s HEAD > ${TARBALL_TOPDIR}/VERSION

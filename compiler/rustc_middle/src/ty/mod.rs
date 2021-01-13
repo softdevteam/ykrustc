@@ -1,3 +1,14 @@
+//! Defines how the compiler represents types internally.
+//!
+//! Two important entities in this module are:
+//!
+//! - [`rustc_middle::ty::Ty`], used to represent the semantics of a type.
+//! - [`rustc_middle::ty::TyCtxt`], the central data structure in the compiler.
+//!
+//! For more information, see ["The `ty` module: representing types"] in the ructc-dev-guide.
+//!
+//! ["The `ty` module: representing types"]: https://rustc-dev-guide.rust-lang.org/ty.html
+
 // ignore-tidy-filelength
 pub use self::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 pub use self::AssocItemContainer::*;
@@ -790,6 +801,15 @@ impl GenericParamDefKind {
             GenericParamDefKind::Const => "constant",
         }
     }
+    pub fn to_ord(&self, tcx: TyCtxt<'_>) -> ast::ParamKindOrd {
+        match self {
+            GenericParamDefKind::Lifetime => ast::ParamKindOrd::Lifetime,
+            GenericParamDefKind::Type { .. } => ast::ParamKindOrd::Type,
+            GenericParamDefKind::Const => {
+                ast::ParamKindOrd::Const { unordered: tcx.features().const_generics }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
@@ -1418,22 +1438,21 @@ impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<PolyTraitPredicate<'tcx>> {
 
 impl<'tcx> ToPredicate<'tcx> for PolyRegionOutlivesPredicate<'tcx> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        self.map_bound(|value| PredicateAtom::RegionOutlives(value))
+        self.map_bound(PredicateAtom::RegionOutlives)
             .potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyTypeOutlivesPredicate<'tcx> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        self.map_bound(|value| PredicateAtom::TypeOutlives(value))
+        self.map_bound(PredicateAtom::TypeOutlives)
             .potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyProjectionPredicate<'tcx> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        self.map_bound(|value| PredicateAtom::Projection(value))
-            .potentially_quantified(tcx, PredicateKind::ForAll)
+        self.map_bound(PredicateAtom::Projection).potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
@@ -1627,8 +1646,6 @@ pub type PlaceholderConst<'tcx> = Placeholder<BoundConst<'tcx>>;
 /// which cause cycle errors.
 ///
 /// ```rust
-/// #![feature(const_generics)]
-///
 /// struct A;
 /// impl A {
 ///     fn foo<const N: usize>(&self) -> [u8; N] { [0; N] }
@@ -2879,19 +2896,11 @@ impl<'tcx> TyCtxt<'tcx> {
     }
 
     pub fn opt_associated_item(self, def_id: DefId) -> Option<&'tcx AssocItem> {
-        let is_associated_item = if let Some(def_id) = def_id.as_local() {
-            matches!(
-                self.hir().get(self.hir().local_def_id_to_hir_id(def_id)),
-                Node::TraitItem(_) | Node::ImplItem(_)
-            )
+        if let DefKind::AssocConst | DefKind::AssocFn | DefKind::AssocTy = self.def_kind(def_id) {
+            Some(self.associated_item(def_id))
         } else {
-            matches!(
-                self.def_kind(def_id),
-                DefKind::AssocConst | DefKind::AssocFn | DefKind::AssocTy
-            )
-        };
-
-        is_associated_item.then(|| self.associated_item(def_id))
+            None
+        }
     }
 
     pub fn field_index(self, hir_id: hir::HirId, typeck_results: &TypeckResults<'_>) -> usize {
@@ -3001,7 +3010,16 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Returns the possibly-auto-generated MIR of a `(DefId, Subst)` pair.
     pub fn instance_mir(self, instance: ty::InstanceDef<'tcx>) -> &'tcx Body<'tcx> {
         match instance {
-            ty::InstanceDef::Item(def) => self.optimized_mir_opt_const_arg(def),
+            ty::InstanceDef::Item(def) => match self.def_kind(def.did) {
+                DefKind::Const
+                | DefKind::Static
+                | DefKind::AssocConst
+                | DefKind::Ctor(..)
+                | DefKind::AnonConst => self.mir_for_ctfe_opt_const_arg(def),
+                // If the caller wants `mir_for_ctfe` of a function they should not be using
+                // `instance_mir`, so we'll assume const fn also wants the optimized version.
+                _ => self.optimized_mir_or_const_arg_mir(def),
+            },
             ty::InstanceDef::VtableShim(..)
             | ty::InstanceDef::ReifyShim(..)
             | ty::InstanceDef::Intrinsic(..)
@@ -3137,6 +3155,7 @@ pub fn provide(providers: &mut ty::query::Providers) {
     *providers = ty::query::Providers {
         trait_impls_of: trait_def::trait_impls_of_provider,
         all_local_trait_impls: trait_def::all_local_trait_impls,
+        type_uninhabited_from: inhabitedness::type_uninhabited_from,
         ..*providers
     };
 }

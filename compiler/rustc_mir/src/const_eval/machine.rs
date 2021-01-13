@@ -13,6 +13,7 @@ use rustc_middle::mir::AssertMessage;
 use rustc_session::Limit;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_target::abi::{Align, Size};
+use rustc_target::spec::abi::Abi;
 
 use crate::interpret::{
     self, compile_time_machine, AllocId, Allocation, Frame, ImmTy, InterpCx, InterpResult, Memory,
@@ -200,9 +201,26 @@ impl<'mir, 'tcx> interpret::Machine<'mir, 'tcx> for CompileTimeInterpreter<'mir,
 
     type MemoryExtra = MemoryExtra;
 
+    fn load_mir(
+        ecx: &InterpCx<'mir, 'tcx, Self>,
+        instance: ty::InstanceDef<'tcx>,
+    ) -> InterpResult<'tcx, &'tcx mir::Body<'tcx>> {
+        match instance {
+            ty::InstanceDef::Item(def) => {
+                if ecx.tcx.is_ctfe_mir_available(def.did) {
+                    Ok(ecx.tcx.mir_for_ctfe_opt_const_arg(def))
+                } else {
+                    throw_unsup!(NoMirFor(def.did))
+                }
+            }
+            _ => Ok(ecx.tcx.instance_mir(instance)),
+        }
+    }
+
     fn find_mir_or_eval_fn(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
+        _abi: Abi,
         args: &[OpTy<'tcx>],
         _ret: Option<(PlaceTy<'tcx>, mir::BasicBlock)>,
         _unwind: Option<mir::BasicBlock>, // unwinding is not supported in consts

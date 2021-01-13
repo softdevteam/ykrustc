@@ -439,8 +439,8 @@ pub fn trait_ref_of_method<'tcx>(cx: &LateContext<'tcx>, hir_id: HirId) -> Optio
     if_chain! {
         if parent_impl != hir::CRATE_HIR_ID;
         if let hir::Node::Item(item) = cx.tcx.hir().get(parent_impl);
-        if let hir::ItemKind::Impl{ of_trait: trait_ref, .. } = &item.kind;
-        then { return trait_ref.as_ref(); }
+        if let hir::ItemKind::Impl(impl_) = &item.kind;
+        then { return impl_.of_trait.as_ref(); }
     }
     None
 }
@@ -788,8 +788,7 @@ pub fn indent_of<T: LintContext>(cx: &T, span: Span) -> Option<usize> {
 /// fn into3(self)   -> () {}
 ///               ^
 /// ```
-#[allow(clippy::needless_pass_by_value)]
-pub fn position_before_rarrow(s: String) -> Option<usize> {
+pub fn position_before_rarrow(s: &str) -> Option<usize> {
     s.rfind("->").map(|rpos| {
         let mut rpos = rpos;
         let chars: Vec<char> = s.chars().collect();
@@ -1531,7 +1530,7 @@ pub fn is_no_std_crate(krate: &Crate<'_>) -> bool {
 /// ```
 pub fn is_trait_impl_item(cx: &LateContext<'_>, hir_id: HirId) -> bool {
     if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-        matches!(item.kind, ItemKind::Impl { of_trait: Some(_), .. })
+        matches!(item.kind, ItemKind::Impl(hir::Impl { of_trait: Some(_), .. }))
     } else {
         false
     }

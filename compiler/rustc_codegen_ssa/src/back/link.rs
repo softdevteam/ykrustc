@@ -2,7 +2,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::temp_dir::MaybeTempDir;
 use rustc_fs_util::fix_windows_verbatim_for_gcc;
 use rustc_hir::def_id::CrateNum;
-use rustc_middle::middle::cstore::{EncodedMetadata, LibSource, NativeLib};
+use rustc_middle::middle::cstore::{EncodedMetadata, LibSource};
 use rustc_middle::middle::dependency_format::Linkage;
 use rustc_session::config::{self, CFGuard, CrateType, DebugInfo};
 use rustc_session::config::{OutputFilenames, OutputType, PrintRequest, SanitizerSet, TracerMode};
@@ -22,7 +22,8 @@ use super::command::Command;
 use super::linker::{self, Linker};
 use super::rpath::{self, RPathConfig};
 use crate::{
-    looks_like_rust_object_file, CodegenResults, CompiledModule, CrateInfo, METADATA_FILENAME,
+    looks_like_rust_object_file, CodegenResults, CompiledModule, CrateInfo, NativeLib,
+    METADATA_FILENAME,
 };
 
 use cc::windows_registry;
@@ -904,7 +905,7 @@ fn link_sanitizer_runtime(sess: &Session, linker: &mut dyn Linker, name: &str) {
         .unwrap_or_default();
 
     match sess.opts.target_triple.triple() {
-        "x86_64-apple-darwin" => {
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => {
             // On Apple platforms, the sanitizer is always built as a dylib, and
             // LLVM will link to `@rpath/*.dylib`, so we need to specify an
             // rpath to the library as well (the rpath should be absolute, see
@@ -1285,6 +1286,7 @@ fn exec_linker(
 
 fn link_output_kind(sess: &Session, crate_type: CrateType) -> LinkOutputKind {
     let kind = match (crate_type, sess.crt_static(Some(crate_type)), sess.relocation_model()) {
+        (CrateType::Executable, _, _) if sess.is_wasi_reactor() => LinkOutputKind::WasiReactorExe,
         (CrateType::Executable, false, RelocModel::Pic) => LinkOutputKind::DynamicPicExe,
         (CrateType::Executable, false, _) => LinkOutputKind::DynamicNoPicExe,
         (CrateType::Executable, true, RelocModel::Pic) => LinkOutputKind::StaticPicExe,

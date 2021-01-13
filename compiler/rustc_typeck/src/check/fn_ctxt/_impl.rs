@@ -914,7 +914,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 method::MethodError::PrivateMatch(kind, def_id, _) => Ok((kind, def_id)),
                 _ => Err(ErrorReported),
             };
-            if item_name.name != kw::Invalid {
+            if item_name.name != kw::Empty {
                 if let Some(mut e) = self.report_method_error(
                     span,
                     ty,
@@ -1376,7 +1376,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         }
                     }
                     GenericParamDefKind::Const => {
-                        // FIXME(const_generics:defaults)
+                        // FIXME(const_generics_defaults)
                         // No const parameters were provided, we have to infer them.
                         self.fcx.var_for_def(self.span, param)
                     }

@@ -63,8 +63,6 @@ pub fn intrinsic_operation_unsafety(intrinsic: Symbol) -> hir::Unsafety {
         | sym::min_align_of
         | sym::needs_drop
         | sym::caller_location
-        | sym::size_of_val
-        | sym::min_align_of_val
         | sym::add_with_overflow
         | sym::sub_with_overflow
         | sym::mul_with_overflow
@@ -92,6 +90,7 @@ pub fn intrinsic_operation_unsafety(intrinsic: Symbol) -> hir::Unsafety {
         | sym::rustc_peek
         | sym::maxnumf64
         | sym::type_name
+        | sym::forget
         | sym::variant_count => hir::Unsafety::Normal,
         _ => hir::Unsafety::Unsafe,
     }

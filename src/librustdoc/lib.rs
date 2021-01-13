@@ -15,8 +15,8 @@
 #![feature(never_type)]
 #![feature(once_cell)]
 #![feature(type_ascription)]
-#![feature(split_inclusive)]
 #![feature(str_split_once)]
+#![feature(iter_intersperse)]
 #![recursion_limit = "256"]
 
 #[macro_use]
@@ -263,13 +263,13 @@ fn opts() -> Vec<RustcOptGroup> {
                 "sort modules by where they appear in the program, rather than alphabetically",
             )
         }),
-        unstable("default-theme", |o| {
+        stable("default-theme", |o| {
             o.optopt(
                 "",
                 "default-theme",
                 "Set the default theme. THEME should be the theme name, generally lowercase. \
                  If an unknown default theme is specified, the builtin default is used. \
-                 The set of themes, and the rustdoc built-in default is not stable.",
+                 The set of themes, and the rustdoc built-in default, are not stable.",
                 "THEME",
             )
         }),
@@ -411,11 +411,7 @@ fn opts() -> Vec<RustcOptGroup> {
             )
         }),
         unstable("test-builder", |o| {
-            o.optflag(
-                "",
-                "test-builder",
-                "specified the rustc-like binary to use as the test builder",
-            )
+            o.optopt("", "test-builder", "The rustc-like binary to use as the test builder", "PATH")
         }),
         unstable("check", |o| o.optflag("", "check", "Run rustdoc checks")),
     ]
