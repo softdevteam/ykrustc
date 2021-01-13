@@ -23,18 +23,18 @@ use rustc_span::symbol::{sym, Symbol};
 // function, then we should explore its block to check for codes that
 // may need to be marked as live.
 fn should_explore(tcx: TyCtxt<'_>, hir_id: hir::HirId) -> bool {
-    match tcx.hir().find(hir_id) {
+    matches!(
+        tcx.hir().find(hir_id),
         Some(
             Node::Item(..)
-            | Node::ImplItem(..)
-            | Node::ForeignItem(..)
-            | Node::TraitItem(..)
-            | Node::Variant(..)
-            | Node::AnonConst(..)
-            | Node::Pat(..),
-        ) => true,
-        _ => false,
-    }
+                | Node::ImplItem(..)
+                | Node::ForeignItem(..)
+                | Node::TraitItem(..)
+                | Node::Variant(..)
+                | Node::AnonConst(..)
+                | Node::Pat(..),
+        )
+    )
 }
 
 struct MarkSymbolVisitor<'tcx> {
@@ -396,7 +396,7 @@ impl<'v, 'k, 'tcx> ItemLikeVisitor<'v> for LifeSeeder<'k, 'tcx> {
                     }
                 }
             }
-            hir::ItemKind::Impl { ref of_trait, items, .. } => {
+            hir::ItemKind::Impl(hir::Impl { ref of_trait, items, .. }) => {
                 if of_trait.is_some() {
                     self.worklist.push(item.hir_id);
                 }
@@ -500,16 +500,16 @@ struct DeadVisitor<'tcx> {
 
 impl DeadVisitor<'tcx> {
     fn should_warn_about_item(&mut self, item: &hir::Item<'_>) -> bool {
-        let should_warn = match item.kind {
+        let should_warn = matches!(
+            item.kind,
             hir::ItemKind::Static(..)
-            | hir::ItemKind::Const(..)
-            | hir::ItemKind::Fn(..)
-            | hir::ItemKind::TyAlias(..)
-            | hir::ItemKind::Enum(..)
-            | hir::ItemKind::Struct(..)
-            | hir::ItemKind::Union(..) => true,
-            _ => false,
-        };
+                | hir::ItemKind::Const(..)
+                | hir::ItemKind::Fn(..)
+                | hir::ItemKind::TyAlias(..)
+                | hir::ItemKind::Enum(..)
+                | hir::ItemKind::Struct(..)
+                | hir::ItemKind::Union(..)
+        );
         should_warn && !self.symbol_is_live(item.hir_id)
     }
 

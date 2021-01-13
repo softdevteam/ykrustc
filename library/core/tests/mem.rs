@@ -134,11 +134,24 @@ fn test_discriminant_send_sync() {
 }
 
 #[test]
-#[cfg(not(bootstrap))]
 fn assume_init_good() {
     const TRUE: bool = unsafe { MaybeUninit::<bool>::new(true).assume_init() };
 
     assert!(TRUE);
+}
+
+#[test]
+fn uninit_array_assume_init() {
+    let mut array: [MaybeUninit<i16>; 5] = MaybeUninit::uninit_array();
+    array[0].write(3);
+    array[1].write(1);
+    array[2].write(4);
+    array[3].write(1);
+    array[4].write(5);
+
+    let array = unsafe { MaybeUninit::array_assume_init(array) };
+
+    assert_eq!(array, [3, 1, 4, 1, 5]);
 }
 
 #[test]
@@ -266,4 +279,11 @@ fn uninit_write_slice_cloned_no_drop() {
     MaybeUninit::write_slice_cloned(&mut dst, &src);
 
     forget(src);
+}
+
+#[test]
+#[cfg(not(bootstrap))]
+fn uninit_const_assume_init_read() {
+    const FOO: u32 = unsafe { MaybeUninit::new(42).assume_init_read() };
+    assert_eq!(FOO, 42);
 }

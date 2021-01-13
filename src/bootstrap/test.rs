@@ -869,12 +869,6 @@ default_test_with_compare_mode!(Ui {
     compare_mode: "nll"
 });
 
-default_test!(CompileFail {
-    path: "src/test/compile-fail",
-    mode: "compile-fail",
-    suite: "compile-fail"
-});
-
 default_test!(RunPassValgrind {
     path: "src/test/run-pass-valgrind",
     mode: "run-pass-valgrind",
@@ -1132,7 +1126,19 @@ note: if you're sure you want to do this, please open an issue as to why. In the
                 Ok(path) => path,
                 Err(_) => p,
             })
-            .filter(|p| p.starts_with(suite_path) && (p.is_dir() || p.is_file()))
+            .filter(|p| p.starts_with(suite_path))
+            .filter(|p| {
+                let exists = p.is_dir() || p.is_file();
+                if !exists {
+                    if let Some(p) = p.to_str() {
+                        builder.info(&format!(
+                            "Warning: Skipping \"{}\": not a regular file or directory",
+                            p
+                        ));
+                    }
+                }
+                exists
+            })
             .filter_map(|p| {
                 // Since test suite paths are themselves directories, if we don't
                 // specify a directory or file, we'll get an empty string here
@@ -1141,7 +1147,7 @@ note: if you're sure you want to do this, please open an issue as to why. In the
                 // flag is respected, so providing an empty --test-args conflicts with
                 // any following it.
                 match p.strip_prefix(suite_path).ok().and_then(|p| p.to_str()) {
-                    Some(s) if s != "" => Some(s),
+                    Some(s) if !s.is_empty() => Some(s),
                     _ => None,
                 }
             })
@@ -1968,8 +1974,8 @@ impl Step for Distcheck {
         builder.ensure(dist::Src);
 
         let mut cmd = Command::new("tar");
-        cmd.arg("-xzf")
-            .arg(builder.ensure(dist::PlainSourceTarball))
+        cmd.arg("-xf")
+            .arg(builder.ensure(dist::PlainSourceTarball).tarball())
             .arg("--strip-components=1")
             .current_dir(&dir);
         builder.run(&mut cmd);
@@ -1992,8 +1998,8 @@ impl Step for Distcheck {
         t!(fs::create_dir_all(&dir));
 
         let mut cmd = Command::new("tar");
-        cmd.arg("-xzf")
-            .arg(builder.ensure(dist::Src))
+        cmd.arg("-xf")
+            .arg(builder.ensure(dist::Src).tarball())
             .arg("--strip-components=1")
             .current_dir(&dir);
         builder.run(&mut cmd);

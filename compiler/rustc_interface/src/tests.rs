@@ -8,6 +8,7 @@ use rustc_session::config::{rustc_optgroups, ErrorOutputType, ExternLocation, Op
 use rustc_session::config::{CFGuard, ExternEntry, LinkerPluginLto, LtoCli, SwitchWithOptPath};
 use rustc_session::config::{
     Externs, OutputType, OutputTypes, SanitizerSet, SymbolManglingVersion, TracerMode,
+    WasiExecModel,
 };
 use rustc_session::lint::Level;
 use rustc_session::search_paths::SearchPath;
@@ -598,6 +599,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(unleash_the_miri_inside_of_you, true);
     tracked!(use_ctors_section, Some(true));
     tracked!(verify_llvm_ir, true);
+    tracked!(wasi_exec_model, Some(WasiExecModel::Reactor));
 }
 
 #[test]

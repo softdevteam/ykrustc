@@ -56,14 +56,26 @@ impl<'a> Parser<'a> {
         self.expect(&token::Colon)?;
         let ty = self.parse_ty()?;
 
-        self.sess.gated_spans.gate(sym::min_const_generics, const_span.to(self.prev_token.span));
+        // Parse optional const generics default value, taking care of feature gating the spans
+        // with the unstable syntax mechanism.
+        let default = if self.eat(&token::Eq) {
+            // The gated span goes from the `=` to the end of the const argument that follows (and
+            // which could be a block expression).
+            let start = self.prev_token.span;
+            let const_arg = self.parse_const_arg()?;
+            let span = start.to(const_arg.value.span);
+            self.sess.gated_spans.gate(sym::const_generics_defaults, span);
+            Some(const_arg)
+        } else {
+            None
+        };
 
         Ok(GenericParam {
             ident,
             id: ast::DUMMY_NODE_ID,
             attrs: preceding_attrs.into(),
             bounds: Vec::new(),
-            kind: GenericParamKind::Const { ty, kw_span: const_span },
+            kind: GenericParamKind::Const { ty, kw_span: const_span, default },
             is_placeholder: false,
         })
     }

@@ -175,7 +175,7 @@
 //! [`str`]: prim@str
 //! [`mpsc`]: sync::mpsc
 //! [`std::cmp`]: cmp
-//! [`std::slice`]: slice
+//! [`std::slice`]: mod@slice
 //! [`use std::env`]: env/index.html
 //! [`use`]: ../book/ch07-02-defining-modules-to-control-scope-and-privacy.html
 //! [crates.io]: https://crates.io
@@ -185,7 +185,8 @@
 //! [other]: #what-is-in-the-standard-library-documentation
 //! [primitive types]: ../book/ch03-02-data-types.html
 //! [rust-discord]: https://discord.gg/rust-lang
-
+#![cfg_attr(not(bootstrap), doc = "[array]: prim@array")]
+#![cfg_attr(not(bootstrap), doc = "[slice]: prim@slice")]
 #![cfg_attr(not(feature = "restricted-std"), stable(feature = "rust1", since = "1.0.0"))]
 #![cfg_attr(feature = "restricted-std", unstable(feature = "restricted_std", issue = "none"))]
 #![doc(
@@ -288,8 +289,7 @@
 #![feature(nll)]
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(once_cell)]
-#![cfg_attr(bootstrap, feature(optin_builtin_traits))]
-#![cfg_attr(not(bootstrap), feature(auto_traits))]
+#![feature(auto_traits)]
 #![feature(or_patterns)]
 #![feature(panic_info_message)]
 #![feature(panic_internals)]
@@ -304,11 +304,9 @@
 #![feature(rustc_private)]
 #![feature(shrink_to)]
 #![feature(slice_concat_ext)]
-#![feature(slice_fill)]
 #![feature(slice_internals)]
 #![feature(slice_ptr_get)]
 #![feature(slice_ptr_len)]
-#![feature(slice_strip)]
 #![feature(staged_api)]
 #![feature(std_internals)]
 #![feature(stdsimd)]

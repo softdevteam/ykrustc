@@ -84,14 +84,14 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                         new_generics
                     });
 
-                let polarity;
+                let negative_polarity;
                 let new_generics = match result {
                     AutoTraitResult::PositiveImpl(new_generics) => {
-                        polarity = None;
+                        negative_polarity = false;
                         new_generics
                     }
                     AutoTraitResult::NegativeImpl => {
-                        polarity = Some(ImplPolarity::Negative);
+                        negative_polarity = true;
 
                         // For negative impls, we use the generic params, but *not* the predicates,
                         // from the original type. Otherwise, the displayed impl appears to be a
@@ -123,17 +123,14 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                     attrs: Default::default(),
                     visibility: Inherited,
                     def_id: self.cx.next_def_id(param_env_def_id.krate),
-                    stability: None,
-                    const_stability: None,
-                    deprecation: None,
-                    kind: ImplItem(Impl {
+                    kind: box ImplItem(Impl {
                         unsafety: hir::Unsafety::Normal,
                         generics: new_generics,
                         provided_trait_methods: Default::default(),
                         trait_: Some(trait_ref.clean(self.cx).get_trait_type().unwrap()),
                         for_: ty.clean(self.cx),
                         items: Vec::new(),
-                        polarity,
+                        negative_polarity,
                         synthetic: true,
                         blanket_impl: None,
                     }),
@@ -354,8 +351,8 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                 if let Some(data) = ty_to_fn.get(&ty) {
                     let (poly_trait, output) =
                         (data.0.as_ref().expect("as_ref failed").clone(), data.1.as_ref().cloned());
-                    let new_ty = match &poly_trait.trait_ {
-                        &Type::ResolvedPath {
+                    let new_ty = match poly_trait.trait_ {
+                        Type::ResolvedPath {
                             ref path,
                             ref param_names,
                             ref did,
@@ -600,7 +597,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                                             ref mut bindings, ..
                                         } => {
                                             bindings.push(TypeBinding {
-                                                name: left_name.clone(),
+                                                name: left_name,
                                                 kind: TypeBindingKind::Equality { ty: rhs },
                                             });
                                         }
@@ -668,7 +665,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                 GenericParamDefKind::Type { ref mut default, ref mut bounds, .. } => {
                     // We never want something like `impl<T=Foo>`.
                     default.take();
-                    let generic_ty = Type::Generic(param.name.clone());
+                    let generic_ty = Type::Generic(param.name);
                     if !has_sized.contains(&generic_ty) {
                         bounds.insert(0, GenericBound::maybe_sized(self.cx));
                     }
@@ -741,11 +738,11 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
     }
 
     fn is_fn_ty(&self, tcx: TyCtxt<'_>, ty: &Type) -> bool {
-        match &ty {
-            &&Type::ResolvedPath { ref did, .. } => {
-                *did == tcx.require_lang_item(LangItem::Fn, None)
-                    || *did == tcx.require_lang_item(LangItem::FnMut, None)
-                    || *did == tcx.require_lang_item(LangItem::FnOnce, None)
+        match ty {
+            &Type::ResolvedPath { did, .. } => {
+                did == tcx.require_lang_item(LangItem::Fn, None)
+                    || did == tcx.require_lang_item(LangItem::FnMut, None)
+                    || did == tcx.require_lang_item(LangItem::FnOnce, None)
             }
             _ => false,
         }

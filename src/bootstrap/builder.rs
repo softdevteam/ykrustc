@@ -384,7 +384,6 @@ impl<'a> Builder<'a> {
                 test::ExpandYamlAnchors,
                 test::Tidy,
                 test::Ui,
-                test::CompileFail,
                 test::RunPassValgrind,
                 test::MirOpt,
                 test::Codegen,
@@ -471,6 +470,7 @@ impl<'a> Builder<'a> {
                 dist::RustDev,
                 dist::Extended,
                 dist::BuildManifest,
+                dist::ReproducibleArtifacts,
             ),
             Kind::Install => describe!(
                 install::Docs,
@@ -736,10 +736,7 @@ impl<'a> Builder<'a> {
         if self.config.deny_warnings {
             cmd.arg("-Dwarnings");
         }
-        // cfg(not(bootstrap)), can be removed on the next beta bump
-        if compiler.stage != 0 {
-            cmd.arg("-Znormalize-docs");
-        }
+        cmd.arg("-Znormalize-docs");
 
         // Remove make-related flags that can cause jobserver problems.
         cmd.env_remove("MAKEFLAGS");
@@ -1537,7 +1534,7 @@ impl Rustflags {
     fn arg(&mut self, arg: &str) -> &mut Self {
         assert_eq!(arg.split(' ').count(), 1);
         if !self.0.is_empty() {
-            self.0.push_str(" ");
+            self.0.push(' ');
         }
         self.0.push_str(arg);
         self

@@ -486,7 +486,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     }
                     GenericParamDefKind::Const => {
                         let ty = tcx.at(self.span).type_of(param.def_id);
-                        // FIXME(const_generics:defaults)
+                        // FIXME(const_generics_defaults)
                         if infer_args {
                             // No const parameters were provided, we can infer all.
                             self.astconv.ct_infer(ty, Some(param), self.span).into()
@@ -770,7 +770,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         // Try to find an unbound in bounds.
         let mut unbound = None;
         for ab in ast_bounds {
-            if let &hir::GenericBound::Trait(ref ptr, hir::TraitBoundModifier::Maybe) = ab {
+            if let hir::GenericBound::Trait(ptr, hir::TraitBoundModifier::Maybe) = ab {
                 if unbound.is_none() {
                     unbound = Some(&ptr.trait_ref);
                 } else {
@@ -1256,17 +1256,15 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             })
         });
 
-        let regular_trait_predicates = existential_trait_refs.map(|trait_ref| {
-            trait_ref.map_bound(|trait_ref| ty::ExistentialPredicate::Trait(trait_ref))
-        });
+        let regular_trait_predicates = existential_trait_refs
+            .map(|trait_ref| trait_ref.map_bound(ty::ExistentialPredicate::Trait));
         let auto_trait_predicates = auto_traits.into_iter().map(|trait_ref| {
             ty::Binder::dummy(ty::ExistentialPredicate::AutoTrait(trait_ref.trait_ref().def_id()))
         });
         let mut v = regular_trait_predicates
             .chain(auto_trait_predicates)
             .chain(
-                existential_projections
-                    .map(|x| x.map_bound(|x| ty::ExistentialPredicate::Projection(x))),
+                existential_projections.map(|x| x.map_bound(ty::ExistentialPredicate::Projection)),
             )
             .collect::<SmallVec<[_; 8]>>();
         v.sort_by(|a, b| a.skip_binder().stable_cmp(tcx, &b.skip_binder()));
@@ -2013,11 +2011,11 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                         "generic `Self` types are currently not permitted in anonymous constants",
                     );
                     if let Some(hir::Node::Item(&hir::Item {
-                        kind: hir::ItemKind::Impl { self_ty, .. },
+                        kind: hir::ItemKind::Impl(ref impl_),
                         ..
                     })) = tcx.hir().get_if_local(def_id)
                     {
-                        err.span_note(self_ty.span, "not a concrete type");
+                        err.span_note(impl_.self_ty.span, "not a concrete type");
                     }
                     err.emit();
                     tcx.ty_error()

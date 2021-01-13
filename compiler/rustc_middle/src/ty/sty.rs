@@ -215,10 +215,7 @@ pub enum TyKind<'tcx> {
 impl TyKind<'tcx> {
     #[inline]
     pub fn is_primitive(&self) -> bool {
-        match self {
-            Bool | Char | Int(_) | Uint(_) | Float(_) => true,
-            _ => false,
-        }
+        matches!(self, Bool | Char | Int(_) | Uint(_) | Float(_))
     }
 
     /// Get the article ("a" or "an") to use with this type.
@@ -1427,28 +1424,33 @@ pub struct EarlyBoundRegion {
     pub name: Symbol,
 }
 
+/// A **ty**pe **v**ariable **ID**.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct TyVid {
     pub index: u32,
 }
 
+/// A **`const`** **v**ariable **ID**.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct ConstVid<'tcx> {
     pub index: u32,
     pub phantom: PhantomData<&'tcx ()>,
 }
 
+/// An **int**egral (`u32`, `i32`, `usize`, etc.) type **v**ariable **ID**.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct IntVid {
     pub index: u32,
 }
 
+/// An **float**ing-point (`f32` or `f64`) type **v**ariable **ID**.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct FloatVid {
     pub index: u32,
 }
 
 rustc_index::newtype_index! {
+    /// A **region** (lifetime) **v**ariable **ID**.
     pub struct RegionVid {
         DEBUG_FORMAT = custom,
     }
@@ -1460,18 +1462,40 @@ impl Atom for RegionVid {
     }
 }
 
+/// A placeholder for a type that hasn't been inferred yet.
+///
+/// E.g., if we have an empty array (`[]`), then we create a fresh
+/// type variable for the element type since we won't know until it's
+/// used what the element type is supposed to be.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub enum InferTy {
+    /// A type variable.
     TyVar(TyVid),
+    /// An integral type variable (`{integer}`).
+    ///
+    /// These are created when the compiler sees an integer literal like
+    /// `1` that could be several different types (`u8`, `i32`, `u32`, etc.).
+    /// We don't know until it's used what type it's supposed to be, so
+    /// we create a fresh type variable.
     IntVar(IntVid),
+    /// A floating-point type variable (`{float}`).
+    ///
+    /// These are created when the compiler sees an float literal like
+    /// `1.0` that could be either an `f32` or an `f64`.
+    /// We don't know until it's used what type it's supposed to be, so
+    /// we create a fresh type variable.
     FloatVar(FloatVid),
 
-    /// A `FreshTy` is one that is generated as a replacement for an
-    /// unbound type variable. This is convenient for caching etc. See
-    /// `infer::freshen` for more details.
+    /// A [`FreshTy`][Self::FreshTy] is one that is generated as a replacement
+    /// for an unbound type variable. This is convenient for caching etc. See
+    /// `rustc_infer::infer::freshen` for more details.
+    ///
+    /// Compare with [`TyVar`][Self::TyVar].
     FreshTy(u32),
+    /// Like [`FreshTy`][Self::FreshTy], but as a replacement for [`IntVar`][Self::IntVar].
     FreshIntTy(u32),
+    /// Like [`FreshTy`][Self::FreshTy], but as a replacement for [`FloatVar`][Self::FloatVar].
     FreshFloatTy(u32),
 }
 
@@ -1572,17 +1596,11 @@ impl RegionKind {
     }
 
     pub fn is_late_bound(&self) -> bool {
-        match *self {
-            ty::ReLateBound(..) => true,
-            _ => false,
-        }
+        matches!(*self, ty::ReLateBound(..))
     }
 
     pub fn is_placeholder(&self) -> bool {
-        match *self {
-            ty::RePlaceholder(..) => true,
-            _ => false,
-        }
+        matches!(*self, ty::RePlaceholder(..))
     }
 
     pub fn bound_at_or_above_binder(&self, index: ty::DebruijnIndex) -> bool {

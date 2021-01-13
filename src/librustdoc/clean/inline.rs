@@ -169,7 +169,17 @@ crate fn record_extern_fqn(cx: &DocContext<'_>, did: DefId, kind: clean::TypeKin
         if !s.is_empty() { Some(s) } else { None }
     });
     let fqn = if let clean::TypeKind::Macro = kind {
-        vec![crate_name, relative.last().expect("relative was empty")]
+        // Check to see if it is a macro 2.0 or built-in macro
+        if matches!(
+            cx.enter_resolver(|r| r.cstore().load_macro_untracked(did, cx.sess())),
+            LoadedMacro::MacroDef(def, _)
+                if matches!(&def.kind, ast::ItemKind::MacroDef(ast_def)
+                    if !ast_def.macro_rules)
+        ) {
+            once(crate_name).chain(relative).collect()
+        } else {
+            vec![crate_name, relative.last().expect("relative was empty")]
+        }
     } else {
         once(crate_name).chain(relative).collect()
     };
@@ -261,26 +271,12 @@ fn build_union(cx: &DocContext<'_>, did: DefId) -> clean::Union {
 
 fn build_type_alias(cx: &DocContext<'_>, did: DefId) -> clean::Typedef {
     let predicates = cx.tcx.explicit_predicates_of(did);
+    let type_ = cx.tcx.type_of(did).clean(cx);
 
     clean::Typedef {
-        type_: cx.tcx.type_of(did).clean(cx),
+        type_,
         generics: (cx.tcx.generics_of(did), predicates).clean(cx),
-        item_type: build_type_alias_type(cx, did),
-    }
-}
-
-fn build_type_alias_type(cx: &DocContext<'_>, did: DefId) -> Option<clean::Type> {
-    let type_ = cx.tcx.type_of(did).clean(cx);
-    type_.def_id().and_then(|did| build_ty(cx, did))
-}
-
-crate fn build_ty(cx: &DocContext<'_>, did: DefId) -> Option<clean::Type> {
-    match cx.tcx.def_kind(did) {
-        DefKind::Struct | DefKind::Union | DefKind::Enum | DefKind::Const | DefKind::Static => {
-            Some(cx.tcx.type_of(did).clean(cx))
-        }
-        DefKind::TyAlias => build_type_alias_type(cx, did),
-        _ => None,
+        item_type: None,
     }
 }
 
@@ -362,18 +358,16 @@ crate fn build_impl(
     let impl_item = match did.as_local() {
         Some(did) => {
             let hir_id = tcx.hir().local_def_id_to_hir_id(did);
-            match tcx.hir().expect_item(hir_id).kind {
-                hir::ItemKind::Impl { self_ty, ref generics, ref items, .. } => {
-                    Some((self_ty, generics, items))
-                }
+            match &tcx.hir().expect_item(hir_id).kind {
+                hir::ItemKind::Impl(impl_) => Some(impl_),
                 _ => panic!("`DefID` passed to `build_impl` is not an `impl"),
             }
         }
         None => None,
     };
 
-    let for_ = match impl_item {
-        Some((self_ty, _, _)) => self_ty.clean(cx),
+    let for_ = match &impl_item {
+        Some(impl_) => impl_.self_ty.clean(cx),
         None => tcx.type_of(did).clean(cx),
     };
 
@@ -395,9 +389,13 @@ crate fn build_impl(
 
     let predicates = tcx.explicit_predicates_of(did);
     let (trait_items, generics) = match impl_item {
-        Some((_, generics, items)) => (
-            items.iter().map(|item| tcx.hir().impl_item(item.id).clean(cx)).collect::<Vec<_>>(),
-            generics.clean(cx),
+        Some(impl_) => (
+            impl_
+                .items
+                .iter()
+                .map(|item| tcx.hir().impl_item(item.id).clean(cx))
+                .collect::<Vec<_>>(),
+            impl_.generics.clean(cx),
         ),
         None => (
             tcx.associated_items(did)
@@ -442,7 +440,7 @@ crate fn build_impl(
             trait_,
             for_,
             items: trait_items,
-            polarity: Some(polarity.clean(cx)),
+            negative_polarity: polarity.clean(cx),
             synthetic: false,
             blanket_impl: None,
         }),
@@ -455,63 +453,51 @@ crate fn build_impl(
 
 fn build_module(cx: &DocContext<'_>, did: DefId, visited: &mut FxHashSet<DefId>) -> clean::Module {
     let mut items = Vec::new();
-    fill_in(cx, did, &mut items, visited);
-    return clean::Module { items, is_crate: false };
 
-    fn fill_in(
-        cx: &DocContext<'_>,
-        did: DefId,
-        items: &mut Vec<clean::Item>,
-        visited: &mut FxHashSet<DefId>,
-    ) {
-        // If we're re-exporting a re-export it may actually re-export something in
-        // two namespaces, so the target may be listed twice. Make sure we only
-        // visit each node at most once.
-        for &item in cx.tcx.item_children(did).iter() {
-            if item.vis == ty::Visibility::Public {
-                if let Some(def_id) = item.res.mod_def_id() {
-                    if did == def_id || !visited.insert(def_id) {
-                        continue;
-                    }
+    // If we're re-exporting a re-export it may actually re-export something in
+    // two namespaces, so the target may be listed twice. Make sure we only
+    // visit each node at most once.
+    for &item in cx.tcx.item_children(did).iter() {
+        if item.vis == ty::Visibility::Public {
+            if let Some(def_id) = item.res.mod_def_id() {
+                if did == def_id || !visited.insert(def_id) {
+                    continue;
                 }
-                if let Res::PrimTy(p) = item.res {
-                    // Primitive types can't be inlined so generate an import instead.
-                    items.push(clean::Item {
-                        name: None,
-                        attrs: clean::Attributes::default(),
-                        source: clean::Span::dummy(),
-                        def_id: DefId::local(CRATE_DEF_INDEX),
-                        visibility: clean::Public,
-                        stability: None,
-                        const_stability: None,
-                        deprecation: None,
-                        kind: clean::ImportItem(clean::Import::new_simple(
-                            item.ident.name,
-                            clean::ImportSource {
-                                path: clean::Path {
-                                    global: false,
-                                    res: item.res,
-                                    segments: vec![clean::PathSegment {
-                                        name: clean::PrimitiveType::from(p).as_sym(),
-                                        args: clean::GenericArgs::AngleBracketed {
-                                            args: Vec::new(),
-                                            bindings: Vec::new(),
-                                        },
-                                    }],
-                                },
-                                did: None,
+            }
+            if let Res::PrimTy(p) = item.res {
+                // Primitive types can't be inlined so generate an import instead.
+                items.push(clean::Item {
+                    name: None,
+                    attrs: clean::Attributes::default(),
+                    source: clean::Span::dummy(),
+                    def_id: DefId::local(CRATE_DEF_INDEX),
+                    visibility: clean::Public,
+                    kind: box clean::ImportItem(clean::Import::new_simple(
+                        item.ident.name,
+                        clean::ImportSource {
+                            path: clean::Path {
+                                global: false,
+                                res: item.res,
+                                segments: vec![clean::PathSegment {
+                                    name: clean::PrimitiveType::from(p).as_sym(),
+                                    args: clean::GenericArgs::AngleBracketed {
+                                        args: Vec::new(),
+                                        bindings: Vec::new(),
+                                    },
+                                }],
                             },
-                            true,
-                        )),
-                    });
-                } else if let Some(i) =
-                    try_inline(cx, did, item.res, item.ident.name, None, visited)
-                {
-                    items.extend(i)
-                }
+                            did: None,
+                        },
+                        true,
+                    )),
+                });
+            } else if let Some(i) = try_inline(cx, did, item.res, item.ident.name, None, visited) {
+                items.extend(i)
             }
         }
     }
+
+    clean::Module { items, is_crate: false }
 }
 
 crate fn print_inlined_const(cx: &DocContext<'_>, did: DefId) -> String {
