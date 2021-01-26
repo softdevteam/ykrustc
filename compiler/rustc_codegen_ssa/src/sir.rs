@@ -72,7 +72,7 @@ impl Sir {
             types: RefCell::new(SirTypes {
                 cgu_hash: ykpack::CguHash(cgu_hasher.finish()),
                 map: Default::default(),
-                next_idx: Default::default(),
+                next_idx: ykpack::TyIndex(0),
             }),
             funcs: Default::default(),
         }
@@ -931,17 +931,17 @@ impl SirTypes {
     /// Note that the index is only unique within the scope of the current compilation unit.
     /// To make a globally unique ID, we pair the index with CGU hash (see ykpack::CguHash).
     pub fn index(&mut self, t: ykpack::Ty) -> ykpack::TyIndex {
-        let next_idx = &mut self.next_idx;
+        let next_idx = &mut self.next_idx.0;
         *self.map.entry(t).or_insert_with(|| {
             let idx = *next_idx;
             *next_idx += 1;
-            idx
+            ykpack::TyIndex(idx)
         })
     }
 
     /// Given a type id return the corresponding type.
     pub fn get(&self, tyid: ykpack::TypeId) -> &ykpack::Ty {
-        self.map.get_index(usize::try_from(tyid.1).unwrap()).unwrap().0
+        self.map.get_index(usize::try_from(tyid.idx.0).unwrap()).unwrap().0
     }
 }
 

@@ -43,7 +43,7 @@ pub fn write_sir<'tcx>(
     // The serialisation order matters here, as the load order (in the runtime) corresponds with
     // the type indices, hence use of `IndexMap` for insertion order.
     for (typ, typ_idx) in sir_types.map {
-        debug_assert!(usize::try_from(typ_idx).unwrap() == hdr.types.len());
+        debug_assert!(usize::try_from(typ_idx.0).unwrap() == hdr.types.len());
         hdr.types.push(encoder.tell());
         encoder.serialise(ykpack::Pack::Type(typ)).unwrap();
     }
@@ -98,7 +98,7 @@ pub fn write_sir<'tcx>(
 impl SirMethods for CodegenCx<'b, 'tcx> {
     fn define_sir_type(&self, ty: ykpack::Ty) -> ykpack::TypeId {
         let mut types = self.sir.as_ref().unwrap().types.borrow_mut();
-        (types.cgu_hash, types.index(ty))
+        ykpack::TypeId { cgu: types.cgu_hash, idx: types.index(ty) }
     }
 
     fn define_function_sir(&self, sir: ykpack::Body) {
