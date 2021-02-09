@@ -73,12 +73,10 @@ pub struct SirFuncCx<'tcx> {
     instance: Instance<'tcx>,
     /// The MIR body of the above instance.
     mir: &'tcx mir::Body<'tcx>,
-    /// The SIR function we are building.
-    pub func: ykpack::Body,
+    /// The builder for the SIR function.
+    pub sir_builder: ykpack::build::SirBuilder,
     /// Maps each MIR local to a SIR IPlace.
     var_map: FxHashMap<mir::Local, ykpack::IPlace>,
-    /// The next SIR local variable index to be allocated.
-    next_sir_local: ykpack::LocalIndex,
     /// The compiler's type context.
     tcx: TyCtxt<'tcx>,
 }
@@ -90,6 +88,8 @@ impl SirFuncCx<'tcx> {
         instance: &Instance<'tcx>,
         mir: &'tcx mir::Body<'tcx>,
     ) -> Self {
+        let symbol_name = String::from(&*tcx.symbol_name(*instance).name);
+
         let mut flags = ykpack::BodyFlags::empty();
         for attr in tcx.get_attrs(instance.def_id()).iter() {
             if tcx.sess.check_name(attr, sym::do_not_trace) {
@@ -137,20 +137,6 @@ impl SirFuncCx<'tcx> {
             }
         }
 
-        // Since there's a one-to-one mapping between MIR and SIR blocks, we know how many SIR
-        // blocks we will need and can allocate empty SIR blocks ahead of time.
-        let blocks = vec![
-            ykpack::BasicBlock {
-                stmts: Default::default(),
-                term: ykpack::Terminator::Unreachable,
-            };
-            mir.basic_blocks().len()
-        ];
-
-        // There will be at least as many locals in the SIR as there are in the MIR.
-        let local_decls = Vec::with_capacity(mir.local_decls.len());
-        let symbol_name = String::from(&*tcx.symbol_name(*instance).name);
-
         let crate_name = tcx.crate_name(instance.def_id().krate).as_str();
         if crate_name == "core" || crate_name == "alloc" {
             flags |= ykpack::BodyFlags::DO_NOT_TRACE;
@@ -160,17 +146,13 @@ impl SirFuncCx<'tcx> {
         let mut this = Self {
             instance: instance.clone(),
             mir,
-            func: ykpack::Body {
+            sir_builder: ykpack::build::SirBuilder::new(
                 symbol_name,
-                blocks,
                 flags,
-                local_decls,
-                num_args: mir.arg_count,
-                layout: (0, 0),
-                offsets: Vec::new(),
-            },
+                mir.arg_count,
+                mir.basic_blocks().len(),
+            ),
             var_map,
-            next_sir_local: 0,
             tcx,
         };
 
@@ -179,7 +161,10 @@ impl SirFuncCx<'tcx> {
             let ml = mir::Local::from_usize(idx);
             let sirty =
                 this.lower_ty_and_layout(bx, &this.mono_layout_of(bx, this.mir.local_decls[ml].ty));
-            this.func.local_decls.push(ykpack::LocalDecl { ty: sirty, referenced: false });
+            this.sir_builder
+                .func
+                .local_decls
+                .push(ykpack::LocalDecl { ty: sirty, referenced: false });
             this.var_map.insert(
                 ml,
                 ykpack::IPlace::Val {
@@ -188,7 +173,6 @@ impl SirFuncCx<'tcx> {
                     ty: sirty,
                 },
             );
-            this.next_sir_local += 1;
         }
         this
     }
@@ -196,15 +180,15 @@ impl SirFuncCx<'tcx> {
     /// Compute layout and offsets required for blackholing.
     pub fn compute_layout_and_offsets<Bx: BuilderMethods<'a, 'tcx>>(&mut self, bx: &Bx) {
         let mut layout = Layout::from_size_align(0, 1).unwrap();
-        for ld in &self.func.local_decls {
+        for ld in &self.sir_builder.func.local_decls {
             let (size, align) = bx.cx().get_size_align(ld.ty);
             let l = Layout::from_size_align(size, align).unwrap();
             let (nl, off) = layout.extend(l).unwrap();
-            self.func.offsets.push(off);
+            self.sir_builder.func.offsets.push(off);
             layout = nl;
         }
         layout = layout.pad_to_align();
-        self.func.layout = (layout.size(), layout.align());
+        self.sir_builder.func.layout = (layout.size(), layout.align());
     }
 
     /// Returns the IPlace corresponding with MIR local `ml`. A new IPlace is constructed if we've
@@ -228,36 +212,28 @@ impl SirFuncCx<'tcx> {
 
     /// Returns a zero-offset IPlace for a new SIR local.
     fn new_sir_local(&mut self, sirty: ykpack::TypeId) -> ykpack::IPlace {
-        let idx = self.next_sir_local;
-        self.next_sir_local += 1;
-        self.func.local_decls.push(ykpack::LocalDecl { ty: sirty, referenced: false });
-        ykpack::IPlace::Val { local: ykpack::Local(idx), off: 0, ty: sirty }
+        self.sir_builder.new_sir_local(sirty)
     }
 
     /// Tells the tracer codegen that the local `l` is referenced, and that is should be allocated
     /// directly to the stack and not a register. You can't reference registers.
     fn notify_referenced(&mut self, l: ykpack::Local) {
-        let idx = usize::try_from(l.0).unwrap();
-        let slot = self.func.local_decls.get_mut(idx).unwrap();
-        slot.referenced = true;
+        self.sir_builder.notify_referenced(l)
     }
 
     /// Returns true if there are no basic blocks.
     pub fn is_empty(&self) -> bool {
-        self.func.blocks.len() == 0
+        self.sir_builder.is_empty()
     }
 
     /// Appends a statement to the specified basic block.
     fn push_stmt(&mut self, bb: ykpack::BasicBlockIndex, stmt: ykpack::Statement) {
-        self.func.blocks[usize::try_from(bb).unwrap()].stmts.push(stmt);
+        self.sir_builder.push_stmt(bb, stmt)
     }
 
     /// Sets the terminator of the specified block.
     pub fn set_terminator(&mut self, bb: ykpack::BasicBlockIndex, new_term: ykpack::Terminator) {
-        let term = &mut self.func.blocks[usize::try_from(bb).unwrap()].term;
-        // We should only ever replace the default unreachable terminator assigned at allocation time.
-        debug_assert!(*term == ykpack::Terminator::Unreachable);
-        *term = new_term
+        self.sir_builder.set_terminator(bb, new_term);
     }
 
     pub fn set_term_switchint<Bx: BuilderMethods<'a, 'tcx>>(

@@ -288,7 +288,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         // declarations.
         if !sfcx.is_empty() {
             sfcx.compute_layout_and_offsets(&bx);
-            cx.define_function_sir(sfcx.func);
+            cx.define_function_sir(sfcx.sir_builder.func);
         }
     }
 }
