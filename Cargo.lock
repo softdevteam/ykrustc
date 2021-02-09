@@ -3625,7 +3625,6 @@ dependencies = [
  "bitflags",
  "cc",
  "gimli",
- "indexmap",
  "jobserver",
  "libc",
  "memmap",

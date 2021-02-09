@@ -4,7 +4,6 @@
 //! into an ELF section at link time.
 
 use crate::traits::{BuilderMethods, SirMethods};
-use indexmap::IndexMap;
 use rustc_ast::ast;
 use rustc_ast::ast::{IntTy, UintTy};
 use rustc_data_structures::fx::{FxHashMap, FxHasher};
@@ -19,11 +18,9 @@ use rustc_span::sym;
 use rustc_target::abi::FieldsShape;
 use rustc_target::abi::VariantIdx;
 use std::alloc::Layout;
-use std::cell::RefCell;
 use std::convert::{TryFrom, TryInto};
 use std::default::Default;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::io;
+use std::hash::{Hash, Hasher};
 use ykpack;
 
 pub const BUILD_SCRIPT_CRATE: &str = "build_script_build";
@@ -44,58 +41,30 @@ macro_rules! binop_lowerings {
     }
 }
 
-/// A collection of in-memory SIR data structures to be serialised.
-/// Each codegen unit builds one instance of this which is then merged into a "global" instance
-/// when the unit completes.
-pub struct Sir {
-    pub types: RefCell<SirTypes>,
-    pub funcs: RefCell<Vec<ykpack::Body>>,
+pub use ykpack::build::{Sir, SirTypes};
+
+pub fn new_sir(tcx: TyCtxt<'_>, cgu_name: &str) -> Sir {
+    // Build the CGU hash.
+    //
+    // This must be a globally unique hash for this compilation unit. It might have been
+    // tempting to use the `tcx.crate_hash()` as part of the CGU hash, but this query is
+    // invalidated on every source code change to the crate. In turn, that would mean lots of
+    // unnecessary rebuilds.
+    //
+    // We settle on:
+    // CGU hash = crate name + crate disambiguator + codegen unit name.
+    let mut cgu_hasher = FxHasher::default();
+    tcx.crate_name(LOCAL_CRATE).hash(&mut cgu_hasher);
+    tcx.crate_disambiguator(LOCAL_CRATE).hash(&mut cgu_hasher);
+    cgu_name.hash(&mut cgu_hasher);
+
+    Sir::new(ykpack::CguHash(cgu_hasher.finish()))
 }
 
-impl Sir {
-    pub fn new(tcx: TyCtxt<'_>, cgu_name: &str) -> Self {
-        // Build the CGU hash.
-        //
-        // This must be a globally unique hash for this compilation unit. It might have been
-        // tempting to use the `tcx.crate_hash()` as part of the CGU hash, but this query is
-        // invalidated on every source code change to the crate. In turn, that would mean lots of
-        // unnecessary rebuilds.
-        //
-        // We settle on:
-        // CGU hash = crate name + crate disambiguator + codegen unit name.
-        let mut cgu_hasher = FxHasher::default();
-        tcx.crate_name(LOCAL_CRATE).hash(&mut cgu_hasher);
-        tcx.crate_disambiguator(LOCAL_CRATE).hash(&mut cgu_hasher);
-        cgu_name.hash(&mut cgu_hasher);
-
-        Sir {
-            types: RefCell::new(SirTypes {
-                cgu_hash: ykpack::CguHash(cgu_hasher.finish()),
-                map: Default::default(),
-                next_idx: ykpack::TyIndex(0),
-            }),
-            funcs: Default::default(),
-        }
-    }
-
-    /// Returns `true` if we should collect SIR for the current crate.
-    pub fn is_required(tcx: TyCtxt<'_>) -> bool {
-        tcx.sess.opts.cg.tracer.encode_sir()
-            && tcx.crate_name(LOCAL_CRATE).as_str() != BUILD_SCRIPT_CRATE
-    }
-
-    /// Returns true if there is nothing inside.
-    pub fn is_empty(&self) -> bool {
-        self.funcs.borrow().len() == 0
-    }
-
-    /// Writes a textual representation of the SIR to `w`. Used for `--emit yk-sir`.
-    pub fn dump(&self, w: &mut dyn io::Write) -> Result<(), io::Error> {
-        for f in self.funcs.borrow().iter() {
-            writeln!(w, "{}", f)?;
-        }
-        Ok(())
-    }
+/// Returns `true` if we should collect SIR for the current crate.
+pub fn is_sir_required(tcx: TyCtxt<'_>) -> bool {
+    tcx.sess.opts.cg.tracer.encode_sir()
+        && tcx.crate_name(LOCAL_CRATE).as_str() != BUILD_SCRIPT_CRATE
 }
 
 /// A structure for building the SIR of a function.
@@ -912,36 +881,6 @@ impl SirFuncCx<'tcx> {
             // An enum with variants.
             ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout))
         }
-    }
-}
-
-pub struct SirTypes {
-    /// A globally unique identifier for the codegen unit.
-    pub cgu_hash: ykpack::CguHash,
-    /// Maps types to their index. Ordered by insertion via `IndexMap`.
-    pub map: IndexMap<ykpack::Ty, ykpack::TyIndex, BuildHasherDefault<FxHasher>>,
-    /// The next available type index.
-    next_idx: ykpack::TyIndex,
-}
-
-impl SirTypes {
-    /// Get the index of a type. If this is the first time we have seen this type, a new index is
-    /// allocated and returned.
-    ///
-    /// Note that the index is only unique within the scope of the current compilation unit.
-    /// To make a globally unique ID, we pair the index with CGU hash (see ykpack::CguHash).
-    pub fn index(&mut self, t: ykpack::Ty) -> ykpack::TyIndex {
-        let next_idx = &mut self.next_idx.0;
-        *self.map.entry(t).or_insert_with(|| {
-            let idx = *next_idx;
-            *next_idx += 1;
-            ykpack::TyIndex(idx)
-        })
-    }
-
-    /// Given a type id return the corresponding type.
-    pub fn get(&self, tyid: ykpack::TypeId) -> &ykpack::Ty {
-        self.map.get_index(usize::try_from(tyid.idx.0).unwrap()).unwrap().0
     }
 }
 

@@ -288,8 +288,8 @@ impl<'ll, 'tcx> CodegenCx<'ll, 'tcx> {
         // If we are putting SIR into the binary or dumping it to disk, then create a place to
         // store it until it is serialised. Also skip generating SIR for build scripts (we will
         // never trace them).
-        let sir = if sir::Sir::is_required(tcx) {
-            Some(sir::Sir::new(tcx, &*codegen_unit.name().as_str()))
+        let sir = if sir::is_sir_required(tcx) {
+            Some(sir::new_sir(tcx, &*codegen_unit.name().as_str()))
         } else {
             None
         };

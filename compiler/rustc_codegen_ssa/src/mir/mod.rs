@@ -16,7 +16,7 @@ use rustc_index::vec::IndexVec;
 use self::analyze::CleanupKind;
 use self::debuginfo::{FunctionDebugContext, PerLocalVarDebugInfo};
 use self::place::PlaceRef;
-use crate::sir::{Sir, SirFuncCx};
+use crate::sir::{self, SirFuncCx};
 use rustc_middle::mir::traversal;
 
 use self::operand::{OperandRef, OperandValue};
@@ -176,7 +176,7 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 
     let (landing_pads, funclets) = create_funclets(&mir, &mut bx, &cleanup_kinds, &block_bxs);
 
-    let sir_func_cx = if Sir::is_required(cx.tcx()) {
+    let sir_func_cx = if sir::is_sir_required(cx.tcx()) {
         Some(SirFuncCx::new(&bx, cx.tcx(), &instance, mir))
     } else {
         None
