@@ -4,7 +4,6 @@
 //! into an ELF section at link time.
 
 use crate::traits::{BuilderMethods, SirMethods};
-use indexmap::IndexMap;
 use rustc_ast::ast;
 use rustc_ast::ast::{IntTy, UintTy};
 use rustc_data_structures::fx::{FxHashMap, FxHasher};
@@ -19,11 +18,9 @@ use rustc_span::sym;
 use rustc_target::abi::FieldsShape;
 use rustc_target::abi::VariantIdx;
 use std::alloc::Layout;
-use std::cell::RefCell;
 use std::convert::{TryFrom, TryInto};
 use std::default::Default;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::io;
+use std::hash::{Hash, Hasher};
 use ykpack;
 
 pub const BUILD_SCRIPT_CRATE: &str = "build_script_build";
@@ -44,58 +41,30 @@ macro_rules! binop_lowerings {
     }
 }
 
-/// A collection of in-memory SIR data structures to be serialised.
-/// Each codegen unit builds one instance of this which is then merged into a "global" instance
-/// when the unit completes.
-pub struct Sir {
-    pub types: RefCell<SirTypes>,
-    pub funcs: RefCell<Vec<ykpack::Body>>,
+pub use ykpack::build::{Sir, SirTypes};
+
+pub fn new_sir(tcx: TyCtxt<'_>, cgu_name: &str) -> Sir {
+    // Build the CGU hash.
+    //
+    // This must be a globally unique hash for this compilation unit. It might have been
+    // tempting to use the `tcx.crate_hash()` as part of the CGU hash, but this query is
+    // invalidated on every source code change to the crate. In turn, that would mean lots of
+    // unnecessary rebuilds.
+    //
+    // We settle on:
+    // CGU hash = crate name + crate disambiguator + codegen unit name.
+    let mut cgu_hasher = FxHasher::default();
+    tcx.crate_name(LOCAL_CRATE).hash(&mut cgu_hasher);
+    tcx.crate_disambiguator(LOCAL_CRATE).hash(&mut cgu_hasher);
+    cgu_name.hash(&mut cgu_hasher);
+
+    Sir::new(ykpack::CguHash(cgu_hasher.finish()))
 }
 
-impl Sir {
-    pub fn new(tcx: TyCtxt<'_>, cgu_name: &str) -> Self {
-        // Build the CGU hash.
-        //
-        // This must be a globally unique hash for this compilation unit. It might have been
-        // tempting to use the `tcx.crate_hash()` as part of the CGU hash, but this query is
-        // invalidated on every source code change to the crate. In turn, that would mean lots of
-        // unnecessary rebuilds.
-        //
-        // We settle on:
-        // CGU hash = crate name + crate disambiguator + codegen unit name.
-        let mut cgu_hasher = FxHasher::default();
-        tcx.crate_name(LOCAL_CRATE).hash(&mut cgu_hasher);
-        tcx.crate_disambiguator(LOCAL_CRATE).hash(&mut cgu_hasher);
-        cgu_name.hash(&mut cgu_hasher);
-
-        Sir {
-            types: RefCell::new(SirTypes {
-                cgu_hash: ykpack::CguHash(cgu_hasher.finish()),
-                map: Default::default(),
-                next_idx: ykpack::TyIndex(0),
-            }),
-            funcs: Default::default(),
-        }
-    }
-
-    /// Returns `true` if we should collect SIR for the current crate.
-    pub fn is_required(tcx: TyCtxt<'_>) -> bool {
-        tcx.sess.opts.cg.tracer.encode_sir()
-            && tcx.crate_name(LOCAL_CRATE).as_str() != BUILD_SCRIPT_CRATE
-    }
-
-    /// Returns true if there is nothing inside.
-    pub fn is_empty(&self) -> bool {
-        self.funcs.borrow().len() == 0
-    }
-
-    /// Writes a textual representation of the SIR to `w`. Used for `--emit yk-sir`.
-    pub fn dump(&self, w: &mut dyn io::Write) -> Result<(), io::Error> {
-        for f in self.funcs.borrow().iter() {
-            writeln!(w, "{}", f)?;
-        }
-        Ok(())
-    }
+/// Returns `true` if we should collect SIR for the current crate.
+pub fn is_sir_required(tcx: TyCtxt<'_>) -> bool {
+    tcx.sess.opts.cg.tracer.encode_sir()
+        && tcx.crate_name(LOCAL_CRATE).as_str() != BUILD_SCRIPT_CRATE
 }
 
 /// A structure for building the SIR of a function.
@@ -104,12 +73,10 @@ pub struct SirFuncCx<'tcx> {
     instance: Instance<'tcx>,
     /// The MIR body of the above instance.
     mir: &'tcx mir::Body<'tcx>,
-    /// The SIR function we are building.
-    pub func: ykpack::Body,
+    /// The builder for the SIR function.
+    pub sir_builder: ykpack::build::SirBuilder,
     /// Maps each MIR local to a SIR IPlace.
     var_map: FxHashMap<mir::Local, ykpack::IPlace>,
-    /// The next SIR local variable index to be allocated.
-    next_sir_local: ykpack::LocalIndex,
     /// The compiler's type context.
     tcx: TyCtxt<'tcx>,
 }
@@ -121,6 +88,8 @@ impl SirFuncCx<'tcx> {
         instance: &Instance<'tcx>,
         mir: &'tcx mir::Body<'tcx>,
     ) -> Self {
+        let symbol_name = String::from(&*tcx.symbol_name(*instance).name);
+
         let mut flags = ykpack::BodyFlags::empty();
         for attr in tcx.get_attrs(instance.def_id()).iter() {
             if tcx.sess.check_name(attr, sym::do_not_trace) {
@@ -168,20 +137,6 @@ impl SirFuncCx<'tcx> {
             }
         }
 
-        // Since there's a one-to-one mapping between MIR and SIR blocks, we know how many SIR
-        // blocks we will need and can allocate empty SIR blocks ahead of time.
-        let blocks = vec![
-            ykpack::BasicBlock {
-                stmts: Default::default(),
-                term: ykpack::Terminator::Unreachable,
-            };
-            mir.basic_blocks().len()
-        ];
-
-        // There will be at least as many locals in the SIR as there are in the MIR.
-        let local_decls = Vec::with_capacity(mir.local_decls.len());
-        let symbol_name = String::from(&*tcx.symbol_name(*instance).name);
-
         let crate_name = tcx.crate_name(instance.def_id().krate).as_str();
         if crate_name == "core" || crate_name == "alloc" {
             flags |= ykpack::BodyFlags::DO_NOT_TRACE;
@@ -191,17 +146,13 @@ impl SirFuncCx<'tcx> {
         let mut this = Self {
             instance: instance.clone(),
             mir,
-            func: ykpack::Body {
+            sir_builder: ykpack::build::SirBuilder::new(
                 symbol_name,
-                blocks,
                 flags,
-                local_decls,
-                num_args: mir.arg_count,
-                layout: (0, 0),
-                offsets: Vec::new(),
-            },
+                mir.arg_count,
+                mir.basic_blocks().len(),
+            ),
             var_map,
-            next_sir_local: 0,
             tcx,
         };
 
@@ -210,7 +161,10 @@ impl SirFuncCx<'tcx> {
             let ml = mir::Local::from_usize(idx);
             let sirty =
                 this.lower_ty_and_layout(bx, &this.mono_layout_of(bx, this.mir.local_decls[ml].ty));
-            this.func.local_decls.push(ykpack::LocalDecl { ty: sirty, referenced: false });
+            this.sir_builder
+                .func
+                .local_decls
+                .push(ykpack::LocalDecl { ty: sirty, referenced: false });
             this.var_map.insert(
                 ml,
                 ykpack::IPlace::Val {
@@ -219,7 +173,6 @@ impl SirFuncCx<'tcx> {
                     ty: sirty,
                 },
             );
-            this.next_sir_local += 1;
         }
         this
     }
@@ -227,15 +180,15 @@ impl SirFuncCx<'tcx> {
     /// Compute layout and offsets required for blackholing.
     pub fn compute_layout_and_offsets<Bx: BuilderMethods<'a, 'tcx>>(&mut self, bx: &Bx) {
         let mut layout = Layout::from_size_align(0, 1).unwrap();
-        for ld in &self.func.local_decls {
+        for ld in &self.sir_builder.func.local_decls {
             let (size, align) = bx.cx().get_size_align(ld.ty);
             let l = Layout::from_size_align(size, align).unwrap();
             let (nl, off) = layout.extend(l).unwrap();
-            self.func.offsets.push(off);
+            self.sir_builder.func.offsets.push(off);
             layout = nl;
         }
         layout = layout.pad_to_align();
-        self.func.layout = (layout.size(), layout.align());
+        self.sir_builder.func.layout = (layout.size(), layout.align());
     }
 
     /// Returns the IPlace corresponding with MIR local `ml`. A new IPlace is constructed if we've
@@ -259,36 +212,28 @@ impl SirFuncCx<'tcx> {
 
     /// Returns a zero-offset IPlace for a new SIR local.
     fn new_sir_local(&mut self, sirty: ykpack::TypeId) -> ykpack::IPlace {
-        let idx = self.next_sir_local;
-        self.next_sir_local += 1;
-        self.func.local_decls.push(ykpack::LocalDecl { ty: sirty, referenced: false });
-        ykpack::IPlace::Val { local: ykpack::Local(idx), off: 0, ty: sirty }
+        self.sir_builder.new_sir_local(sirty)
     }
 
     /// Tells the tracer codegen that the local `l` is referenced, and that is should be allocated
     /// directly to the stack and not a register. You can't reference registers.
     fn notify_referenced(&mut self, l: ykpack::Local) {
-        let idx = usize::try_from(l.0).unwrap();
-        let slot = self.func.local_decls.get_mut(idx).unwrap();
-        slot.referenced = true;
+        self.sir_builder.notify_referenced(l)
     }
 
     /// Returns true if there are no basic blocks.
     pub fn is_empty(&self) -> bool {
-        self.func.blocks.len() == 0
+        self.sir_builder.is_empty()
     }
 
     /// Appends a statement to the specified basic block.
     fn push_stmt(&mut self, bb: ykpack::BasicBlockIndex, stmt: ykpack::Statement) {
-        self.func.blocks[usize::try_from(bb).unwrap()].stmts.push(stmt);
+        self.sir_builder.push_stmt(bb, stmt)
     }
 
     /// Sets the terminator of the specified block.
     pub fn set_terminator(&mut self, bb: ykpack::BasicBlockIndex, new_term: ykpack::Terminator) {
-        let term = &mut self.func.blocks[usize::try_from(bb).unwrap()].term;
-        // We should only ever replace the default unreachable terminator assigned at allocation time.
-        debug_assert!(*term == ykpack::Terminator::Unreachable);
-        *term = new_term
+        self.sir_builder.set_terminator(bb, new_term);
     }
 
     pub fn set_term_switchint<Bx: BuilderMethods<'a, 'tcx>>(
@@ -915,169 +860,4 @@ impl SirFuncCx<'tcx> {
     }
 }
 
-pub struct SirTypes {
-    /// A globally unique identifier for the codegen unit.
-    pub cgu_hash: ykpack::CguHash,
-    /// Maps types to their index. Ordered by insertion via `IndexMap`.
-    pub map: IndexMap<ykpack::Ty, ykpack::TyIndex, BuildHasherDefault<FxHasher>>,
-    /// The next available type index.
-    next_idx: ykpack::TyIndex,
-}
-
-impl SirTypes {
-    /// Get the index of a type. If this is the first time we have seen this type, a new index is
-    /// allocated and returned.
-    ///
-    /// Note that the index is only unique within the scope of the current compilation unit.
-    /// To make a globally unique ID, we pair the index with CGU hash (see ykpack::CguHash).
-    pub fn index(&mut self, t: ykpack::Ty) -> ykpack::TyIndex {
-        let next_idx = &mut self.next_idx.0;
-        *self.map.entry(t).or_insert_with(|| {
-            let idx = *next_idx;
-            *next_idx += 1;
-            ykpack::TyIndex(idx)
-        })
-    }
-
-    /// Given a type id return the corresponding type.
-    pub fn get(&self, tyid: ykpack::TypeId) -> &ykpack::Ty {
-        self.map.get_index(usize::try_from(tyid.idx.0).unwrap()).unwrap().0
-    }
-}
-
-pub mod labels {
-    use object::{Object, ObjectSection};
-    use std::{
-        convert::TryFrom,
-        fs,
-        path::{Path, PathBuf},
-        process::Command,
-    };
-
-    /// Splits a Yorick mapping label name into its constituent fields.
-    fn split_label_name(s: &str) -> (String, u32) {
-        let data: Vec<&str> = s.split(':').collect();
-        debug_assert!(data.len() == 3);
-        let sym = data[1].to_owned();
-        let bb_idx = data[2].parse::<u32>().unwrap();
-        (sym, bb_idx)
-    }
-
-    /// Add a Yorick label section to the specified executable.
-    pub fn add_yk_label_section(exe_path: &Path) {
-        let labels = extract_dwarf_labels(exe_path).unwrap();
-        let mut tempf = tempfile::NamedTempFile::new().unwrap();
-        bincode::serialize_into(&mut tempf, &labels).unwrap();
-        add_section(exe_path, tempf.path());
-    }
-
-    /// Copies the bytes in `sec_data_path` into a new Yorick label section of an executable.
-    fn add_section(exe_path: &Path, sec_data_path: &Path) {
-        let mut out_path = PathBuf::from(exe_path);
-        out_path.set_extension("with_labels");
-        Command::new("objcopy")
-            .args(&[
-                "--add-section",
-                &format!("{}={}", ykpack::YKLABELS_SECTION, sec_data_path.to_str().unwrap()),
-                "--set-section-flags",
-                &format!("{}=contents,alloc,readonly", ykpack::YKLABELS_SECTION),
-                exe_path.to_str().unwrap(),
-                out_path.to_str().unwrap(),
-            ])
-            .output()
-            .expect("failed to insert labels section");
-        std::fs::rename(out_path, exe_path).unwrap();
-    }
-
-    /// Walks the DWARF tree of the specified executable and extracts Yorick location mapping
-    /// labels. Returns an list of labels ordered by file offset (ascending).
-    fn extract_dwarf_labels(exe_filename: &Path) -> Result<Vec<ykpack::SirLabel>, gimli::Error> {
-        let file = fs::File::open(exe_filename).unwrap();
-        let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
-        let object = object::File::parse(&*mmap).unwrap();
-        let endian = if object.is_little_endian() {
-            gimli::RunTimeEndian::Little
-        } else {
-            gimli::RunTimeEndian::Big
-        };
-        let loader = |id: gimli::SectionId| -> Result<&[u8], gimli::Error> {
-            Ok(object
-                .section_by_name(id.name())
-                .map(|sec| sec.data().expect("failed to decompress section"))
-                .unwrap_or(&[] as &[u8]))
-        };
-        let sup_loader = |_| Ok(&[] as &[u8]);
-        let dwarf_cow = gimli::Dwarf::load(&loader, &sup_loader)?;
-        let borrow_section: &dyn for<'a> Fn(
-            &&'a [u8],
-        )
-            -> gimli::EndianSlice<'a, gimli::RunTimeEndian> =
-            &|section| gimli::EndianSlice::new(section, endian);
-        let dwarf = dwarf_cow.borrow(&borrow_section);
-        let mut iter = dwarf.units();
-        let mut subaddr = None;
-        let mut labels = Vec::new();
-        while let Some(header) = iter.next()? {
-            let unit = dwarf.unit(header)?;
-            let mut entries = unit.entries();
-            while let Some((_, entry)) = entries.next_dfs()? {
-                if entry.tag() == gimli::DW_TAG_subprogram {
-                    if let Some(_name) = entry.attr_value(gimli::DW_AT_linkage_name)? {
-                        if let Some(lowpc) = entry.attr_value(gimli::DW_AT_low_pc)? {
-                            if let gimli::AttributeValue::Addr(v) = lowpc {
-                                // We can not accurately insert labels at the beginning of
-                                // functions, because the label is offset by the function headers.
-                                // We thus simply remember the subprogram's address so we can later
-                                // assign it to the first block (ending with '_0') of this
-                                // subprogram.
-                                subaddr = Some(u64::try_from(v).unwrap());
-                            } else {
-                                panic!("Error reading dwarf information. Expected type 'Addr'.")
-                            }
-                        }
-                    }
-                } else if entry.tag() == gimli::DW_TAG_label {
-                    if let Some(name) = entry.attr_value(gimli::DW_AT_name)? {
-                        if let Some(es) = name.string_value(&dwarf.debug_str) {
-                            let s = es.to_string()?;
-                            if s.starts_with("__YK_") {
-                                if let Some(lowpc) = entry.attr_value(gimli::DW_AT_low_pc)? {
-                                    if subaddr.is_some() && s.ends_with("_0") {
-                                        // This is the first block of the subprogram. Assign its
-                                        // label to the subprogram's address.
-                                        let (fsym, bb) = split_label_name(s);
-                                        labels.push(ykpack::SirLabel {
-                                            off: usize::try_from(subaddr.unwrap()).unwrap(),
-                                            symbol_name: fsym,
-                                            bb,
-                                        });
-                                        subaddr = None;
-                                    } else {
-                                        let (fsym, bb) = split_label_name(s);
-                                        if let gimli::AttributeValue::Addr(v) = lowpc {
-                                            labels.push(ykpack::SirLabel {
-                                                off: usize::try_from(u64::try_from(v).unwrap())
-                                                    .unwrap(),
-                                                symbol_name: fsym,
-                                                bb,
-                                            });
-                                        } else {
-                                            panic!(
-                                                "Error reading dwarf information. Expected type 'Addr'."
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    // Ignore labels that have no address.
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        labels.sort_by_key(|l| l.off);
-        Ok(labels)
-    }
-}
+pub use ykpack::labels;
