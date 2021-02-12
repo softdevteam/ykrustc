@@ -30,9 +30,9 @@
 //! get confused if the spans from leaf AST nodes occur in multiple places
 //! in the HIR, especially for multiple identifiers.
 
-#![feature(array_value_iter)]
 #![feature(crate_visibility_modifier)]
 #![feature(or_patterns)]
+#![feature(box_patterns)]
 #![recursion_limit = "256"]
 
 use rustc_ast::node_id::NodeMap;
@@ -53,13 +53,15 @@ use rustc_hir::definitions::{DefKey, DefPathData, Definitions};
 use rustc_hir::intravisit;
 use rustc_hir::{ConstArg, GenericArg, ParamName};
 use rustc_index::vec::{Idx, IndexVec};
-use rustc_session::lint::{builtin::BARE_TRAIT_OBJECTS, BuiltinLintDiagnostics, LintBuffer};
+use rustc_session::lint::builtin::{BARE_TRAIT_OBJECTS, MISSING_ABI};
+use rustc_session::lint::{BuiltinLintDiagnostics, LintBuffer};
 use rustc_session::parse::ParseSess;
 use rustc_session::Session;
 use rustc_span::hygiene::ExpnId;
 use rustc_span::source_map::{respan, DesugaringKind};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::Span;
+use rustc_target::spec::abi::Abi;
 
 use smallvec::{smallvec, SmallVec};
 use std::collections::BTreeMap;
@@ -499,13 +501,15 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     ItemKind::Struct(_, ref generics)
                     | ItemKind::Union(_, ref generics)
                     | ItemKind::Enum(_, ref generics)
-                    | ItemKind::TyAlias(_, ref generics, ..)
-                    | ItemKind::Trait(_, _, ref generics, ..) => {
+                    | ItemKind::TyAlias(box TyAliasKind(_, ref generics, ..))
+                    | ItemKind::Trait(box TraitKind(_, _, ref generics, ..)) => {
                         let def_id = self.lctx.resolver.local_def_id(item.id);
                         let count = generics
                             .params
                             .iter()
-                            .filter(|param| matches!(param.kind, ast::GenericParamKind::Lifetime { .. }))
+                            .filter(|param| {
+                                matches!(param.kind, ast::GenericParamKind::Lifetime { .. })
+                            })
                             .count();
                         self.lctx.type_def_lifetime_params.insert(def_id.to_def_id(), count);
                     }
@@ -1072,16 +1076,40 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     fn lower_assoc_ty_constraint(
         &mut self,
         constraint: &AssocTyConstraint,
-        itctx: ImplTraitContext<'_, 'hir>,
+        mut itctx: ImplTraitContext<'_, 'hir>,
     ) -> hir::TypeBinding<'hir> {
         debug!("lower_assoc_ty_constraint(constraint={:?}, itctx={:?})", constraint, itctx);
 
-        if let Some(ref gen_args) = constraint.gen_args {
-            self.sess.span_fatal(
-                gen_args.span(),
-                "generic associated types in trait paths are currently not implemented",
-            );
-        }
+        // lower generic arguments of identifier in constraint
+        let gen_args = if let Some(ref gen_args) = constraint.gen_args {
+            let gen_args_ctor = match gen_args {
+                GenericArgs::AngleBracketed(ref data) => {
+                    self.lower_angle_bracketed_parameter_data(
+                        data,
+                        ParamMode::Explicit,
+                        itctx.reborrow(),
+                    )
+                    .0
+                }
+                GenericArgs::Parenthesized(ref data) => {
+                    let mut err = self.sess.struct_span_err(
+                        gen_args.span(),
+                        "parenthesized generic arguments cannot be used in associated type constraints"
+                    );
+                    // FIXME: try to write a suggestion here
+                    err.emit();
+                    self.lower_angle_bracketed_parameter_data(
+                        &data.as_angle_bracketed_args(),
+                        ParamMode::Explicit,
+                        itctx.reborrow(),
+                    )
+                    .0
+                }
+            };
+            self.arena.alloc(gen_args_ctor.into_generic_args(&self.arena))
+        } else {
+            self.arena.alloc(hir::GenericArgs::none())
+        };
 
         let kind = match constraint.kind {
             AssocTyConstraintKind::Equality { ref ty } => {
@@ -1178,6 +1206,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         hir::TypeBinding {
             hir_id: self.lower_node_id(constraint.id),
             ident: constraint.ident,
+            gen_args,
             kind,
             span: constraint.span,
         }
@@ -1288,6 +1317,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             }
             TyKind::BareFn(ref f) => self.with_in_scope_lifetime_defs(&f.generic_params, |this| {
                 this.with_anonymous_lifetime_mode(AnonymousLifetimeMode::PassThrough, |this| {
+                    let span = this.sess.source_map().next_point(t.span.shrink_to_lo());
                     hir::TyKind::BareFn(this.arena.alloc(hir::BareFnTy {
                         generic_params: this.lower_generic_params(
                             &f.generic_params,
@@ -1295,7 +1325,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                             ImplTraitContext::disallowed(),
                         ),
                         unsafety: this.lower_unsafety(f.unsafety),
-                        abi: this.lower_extern(f.ext),
+                        abi: this.lower_extern(f.ext, span, t.id),
                         decl: this.lower_fn_decl(&f.decl, None, false, None),
                         param_names: this.lower_fn_params_to_names(&f.decl),
                     }))
@@ -2774,6 +2804,26 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 span,
                 "trait objects without an explicit `dyn` are deprecated",
                 BuiltinLintDiagnostics::BareTraitObject(span, is_global),
+            )
+        }
+    }
+
+    fn maybe_lint_missing_abi(&mut self, span: Span, id: NodeId, default: Abi) {
+        // FIXME(davidtwco): This is a hack to detect macros which produce spans of the
+        // call site which do not have a macro backtrace. See #61963.
+        let is_macro_callsite = self
+            .sess
+            .source_map()
+            .span_to_snippet(span)
+            .map(|snippet| snippet.starts_with("#["))
+            .unwrap_or(true);
+        if !is_macro_callsite {
+            self.resolver.lint_buffer().buffer_lint_with_diagnostic(
+                MISSING_ABI,
+                id,
+                span,
+                "extern declarations without an explicit ABI are deprecated",
+                BuiltinLintDiagnostics::MissingAbi(span, default),
             )
         }
     }

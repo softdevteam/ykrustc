@@ -184,7 +184,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
 
             hir::ExprKind::Type(ref subexpr, _) => self.walk_expr(subexpr),
 
-            hir::ExprKind::Unary(hir::UnOp::UnDeref, ref base) => {
+            hir::ExprKind::Unary(hir::UnOp::Deref, ref base) => {
                 // *base
                 self.select_from_expr(base);
             }
@@ -217,6 +217,14 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
 
             hir::ExprKind::Tup(ref exprs) => {
                 self.consume_exprs(exprs);
+            }
+
+            hir::ExprKind::If(ref cond_expr, ref then_expr, ref opt_else_expr) => {
+                self.consume_expr(&cond_expr);
+                self.consume_expr(&then_expr);
+                if let Some(ref else_expr) = *opt_else_expr {
+                    self.consume_expr(&else_expr);
+                }
             }
 
             hir::ExprKind::Match(ref discr, arms, _) => {
@@ -281,7 +289,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
             | hir::ExprKind::ConstBlock(..)
             | hir::ExprKind::Err => {}
 
-            hir::ExprKind::Loop(ref blk, _, _) => {
+            hir::ExprKind::Loop(ref blk, ..) => {
                 self.walk_block(blk);
             }
 
@@ -622,7 +630,7 @@ impl<'a, 'tcx> ExprUseVisitor<'a, 'tcx> {
                         PlaceBase::Local(*var_hir_id)
                     };
                     let place_with_id = PlaceWithHirId::new(
-                        capture_info.expr_id.unwrap_or(closure_expr.hir_id),
+                        capture_info.path_expr_id.unwrap_or(closure_expr.hir_id),
                         place.base_ty,
                         place_base,
                         place.projections.clone(),

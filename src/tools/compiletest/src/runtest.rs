@@ -2015,10 +2015,10 @@ impl<'test> TestCx<'test> {
                 rustc.args(&["-Zchalk"]);
             }
             Some(CompareMode::SplitDwarf) => {
-                rustc.args(&["-Zsplit-dwarf=split"]);
+                rustc.args(&["-Csplit-debuginfo=unpacked", "-Zunstable-options"]);
             }
             Some(CompareMode::SplitDwarfSingle) => {
-                rustc.args(&["-Zsplit-dwarf=single"]);
+                rustc.args(&["-Csplit-debuginfo=packed", "-Zunstable-options"]);
             }
             None => {}
         }
@@ -2490,27 +2490,27 @@ impl<'test> TestCx<'test> {
         let mut json_out = out_dir.join(self.testpaths.file.file_stem().unwrap());
         json_out.set_extension("json");
         let res = self.cmd2procres(
+            Command::new(self.config.jsondocck_path.as_ref().unwrap())
+                .arg("--doc-dir")
+                .arg(root.join(&out_dir))
+                .arg("--template")
+                .arg(&self.testpaths.file),
+        );
+
+        if !res.status.success() {
+            self.fatal_proc_rec("jsondocck failed!", &res)
+        }
+
+        let mut json_out = out_dir.join(self.testpaths.file.file_stem().unwrap());
+        json_out.set_extension("json");
+        let res = self.cmd2procres(
             Command::new(&self.config.docck_python)
-                .arg(root.join("src/test/rustdoc-json/check_missing_items.py"))
+                .arg(root.join("src/etc/check_missing_items.py"))
                 .arg(&json_out),
         );
 
         if !res.status.success() {
             self.fatal_proc_rec("check_missing_items failed!", &res);
-        }
-
-        let mut expected = self.testpaths.file.clone();
-        expected.set_extension("expected");
-        let res = self.cmd2procres(
-            Command::new(&self.config.docck_python)
-                .arg(root.join("src/test/rustdoc-json/compare.py"))
-                .arg(&expected)
-                .arg(&json_out)
-                .arg(&expected.parent().unwrap()),
-        );
-
-        if !res.status.success() {
-            self.fatal_proc_rec("compare failed!", &res);
         }
     }
 
@@ -3124,7 +3124,12 @@ impl<'test> TestCx<'test> {
                     errors += self.compare_output("stdout", &normalized_stdout, &expected_stdout);
                 }
                 if !self.props.dont_check_compiler_stderr {
-                    errors += self.compare_output("stderr", &normalized_stderr, &expected_stderr);
+                    let kind = if self.props.stderr_per_bitwidth {
+                        format!("{}bit.stderr", get_pointer_width(&self.config.target))
+                    } else {
+                        String::from("stderr")
+                    };
+                    errors += self.compare_output(&kind, &normalized_stderr, &expected_stderr);
                 }
             }
             TestOutput::Run => {

@@ -3,7 +3,6 @@ use crate::mir::interpret::{AllocId, ConstValue, GlobalAlloc, Pointer, Scalar};
 use crate::ty::subst::{GenericArg, GenericArgKind, Subst};
 use crate::ty::{self, ConstInt, DefIdTree, ParamConst, ScalarInt, Ty, TyCtxt, TypeFoldable};
 use rustc_apfloat::ieee::{Double, Single};
-use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def::{self, CtorKind, DefKind, Namespace};
@@ -557,14 +556,19 @@ pub trait PrettyPrinter<'tcx>:
             }
             ty::FnPtr(ref bare_fn) => p!(print(bare_fn)),
             ty::Infer(infer_ty) => {
+                let verbose = self.tcx().sess.verbose();
                 if let ty::TyVar(ty_vid) = infer_ty {
                     if let Some(name) = self.infer_ty_name(ty_vid) {
                         p!(write("{}", name))
                     } else {
-                        p!(write("{}", infer_ty))
+                        if verbose {
+                            p!(write("{:?}", infer_ty))
+                        } else {
+                            p!(write("{}", infer_ty))
+                        }
                     }
                 } else {
-                    p!(write("{}", infer_ty))
+                    if verbose { p!(write("{:?}", infer_ty)) } else { p!(write("{}", infer_ty)) }
                 }
             }
             ty::Error(_) => p!("[type error]"),
@@ -623,12 +627,8 @@ pub trait PrettyPrinter<'tcx>:
                     p!("impl");
                     for (predicate, _) in bounds {
                         let predicate = predicate.subst(self.tcx(), substs);
-                        // Note: We can't use `to_opt_poly_trait_ref` here as `predicate`
-                        // may contain unbound variables. We therefore do this manually.
-                        //
-                        // FIXME(lcnr): Find out why exactly this is the case :)
-                        let bound_predicate = predicate.bound_atom_with_opt_escaping(self.tcx());
-                        if let ty::PredicateAtom::Trait(pred, _) = bound_predicate.skip_binder() {
+                        let bound_predicate = predicate.kind();
+                        if let ty::PredicateKind::Trait(pred, _) = bound_predicate.skip_binder() {
                             let trait_ref = bound_predicate.rebind(pred.trait_ref);
                             // Don't print +Sized, but rather +?Sized if absent.
                             if Some(trait_ref.def_id()) == self.tcx().lang_items().sized_trait() {
@@ -972,7 +972,7 @@ pub trait PrettyPrinter<'tcx>:
                     ty::TyS {
                         kind:
                             ty::Array(
-                                ty::TyS { kind: ty::Uint(ast::UintTy::U8), .. },
+                                ty::TyS { kind: ty::Uint(ty::UintTy::U8), .. },
                                 ty::Const {
                                     val: ty::ConstKind::Value(ConstValue::Scalar(int)),
                                     ..
@@ -1001,10 +1001,10 @@ pub trait PrettyPrinter<'tcx>:
             (Scalar::Int(int), ty::Bool) if int == ScalarInt::FALSE => p!("false"),
             (Scalar::Int(int), ty::Bool) if int == ScalarInt::TRUE => p!("true"),
             // Float
-            (Scalar::Int(int), ty::Float(ast::FloatTy::F32)) => {
+            (Scalar::Int(int), ty::Float(ty::FloatTy::F32)) => {
                 p!(write("{}f32", Single::try_from(int).unwrap()))
             }
-            (Scalar::Int(int), ty::Float(ast::FloatTy::F64)) => {
+            (Scalar::Int(int), ty::Float(ty::FloatTy::F64)) => {
                 p!(write("{}f64", Double::try_from(int).unwrap()))
             }
             // Int
@@ -1250,7 +1250,7 @@ pub struct FmtPrinterData<'a, 'tcx, F> {
 
     pub region_highlight_mode: RegionHighlightMode,
 
-    pub name_resolver: Option<Box<&'a dyn Fn(ty::sty::TyVid) -> Option<String>>>,
+    pub name_resolver: Option<Box<&'a dyn Fn(ty::TyVid) -> Option<String>>>,
 }
 
 impl<F> Deref for FmtPrinter<'a, 'tcx, F> {
@@ -2011,21 +2011,6 @@ define_print_and_forward_display! {
         p!("fn", pretty_fn_sig(self.inputs(), self.c_variadic, self.output()));
     }
 
-    ty::InferTy {
-        if cx.tcx().sess.verbose() {
-            p!(write("{:?}", self));
-            return Ok(cx);
-        }
-        match *self {
-            ty::TyVar(_) => p!("_"),
-            ty::IntVar(_) => p!(write("{}", "{integer}")),
-            ty::FloatVar(_) => p!(write("{}", "{float}")),
-            ty::FreshTy(v) => p!(write("FreshTy({})", v)),
-            ty::FreshIntTy(v) => p!(write("FreshIntTy({})", v)),
-            ty::FreshFloatTy(v) => p!(write("FreshFloatTy({})", v))
-        }
-    }
-
     ty::TraitRef<'tcx> {
         p!(write("<{} as {}>", self.self_ty(), self.print_only_trait_path()))
     }
@@ -2068,40 +2053,38 @@ define_print_and_forward_display! {
     }
 
     ty::Predicate<'tcx> {
-        match self.kind() {
-            &ty::PredicateKind::Atom(atom) => p!(print(atom)),
-            ty::PredicateKind::ForAll(binder) => p!(print(binder)),
-        }
+        let binder = self.kind();
+        p!(print(binder))
     }
 
-    ty::PredicateAtom<'tcx> {
+    ty::PredicateKind<'tcx> {
         match *self {
-            ty::PredicateAtom::Trait(ref data, constness) => {
+            ty::PredicateKind::Trait(ref data, constness) => {
                 if let hir::Constness::Const = constness {
                     p!("const ");
                 }
                 p!(print(data))
             }
-            ty::PredicateAtom::Subtype(predicate) => p!(print(predicate)),
-            ty::PredicateAtom::RegionOutlives(predicate) => p!(print(predicate)),
-            ty::PredicateAtom::TypeOutlives(predicate) => p!(print(predicate)),
-            ty::PredicateAtom::Projection(predicate) => p!(print(predicate)),
-            ty::PredicateAtom::WellFormed(arg) => p!(print(arg), " well-formed"),
-            ty::PredicateAtom::ObjectSafe(trait_def_id) => {
+            ty::PredicateKind::Subtype(predicate) => p!(print(predicate)),
+            ty::PredicateKind::RegionOutlives(predicate) => p!(print(predicate)),
+            ty::PredicateKind::TypeOutlives(predicate) => p!(print(predicate)),
+            ty::PredicateKind::Projection(predicate) => p!(print(predicate)),
+            ty::PredicateKind::WellFormed(arg) => p!(print(arg), " well-formed"),
+            ty::PredicateKind::ObjectSafe(trait_def_id) => {
                 p!("the trait `", print_def_path(trait_def_id, &[]), "` is object-safe")
             }
-            ty::PredicateAtom::ClosureKind(closure_def_id, _closure_substs, kind) => {
+            ty::PredicateKind::ClosureKind(closure_def_id, _closure_substs, kind) => {
                 p!("the closure `",
                 print_value_path(closure_def_id, &[]),
                 write("` implements the trait `{}`", kind))
             }
-            ty::PredicateAtom::ConstEvaluatable(def, substs) => {
+            ty::PredicateKind::ConstEvaluatable(def, substs) => {
                 p!("the constant `", print_value_path(def.did, substs), "` can be evaluated")
             }
-            ty::PredicateAtom::ConstEquate(c1, c2) => {
+            ty::PredicateKind::ConstEquate(c1, c2) => {
                 p!("the constant `", print(c1), "` equals `", print(c2), "`")
             }
-            ty::PredicateAtom::TypeWellFormedFromEnv(ty) => {
+            ty::PredicateKind::TypeWellFormedFromEnv(ty) => {
                 p!("the type `", print(ty), "` is found in the environment")
             }
         }
@@ -2160,6 +2143,7 @@ fn for_each_def(tcx: TyCtxt<'_>, mut collect_fn: impl for<'b> FnMut(&'b Ident, N
 
             match child.res {
                 def::Res::Def(DefKind::AssocTy, _) => {}
+                def::Res::Def(DefKind::TyAlias, _) => {}
                 def::Res::Def(defkind, def_id) => {
                     if let Some(ns) = defkind.ns() {
                         collect_fn(&child.ident, ns, def_id);

@@ -4,8 +4,6 @@
 //! into an ELF section at link time.
 
 use crate::traits::{BuilderMethods, SirMethods};
-use rustc_ast::ast;
-use rustc_ast::ast::{IntTy, UintTy};
 use rustc_data_structures::fx::{FxHashMap, FxHasher};
 use rustc_hir::{self, def_id::LOCAL_CRATE};
 use rustc_middle::mir;
@@ -641,27 +639,27 @@ impl SirFuncCx<'tcx> {
     /// Lower an unsigned integer.
     fn lower_uint(
         &self,
-        uint: ast::UintTy,
+        uint: ty::UintTy,
         s: mir::interpret::Scalar,
     ) -> Result<ykpack::UnsignedInt, ()> {
         match uint {
-            ast::UintTy::U8 => match s.to_u8() {
+            ty::UintTy::U8 => match s.to_u8() {
                 Ok(val) => Ok(ykpack::UnsignedInt::U8(val)),
                 Err(e) => panic!("Could not lower scalar to u8: {}", e),
             },
-            ast::UintTy::U16 => match s.to_u16() {
+            ty::UintTy::U16 => match s.to_u16() {
                 Ok(val) => Ok(ykpack::UnsignedInt::U16(val)),
                 Err(e) => panic!("Could not lower scalar to u16: {}", e),
             },
-            ast::UintTy::U32 => match s.to_u32() {
+            ty::UintTy::U32 => match s.to_u32() {
                 Ok(val) => Ok(ykpack::UnsignedInt::U32(val)),
                 Err(e) => panic!("Could not lower scalar to u32: {}", e),
             },
-            ast::UintTy::U64 => match s.to_u64() {
+            ty::UintTy::U64 => match s.to_u64() {
                 Ok(val) => Ok(ykpack::UnsignedInt::U64(val)),
                 Err(e) => panic!("Could not lower scalar to u64: {}", e),
             },
-            ast::UintTy::Usize => match s.to_machine_usize(&self.tcx) {
+            ty::UintTy::Usize => match s.to_machine_usize(&self.tcx) {
                 Ok(val) => Ok(ykpack::UnsignedInt::Usize(val as usize)),
                 Err(e) => panic!("Could not lower scalar to usize: {}", e),
             },
@@ -672,27 +670,27 @@ impl SirFuncCx<'tcx> {
     /// Lower a signed integer.
     fn lower_int(
         &self,
-        int: ast::IntTy,
+        int: ty::IntTy,
         s: mir::interpret::Scalar,
     ) -> Result<ykpack::SignedInt, ()> {
         match int {
-            ast::IntTy::I8 => match s.to_i8() {
+            ty::IntTy::I8 => match s.to_i8() {
                 Ok(val) => Ok(ykpack::SignedInt::I8(val)),
                 Err(e) => panic!("Could not lower scalar to i8: {}", e),
             },
-            ast::IntTy::I16 => match s.to_i16() {
+            ty::IntTy::I16 => match s.to_i16() {
                 Ok(val) => Ok(ykpack::SignedInt::I16(val)),
                 Err(e) => panic!("Could not lower scalar to i16: {}", e),
             },
-            ast::IntTy::I32 => match s.to_i32() {
+            ty::IntTy::I32 => match s.to_i32() {
                 Ok(val) => Ok(ykpack::SignedInt::I32(val)),
                 Err(e) => panic!("Could not lower scalar to i32: {}", e),
             },
-            ast::IntTy::I64 => match s.to_i64() {
+            ty::IntTy::I64 => match s.to_i64() {
                 Ok(val) => Ok(ykpack::SignedInt::I64(val)),
                 Err(e) => panic!("Could not lower scalar to i64: {}", e),
             },
-            ast::IntTy::Isize => match s.to_machine_isize(&self.tcx) {
+            ty::IntTy::Isize => match s.to_machine_isize(&self.tcx) {
                 Ok(val) => Ok(ykpack::SignedInt::Isize(val as isize)),
                 Err(e) => panic!("Could not lower scalar to isize: {}", e),
             },
@@ -784,25 +782,25 @@ impl SirFuncCx<'tcx> {
         tyid
     }
 
-    fn lower_signed_int_ty(&mut self, si: IntTy) -> ykpack::TyKind {
+    fn lower_signed_int_ty(&mut self, si: ty::IntTy) -> ykpack::TyKind {
         match si {
-            IntTy::Isize => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::Isize),
-            IntTy::I8 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I8),
-            IntTy::I16 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I16),
-            IntTy::I32 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I32),
-            IntTy::I64 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I64),
-            IntTy::I128 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I128),
+            ty::IntTy::Isize => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::Isize),
+            ty::IntTy::I8 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I8),
+            ty::IntTy::I16 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I16),
+            ty::IntTy::I32 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I32),
+            ty::IntTy::I64 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I64),
+            ty::IntTy::I128 => ykpack::TyKind::SignedInt(ykpack::SignedIntTy::I128),
         }
     }
 
-    fn lower_unsigned_int_ty(&mut self, ui: UintTy) -> ykpack::TyKind {
+    fn lower_unsigned_int_ty(&mut self, ui: ty::UintTy) -> ykpack::TyKind {
         match ui {
-            UintTy::Usize => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::Usize),
-            UintTy::U8 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U8),
-            UintTy::U16 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U16),
-            UintTy::U32 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U32),
-            UintTy::U64 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U64),
-            UintTy::U128 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U128),
+            ty::UintTy::Usize => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::Usize),
+            ty::UintTy::U8 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U8),
+            ty::UintTy::U16 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U16),
+            ty::UintTy::U32 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U32),
+            ty::UintTy::U64 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U64),
+            ty::UintTy::U128 => ykpack::TyKind::UnsignedInt(ykpack::UnsignedIntTy::U128),
         }
     }
 

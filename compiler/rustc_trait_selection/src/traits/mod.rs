@@ -6,7 +6,7 @@ pub mod auto_trait;
 mod chalk_fulfill;
 pub mod codegen;
 mod coherence;
-mod const_evaluatable;
+pub mod const_evaluatable;
 mod engine;
 pub mod error_reporting;
 mod fulfill;
@@ -65,7 +65,8 @@ pub use self::util::{
     get_vtable_index_of_object_method, impl_item_is_final, predicate_for_trait_def, upcast_choices,
 };
 pub use self::util::{
-    supertrait_def_ids, supertraits, transitive_bounds, SupertraitDefIds, Supertraits,
+    supertrait_def_ids, supertraits, transitive_bounds, transitive_bounds_that_define_assoc_type,
+    SupertraitDefIds, Supertraits,
 };
 
 pub use self::chalk_fulfill::FulfillmentContext as ChalkFulfillmentContext;
@@ -324,7 +325,7 @@ pub fn normalize_param_env_or_error<'tcx>(
     // TypeOutlives predicates - these are normally used by regionck.
     let outlives_predicates: Vec<_> = predicates
         .drain_filter(|predicate| {
-            matches!(predicate.skip_binders(), ty::PredicateAtom::TypeOutlives(..))
+            matches!(predicate.kind().skip_binder(), ty::PredicateKind::TypeOutlives(..))
         })
         .collect();
 

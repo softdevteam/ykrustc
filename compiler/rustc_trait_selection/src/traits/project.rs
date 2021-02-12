@@ -625,7 +625,7 @@ fn prune_cache_value_obligations<'a, 'tcx>(
         .obligations
         .iter()
         .filter(|obligation| {
-            let bound_predicate = obligation.predicate.bound_atom();
+            let bound_predicate = obligation.predicate.kind();
             match bound_predicate.skip_binder() {
                 // We found a `T: Foo<X = U>` predicate, let's check
                 // if `U` references any unresolved type
@@ -636,7 +636,7 @@ fn prune_cache_value_obligations<'a, 'tcx>(
                 // indirect obligations (e.g., we project to `?0`,
                 // but we have `T: Foo<X = ?1>` and `?1: Bar<X =
                 // ?0>`).
-                ty::PredicateAtom::Projection(data) => {
+                ty::PredicateKind::Projection(data) => {
                     infcx.unresolved_type_vars(&bound_predicate.rebind(data.ty)).is_some()
                 }
 
@@ -736,14 +736,9 @@ fn project_type<'cx, 'tcx>(
 
     if !selcx.tcx().sess.recursion_limit().value_within_limit(obligation.recursion_depth) {
         debug!("project: overflow!");
-        match selcx.query_mode() {
-            super::TraitQueryMode::Standard => {
-                selcx.infcx().report_overflow_error(&obligation, true);
-            }
-            super::TraitQueryMode::Canonical => {
-                return Err(ProjectionTyError::TraitSelectionError(SelectionError::Overflow));
-            }
-        }
+        // This should really be an immediate error, but some existing code
+        // relies on being able to recover from this.
+        return Err(ProjectionTyError::TraitSelectionError(SelectionError::Overflow));
     }
 
     let obligation_trait_ref = &obligation.predicate.trait_ref(selcx.tcx());
@@ -917,8 +912,8 @@ fn assemble_candidates_from_predicates<'cx, 'tcx>(
     let infcx = selcx.infcx();
     for predicate in env_predicates {
         debug!(?predicate);
-        let bound_predicate = predicate.bound_atom();
-        if let ty::PredicateAtom::Projection(data) = predicate.skip_binders() {
+        let bound_predicate = predicate.kind();
+        if let ty::PredicateKind::Projection(data) = predicate.kind().skip_binder() {
             let data = bound_predicate.rebind(data);
             let same_def_id = data.projection_def_id() == obligation.predicate.item_def_id;
 

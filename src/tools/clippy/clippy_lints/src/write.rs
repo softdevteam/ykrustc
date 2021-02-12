@@ -2,7 +2,10 @@ use std::borrow::Cow;
 use std::ops::Range;
 
 use crate::utils::{snippet_with_applicability, span_lint, span_lint_and_sugg, span_lint_and_then};
-use rustc_ast::ast::{Expr, ExprKind, Item, ItemKind, MacCall, StrLit, StrStyle};
+use if_chain::if_chain;
+use rustc_ast::ast::{
+    Expr, ExprKind, ImplKind, Item, ItemKind, LitKind, MacCall, StrLit, StrStyle,
+};
 use rustc_ast::token;
 use rustc_ast::tokenstream::TokenStream;
 use rustc_errors::Applicability;
@@ -10,7 +13,8 @@ use rustc_lexer::unescape::{self, EscapeError};
 use rustc_lint::{EarlyContext, EarlyLintPass};
 use rustc_parse::parser;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
-use rustc_span::{sym, BytePos, Span, Symbol};
+use rustc_span::symbol::kw;
+use rustc_span::{sym, BytePos, Span};
 
 declare_clippy_lint! {
     /// **What it does:** This lint warns when you use `println!("")` to
@@ -229,10 +233,10 @@ impl_lint_pass!(Write => [
 
 impl EarlyLintPass for Write {
     fn check_item(&mut self, _: &EarlyContext<'_>, item: &Item) {
-        if let ItemKind::Impl {
+        if let ItemKind::Impl(box ImplKind {
             of_trait: Some(trait_ref),
             ..
-        } = &item.kind
+        }) = &item.kind
         {
             let trait_name = trait_ref
                 .path
@@ -301,7 +305,7 @@ impl EarlyLintPass for Write {
             }
         } else if mac.path == sym!(writeln) {
             if let (Some(fmt_str), expr) = self.check_tts(cx, mac.args.inner_tokens(), true) {
-                if fmt_str.symbol == Symbol::intern("") {
+                if fmt_str.symbol == kw::Empty {
                     let mut applicability = Applicability::MachineApplicable;
                     // FIXME: remove this `#[allow(...)]` once the issue #5822 gets fixed
                     #[allow(clippy::option_if_let_else)]
@@ -375,10 +379,15 @@ impl Write {
     /// (Some("string to write: {}"), Some(buf))
     /// ```
     #[allow(clippy::too_many_lines)]
-    fn check_tts<'a>(&self, cx: &EarlyContext<'a>, tts: TokenStream, is_write: bool) -> (Option<StrLit>, Option<Expr>) {
+    fn check_tts<'a>(
+        &self,
+        cx: &EarlyContext<'a>,
+        tts: TokenStream,
+        is_write: bool,
+    ) -> (Option<StrLit>, Option<Expr>) {
         use rustc_parse_format::{
-            AlignUnknown, ArgumentImplicitlyIs, ArgumentIs, ArgumentNamed, CountImplied, FormatSpec, ParseMode, Parser,
-            Piece,
+            AlignUnknown, ArgumentImplicitlyIs, ArgumentIs, ArgumentNamed, CountImplied,
+            FormatSpec, ParseMode, Parser, Piece,
         };
 
         let mut parser = parser::Parser::new(&cx.sess.parse_sess, tts, false, None);
@@ -408,7 +417,12 @@ impl Write {
             if let Piece::NextArgument(arg) = piece {
                 if !self.in_debug_impl && arg.format.ty == "?" {
                     // FIXME: modify rustc's fmt string parser to give us the current span
-                    span_lint(cx, USE_DEBUG, parser.prev_token.span, "use of `Debug`-based formatting");
+                    span_lint(
+                        cx,
+                        USE_DEBUG,
+                        parser.prev_token.span,
+                        "use of `Debug`-based formatting",
+                    );
                 }
                 args.push(arg);
             }
@@ -436,7 +450,9 @@ impl Write {
                 return (Some(fmtstr), None);
             };
             match &token_expr.kind {
-                ExprKind::Lit(_) => {
+                ExprKind::Lit(lit)
+                    if !matches!(lit.kind, LitKind::Int(..) | LitKind::Float(..)) =>
+                {
                     let mut all_simple = true;
                     let mut seen = false;
                     for arg in &args {
@@ -446,18 +462,21 @@ impl Write {
                                     all_simple &= arg.format == SIMPLE;
                                     seen = true;
                                 }
-                            },
-                            ArgumentNamed(_) => {},
+                            }
+                            ArgumentNamed(_) => {}
                         }
                     }
                     if all_simple && seen {
                         span_lint(cx, lint, token_expr.span, "literal with an empty format string");
                     }
                     idx += 1;
-                },
+                }
                 ExprKind::Assign(lhs, rhs, _) => {
-                    if let ExprKind::Lit(_) = rhs.kind {
-                        if let ExprKind::Path(_, p) = &lhs.kind {
+                    if_chain! {
+                        if let ExprKind::Lit(ref lit) = rhs.kind;
+                        if !matches!(lit.kind, LitKind::Int(..) | LitKind::Float(..));
+                        if let ExprKind::Path(_, p) = &lhs.kind;
+                        then {
                             let mut all_simple = true;
                             let mut seen = false;
                             for arg in &args {
@@ -476,7 +495,7 @@ impl Write {
                             }
                         }
                     }
-                },
+                }
                 _ => idx += 1,
             }
         }
@@ -484,7 +503,7 @@ impl Write {
 
     fn lint_println_empty_string(&self, cx: &EarlyContext<'_>, mac: &MacCall) {
         if let (Some(fmt_str), _) = self.check_tts(cx, mac.args.inner_tokens(), false) {
-            if fmt_str.symbol == Symbol::intern("") {
+            if fmt_str.symbol == kw::Empty {
                 let name = mac.path.segments[0].ident.name;
                 span_lint_and_sugg(
                     cx,
@@ -508,11 +527,17 @@ impl Write {
                     cx,
                     PRINT_WITH_NEWLINE,
                     mac.span(),
-                    &format!("using `{}!()` with a format string that ends in a single newline", name),
+                    &format!(
+                        "using `{}!()` with a format string that ends in a single newline",
+                        name
+                    ),
                     |err| {
                         err.multipart_suggestion(
                             &format!("use `{}!` instead", suggested),
-                            vec![(mac.path.span, suggested), (newline_span(&fmt_str), String::new())],
+                            vec![
+                                (mac.path.span, suggested),
+                                (newline_span(&fmt_str), String::new()),
+                            ],
                             Applicability::MachineApplicable,
                         );
                     },

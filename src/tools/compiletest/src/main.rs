@@ -60,6 +60,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         .optopt("", "rust-demangler-path", "path to rust-demangler to use in tests", "PATH")
         .reqopt("", "lldb-python", "path to python to use for doc tests", "PATH")
         .reqopt("", "docck-python", "path to python to use for doc tests", "PATH")
+        .optopt("", "jsondocck-path", "path to jsondocck to use for doc tests", "PATH")
         .optopt("", "valgrind-path", "path to Valgrind executable for Valgrind tests", "PROGRAM")
         .optflag("", "force-valgrind", "fail if Valgrind tests cannot be run under Valgrind")
         .optopt("", "run-clang-based-tests-with", "path to Clang executable", "PATH")
@@ -207,6 +208,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         rust_demangler_path: matches.opt_str("rust-demangler-path").map(PathBuf::from),
         lldb_python: matches.opt_str("lldb-python").unwrap(),
         docck_python: matches.opt_str("docck-python").unwrap(),
+        jsondocck_path: matches.opt_str("jsondocck-path"),
         valgrind_path: matches.opt_str("valgrind-path"),
         force_valgrind: matches.opt_present("force-valgrind"),
         run_clang_based_tests_with: matches.opt_str("run-clang-based-tests-with"),
@@ -219,7 +221,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         suite: matches.opt_str("suite").unwrap(),
         debugger: None,
         run_ignored,
-        filter: matches.free.first().cloned(),
+        filters: matches.free.clone(),
         filter_exact: matches.opt_present("exact"),
         force_pass_mode: matches.opt_str("pass").map(|mode| {
             mode.parse::<PassMode>()
@@ -278,7 +280,7 @@ pub fn log_config(config: &Config) {
     logv(c, format!("stage_id: {}", config.stage_id));
     logv(c, format!("mode: {}", config.mode));
     logv(c, format!("run_ignored: {}", config.run_ignored));
-    logv(c, format!("filter: {}", opt_str(&config.filter)));
+    logv(c, format!("filters: {:?}", config.filters));
     logv(c, format!("filter_exact: {}", config.filter_exact));
     logv(
         c,
@@ -463,7 +465,7 @@ fn configure_lldb(config: &Config) -> Option<Config> {
 pub fn test_opts(config: &Config) -> test::TestOpts {
     test::TestOpts {
         exclude_should_panic: false,
-        filter: config.filter.clone(),
+        filters: config.filters.clone(),
         filter_exact: config.filter_exact,
         run_ignored: if config.run_ignored { test::RunIgnored::Yes } else { test::RunIgnored::No },
         format: if config.quiet { test::OutputFormat::Terse } else { test::OutputFormat::Pretty },

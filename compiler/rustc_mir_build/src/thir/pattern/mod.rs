@@ -9,7 +9,6 @@ pub(crate) use self::check_match::check_match;
 
 use crate::thir::util::UserAnnotatedTyHelpers;
 
-use rustc_ast as ast;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
@@ -867,7 +866,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
                     return *self.const_to_pat(value, expr.hir_id, expr.span, false).kind;
                 }
                 hir::ExprKind::Lit(ref lit) => (lit, false),
-                hir::ExprKind::Unary(hir::UnOp::UnNeg, ref expr) => {
+                hir::ExprKind::Unary(hir::UnOp::Neg, ref expr) => {
                     let lit = match expr.kind {
                         hir::ExprKind::Lit(ref lit) => lit,
                         _ => span_bug!(expr.span, "not a literal: {:?}", expr),
@@ -1069,20 +1068,19 @@ crate fn compare_const_vals<'tcx>(
     if let (Some(a), Some(b)) = (a_bits, b_bits) {
         use rustc_apfloat::Float;
         return match *ty.kind() {
-            ty::Float(ast::FloatTy::F32) => {
+            ty::Float(ty::FloatTy::F32) => {
                 let l = rustc_apfloat::ieee::Single::from_bits(a);
                 let r = rustc_apfloat::ieee::Single::from_bits(b);
                 l.partial_cmp(&r)
             }
-            ty::Float(ast::FloatTy::F64) => {
+            ty::Float(ty::FloatTy::F64) => {
                 let l = rustc_apfloat::ieee::Double::from_bits(a);
                 let r = rustc_apfloat::ieee::Double::from_bits(b);
                 l.partial_cmp(&r)
             }
             ty::Int(ity) => {
-                use rustc_attr::SignedInt;
                 use rustc_middle::ty::layout::IntegerExt;
-                let size = rustc_target::abi::Integer::from_attr(&tcx, SignedInt(ity)).size();
+                let size = rustc_target::abi::Integer::from_int_ty(&tcx, ity).size();
                 let a = size.sign_extend(a);
                 let b = size.sign_extend(b);
                 Some((a as i128).cmp(&(b as i128)))

@@ -13,15 +13,15 @@ use rustc_hir::def::{
     PerNS,
 };
 use rustc_hir::def_id::{CrateNum, DefId};
+use rustc_middle::ty::TyCtxt;
 use rustc_middle::{bug, ty};
 use rustc_resolve::ParentScope;
 use rustc_session::lint::{
     builtin::{BROKEN_INTRA_DOC_LINKS, PRIVATE_INTRA_DOC_LINKS},
     Lint,
 };
-use rustc_span::hygiene::MacroKind;
-use rustc_span::symbol::Ident;
-use rustc_span::symbol::Symbol;
+use rustc_span::hygiene::{MacroKind, SyntaxContext};
+use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::DUMMY_SP;
 use smallvec::{smallvec, SmallVec};
 
@@ -44,7 +44,7 @@ use super::span_of_attrs;
 crate const COLLECT_INTRA_DOC_LINKS: Pass = Pass {
     name: "collect-intra-doc-links",
     run: collect_intra_doc_links,
-    description: "reads a crate's documentation to resolve intra-doc-links",
+    description: "resolves intra-doc links",
 };
 
 crate fn collect_intra_doc_links(krate: Crate, cx: &DocContext<'_>) -> Crate {
@@ -86,7 +86,7 @@ impl Res {
         }
     }
 
-    fn name(self, tcx: ty::TyCtxt<'_>) -> String {
+    fn name(self, tcx: TyCtxt<'_>) -> String {
         match self {
             Res::Def(_, id) => tcx.item_name(id).to_string(),
             Res::Primitive(prim) => prim.as_str().to_string(),
@@ -770,7 +770,12 @@ fn traits_implemented_by(cx: &DocContext<'_>, type_: DefId, module: DefId) -> Fx
     let mut cache = cx.module_trait_cache.borrow_mut();
     let in_scope_traits = cache.entry(module).or_insert_with(|| {
         cx.enter_resolver(|resolver| {
-            resolver.traits_in_scope(module).into_iter().map(|candidate| candidate.def_id).collect()
+            let parent_scope = &ParentScope::module(resolver.get_module(module), resolver);
+            resolver
+                .traits_in_scope(None, parent_scope, SyntaxContext::root(), None)
+                .into_iter()
+                .map(|candidate| candidate.def_id)
+                .collect()
         })
     });
 
@@ -861,12 +866,11 @@ impl<'a, 'tcx> DocFolder for LinkCollector<'a, 'tcx> {
 
         // FIXME(jynelson): this shouldn't go through stringification, rustdoc should just use the DefId directly
         let self_name = self_id.and_then(|self_id| {
-            use ty::TyKind;
             if matches!(self.cx.tcx.def_kind(self_id), DefKind::Impl) {
                 // using `ty.to_string()` (or any variant) has issues with raw idents
                 let ty = self.cx.tcx.type_of(self_id);
                 let name = match ty.kind() {
-                    TyKind::Adt(def, _) => Some(self.cx.tcx.item_name(def.did).to_string()),
+                    ty::Adt(def, _) => Some(self.cx.tcx.item_name(def.did).to_string()),
                     other if other.is_primitive() => Some(ty.to_string()),
                     _ => None,
                 };
@@ -977,7 +981,7 @@ impl LinkCollector<'_, '_> {
         let link_text =
             disambiguator.map(|d| d.display_for(path_str)).unwrap_or_else(|| path_str.to_owned());
 
-        // In order to correctly resolve intra-doc-links we need to
+        // In order to correctly resolve intra-doc links we need to
         // pick a base AST node to work from.  If the documentation for
         // this module came from an inner comment (//!) then we anchor
         // our name resolution *inside* the module.  If, on the other
@@ -1190,7 +1194,7 @@ impl LinkCollector<'_, '_> {
         };
 
         match res {
-            Res::Primitive(_) => {
+            Res::Primitive(prim) => {
                 if let Some((kind, id)) = self.kind_side_channel.take() {
                     // We're actually resolving an associated item of a primitive, so we need to
                     // verify the disambiguator (if any) matches the type of the associated item.
@@ -1201,6 +1205,29 @@ impl LinkCollector<'_, '_> {
                     // valid omission. See https://github.com/rust-lang/rust/pull/80660#discussion_r551585677
                     // for discussion on the matter.
                     verify(kind, id)?;
+
+                    if prim == PrimitiveType::RawPointer
+                        && !self.cx.tcx.features().intra_doc_pointers
+                    {
+                        let span = super::source_span_for_markdown_range(
+                            cx,
+                            dox,
+                            &ori_link.range,
+                            &item.attrs,
+                        )
+                        .unwrap_or_else(|| {
+                            span_of_attrs(&item.attrs).unwrap_or(item.source.span())
+                        });
+
+                        rustc_session::parse::feature_err(
+                            &self.cx.tcx.sess.parse_sess,
+                            sym::intra_doc_pointers,
+                            span,
+                            "linking to associated items of raw pointers is experimental",
+                        )
+                        .note("rustdoc does not allow disambiguating between `*const` and `*mut`, and pointers are unstable until it does")
+                        .emit();
+                    }
                 } else {
                     match disambiguator {
                         Some(Disambiguator::Primitive | Disambiguator::Namespace(_)) | None => {}
@@ -1210,6 +1237,7 @@ impl LinkCollector<'_, '_> {
                         }
                     }
                 }
+
                 Some(ItemLink { link: ori_link.link, link_text, did: None, fragment })
             }
             Res::Def(kind, id) => {

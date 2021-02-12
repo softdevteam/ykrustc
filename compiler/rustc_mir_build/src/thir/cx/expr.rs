@@ -299,7 +299,7 @@ fn make_mirror_unadjusted<'a, 'tcx>(
             }
         }
 
-        hir::ExprKind::Unary(hir::UnOp::UnDeref, ref arg) => {
+        hir::ExprKind::Unary(hir::UnOp::Deref, ref arg) => {
             if cx.typeck_results().is_method_call(expr) {
                 overloaded_place(cx, expr, expr_ty, None, vec![arg.to_ref()], expr.span)
             } else {
@@ -307,7 +307,7 @@ fn make_mirror_unadjusted<'a, 'tcx>(
             }
         }
 
-        hir::ExprKind::Unary(hir::UnOp::UnNot, ref arg) => {
+        hir::ExprKind::Unary(hir::UnOp::Not, ref arg) => {
             if cx.typeck_results().is_method_call(expr) {
                 overloaded_operator(cx, expr, vec![arg.to_ref()])
             } else {
@@ -315,7 +315,7 @@ fn make_mirror_unadjusted<'a, 'tcx>(
             }
         }
 
-        hir::ExprKind::Unary(hir::UnOp::UnNeg, ref arg) => {
+        hir::ExprKind::Unary(hir::UnOp::Neg, ref arg) => {
             if cx.typeck_results().is_method_call(expr) {
                 overloaded_operator(cx, expr, vec![arg.to_ref()])
             } else if let hir::ExprKind::Lit(ref lit) = arg.kind {
@@ -537,13 +537,16 @@ fn make_mirror_unadjusted<'a, 'tcx>(
             },
             Err(err) => bug!("invalid loop id for continue: {}", err),
         },
+        hir::ExprKind::If(cond, then, else_opt) => ExprKind::If {
+            cond: cond.to_ref(),
+            then: then.to_ref(),
+            else_opt: else_opt.map(|el| el.to_ref()),
+        },
         hir::ExprKind::Match(ref discr, ref arms, _) => ExprKind::Match {
             scrutinee: discr.to_ref(),
             arms: arms.iter().map(|a| convert_arm(cx, a)).collect(),
         },
-        hir::ExprKind::Loop(ref body, _, _) => {
-            ExprKind::Loop { body: block::to_expr_ref(cx, body) }
-        }
+        hir::ExprKind::Loop(ref body, ..) => ExprKind::Loop { body: block::to_expr_ref(cx, body) },
         hir::ExprKind::Field(ref source, ..) => ExprKind::Field {
             lhs: source.to_ref(),
             name: Field::new(cx.tcx.field_index(expr.hir_id, cx.typeck_results)),

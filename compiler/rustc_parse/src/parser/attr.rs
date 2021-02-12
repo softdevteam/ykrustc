@@ -89,7 +89,7 @@ impl<'a> Parser<'a> {
             inner_parse_policy, self.token
         );
         let lo = self.token.span;
-        let ((item, style, span), tokens) = self.collect_tokens(|this| {
+        self.collect_tokens(|this| {
             if this.eat(&token::Pound) {
                 let style = if this.eat(&token::Not) {
                     ast::AttrStyle::Inner
@@ -107,15 +107,13 @@ impl<'a> Parser<'a> {
                     this.error_on_forbidden_inner_attr(attr_sp, inner_parse_policy);
                 }
 
-                Ok((item, style, attr_sp))
+                Ok(attr::mk_attr_from_item(item, None, style, attr_sp))
             } else {
                 let token_str = pprust::token_to_string(&this.token);
                 let msg = &format!("expected `#`, found `{}`", token_str);
                 Err(this.struct_span_err(this.token.span, msg))
             }
-        })?;
-
-        Ok(attr::mk_attr_from_item(item, tokens, style, span))
+        })
     }
 
     pub(super) fn error_on_forbidden_inner_attr(&self, attr_sp: Span, policy: InnerAttrPolicy<'_>) {
@@ -165,13 +163,7 @@ impl<'a> Parser<'a> {
                 let args = this.parse_attr_args()?;
                 Ok(ast::AttrItem { path, args, tokens: None })
             };
-            if capture_tokens {
-                let (mut item, tokens) = self.collect_tokens(do_parse)?;
-                item.tokens = tokens;
-                item
-            } else {
-                do_parse(self)?
-            }
+            if capture_tokens { self.collect_tokens(do_parse) } else { do_parse(self) }?
         })
     }
 
@@ -314,13 +306,11 @@ impl<'a> Parser<'a> {
 }
 
 pub fn maybe_needs_tokens(attrs: &[ast::Attribute]) -> bool {
-    // One of the attributes may either itself be a macro, or apply derive macros (`derive`),
+    // One of the attributes may either itself be a macro,
     // or expand to macro attributes (`cfg_attr`).
     attrs.iter().any(|attr| {
         attr.ident().map_or(true, |ident| {
-            ident.name == sym::derive
-                || ident.name == sym::cfg_attr
-                || !rustc_feature::is_builtin_attr_name(ident.name)
+            ident.name == sym::cfg_attr || !rustc_feature::is_builtin_attr_name(ident.name)
         })
     })
 }

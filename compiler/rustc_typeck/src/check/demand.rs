@@ -773,7 +773,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if let hir::ExprKind::Lit(lit) = &expr.kind { lit.node.is_suffixed() } else { false }
         };
         let is_negative_int =
-            |expr: &hir::Expr<'_>| matches!(expr.kind, hir::ExprKind::Unary(hir::UnOp::UnNeg, ..));
+            |expr: &hir::Expr<'_>| matches!(expr.kind, hir::ExprKind::Unary(hir::UnOp::Neg, ..));
         let is_uint = |ty: Ty<'_>| matches!(ty.kind(), ty::Uint(..));
 
         let in_const_context = self.tcx.hir().is_inside_const_context(expr.hir_id);
@@ -816,6 +816,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             |err: &mut DiagnosticBuilder<'_>,
              found_to_exp_is_fallible: bool,
              exp_to_found_is_fallible: bool| {
+                let exp_is_lhs =
+                    expected_ty_expr.map(|e| self.tcx.hir().is_lhs(e.hir_id)).unwrap_or(false);
+
+                if exp_is_lhs {
+                    return;
+                }
+
                 let always_fallible = found_to_exp_is_fallible
                     && (exp_to_found_is_fallible || expected_ty_expr.is_none());
                 let msg = if literal_is_ty_suffixed(expr) {

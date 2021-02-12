@@ -1,6 +1,4 @@
-<a href = "https://www.rust-lang.org/">
-<img width = "90%" height = "auto" src = "https://img.shields.io/badge/Rust-Programming%20Language-black?style=flat&logo=rust" alt = "The Rust Programming Language">
-</a>
+# The Rust Programming Language
 
 This is a modified version of the Rust compiler for the Yorick meta-tracer.
 

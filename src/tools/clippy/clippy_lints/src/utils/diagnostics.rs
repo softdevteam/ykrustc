@@ -110,7 +110,7 @@ pub fn span_lint_and_help<'a, T: LintContext>(
 pub fn span_lint_and_note<'a, T: LintContext>(
     cx: &'a T,
     lint: &'static Lint,
-    span: Span,
+    span: impl Into<MultiSpan>,
     msg: &str,
     note_span: Option<Span>,
     note: &str,
@@ -186,8 +186,6 @@ pub fn span_lint_hir_and_then(
 ///     |
 ///     = note: `-D fold-any` implied by `-D warnings`
 /// ```
-
-#[allow(clippy::unknown_clippy_lints)]
 #[cfg_attr(feature = "internal-lints", allow(clippy::collapsible_span_lint_calls))]
 pub fn span_lint_and_sugg<'a, T: LintContext>(
     cx: &'a T,

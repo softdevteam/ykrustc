@@ -37,6 +37,15 @@ fn should_explore(tcx: TyCtxt<'_>, hir_id: hir::HirId) -> bool {
     )
 }
 
+fn base_expr<'a>(mut expr: &'a hir::Expr<'a>) -> &'a hir::Expr<'a> {
+    loop {
+        match expr.kind {
+            hir::ExprKind::Field(base, ..) => expr = base,
+            _ => return expr,
+        }
+    }
+}
+
 struct MarkSymbolVisitor<'tcx> {
     worklist: Vec<hir::HirId>,
     tcx: TyCtxt<'tcx>,
@@ -263,6 +272,12 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
             hir::ExprKind::MethodCall(..) => {
                 self.lookup_and_handle_method(expr.hir_id);
             }
+            hir::ExprKind::Assign(ref left, ref right, ..) => {
+                // Ignore write to field
+                self.visit_expr(base_expr(left));
+                self.visit_expr(right);
+                return;
+            }
             hir::ExprKind::Field(ref lhs, ..) => {
                 self.handle_field_access(&lhs, expr.hir_id);
             }
@@ -290,6 +305,7 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
     }
 
     fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
+        self.in_pat = true;
         match pat.kind {
             PatKind::Struct(ref path, ref fields, _) => {
                 let res = self.typeck_results().qpath_res(path, pat.hir_id);
@@ -302,7 +318,6 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
             _ => (),
         }
 
-        self.in_pat = true;
         intravisit::walk_pat(self, pat);
         self.in_pat = false;
     }

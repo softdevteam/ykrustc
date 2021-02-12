@@ -8,7 +8,6 @@ use crate::errors::MethodCallOnUnknownType;
 use crate::hir::def::DefKind;
 use crate::hir::def_id::DefId;
 
-use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
 use rustc_hir as hir;
@@ -48,7 +47,7 @@ pub use self::PickKind::*;
 
 /// Boolean flag used to indicate if this search is for a suggestion
 /// or not. If true, we can allow ambiguity and so forth.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct IsSuggestion(pub bool);
 
 struct ProbeContext<'a, 'tcx> {
@@ -219,6 +218,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// would result in an error (basically, the same criteria we
     /// would use to decide if a method is a plausible fit for
     /// ambiguity purposes).
+    #[instrument(level = "debug", skip(self, scope_expr_id))]
     pub fn probe_for_return_type(
         &self,
         span: Span,
@@ -264,6 +264,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             .collect()
     }
 
+    #[instrument(level = "debug", skip(self, scope_expr_id))]
     pub fn probe_for_name(
         &self,
         span: Span,
@@ -660,30 +661,30 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
             }
             ty::Int(i) => {
                 let lang_def_id = match i {
-                    ast::IntTy::I8 => lang_items.i8_impl(),
-                    ast::IntTy::I16 => lang_items.i16_impl(),
-                    ast::IntTy::I32 => lang_items.i32_impl(),
-                    ast::IntTy::I64 => lang_items.i64_impl(),
-                    ast::IntTy::I128 => lang_items.i128_impl(),
-                    ast::IntTy::Isize => lang_items.isize_impl(),
+                    ty::IntTy::I8 => lang_items.i8_impl(),
+                    ty::IntTy::I16 => lang_items.i16_impl(),
+                    ty::IntTy::I32 => lang_items.i32_impl(),
+                    ty::IntTy::I64 => lang_items.i64_impl(),
+                    ty::IntTy::I128 => lang_items.i128_impl(),
+                    ty::IntTy::Isize => lang_items.isize_impl(),
                 };
                 self.assemble_inherent_impl_for_primitive(lang_def_id);
             }
             ty::Uint(i) => {
                 let lang_def_id = match i {
-                    ast::UintTy::U8 => lang_items.u8_impl(),
-                    ast::UintTy::U16 => lang_items.u16_impl(),
-                    ast::UintTy::U32 => lang_items.u32_impl(),
-                    ast::UintTy::U64 => lang_items.u64_impl(),
-                    ast::UintTy::U128 => lang_items.u128_impl(),
-                    ast::UintTy::Usize => lang_items.usize_impl(),
+                    ty::UintTy::U8 => lang_items.u8_impl(),
+                    ty::UintTy::U16 => lang_items.u16_impl(),
+                    ty::UintTy::U32 => lang_items.u32_impl(),
+                    ty::UintTy::U64 => lang_items.u64_impl(),
+                    ty::UintTy::U128 => lang_items.u128_impl(),
+                    ty::UintTy::Usize => lang_items.usize_impl(),
                 };
                 self.assemble_inherent_impl_for_primitive(lang_def_id);
             }
             ty::Float(f) => {
                 let (lang_def_id1, lang_def_id2) = match f {
-                    ast::FloatTy::F32 => (lang_items.f32_impl(), lang_items.f32_runtime_impl()),
-                    ast::FloatTy::F64 => (lang_items.f64_impl(), lang_items.f64_runtime_impl()),
+                    ty::FloatTy::F32 => (lang_items.f32_impl(), lang_items.f32_runtime_impl()),
+                    ty::FloatTy::F64 => (lang_items.f64_impl(), lang_items.f64_runtime_impl()),
                 };
                 self.assemble_inherent_impl_for_primitive(lang_def_id1);
                 self.assemble_inherent_impl_for_primitive(lang_def_id2);
@@ -770,7 +771,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         // will be reported by `object_safety.rs` if the method refers to the
         // `Self` type anywhere other than the receiver. Here, we use a
         // substitution that replaces `Self` with the object type itself. Hence,
-        // a `&self` method will wind up with an argument type like `&Trait`.
+        // a `&self` method will wind up with an argument type like `&dyn Trait`.
         let trait_ref = principal.with_self_ty(self.tcx, self_ty);
         self.elaborate_bounds(iter::once(trait_ref), |this, new_trait_ref, item| {
             let new_trait_ref = this.erase_late_bound_regions(new_trait_ref);
@@ -795,9 +796,9 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         debug!("assemble_inherent_candidates_from_param(param_ty={:?})", param_ty);
 
         let bounds = self.param_env.caller_bounds().iter().filter_map(|predicate| {
-            let bound_predicate = predicate.bound_atom();
+            let bound_predicate = predicate.kind();
             match bound_predicate.skip_binder() {
-                ty::PredicateAtom::Trait(trait_predicate, _) => {
+                ty::PredicateKind::Trait(trait_predicate, _) => {
                     match *trait_predicate.trait_ref.self_ty().kind() {
                         ty::Param(p) if p == param_ty => {
                             Some(bound_predicate.rebind(trait_predicate.trait_ref))
@@ -805,16 +806,16 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                         _ => None,
                     }
                 }
-                ty::PredicateAtom::Subtype(..)
-                | ty::PredicateAtom::Projection(..)
-                | ty::PredicateAtom::RegionOutlives(..)
-                | ty::PredicateAtom::WellFormed(..)
-                | ty::PredicateAtom::ObjectSafe(..)
-                | ty::PredicateAtom::ClosureKind(..)
-                | ty::PredicateAtom::TypeOutlives(..)
-                | ty::PredicateAtom::ConstEvaluatable(..)
-                | ty::PredicateAtom::ConstEquate(..)
-                | ty::PredicateAtom::TypeWellFormedFromEnv(..) => None,
+                ty::PredicateKind::Subtype(..)
+                | ty::PredicateKind::Projection(..)
+                | ty::PredicateKind::RegionOutlives(..)
+                | ty::PredicateKind::WellFormed(..)
+                | ty::PredicateKind::ObjectSafe(..)
+                | ty::PredicateKind::ClosureKind(..)
+                | ty::PredicateKind::TypeOutlives(..)
+                | ty::PredicateKind::ConstEvaluatable(..)
+                | ty::PredicateKind::ConstEquate(..)
+                | ty::PredicateKind::TypeWellFormedFromEnv(..) => None,
             }
         });
 

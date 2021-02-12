@@ -217,6 +217,14 @@ extern "C" void LLVMRustAddCallSiteAttribute(LLVMValueRef Instr, unsigned Index,
   Call->addAttribute(Index, Attr);
 }
 
+extern "C" void LLVMRustAddCallSiteAttrString(LLVMValueRef Instr, unsigned Index,
+                                              const char *Name) {
+  CallBase *Call = unwrap<CallBase>(Instr);
+  Attribute Attr = Attribute::get(Call->getContext(), Name);
+  Call->addAttribute(Index, Attr);
+}
+
+
 extern "C" void LLVMRustAddAlignmentCallSiteAttr(LLVMValueRef Instr,
                                                  unsigned Index,
                                                  uint32_t Bytes) {
@@ -661,6 +669,8 @@ extern "C" uint32_t LLVMRustDebugMetadataVersion() {
   return DEBUG_METADATA_VERSION;
 }
 
+extern "C" uint32_t LLVMRustVersionPatch() { return LLVM_VERSION_PATCH; }
+
 extern "C" uint32_t LLVMRustVersionMinor() { return LLVM_VERSION_MINOR; }
 
 extern "C" uint32_t LLVMRustVersionMajor() { return LLVM_VERSION_MAJOR; }
@@ -995,11 +1005,9 @@ LLVMRustDICompositeTypeReplaceArrays(LLVMRustDIBuilderRef Builder,
 }
 
 extern "C" LLVMMetadataRef
-LLVMRustDIBuilderCreateDebugLocation(LLVMContextRef ContextRef, unsigned Line,
-                                     unsigned Column, LLVMMetadataRef Scope,
+LLVMRustDIBuilderCreateDebugLocation(unsigned Line, unsigned Column,
+                                     LLVMMetadataRef Scope,
                                      LLVMMetadataRef InlinedAt) {
-  LLVMContext &Context = *unwrap(ContextRef);
-
   DebugLoc debug_loc = DebugLoc::get(Line, Column, unwrapDIPtr<MDNode>(Scope),
                                      unwrapDIPtr<MDNode>(InlinedAt));
 

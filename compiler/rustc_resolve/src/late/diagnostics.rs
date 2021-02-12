@@ -264,7 +264,7 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
                 // The current function has a `self' parameter, but we were unable to resolve
                 // a reference to `self`. This can only happen if the `self` identifier we
                 // are resolving came from a different hygiene context.
-                if fn_kind.decl().inputs.get(0).map(|p| p.is_self()).unwrap_or(false) {
+                if fn_kind.decl().inputs.get(0).map_or(false, |p| p.is_self()) {
                     err.span_label(*span, "this function has a `self` parameter, but a macro invocation can only access identifiers it receives from parameters");
                 } else {
                     let doesnt = if is_assoc_fn {
@@ -545,17 +545,23 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
         if let Some(err_code) = &err.code {
             if err_code == &rustc_errors::error_code!(E0425) {
                 for label_rib in &self.label_ribs {
-                    for (label_ident, _) in &label_rib.bindings {
+                    for (label_ident, node_id) in &label_rib.bindings {
                         if format!("'{}", ident) == label_ident.to_string() {
-                            let msg = "a label with a similar name exists";
-                            // FIXME: consider only emitting this suggestion if a label would be valid here
-                            // which is pretty much only the case for `break` expressions.
-                            err.span_suggestion(
-                                span,
-                                &msg,
-                                label_ident.name.to_string(),
-                                Applicability::MaybeIncorrect,
-                            );
+                            err.span_label(label_ident.span, "a label with a similar name exists");
+                            if let PathSource::Expr(Some(Expr {
+                                kind: ExprKind::Break(None, Some(_)),
+                                ..
+                            })) = source
+                            {
+                                err.span_suggestion(
+                                    span,
+                                    "use the similarly named label",
+                                    label_ident.name.to_string(),
+                                    Applicability::MaybeIncorrect,
+                                );
+                                // Do not lint against unused label when we suggest them.
+                                self.diagnostic_metadata.unused_labels.remove(node_id);
+                            }
                         }
                     }
                 }
@@ -1103,7 +1109,9 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
                 if assoc_item.ident == ident {
                     return Some(match &assoc_item.kind {
                         ast::AssocItemKind::Const(..) => AssocSuggestion::AssocConst,
-                        ast::AssocItemKind::Fn(_, sig, ..) if sig.decl.has_self() => {
+                        ast::AssocItemKind::Fn(box ast::FnKind(_, sig, ..))
+                            if sig.decl.has_self() =>
+                        {
                             AssocSuggestion::MethodWithSelf
                         }
                         ast::AssocItemKind::Fn(..) => AssocSuggestion::AssocFn,
@@ -1204,8 +1212,8 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
             // Add primitive types to the mix
             if filter_fn(Res::PrimTy(PrimTy::Bool)) {
                 names.extend(
-                    self.r.primitive_type_table.primitive_types.iter().map(|(name, prim_ty)| {
-                        TypoSuggestion::from_res(*name, Res::PrimTy(*prim_ty))
+                    PrimTy::ALL.iter().map(|prim_ty| {
+                        TypoSuggestion::from_res(prim_ty.name(), Res::PrimTy(*prim_ty))
                     }),
                 )
             }
@@ -1452,8 +1460,7 @@ impl<'a: 'ast, 'ast> LateResolutionVisitor<'a, '_, 'ast> {
             }
         } else {
             let needs_placeholder = |def_id: DefId, kind: CtorKind| {
-                let has_no_fields =
-                    self.r.field_names.get(&def_id).map(|f| f.is_empty()).unwrap_or(false);
+                let has_no_fields = self.r.field_names.get(&def_id).map_or(false, |f| f.is_empty());
                 match kind {
                     CtorKind::Const => false,
                     CtorKind::Fn | CtorKind::Fictive if has_no_fields => false,
@@ -1654,12 +1661,15 @@ impl<'tcx> LifetimeContext<'_, 'tcx> {
             match missing {
                 MissingLifetimeSpot::Generics(generics) => {
                     let (span, sugg) = if let Some(param) = generics.params.iter().find(|p| {
-                        !matches!(p.kind, hir::GenericParamKind::Type {
-                            synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
-                            ..
-                        } | hir::GenericParamKind::Lifetime {
-                            kind: hir::LifetimeParamKind::Elided,
-                        })
+                        !matches!(
+                            p.kind,
+                            hir::GenericParamKind::Type {
+                                synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
+                                ..
+                            } | hir::GenericParamKind::Lifetime {
+                                kind: hir::LifetimeParamKind::Elided,
+                            }
+                        )
                     }) {
                         (param.span.shrink_to_lo(), format!("{}, ", lifetime_ref))
                     } else {
@@ -1839,10 +1849,13 @@ impl<'tcx> LifetimeContext<'_, 'tcx> {
                         msg = "consider introducing a named lifetime parameter".to_string();
                         should_break = true;
                         if let Some(param) = generics.params.iter().find(|p| {
-                            !matches!(p.kind, hir::GenericParamKind::Type {
-                                synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
-                                ..
-                            })
+                            !matches!(
+                                p.kind,
+                                hir::GenericParamKind::Type {
+                                    synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
+                                    ..
+                                }
+                            )
                         }) {
                             (param.span.shrink_to_lo(), "'a, ".to_string())
                         } else {

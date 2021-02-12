@@ -34,7 +34,6 @@ use super::{InferCtxt, MiscVariable, TypeTrace};
 
 use crate::traits::{Obligation, PredicateObligations};
 
-use rustc_ast as ast;
 use rustc_data_structures::sso::SsoHashMap;
 use rustc_hir::def_id::DefId;
 use rustc_middle::traits::ObligationCause;
@@ -281,7 +280,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
         &self,
         vid_is_expected: bool,
         vid: ty::FloatVid,
-        val: ast::FloatTy,
+        val: ty::FloatTy,
     ) -> RelateResult<'tcx, Ty<'tcx>> {
         self.inner
             .borrow_mut()
@@ -358,7 +357,7 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
             self.obligations.push(Obligation::new(
                 self.trace.cause.clone(),
                 self.param_env,
-                ty::PredicateAtom::WellFormed(b_ty.into()).to_predicate(self.infcx.tcx),
+                ty::PredicateKind::WellFormed(b_ty.into()).to_predicate(self.infcx.tcx),
             ));
         }
 
@@ -451,9 +450,9 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         b: &'tcx ty::Const<'tcx>,
     ) {
         let predicate = if a_is_expected {
-            ty::PredicateAtom::ConstEquate(a, b)
+            ty::PredicateKind::ConstEquate(a, b)
         } else {
-            ty::PredicateAtom::ConstEquate(b, a)
+            ty::PredicateKind::ConstEquate(b, a)
         };
         self.obligations.push(Obligation::new(
             self.trace.cause.clone(),

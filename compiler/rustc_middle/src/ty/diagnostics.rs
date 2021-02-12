@@ -1,8 +1,7 @@
 //! Diagnostics related methods for `TyS`.
 
-use crate::ty::sty::InferTy;
 use crate::ty::TyKind::*;
-use crate::ty::{TyCtxt, TyS};
+use crate::ty::{InferTy, TyCtxt, TyS};
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -13,13 +12,17 @@ impl<'tcx> TyS<'tcx> {
     pub fn is_primitive_ty(&self) -> bool {
         matches!(
             self.kind(),
-            Bool | Char | Str | Int(_) | Uint(_) | Float(_)
-            | Infer(
-                InferTy::IntVar(_)
-                | InferTy::FloatVar(_)
-                | InferTy::FreshIntTy(_)
-                | InferTy::FreshFloatTy(_)
-            )
+            Bool | Char
+                | Str
+                | Int(_)
+                | Uint(_)
+                | Float(_)
+                | Infer(
+                    InferTy::IntVar(_)
+                        | InferTy::FloatVar(_)
+                        | InferTy::FreshIntTy(_)
+                        | InferTy::FreshFloatTy(_)
+                )
         )
     }
 

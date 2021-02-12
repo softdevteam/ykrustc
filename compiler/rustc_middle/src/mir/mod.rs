@@ -54,7 +54,7 @@ mod type_foldable;
 pub mod visit;
 
 /// Types for locals
-type LocalDecls<'tcx> = IndexVec<Local, LocalDecl<'tcx>>;
+pub type LocalDecls<'tcx> = IndexVec<Local, LocalDecl<'tcx>>;
 
 pub trait HasLocalDecls<'tcx> {
     fn local_decls(&self) -> &LocalDecls<'tcx>;
@@ -962,8 +962,7 @@ impl<'tcx> LocalDecl<'tcx> {
                     opt_ty_info: _,
                     opt_match_place: _,
                     pat_span: _,
-                })
-                | BindingForm::ImplicitSelf(ImplicitSelfKind::Imm),
+                }) | BindingForm::ImplicitSelf(ImplicitSelfKind::Imm),
             )))
         )
     }
@@ -980,8 +979,7 @@ impl<'tcx> LocalDecl<'tcx> {
                     opt_ty_info: _,
                     opt_match_place: _,
                     pat_span: _,
-                })
-                | BindingForm::ImplicitSelf(_),
+                }) | BindingForm::ImplicitSelf(_),
             )))
         )
     }

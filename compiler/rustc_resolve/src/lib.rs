@@ -9,6 +9,7 @@
 //! Type-relative name resolution (methods, fields, associated items) happens in `librustc_typeck`.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
+#![feature(box_patterns)]
 #![feature(bool_to_option)]
 #![feature(crate_visibility_modifier)]
 #![feature(format_args_capture)]
@@ -24,7 +25,7 @@ use rustc_arena::{DroplessArena, TypedArena};
 use rustc_ast::node_id::NodeMap;
 use rustc_ast::unwrap_or;
 use rustc_ast::visit::{self, Visitor};
-use rustc_ast::{self as ast, FloatTy, IntTy, NodeId, UintTy};
+use rustc_ast::{self as ast, NodeId};
 use rustc_ast::{Crate, CRATE_NODE_ID};
 use rustc_ast::{ItemKind, Path};
 use rustc_ast_lowering::ResolverAstLowering;
@@ -38,15 +39,14 @@ use rustc_hir::def::Namespace::*;
 use rustc_hir::def::{self, CtorOf, DefKind, NonMacroAttrKind, PartialRes};
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, CRATE_DEF_INDEX};
 use rustc_hir::definitions::{DefKey, DefPathData, Definitions};
-use rustc_hir::PrimTy::{self, Bool, Char, Float, Int, Str, Uint};
-use rustc_hir::TraitCandidate;
+use rustc_hir::{PrimTy, TraitCandidate};
 use rustc_index::vec::IndexVec;
 use rustc_metadata::creader::{CStore, CrateLoader};
 use rustc_middle::hir::exports::ExportMap;
 use rustc_middle::middle::cstore::{CrateStore, MetadataLoaderDyn};
+use rustc_middle::span_bug;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::{self, DefIdTree, ResolverOutputs};
-use rustc_middle::{bug, span_bug};
 use rustc_session::lint;
 use rustc_session::lint::{BuiltinLintDiagnostics, LintBuffer};
 use rustc_session::Session;
@@ -750,27 +750,12 @@ impl<'a> NameBinding<'a> {
     fn is_possibly_imported_variant(&self) -> bool {
         match self.kind {
             NameBindingKind::Import { binding, .. } => binding.is_possibly_imported_variant(),
-            _ => self.is_variant(),
-        }
-    }
-
-    // We sometimes need to treat variants as `pub` for backwards compatibility.
-    fn pseudo_vis(&self) -> ty::Visibility {
-        if self.is_variant() && self.res().def_id().is_local() {
-            ty::Visibility::Public
-        } else {
-            self.vis
-        }
-    }
-
-    fn is_variant(&self) -> bool {
-        matches!(
-            self.kind,
             NameBindingKind::Res(
                 Res::Def(DefKind::Variant | DefKind::Ctor(CtorOf::Variant, ..), _),
                 _,
-            )
-        )
+            ) => true,
+            NameBindingKind::Res(..) | NameBindingKind::Module(..) => false,
+        }
     }
 
     fn is_extern_crate(&self) -> bool {
@@ -833,39 +818,6 @@ impl<'a> NameBinding<'a> {
     }
 }
 
-/// Interns the names of the primitive types.
-///
-/// All other types are defined somewhere and possibly imported, but the primitive ones need
-/// special handling, since they have no place of origin.
-struct PrimitiveTypeTable {
-    primitive_types: FxHashMap<Symbol, PrimTy>,
-}
-
-impl PrimitiveTypeTable {
-    fn new() -> PrimitiveTypeTable {
-        let mut table = FxHashMap::default();
-
-        table.insert(sym::bool, Bool);
-        table.insert(sym::char, Char);
-        table.insert(sym::f32, Float(FloatTy::F32));
-        table.insert(sym::f64, Float(FloatTy::F64));
-        table.insert(sym::isize, Int(IntTy::Isize));
-        table.insert(sym::i8, Int(IntTy::I8));
-        table.insert(sym::i16, Int(IntTy::I16));
-        table.insert(sym::i32, Int(IntTy::I32));
-        table.insert(sym::i64, Int(IntTy::I64));
-        table.insert(sym::i128, Int(IntTy::I128));
-        table.insert(sym::str, Str);
-        table.insert(sym::usize, Uint(UintTy::Usize));
-        table.insert(sym::u8, Uint(UintTy::U8));
-        table.insert(sym::u16, Uint(UintTy::U16));
-        table.insert(sym::u32, Uint(UintTy::U32));
-        table.insert(sym::u64, Uint(UintTy::U64));
-        table.insert(sym::u128, Uint(UintTy::U128));
-        Self { primitive_types: table }
-    }
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct ExternPreludeEntry<'a> {
     extern_crate_item: Option<&'a NameBinding<'a>>,
@@ -910,9 +862,6 @@ pub struct Resolver<'a> {
     /// This binding should be ignored during in-module resolution, so that we don't get
     /// "self-confirming" import resolutions during import validation.
     unusable_binding: Option<&'a NameBinding<'a>>,
-
-    /// The idents for the primitive types.
-    primitive_type_table: PrimitiveTypeTable,
 
     /// Resolutions for nodes that have a single resolution.
     partial_res_map: NodeMap<PartialRes>,
@@ -1003,6 +952,8 @@ pub struct Resolver<'a> {
     output_macro_rules_scopes: FxHashMap<ExpnId, MacroRulesScopeRef<'a>>,
     /// Helper attributes that are in scope for the given expansion.
     helper_attrs: FxHashMap<ExpnId, Vec<Ident>>,
+    /// Resolutions for paths inside the `#[derive(...)]` attribute with the given `ExpnId`.
+    derive_resolutions: FxHashMap<ExpnId, Vec<(Lrc<SyntaxExtension>, ast::Path)>>,
 
     /// Avoid duplicated errors for "name already defined".
     name_already_seen: FxHashMap<Symbol, Span>,
@@ -1052,7 +1003,7 @@ pub struct ResolverArenas<'a> {
 impl<'a> ResolverArenas<'a> {
     fn alloc_module(&'a self, module: ModuleData<'a>) -> Module<'a> {
         let module = self.modules.alloc(module);
-        if module.def_id().map(|def_id| def_id.is_local()).unwrap_or(true) {
+        if module.def_id().map_or(true, |def_id| def_id.is_local()) {
             self.local_modules.borrow_mut().push(module);
         }
         module
@@ -1283,8 +1234,6 @@ impl<'a> Resolver<'a> {
             last_import_segment: false,
             unusable_binding: None,
 
-            primitive_type_table: PrimitiveTypeTable::new(),
-
             partial_res_map: Default::default(),
             import_res_map: Default::default(),
             label_res_map: Default::default(),
@@ -1333,6 +1282,7 @@ impl<'a> Resolver<'a> {
             invocation_parent_scopes: Default::default(),
             output_macro_rules_scopes: Default::default(),
             helper_attrs: Default::default(),
+            derive_resolutions: Default::default(),
             local_macro_def_scopes: FxHashMap::default(),
             name_already_seen: FxHashMap::default(),
             potentially_unused_imports: Vec::new(),
@@ -1465,61 +1415,86 @@ impl<'a> Resolver<'a> {
 
     /// Entry point to crate resolution.
     pub fn resolve_crate(&mut self, krate: &Crate) {
-        let _prof_timer = self.session.prof.generic_activity("resolve_crate");
-
-        ImportResolver { r: self }.finalize_imports();
-        self.finalize_macro_resolutions();
-
-        self.late_resolve_crate(krate);
-
-        self.check_unused(krate);
-        self.report_errors(krate);
-        self.crate_loader.postprocess(krate);
+        self.session.time("resolve_crate", || {
+            self.session.time("finalize_imports", || ImportResolver { r: self }.finalize_imports());
+            self.session.time("finalize_macro_resolutions", || self.finalize_macro_resolutions());
+            self.session.time("late_resolve_crate", || self.late_resolve_crate(krate));
+            self.session.time("resolve_check_unused", || self.check_unused(krate));
+            self.session.time("resolve_report_errors", || self.report_errors(krate));
+            self.session.time("resolve_postprocess", || self.crate_loader.postprocess(krate));
+        });
     }
 
-    fn get_traits_in_module_containing_item(
+    pub fn traits_in_scope(
         &mut self,
-        ident: Ident,
-        ns: Namespace,
-        module: Module<'a>,
-        found_traits: &mut Vec<TraitCandidate>,
+        current_trait: Option<Module<'a>>,
         parent_scope: &ParentScope<'a>,
+        ctxt: SyntaxContext,
+        assoc_item: Option<(Symbol, Namespace)>,
+    ) -> Vec<TraitCandidate> {
+        let mut found_traits = Vec::new();
+
+        if let Some(module) = current_trait {
+            if self.trait_may_have_item(Some(module), assoc_item) {
+                let def_id = module.def_id().unwrap();
+                found_traits.push(TraitCandidate { def_id, import_ids: smallvec![] });
+            }
+        }
+
+        self.visit_scopes(ScopeSet::All(TypeNS, false), parent_scope, ctxt, |this, scope, _, _| {
+            match scope {
+                Scope::Module(module) => {
+                    this.traits_in_module(module, assoc_item, &mut found_traits);
+                }
+                Scope::StdLibPrelude => {
+                    if let Some(module) = this.prelude {
+                        this.traits_in_module(module, assoc_item, &mut found_traits);
+                    }
+                }
+                Scope::ExternPrelude | Scope::ToolPrelude | Scope::BuiltinTypes => {}
+                _ => unreachable!(),
+            }
+            None::<()>
+        });
+
+        found_traits
+    }
+
+    fn traits_in_module(
+        &mut self,
+        module: Module<'a>,
+        assoc_item: Option<(Symbol, Namespace)>,
+        found_traits: &mut Vec<TraitCandidate>,
     ) {
-        assert!(ns == TypeNS || ns == ValueNS);
         module.ensure_traits(self);
         let traits = module.traits.borrow();
-
-        for &(trait_name, binding) in traits.as_ref().unwrap().iter() {
-            // Traits have pseudo-modules that can be used to search for the given ident.
-            if let Some(module) = binding.module() {
-                let mut ident = ident;
-                if ident.span.glob_adjust(module.expansion, binding.span).is_none() {
-                    continue;
-                }
-                if self
-                    .resolve_ident_in_module_unadjusted(
-                        ModuleOrUniformRoot::Module(module),
-                        ident,
-                        ns,
-                        parent_scope,
-                        false,
-                        module.span,
-                    )
-                    .is_ok()
-                {
-                    let import_ids = self.find_transitive_imports(&binding.kind, trait_name);
-                    let trait_def_id = module.def_id().unwrap();
-                    found_traits.push(TraitCandidate { def_id: trait_def_id, import_ids });
-                }
-            } else if let Res::Def(DefKind::TraitAlias, _) = binding.res() {
-                // For now, just treat all trait aliases as possible candidates, since we don't
-                // know if the ident is somewhere in the transitive bounds.
-                let import_ids = self.find_transitive_imports(&binding.kind, trait_name);
-                let trait_def_id = binding.res().def_id();
-                found_traits.push(TraitCandidate { def_id: trait_def_id, import_ids });
-            } else {
-                bug!("candidate is not trait or trait alias?")
+        for (trait_name, trait_binding) in traits.as_ref().unwrap().iter() {
+            if self.trait_may_have_item(trait_binding.module(), assoc_item) {
+                let def_id = trait_binding.res().def_id();
+                let import_ids = self.find_transitive_imports(&trait_binding.kind, *trait_name);
+                found_traits.push(TraitCandidate { def_id, import_ids });
             }
+        }
+    }
+
+    // List of traits in scope is pruned on best effort basis. We reject traits not having an
+    // associated item with the given name and namespace (if specified). This is a conservative
+    // optimization, proper hygienic type-based resolution of associated items is done in typeck.
+    // We don't reject trait aliases (`trait_module == None`) because we don't have access to their
+    // associated items.
+    fn trait_may_have_item(
+        &mut self,
+        trait_module: Option<Module<'a>>,
+        assoc_item: Option<(Symbol, Namespace)>,
+    ) -> bool {
+        match (trait_module, assoc_item) {
+            (Some(trait_module), Some((name, ns))) => {
+                self.resolutions(trait_module).borrow().iter().any(|resolution| {
+                    let (&BindingKey { ident: assoc_ident, ns: assoc_ns, .. }, _) = resolution;
+                    assoc_ns == ns && assoc_ident.name == name
+                })
+            }
+            _ => true,
         }
     }
 
@@ -1968,9 +1943,9 @@ impl<'a> Resolver<'a> {
         }
 
         if ns == TypeNS {
-            if let Some(prim_ty) = self.primitive_type_table.primitive_types.get(&ident.name) {
+            if let Some(prim_ty) = PrimTy::from_name(ident.name) {
                 let binding =
-                    (Res::PrimTy(*prim_ty), ty::Visibility::Public, DUMMY_SP, ExpnId::root())
+                    (Res::PrimTy(prim_ty), ty::Visibility::Public, DUMMY_SP, ExpnId::root())
                         .to_name_binding(self.arenas);
                 return Some(LexicalScopeBinding::Item(binding));
             }
@@ -2458,8 +2433,14 @@ impl<'a> Resolver<'a> {
                             (format!("use of undeclared crate or module `{}`", ident), None)
                         }
                     } else {
-                        let mut msg =
-                            format!("could not find `{}` in `{}`", ident, path[i - 1].ident);
+                        let parent = path[i - 1].ident.name;
+                        let parent = if parent == kw::PathRoot {
+                            "crate root".to_owned()
+                        } else {
+                            format!("`{}`", parent)
+                        };
+
+                        let mut msg = format!("could not find `{}` in {}", ident, parent);
                         if ns == TypeNS || ns == ValueNS {
                             let ns_to_try = if ns == TypeNS { ValueNS } else { TypeNS };
                             if let FindBindingResult::Binding(Ok(binding)) =
@@ -2467,11 +2448,11 @@ impl<'a> Resolver<'a> {
                             {
                                 let mut found = |what| {
                                     msg = format!(
-                                        "expected {}, found {} `{}` in `{}`",
+                                        "expected {}, found {} `{}` in {}",
                                         ns.descr(),
                                         what,
                                         ident,
-                                        path[i - 1].ident
+                                        parent
                                     )
                                 };
                                 if binding.module().is_some() {
@@ -3031,7 +3012,7 @@ impl<'a> Resolver<'a> {
         let duplicate = new_binding.res().opt_def_id() == old_binding.res().opt_def_id();
         let has_dummy_span = new_binding.span.is_dummy() || old_binding.span.is_dummy();
         let from_item =
-            self.extern_prelude.get(&ident).map(|entry| entry.introduced_by_item).unwrap_or(true);
+            self.extern_prelude.get(&ident).map_or(true, |entry| entry.introduced_by_item);
         // Only suggest removing an import if both bindings are to the same def, if both spans
         // aren't dummy spans. Further, if both bindings are imports, then the ident must have
         // been introduced by a item.
@@ -3225,34 +3206,6 @@ impl<'a> Resolver<'a> {
                 )
             }
         })
-    }
-
-    /// This is equivalent to `get_traits_in_module_containing_item`, but without filtering by the associated item.
-    ///
-    /// This is used by rustdoc for intra-doc links.
-    pub fn traits_in_scope(&mut self, module_id: DefId) -> Vec<TraitCandidate> {
-        let module = self.get_module(module_id);
-        module.ensure_traits(self);
-        let traits = module.traits.borrow();
-        let to_candidate =
-            |this: &mut Self, &(trait_name, binding): &(Ident, &NameBinding<'_>)| TraitCandidate {
-                def_id: binding.res().def_id(),
-                import_ids: this.find_transitive_imports(&binding.kind, trait_name),
-            };
-
-        let mut candidates: Vec<_> =
-            traits.as_ref().unwrap().iter().map(|x| to_candidate(self, x)).collect();
-
-        if let Some(prelude) = self.prelude {
-            if !module.no_implicit_prelude {
-                prelude.ensure_traits(self);
-                candidates.extend(
-                    prelude.traits.borrow().as_ref().unwrap().iter().map(|x| to_candidate(self, x)),
-                );
-            }
-        }
-
-        candidates
     }
 
     /// Rustdoc uses this to resolve things in a recoverable way. `ResolutionError<'a>`

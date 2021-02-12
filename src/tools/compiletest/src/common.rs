@@ -174,7 +174,7 @@ impl fmt::Display for Debugger {
 /// Configuration for compiletest
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// `true` to to overwrite stderr/stdout files instead of complaining about changes in output.
+    /// `true` to overwrite stderr/stdout files instead of complaining about changes in output.
     pub bless: bool,
 
     /// The library paths required for running the compiler.
@@ -197,6 +197,9 @@ pub struct Config {
 
     /// The Python executable to use for htmldocck.
     pub docck_python: String,
+
+    /// The jsondocck executable.
+    pub jsondocck_path: Option<String>,
 
     /// The LLVM `FileCheck` binary path.
     pub llvm_filecheck: Option<PathBuf>,
@@ -237,8 +240,8 @@ pub struct Config {
     /// Run ignored tests
     pub run_ignored: bool,
 
-    /// Only run tests that match this filter
-    pub filter: Option<String>,
+    /// Only run tests that match these filters
+    pub filters: Vec<String>,
 
     /// Exactly match the filter, rather than a substring
     pub filter_exact: bool,

@@ -10,7 +10,7 @@ use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fingerprint::{Fingerprint, FingerprintDecoder};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::svh::Svh;
-use rustc_data_structures::sync::{AtomicCell, Lock, LockGuard, Lrc, OnceCell};
+use rustc_data_structures::sync::{Lock, LockGuard, Lrc, OnceCell};
 use rustc_data_structures::unhash::UnhashMap;
 use rustc_errors::ErrorReported;
 use rustc_expand::base::{SyntaxExtension, SyntaxExtensionKind};
@@ -21,7 +21,6 @@ use rustc_hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX, LOCAL_CRATE}
 use rustc_hir::definitions::{DefKey, DefPath, DefPathData, DefPathHash};
 use rustc_hir::lang_items;
 use rustc_index::vec::{Idx, IndexVec};
-use rustc_middle::dep_graph::{self, DepNode, DepNodeExt, DepNodeIndex};
 use rustc_middle::hir::exports::Export;
 use rustc_middle::middle::cstore::{CrateSource, ExternCrate};
 use rustc_middle::middle::cstore::{ForeignModule, LinkagePreference, NativeLib};
@@ -84,11 +83,6 @@ crate struct CrateMetadata {
     def_path_hash_map: OnceCell<UnhashMap<DefPathHash, DefIndex>>,
     /// Used for decoding interpret::AllocIds in a cached & thread-safe manner.
     alloc_decoding_state: AllocDecodingState,
-    /// The `DepNodeIndex` of the `DepNode` representing this upstream crate.
-    /// It is initialized on the first access in `get_crate_dep_node_index()`.
-    /// Do not access the value directly, as it might not have been initialized yet.
-    /// The field must always be initialized to `DepNodeIndex::INVALID`.
-    dep_node_index: AtomicCell<DepNodeIndex>,
     /// Caches decoded `DefKey`s.
     def_key_cache: Lock<FxHashMap<DefIndex, DefKey>>,
     /// Caches decoded `DefPathHash`es.
@@ -624,43 +618,6 @@ impl MetadataBlob {
     }
 }
 
-impl EntryKind {
-    fn def_kind(&self) -> DefKind {
-        match *self {
-            EntryKind::AnonConst(..) => DefKind::AnonConst,
-            EntryKind::Const(..) => DefKind::Const,
-            EntryKind::AssocConst(..) => DefKind::AssocConst,
-            EntryKind::ImmStatic
-            | EntryKind::MutStatic
-            | EntryKind::ForeignImmStatic
-            | EntryKind::ForeignMutStatic => DefKind::Static,
-            EntryKind::Struct(_, _) => DefKind::Struct,
-            EntryKind::Union(_, _) => DefKind::Union,
-            EntryKind::Fn(_) | EntryKind::ForeignFn(_) => DefKind::Fn,
-            EntryKind::AssocFn(_) => DefKind::AssocFn,
-            EntryKind::Type => DefKind::TyAlias,
-            EntryKind::TypeParam => DefKind::TyParam,
-            EntryKind::ConstParam => DefKind::ConstParam,
-            EntryKind::OpaqueTy => DefKind::OpaqueTy,
-            EntryKind::AssocType(_) => DefKind::AssocTy,
-            EntryKind::Mod(_) => DefKind::Mod,
-            EntryKind::Variant(_) => DefKind::Variant,
-            EntryKind::Trait(_) => DefKind::Trait,
-            EntryKind::TraitAlias => DefKind::TraitAlias,
-            EntryKind::Enum(..) => DefKind::Enum,
-            EntryKind::MacroDef(_) => DefKind::Macro(MacroKind::Bang),
-            EntryKind::ProcMacro(kind) => DefKind::Macro(kind),
-            EntryKind::ForeignType => DefKind::ForeignTy,
-            EntryKind::Impl(_) => DefKind::Impl,
-            EntryKind::Closure => DefKind::Closure,
-            EntryKind::ForeignMod => DefKind::ForeignMod,
-            EntryKind::GlobalAsm => DefKind::GlobalAsm,
-            EntryKind::Field => DefKind::Field,
-            EntryKind::Generator(_) => DefKind::Generator,
-        }
-    }
-}
-
 impl CrateRoot<'_> {
     crate fn is_proc_macro_crate(&self) -> bool {
         self.proc_macro_data.is_some()
@@ -691,21 +648,6 @@ impl CrateRoot<'_> {
 }
 
 impl<'a, 'tcx> CrateMetadataRef<'a> {
-    fn maybe_kind(&self, item_id: DefIndex) -> Option<EntryKind> {
-        self.root.tables.kind.get(self, item_id).map(|k| k.decode(self))
-    }
-
-    fn kind(&self, item_id: DefIndex) -> EntryKind {
-        self.maybe_kind(item_id).unwrap_or_else(|| {
-            bug!(
-                "CrateMetadata::kind({:?}): id not found, in crate {:?} with number {}",
-                item_id,
-                self.root.name,
-                self.cnum,
-            )
-        })
-    }
-
     fn raw_proc_macro(&self, id: DefIndex) -> &ProcMacro {
         // DefIndex's in root.proc_macro_data have a one-to-one correspondence
         // with items in 'raw_proc_macros'.
@@ -721,25 +663,51 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         &self.raw_proc_macros.unwrap()[pos]
     }
 
-    fn item_ident(&self, item_index: DefIndex, sess: &Session) -> Ident {
+    fn try_item_ident(&self, item_index: DefIndex, sess: &Session) -> Result<Ident, String> {
         let name = self
             .def_key(item_index)
             .disambiguated_data
             .data
             .get_opt_name()
-            .expect("no name in item_ident");
+            .ok_or_else(|| format!("Missing opt name for {:?}", item_index))?;
         let span = self
             .root
             .tables
             .ident_span
             .get(self, item_index)
-            .map(|data| data.decode((self, sess)))
-            .unwrap_or_else(|| panic!("Missing ident span for {:?} ({:?})", name, item_index));
-        Ident::new(name, span)
+            .ok_or_else(|| format!("Missing ident span for {:?} ({:?})", name, item_index))?
+            .decode((self, sess));
+        Ok(Ident::new(name, span))
     }
 
-    fn def_kind(&self, index: DefIndex) -> DefKind {
-        self.kind(index).def_kind()
+    fn item_ident(&self, item_index: DefIndex, sess: &Session) -> Ident {
+        self.try_item_ident(item_index, sess).unwrap()
+    }
+
+    fn maybe_kind(&self, item_id: DefIndex) -> Option<EntryKind> {
+        self.root.tables.kind.get(self, item_id).map(|k| k.decode(self))
+    }
+
+    fn kind(&self, item_id: DefIndex) -> EntryKind {
+        self.maybe_kind(item_id).unwrap_or_else(|| {
+            bug!(
+                "CrateMetadata::kind({:?}): id not found, in crate {:?} with number {}",
+                item_id,
+                self.root.name,
+                self.cnum,
+            )
+        })
+    }
+
+    fn def_kind(&self, item_id: DefIndex) -> DefKind {
+        self.root.tables.def_kind.get(self, item_id).map(|k| k.decode(self)).unwrap_or_else(|| {
+            bug!(
+                "CrateMetadata::def_kind({:?}): id not found, in crate {:?} with number {}",
+                item_id,
+                self.root.name,
+                self.cnum,
+            )
+        })
     }
 
     fn get_span(&self, index: DefIndex, sess: &Session) -> Span {
@@ -1607,31 +1575,6 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         self.def_path_hash_unlocked(index, &mut def_path_hashes)
     }
 
-    /// Get the `DepNodeIndex` corresponding this crate. The result of this
-    /// method is cached in the `dep_node_index` field.
-    fn get_crate_dep_node_index(&self, tcx: TyCtxt<'tcx>) -> DepNodeIndex {
-        let mut dep_node_index = self.dep_node_index.load();
-
-        if unlikely!(dep_node_index == DepNodeIndex::INVALID) {
-            // We have not cached the DepNodeIndex for this upstream crate yet,
-            // so use the dep-graph to find it out and cache it.
-            // Note that multiple threads can enter this block concurrently.
-            // That is fine because the DepNodeIndex remains constant
-            // throughout the whole compilation session, and multiple stores
-            // would always write the same value.
-
-            let def_path_hash = self.def_path_hash(CRATE_DEF_INDEX);
-            let dep_node =
-                DepNode::from_def_path_hash(def_path_hash, dep_graph::DepKind::CrateMetadata);
-
-            dep_node_index = tcx.dep_graph.dep_node_index_of(&dep_node);
-            assert!(dep_node_index != DepNodeIndex::INVALID);
-            self.dep_node_index.store(dep_node_index);
-        }
-
-        dep_node_index
-    }
-
     /// Imports the source_map from an external crate into the source_map of the crate
     /// currently being compiled (the "local crate").
     ///
@@ -1848,7 +1791,6 @@ impl CrateMetadata {
             source_map_import_info: OnceCell::new(),
             def_path_hash_map: Default::default(),
             alloc_decoding_state,
-            dep_node_index: AtomicCell::new(DepNodeIndex::INVALID),
             cnum,
             cnum_map,
             dependencies,

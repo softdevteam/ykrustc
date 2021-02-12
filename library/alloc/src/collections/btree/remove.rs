@@ -1,6 +1,5 @@
 use super::map::MIN_LEN;
 use super::node::{marker, ForceResult::*, Handle, LeftOrRight::*, NodeRef};
-use super::unwrap_unchecked;
 
 impl<'a, K: 'a, V: 'a> Handle<NodeRef<marker::Mut<'a>, K, V, marker::LeafOrInternal>, marker::KV> {
     /// Removes a key-value pair from the tree, and returns that pair, as well as
@@ -33,7 +32,7 @@ impl<'a, K: 'a, V: 'a> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Leaf>, mark
                 Ok(Left(left_parent_kv)) => {
                     debug_assert!(left_parent_kv.right_child_len() == MIN_LEN - 1);
                     if left_parent_kv.can_merge() {
-                        left_parent_kv.merge(Some(Right(idx)))
+                        left_parent_kv.merge_tracking_child_edge(Right(idx))
                     } else {
                         debug_assert!(left_parent_kv.left_child_len() > MIN_LEN);
                         left_parent_kv.steal_left(idx)
@@ -42,7 +41,7 @@ impl<'a, K: 'a, V: 'a> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Leaf>, mark
                 Ok(Right(right_parent_kv)) => {
                     debug_assert!(right_parent_kv.left_child_len() == MIN_LEN - 1);
                     if right_parent_kv.can_merge() {
-                        right_parent_kv.merge(Some(Left(idx)))
+                        right_parent_kv.merge_tracking_child_edge(Left(idx))
                     } else {
                         debug_assert!(right_parent_kv.right_child_len() > MIN_LEN);
                         right_parent_kv.steal_right(idx)
@@ -77,12 +76,12 @@ impl<'a, K: 'a, V: 'a> Handle<NodeRef<marker::Mut<'a>, K, V, marker::Internal>, 
         // the element we were asked to remove. Prefer the left adjacent KV,
         // for the reasons listed in `choose_parent_kv`.
         let left_leaf_kv = self.left_edge().descend().last_leaf_edge().left_kv();
-        let left_leaf_kv = unsafe { unwrap_unchecked(left_leaf_kv.ok()) };
+        let left_leaf_kv = unsafe { left_leaf_kv.ok().unwrap_unchecked() };
         let (left_kv, left_hole) = left_leaf_kv.remove_leaf_kv(handle_emptied_internal_root);
 
         // The internal node may have been stolen from or merged. Go back right
         // to find where the original KV ended up.
-        let mut internal = unsafe { unwrap_unchecked(left_hole.next_kv().ok()) };
+        let mut internal = unsafe { left_hole.next_kv().ok().unwrap_unchecked() };
         let old_kv = internal.replace_kv(left_kv.0, left_kv.1);
         let pos = internal.next_leaf_edge();
         (old_kv, pos)
@@ -121,27 +120,25 @@ impl<'a, K: 'a, V: 'a> NodeRef<marker::Mut<'a>, K, V, marker::Internal> {
         self,
     ) -> Option<NodeRef<marker::Mut<'a>, K, V, marker::Internal>> {
         match self.forget_type().choose_parent_kv() {
-            Ok(Left(left_parent_kv)) => {
+            Ok(Left(mut left_parent_kv)) => {
                 debug_assert_eq!(left_parent_kv.right_child_len(), MIN_LEN - 1);
                 if left_parent_kv.can_merge() {
-                    let pos = left_parent_kv.merge(None);
-                    let parent_edge = unsafe { unwrap_unchecked(pos.into_node().ascend().ok()) };
-                    Some(parent_edge.into_node())
+                    let parent = left_parent_kv.merge_tracking_parent();
+                    Some(parent)
                 } else {
                     debug_assert!(left_parent_kv.left_child_len() > MIN_LEN);
-                    left_parent_kv.steal_left(0);
+                    left_parent_kv.bulk_steal_left(1);
                     None
                 }
             }
-            Ok(Right(right_parent_kv)) => {
+            Ok(Right(mut right_parent_kv)) => {
                 debug_assert_eq!(right_parent_kv.left_child_len(), MIN_LEN - 1);
                 if right_parent_kv.can_merge() {
-                    let pos = right_parent_kv.merge(None);
-                    let parent_edge = unsafe { unwrap_unchecked(pos.into_node().ascend().ok()) };
-                    Some(parent_edge.into_node())
+                    let parent = right_parent_kv.merge_tracking_parent();
+                    Some(parent)
                 } else {
                     debug_assert!(right_parent_kv.right_child_len() > MIN_LEN);
-                    right_parent_kv.steal_right(0);
+                    right_parent_kv.bulk_steal_right(1);
                     None
                 }
             }

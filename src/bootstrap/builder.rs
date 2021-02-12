@@ -57,6 +57,14 @@ pub trait Step: 'static + Clone + Debug + PartialEq + Eq + Hash {
     /// `true` here can still be overwritten by `should_run` calling `default_condition`.
     const DEFAULT: bool = false;
 
+    /// Whether this step should be run even when `download-rustc` is set.
+    ///
+    /// Most steps are not important when the compiler is downloaded, since they will be included in
+    /// the pre-compiled sysroot. Steps can set this to `true` to be built anyway.
+    ///
+    /// When in doubt, set this to `false`.
+    const ENABLE_DOWNLOAD_RUSTC: bool = false;
+
     /// If true, then this rule should be skipped if --target was specified, but --host was not
     const ONLY_HOSTS: bool = false;
 
@@ -99,6 +107,7 @@ impl RunConfig<'_> {
 
 struct StepDescription {
     default: bool,
+    enable_download_rustc: bool,
     only_hosts: bool,
     should_run: fn(ShouldRun<'_>) -> ShouldRun<'_>,
     make_run: fn(RunConfig<'_>),
@@ -153,6 +162,7 @@ impl StepDescription {
     fn from<S: Step>() -> StepDescription {
         StepDescription {
             default: S::DEFAULT,
+            enable_download_rustc: S::ENABLE_DOWNLOAD_RUSTC,
             only_hosts: S::ONLY_HOSTS,
             should_run: S::should_run,
             make_run: S::make_run,
@@ -169,6 +179,14 @@ impl StepDescription {
                 "{:?} not skipped for {:?} -- not in {:?}",
                 pathset, self.name, builder.config.exclude
             );
+        } else if builder.config.download_rustc && !self.enable_download_rustc {
+            if !builder.config.dry_run {
+                eprintln!(
+                    "Not running {} because its artifacts have been downloaded from CI (`download-rustc` is set)",
+                    self.name
+                );
+            }
+            return;
         }
 
         // Determine the targets participating in this rule.
@@ -629,8 +647,12 @@ impl<'a> Builder<'a> {
                     .join("rustlib")
                     .join(self.target.triple)
                     .join("lib");
-                let _ = fs::remove_dir_all(&sysroot);
-                t!(fs::create_dir_all(&sysroot));
+                // Avoid deleting the rustlib/ directory we just copied
+                // (in `impl Step for Sysroot`).
+                if !builder.config.download_rustc {
+                    let _ = fs::remove_dir_all(&sysroot);
+                    t!(fs::create_dir_all(&sysroot));
+                }
                 INTERNER.intern_path(sysroot)
             }
         }
@@ -814,12 +836,22 @@ impl<'a> Builder<'a> {
             cargo.env("REAL_LIBRARY_PATH", e);
         }
 
+        // Found with `rg "init_env_logger\("`. If anyone uses `init_env_logger`
+        // from out of tree it shouldn't matter, since x.py is only used for
+        // building in-tree.
+        let color_logs = ["RUSTDOC_LOG_COLOR", "RUSTC_LOG_COLOR", "RUST_LOG_COLOR"];
         match self.build.config.color {
             Color::Always => {
                 cargo.arg("--color=always");
+                for log in &color_logs {
+                    cargo.env(log, "always");
+                }
             }
             Color::Never => {
                 cargo.arg("--color=never");
+                for log in &color_logs {
+                    cargo.env(log, "never");
+                }
             }
             Color::Auto => {} // nothing to do
         }
@@ -1129,10 +1161,18 @@ impl<'a> Builder<'a> {
         // itself, we skip it by default since we know it's safe to do so in that case.
         // See https://github.com/rust-lang/rust/issues/79361 for more info on this flag.
         if target.contains("apple") {
-            if self.config.rust_run_dsymutil {
-                rustflags.arg("-Zrun-dsymutil=yes");
+            if stage == 0 {
+                if self.config.rust_run_dsymutil {
+                    rustflags.arg("-Zrun-dsymutil=yes");
+                } else {
+                    rustflags.arg("-Zrun-dsymutil=no");
+                }
             } else {
-                rustflags.arg("-Zrun-dsymutil=no");
+                if self.config.rust_run_dsymutil {
+                    rustflags.arg("-Csplit-debuginfo=packed");
+                } else {
+                    rustflags.arg("-Csplit-debuginfo=unpacked");
+                }
             }
         }
 
@@ -1240,6 +1280,12 @@ impl<'a> Builder<'a> {
             // some code doesn't go through this `rustc` wrapper.
             lint_flags.push("-Wrust_2018_idioms");
             lint_flags.push("-Wunused_lifetimes");
+            // cfg(bootstrap): unconditionally enable this warning after the next beta bump
+            // This is currently disabled for the stage1 libstd, since build scripts
+            // will end up using the bootstrap compiler (which doesn't yet support this lint)
+            if compiler.stage != 0 && mode != Mode::Std {
+                lint_flags.push("-Wsemicolon_in_expressions_from_macros");
+            }
 
             if self.config.deny_warnings {
                 lint_flags.push("-Dwarnings");
@@ -1466,7 +1512,7 @@ impl<'a> Builder<'a> {
                 for el in stack.iter().rev() {
                     out += &format!("\t{:?}\n", el);
                 }
-                panic!(out);
+                panic!("{}", out);
             }
             if let Some(out) = self.cache.get(&step) {
                 self.verbose(&format!("{}c {:?}", "  ".repeat(stack.len()), step));

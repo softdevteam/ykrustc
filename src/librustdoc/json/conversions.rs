@@ -5,13 +5,14 @@
 use std::convert::From;
 
 use rustc_ast::ast;
+use rustc_hir::def::CtorKind;
 use rustc_span::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_span::Pos;
 
+use rustdoc_json_types::*;
+
 use crate::clean;
-use crate::doctree;
 use crate::formats::item_type::ItemType;
-use crate::json::types::*;
 use crate::json::JsonRenderer;
 
 impl JsonRenderer<'_> {
@@ -22,17 +23,17 @@ impl JsonRenderer<'_> {
         match *kind {
             clean::StrippedItem(_) => None,
             kind => Some(Item {
-                id: def_id.into(),
+                id: from_def_id(def_id),
                 crate_id: def_id.krate.as_u32(),
                 name: name.map(|sym| sym.to_string()),
                 source: self.convert_span(source),
                 visibility: self.convert_visibility(visibility),
-                docs: attrs.collapsed_doc_value().unwrap_or_default(),
+                docs: attrs.collapsed_doc_value(),
                 links: attrs
                     .links
                     .into_iter()
                     .filter_map(|clean::ItemLink { link, did, .. }| {
-                        did.map(|did| (link, did.into()))
+                        did.map(|did| (link, from_def_id(did)))
                     })
                     .collect(),
                 attrs: attrs
@@ -40,7 +41,7 @@ impl JsonRenderer<'_> {
                     .iter()
                     .map(rustc_ast_pretty::pprust::attribute_to_string)
                     .collect(),
-                deprecation: deprecation.map(Into::into),
+                deprecation: deprecation.map(from_deprecation),
                 kind: item_type.into(),
                 inner: kind.into(),
             }),
@@ -74,19 +75,17 @@ impl JsonRenderer<'_> {
             Inherited => Visibility::Default,
             Restricted(did) if did.index == CRATE_DEF_INDEX => Visibility::Crate,
             Restricted(did) => Visibility::Restricted {
-                parent: did.into(),
+                parent: from_def_id(did),
                 path: self.tcx.def_path(did).to_string_no_crate_verbose(),
             },
         }
     }
 }
 
-impl From<rustc_attr::Deprecation> for Deprecation {
-    fn from(deprecation: rustc_attr::Deprecation) -> Self {
-        #[rustfmt::skip]
-        let rustc_attr::Deprecation { since, note, is_since_rustc_version: _, suggestion: _ } = deprecation;
-        Deprecation { since: since.map(|s| s.to_string()), note: note.map(|s| s.to_string()) }
-    }
+crate fn from_deprecation(deprecation: rustc_attr::Deprecation) -> Deprecation {
+    #[rustfmt::skip]
+    let rustc_attr::Deprecation { since, note, is_since_rustc_version: _, suggestion: _ } = deprecation;
+    Deprecation { since: since.map(|s| s.to_string()), note: note.map(|s| s.to_string()) }
 }
 
 impl From<clean::GenericArgs> for GenericArgs {
@@ -141,10 +140,8 @@ impl From<clean::TypeBindingKind> for TypeBindingKind {
     }
 }
 
-impl From<DefId> for Id {
-    fn from(did: DefId) -> Self {
-        Id(format!("{}:{}", did.krate.as_u32(), u32::from(did.index)))
-    }
+crate fn from_def_id(did: DefId) -> Id {
+    Id(format!("{}:{}", did.krate.as_u32(), u32::from(did.index)))
 }
 
 impl From<clean::ItemKind> for ItemEnum {
@@ -157,7 +154,7 @@ impl From<clean::ItemKind> for ItemEnum {
             }
             ImportItem(i) => ItemEnum::ImportItem(i.into()),
             StructItem(s) => ItemEnum::StructItem(s.into()),
-            UnionItem(u) => ItemEnum::StructItem(u.into()),
+            UnionItem(u) => ItemEnum::UnionItem(u.into()),
             StructFieldItem(f) => ItemEnum::StructFieldItem(f.into()),
             EnumItem(e) => ItemEnum::EnumItem(e.into()),
             VariantItem(v) => ItemEnum::VariantItem(v.into()),
@@ -165,8 +162,8 @@ impl From<clean::ItemKind> for ItemEnum {
             ForeignFunctionItem(f) => ItemEnum::FunctionItem(f.into()),
             TraitItem(t) => ItemEnum::TraitItem(t.into()),
             TraitAliasItem(t) => ItemEnum::TraitAliasItem(t.into()),
-            MethodItem(m, _) => ItemEnum::MethodItem(m.into()),
-            TyMethodItem(m) => ItemEnum::MethodItem(m.into()),
+            MethodItem(m, _) => ItemEnum::MethodItem(from_function_method(m, true)),
+            TyMethodItem(m) => ItemEnum::MethodItem(from_function_method(m, false)),
             ImplItem(i) => ItemEnum::ImplItem(i.into()),
             StaticItem(s) => ItemEnum::StaticItem(s.into()),
             ForeignStaticItem(s) => ItemEnum::StaticItem(s.into()),
@@ -199,7 +196,7 @@ impl From<clean::Struct> for Struct {
     fn from(struct_: clean::Struct) -> Self {
         let clean::Struct { struct_type, generics, fields, fields_stripped } = struct_;
         Struct {
-            struct_type: struct_type.into(),
+            struct_type: from_ctor_kind(struct_type),
             generics: generics.into(),
             fields_stripped,
             fields: ids(fields),
@@ -208,11 +205,10 @@ impl From<clean::Struct> for Struct {
     }
 }
 
-impl From<clean::Union> for Struct {
+impl From<clean::Union> for Union {
     fn from(struct_: clean::Union) -> Self {
-        let clean::Union { struct_type, generics, fields, fields_stripped } = struct_;
-        Struct {
-            struct_type: struct_type.into(),
+        let clean::Union { generics, fields, fields_stripped } = struct_;
+        Union {
             generics: generics.into(),
             fields_stripped,
             fields: ids(fields),
@@ -221,14 +217,11 @@ impl From<clean::Union> for Struct {
     }
 }
 
-impl From<doctree::StructType> for StructType {
-    fn from(struct_type: doctree::StructType) -> Self {
-        use doctree::StructType::*;
-        match struct_type {
-            Plain => StructType::Plain,
-            Tuple => StructType::Tuple,
-            Unit => StructType::Unit,
-        }
+crate fn from_ctor_kind(struct_type: CtorKind) -> StructType {
+    match struct_type {
+        CtorKind::Fictive => StructType::Plain,
+        CtorKind::Fn => StructType::Tuple,
+        CtorKind::Const => StructType::Unit,
     }
 }
 
@@ -245,7 +238,7 @@ fn stringify_header(header: &rustc_hir::FnHeader) -> String {
 
 impl From<clean::Function> for Function {
     fn from(function: clean::Function) -> Self {
-        let clean::Function { decl, generics, header, all_types: _, ret_types: _ } = function;
+        let clean::Function { decl, generics, header } = function;
         Function {
             decl: decl.into(),
             generics: generics.into(),
@@ -311,7 +304,7 @@ impl From<clean::GenericBound> for GenericBound {
                 GenericBound::TraitBound {
                     trait_: trait_.into(),
                     generic_params: generic_params.into_iter().map(Into::into).collect(),
-                    modifier: modifier.into(),
+                    modifier: from_trait_bound_modifier(modifier),
                 }
             }
             Outlives(lifetime) => GenericBound::Outlives(lifetime.0.to_string()),
@@ -319,14 +312,12 @@ impl From<clean::GenericBound> for GenericBound {
     }
 }
 
-impl From<rustc_hir::TraitBoundModifier> for TraitBoundModifier {
-    fn from(modifier: rustc_hir::TraitBoundModifier) -> Self {
-        use rustc_hir::TraitBoundModifier::*;
-        match modifier {
-            None => TraitBoundModifier::None,
-            Maybe => TraitBoundModifier::Maybe,
-            MaybeConst => TraitBoundModifier::MaybeConst,
-        }
+crate fn from_trait_bound_modifier(modifier: rustc_hir::TraitBoundModifier) -> TraitBoundModifier {
+    use rustc_hir::TraitBoundModifier::*;
+    match modifier {
+        None => TraitBoundModifier::None,
+        Maybe => TraitBoundModifier::Maybe,
+        MaybeConst => TraitBoundModifier::MaybeConst,
     }
 }
 
@@ -336,7 +327,7 @@ impl From<clean::Type> for Type {
         match ty {
             ResolvedPath { path, param_names, did, is_generic: _ } => Type::ResolvedPath {
                 name: path.whole_name(),
-                id: did.into(),
+                id: from_def_id(did),
                 args: path.segments.last().map(|args| Box::new(args.clone().args.into())),
                 param_names: param_names
                     .map(|v| v.into_iter().map(Into::into).collect())
@@ -443,15 +434,14 @@ impl From<clean::Impl> for Impl {
     }
 }
 
-impl From<clean::Function> for Method {
-    fn from(function: clean::Function) -> Self {
-        let clean::Function { header, decl, generics, all_types: _, ret_types: _ } = function;
-        Method {
-            decl: decl.into(),
-            generics: generics.into(),
-            header: stringify_header(&header),
-            has_body: true,
-        }
+crate fn from_function_method(function: clean::Function, has_body: bool) -> Method {
+    let clean::Function { header, decl, generics } = function;
+    Method {
+        decl: decl.into(),
+        generics: generics.into(),
+        header: stringify_header(&header),
+        abi: header.abi.to_string(),
+        has_body,
     }
 }
 
@@ -471,7 +461,7 @@ impl From<clean::VariantStruct> for Struct {
     fn from(struct_: clean::VariantStruct) -> Self {
         let clean::VariantStruct { struct_type, fields, fields_stripped } = struct_;
         Struct {
-            struct_type: struct_type.into(),
+            struct_type: from_ctor_kind(struct_type),
             generics: Default::default(),
             fields_stripped,
             fields: ids(fields),
@@ -482,8 +472,8 @@ impl From<clean::VariantStruct> for Struct {
 
 impl From<clean::Variant> for Variant {
     fn from(variant: clean::Variant) -> Self {
-        use clean::VariantKind::*;
-        match variant.kind {
+        use clean::Variant::*;
+        match variant {
             CLike => Variant::Plain,
             Tuple(t) => Variant::Tuple(t.into_iter().map(Into::into).collect()),
             Struct(s) => Variant::Struct(ids(s.fields)),
@@ -498,13 +488,13 @@ impl From<clean::Import> for Import {
             Simple(s) => Import {
                 span: import.source.path.whole_name(),
                 name: s.to_string(),
-                id: import.source.did.map(Into::into),
+                id: import.source.did.map(from_def_id),
                 glob: false,
             },
             Glob => Import {
                 span: import.source.path.whole_name(),
                 name: import.source.path.last_name().to_string(),
-                id: import.source.did.map(Into::into),
+                id: import.source.did.map(from_def_id),
                 glob: true,
             },
         }
@@ -514,20 +504,18 @@ impl From<clean::Import> for Import {
 impl From<clean::ProcMacro> for ProcMacro {
     fn from(mac: clean::ProcMacro) -> Self {
         ProcMacro {
-            kind: mac.kind.into(),
+            kind: from_macro_kind(mac.kind),
             helpers: mac.helpers.iter().map(|x| x.to_string()).collect(),
         }
     }
 }
 
-impl From<rustc_span::hygiene::MacroKind> for MacroKind {
-    fn from(kind: rustc_span::hygiene::MacroKind) -> Self {
-        use rustc_span::hygiene::MacroKind::*;
-        match kind {
-            Bang => MacroKind::Bang,
-            Attr => MacroKind::Attr,
-            Derive => MacroKind::Derive,
-        }
+crate fn from_macro_kind(kind: rustc_span::hygiene::MacroKind) -> MacroKind {
+    use rustc_span::hygiene::MacroKind::*;
+    match kind {
+        Bang => MacroKind::Bang,
+        Attr => MacroKind::Attr,
+        Derive => MacroKind::Derive,
     }
 }
 
@@ -600,5 +588,5 @@ impl From<ItemType> for ItemKind {
 }
 
 fn ids(items: impl IntoIterator<Item = clean::Item>) -> Vec<Id> {
-    items.into_iter().filter(|x| !x.is_stripped()).map(|i| i.def_id.into()).collect()
+    items.into_iter().filter(|x| !x.is_stripped()).map(|i| from_def_id(i.def_id)).collect()
 }

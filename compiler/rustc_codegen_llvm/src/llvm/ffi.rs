@@ -1100,6 +1100,7 @@ extern "C" {
     // Operations on call sites
     pub fn LLVMSetInstructionCallConv(Instr: &Value, CC: c_uint);
     pub fn LLVMRustAddCallSiteAttribute(Instr: &Value, index: c_uint, attr: Attribute);
+    pub fn LLVMRustAddCallSiteAttrString(Instr: &Value, index: c_uint, Name: *const c_char);
     pub fn LLVMRustAddAlignmentCallSiteAttr(Instr: &Value, index: c_uint, bytes: u32);
     pub fn LLVMRustAddDereferenceableCallSiteAttr(Instr: &Value, index: c_uint, bytes: u64);
     pub fn LLVMRustAddDereferenceableOrNullCallSiteAttr(Instr: &Value, index: c_uint, bytes: u64);
@@ -1811,6 +1812,7 @@ extern "C" {
     pub fn LLVMRustDebugMetadataVersion() -> u32;
     pub fn LLVMRustVersionMajor() -> u32;
     pub fn LLVMRustVersionMinor() -> u32;
+    pub fn LLVMRustVersionPatch() -> u32;
 
     pub fn LLVMRustAddModuleFlag(M: &Module, name: *const c_char, value: u32);
 
@@ -2102,7 +2104,6 @@ extern "C" {
     );
 
     pub fn LLVMRustDIBuilderCreateDebugLocation(
-        Context: &'a Context,
         Line: c_uint,
         Column: c_uint,
         Scope: &'a DIScope,

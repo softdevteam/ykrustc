@@ -96,18 +96,24 @@ fn pierce_parens(mut expr: &ast::Expr) -> &ast::Expr {
 
 impl EarlyLintPass for WhileTrue {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
-        if let ast::ExprKind::While(cond, ..) = &e.kind {
+        if let ast::ExprKind::While(cond, _, label) = &e.kind {
             if let ast::ExprKind::Lit(ref lit) = pierce_parens(cond).kind {
                 if let ast::LitKind::Bool(true) = lit.kind {
                     if !lit.span.from_expansion() {
                         let msg = "denote infinite loops with `loop { ... }`";
-                        let condition_span = cx.sess.source_map().guess_head_span(e.span);
+                        let condition_span = e.span.with_hi(cond.span.hi());
                         cx.struct_span_lint(WHILE_TRUE, condition_span, |lint| {
                             lint.build(msg)
                                 .span_suggestion_short(
                                     condition_span,
                                     "use `loop`",
-                                    "loop".to_owned(),
+                                    format!(
+                                        "{}loop",
+                                        label.map_or_else(String::new, |label| format!(
+                                            "{}: ",
+                                            label.ident,
+                                        ))
+                                    ),
                                     Applicability::MachineApplicable,
                                 )
                                 .emit();
@@ -322,6 +328,18 @@ impl UnsafeCode {
 
         cx.struct_span_lint(UNSAFE_CODE, span, decorate);
     }
+
+    fn report_overriden_symbol_name(&self, cx: &EarlyContext<'_>, span: Span, msg: &str) {
+        self.report_unsafe(cx, span, |lint| {
+            lint.build(msg)
+                .note(
+                    "the linker's behavior with multiple libraries exporting duplicate symbol \
+                    names is undefined and Rust cannot provide guarantees when you manually \
+                    override them",
+                )
+                .emit();
+        })
+    }
 }
 
 impl EarlyLintPass for UnsafeCode {
@@ -351,16 +369,48 @@ impl EarlyLintPass for UnsafeCode {
 
     fn check_item(&mut self, cx: &EarlyContext<'_>, it: &ast::Item) {
         match it.kind {
-            ast::ItemKind::Trait(_, ast::Unsafe::Yes(_), ..) => {
-                self.report_unsafe(cx, it.span, |lint| {
+            ast::ItemKind::Trait(box ast::TraitKind(_, ast::Unsafe::Yes(_), ..)) => self
+                .report_unsafe(cx, it.span, |lint| {
                     lint.build("declaration of an `unsafe` trait").emit()
-                })
+                }),
+
+            ast::ItemKind::Impl(box ast::ImplKind { unsafety: ast::Unsafe::Yes(_), .. }) => self
+                .report_unsafe(cx, it.span, |lint| {
+                    lint.build("implementation of an `unsafe` trait").emit()
+                }),
+
+            ast::ItemKind::Fn(..) => {
+                if let Some(attr) = cx.sess().find_by_name(&it.attrs, sym::no_mangle) {
+                    self.report_overriden_symbol_name(
+                        cx,
+                        attr.span,
+                        "declaration of a `no_mangle` function",
+                    );
+                }
+                if let Some(attr) = cx.sess().find_by_name(&it.attrs, sym::export_name) {
+                    self.report_overriden_symbol_name(
+                        cx,
+                        attr.span,
+                        "declaration of a function with `export_name`",
+                    );
+                }
             }
 
-            ast::ItemKind::Impl { unsafety: ast::Unsafe::Yes(_), .. } => {
-                self.report_unsafe(cx, it.span, |lint| {
-                    lint.build("implementation of an `unsafe` trait").emit()
-                })
+            ast::ItemKind::Static(..) => {
+                if let Some(attr) = cx.sess().find_by_name(&it.attrs, sym::no_mangle) {
+                    self.report_overriden_symbol_name(
+                        cx,
+                        attr.span,
+                        "declaration of a `no_mangle` static",
+                    );
+                }
+                if let Some(attr) = cx.sess().find_by_name(&it.attrs, sym::export_name) {
+                    self.report_overriden_symbol_name(
+                        cx,
+                        attr.span,
+                        "declaration of a static with `export_name`",
+                    );
+                }
             }
 
             _ => {}
@@ -866,7 +916,7 @@ declare_lint_pass!(
 
 impl EarlyLintPass for AnonymousParameters {
     fn check_trait_item(&mut self, cx: &EarlyContext<'_>, it: &ast::AssocItem) {
-        if let ast::AssocItemKind::Fn(_, ref sig, _, _) = it.kind {
+        if let ast::AssocItemKind::Fn(box FnKind(_, ref sig, _, _)) = it.kind {
             for arg in sig.decl.inputs.iter() {
                 if let ast::PatKind::Ident(_, ident, None) = arg.pat.kind {
                     if ident.name == kw::Empty {
@@ -1550,13 +1600,13 @@ declare_lint_pass!(
 impl<'tcx> LateLintPass<'tcx> for TrivialConstraints {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx hir::Item<'tcx>) {
         use rustc_middle::ty::fold::TypeFoldable;
-        use rustc_middle::ty::PredicateAtom::*;
+        use rustc_middle::ty::PredicateKind::*;
 
         if cx.tcx.features().trivial_bounds {
             let def_id = cx.tcx.hir().local_def_id(item.hir_id);
             let predicates = cx.tcx.predicates_of(def_id);
             for &(predicate, span) in predicates.predicates {
-                let predicate_kind_name = match predicate.skip_binders() {
+                let predicate_kind_name = match predicate.kind().skip_binder() {
                     Trait(..) => "Trait",
                     TypeOutlives(..) |
                     RegionOutlives(..) => "Lifetime",
@@ -1936,8 +1986,8 @@ impl ExplicitOutlivesRequirements {
     ) -> Vec<ty::Region<'tcx>> {
         inferred_outlives
             .iter()
-            .filter_map(|(pred, _)| match pred.skip_binders() {
-                ty::PredicateAtom::RegionOutlives(ty::OutlivesPredicate(a, b)) => match a {
+            .filter_map(|(pred, _)| match pred.kind().skip_binder() {
+                ty::PredicateKind::RegionOutlives(ty::OutlivesPredicate(a, b)) => match a {
                     ty::ReEarlyBound(ebr) if ebr.index == index => Some(b),
                     _ => None,
                 },
@@ -1952,8 +2002,8 @@ impl ExplicitOutlivesRequirements {
     ) -> Vec<ty::Region<'tcx>> {
         inferred_outlives
             .iter()
-            .filter_map(|(pred, _)| match pred.skip_binders() {
-                ty::PredicateAtom::TypeOutlives(ty::OutlivesPredicate(a, b)) => {
+            .filter_map(|(pred, _)| match pred.kind().skip_binder() {
+                ty::PredicateKind::TypeOutlives(ty::OutlivesPredicate(a, b)) => {
                     a.is_param(index).then_some(b)
                 }
                 _ => None,
@@ -2601,7 +2651,7 @@ pub struct ClashingExternDeclarations {
     /// the symbol should be reported as a clashing declaration.
     // FIXME: Technically, we could just store a &'tcx str here without issue; however, the
     // `impl_lint_pass` macro doesn't currently support lints parametric over a lifetime.
-    seen_decls: FxHashMap<String, HirId>,
+    seen_decls: FxHashMap<Symbol, HirId>,
 }
 
 /// Differentiate between whether the name for an extern decl came from the link_name attribute or
@@ -2635,14 +2685,14 @@ impl ClashingExternDeclarations {
         let local_did = tcx.hir().local_def_id(fi.hir_id);
         let did = local_did.to_def_id();
         let instance = Instance::new(did, ty::List::identity_for_item(tcx, did));
-        let name = tcx.symbol_name(instance).name;
-        if let Some(&hir_id) = self.seen_decls.get(name) {
+        let name = Symbol::intern(tcx.symbol_name(instance).name);
+        if let Some(&hir_id) = self.seen_decls.get(&name) {
             // Avoid updating the map with the new entry when we do find a collision. We want to
             // make sure we're always pointing to the first definition as the previous declaration.
             // This lets us avoid emitting "knock-on" diagnostics.
             Some(hir_id)
         } else {
-            self.seen_decls.insert(name.to_owned(), hid)
+            self.seen_decls.insert(name, hid)
         }
     }
 
