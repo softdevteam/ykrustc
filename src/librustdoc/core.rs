@@ -24,14 +24,18 @@ use rustc_span::source_map;
 use rustc_span::symbol::sym;
 use rustc_span::DUMMY_SP;
 
-use std::cell::{Cell, RefCell};
 use std::mem;
 use std::rc::Rc;
+use std::{
+    cell::{Cell, RefCell},
+    collections::hash_map::Entry,
+};
 
 use crate::clean;
-use crate::clean::{AttributesExt, MAX_DEF_ID};
+use crate::clean::{AttributesExt, MAX_DEF_IDX};
 use crate::config::{Options as RustdocOptions, RenderOptions};
 use crate::config::{OutputFormat, RenderInfo};
+use crate::formats::cache::Cache;
 use crate::passes::{self, Condition::*, ConditionalPass};
 
 crate use rustc_session::config::{DebuggingOptions, Input, Options};
@@ -45,9 +49,9 @@ crate struct DocContext<'tcx> {
     ///
     /// Most of this logic is copied from rustc_lint::late.
     crate param_env: Cell<ParamEnv<'tcx>>,
-    /// Later on moved into `CACHE_KEY`
+    /// Later on moved into `cache`
     crate renderinfo: RefCell<RenderInfo>,
-    /// Later on moved through `clean::Crate` into `CACHE_KEY`
+    /// Later on moved through `clean::Crate` into `cache`
     crate external_traits: Rc<RefCell<FxHashMap<DefId, clean::Trait>>>,
     /// Used while populating `external_traits` to ensure we don't process the same trait twice at
     /// the same time.
@@ -62,8 +66,7 @@ crate struct DocContext<'tcx> {
     crate ct_substs: RefCell<FxHashMap<DefId, clean::Constant>>,
     /// Table synthetic type parameter for `impl Trait` in argument position -> bounds
     crate impl_trait_bounds: RefCell<FxHashMap<ImplTraitParam, Vec<clean::GenericBound>>>,
-    crate fake_def_ids: RefCell<FxHashMap<CrateNum, DefId>>,
-    crate all_fake_def_ids: RefCell<FxHashSet<DefId>>,
+    crate fake_def_ids: RefCell<FxHashMap<CrateNum, DefIndex>>,
     /// Auto-trait or blanket impls processed so far, as `(self_ty, trait_def_id)`.
     // FIXME(eddyb) make this a `ty::TraitRef<'tcx>` set.
     crate generated_synthetics: RefCell<FxHashSet<(Ty<'tcx>, DefId)>>,
@@ -75,6 +78,8 @@ crate struct DocContext<'tcx> {
     /// See `collect_intra_doc_links::traits_implemented_by` for more details.
     /// `map<module, set<trait>>`
     crate module_trait_cache: RefCell<FxHashMap<DefId, FxHashSet<DefId>>>,
+    /// Fake empty cache used when cache is required as parameter.
+    crate cache: Cache,
 }
 
 impl<'tcx> DocContext<'tcx> {
@@ -135,37 +140,38 @@ impl<'tcx> DocContext<'tcx> {
     /// [`Debug`]: std::fmt::Debug
     /// [`clean::Item`]: crate::clean::types::Item
     crate fn next_def_id(&self, crate_num: CrateNum) -> DefId {
-        let start_def_id = {
-            let num_def_ids = if crate_num == LOCAL_CRATE {
-                self.tcx.hir().definitions().def_path_table().num_def_ids()
-            } else {
-                self.enter_resolver(|r| r.cstore().num_def_ids(crate_num))
-            };
-
-            DefId { krate: crate_num, index: DefIndex::from_usize(num_def_ids) }
-        };
-
         let mut fake_ids = self.fake_def_ids.borrow_mut();
 
-        let def_id = *fake_ids.entry(crate_num).or_insert(start_def_id);
-        fake_ids.insert(
-            crate_num,
-            DefId { krate: crate_num, index: DefIndex::from(def_id.index.index() + 1) },
-        );
+        let def_index = match fake_ids.entry(crate_num) {
+            Entry::Vacant(e) => {
+                let num_def_idx = {
+                    let num_def_idx = if crate_num == LOCAL_CRATE {
+                        self.tcx.hir().definitions().def_path_table().num_def_ids()
+                    } else {
+                        self.enter_resolver(|r| r.cstore().num_def_ids(crate_num))
+                    };
 
-        MAX_DEF_ID.with(|m| {
-            m.borrow_mut().entry(def_id.krate).or_insert(start_def_id);
-        });
+                    DefIndex::from_usize(num_def_idx)
+                };
 
-        self.all_fake_def_ids.borrow_mut().insert(def_id);
+                MAX_DEF_IDX.with(|m| {
+                    m.borrow_mut().insert(crate_num, num_def_idx);
+                });
+                e.insert(num_def_idx)
+            }
+            Entry::Occupied(e) => e.into_mut(),
+        };
+        *def_index = DefIndex::from(*def_index + 1);
 
-        def_id
+        DefId { krate: crate_num, index: *def_index }
     }
 
     /// Like `hir().local_def_id_to_hir_id()`, but skips calling it on fake DefIds.
     /// (This avoids a slice-index-out-of-bounds panic.)
     crate fn as_local_hir_id(&self, def_id: DefId) -> Option<HirId> {
-        if self.all_fake_def_ids.borrow().contains(&def_id) {
+        if MAX_DEF_IDX.with(|m| {
+            m.borrow().get(&def_id.krate).map(|&idx| idx <= def_id.index).unwrap_or(false)
+        }) {
             None
         } else {
             def_id.as_local().map(|def_id| self.tcx.hir().local_def_id_to_hir_id(def_id))
@@ -429,7 +435,7 @@ crate fn create_resolver<'a>(
 
     // Before we actually clone it, let's force all the extern'd crates to
     // actually be loaded, just in case they're only referred to inside
-    // intra-doc-links
+    // intra-doc links
     resolver.borrow_mut().access(|resolver| {
         sess.time("load_extern_crates", || {
             for extern_name in &extern_names {
@@ -457,7 +463,7 @@ crate fn run_global_ctxt(
     mut default_passes: passes::DefaultPassOption,
     mut manual_passes: Vec<String>,
     render_options: RenderOptions,
-    output_format: Option<OutputFormat>,
+    output_format: OutputFormat,
 ) -> (clean::Crate, RenderInfo, RenderOptions) {
     // Certain queries assume that some checks were run elsewhere
     // (see https://github.com/rust-lang/rust/pull/73566#issuecomment-656954425),
@@ -514,7 +520,6 @@ crate fn run_global_ctxt(
         ct_substs: Default::default(),
         impl_trait_bounds: Default::default(),
         fake_def_ids: Default::default(),
-        all_fake_def_ids: Default::default(),
         generated_synthetics: Default::default(),
         auto_traits: tcx
             .all_traits(LOCAL_CRATE)
@@ -524,6 +529,7 @@ crate fn run_global_ctxt(
             .collect(),
         render_options,
         module_trait_cache: RefCell::new(FxHashMap::default()),
+        cache: Cache::default(),
     };
     debug!("crate: {:?}", tcx.hir().krate());
 

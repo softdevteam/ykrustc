@@ -41,12 +41,17 @@ use pulldown_cmark::{
     html, BrokenLink, CodeBlockKind, CowStr, Event, LinkType, Options, Parser, Tag,
 };
 
+use super::format::Buffer;
+
 #[cfg(test)]
 mod tests;
 
 /// Options for rendering Markdown in the main body of documentation.
 pub(crate) fn opts() -> Options {
-    Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH
+    Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
 }
 
 /// A subset of [`opts()`] used for rendering summaries.
@@ -235,9 +240,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
         }
         let lines = origtext.lines().filter_map(|l| map_line(l).for_html());
         let text = lines.collect::<Vec<Cow<'_, str>>>().join("\n");
-        // insert newline to clearly separate it from the
-        // previous block so we can shorten the html output
-        let mut s = String::from("\n");
+
         let playground_button = self.playground.as_ref().and_then(|playground| {
             let krate = &playground.crate_name;
             let url = &playground.url;
@@ -298,8 +301,13 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
             None
         };
 
-        s.push_str(&highlight::render_with_highlighting(
-            text,
+        // insert newline to clearly separate it from the
+        // previous block so we can shorten the html output
+        let mut s = Buffer::new();
+        s.push_str("\n");
+        highlight::render_with_highlighting(
+            &text,
+            &mut s,
             Some(&format!(
                 "rust-example-rendered{}",
                 if let Some((_, class)) = tooltip { format!(" {}", class) } else { String::new() }
@@ -307,8 +315,8 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for CodeBlocks<'_, 'a, I> {
             playground_button.as_deref(),
             tooltip,
             edition,
-        ));
-        Some(Event::Html(s.into()))
+        );
+        Some(Event::Html(s.into_inner().into()))
     }
 }
 
@@ -620,7 +628,7 @@ crate fn find_testable_code<T: doctest::Tester>(
     tests: &mut T,
     error_codes: ErrorCodes,
     enable_per_target_ignores: bool,
-    extra_info: Option<&ExtraInfo<'_, '_>>,
+    extra_info: Option<&ExtraInfo<'_>>,
 ) {
     let mut parser = Parser::new(doc).into_offset_iter();
     let mut prev_offset = 0;
@@ -681,19 +689,19 @@ crate fn find_testable_code<T: doctest::Tester>(
     }
 }
 
-crate struct ExtraInfo<'a, 'b> {
+crate struct ExtraInfo<'tcx> {
     hir_id: Option<HirId>,
     item_did: Option<DefId>,
     sp: Span,
-    tcx: &'a TyCtxt<'b>,
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'b> ExtraInfo<'a, 'b> {
-    crate fn new(tcx: &'a TyCtxt<'b>, hir_id: HirId, sp: Span) -> ExtraInfo<'a, 'b> {
+impl<'tcx> ExtraInfo<'tcx> {
+    crate fn new(tcx: TyCtxt<'tcx>, hir_id: HirId, sp: Span) -> ExtraInfo<'tcx> {
         ExtraInfo { hir_id: Some(hir_id), item_did: None, sp, tcx }
     }
 
-    crate fn new_did(tcx: &'a TyCtxt<'b>, did: DefId, sp: Span) -> ExtraInfo<'a, 'b> {
+    crate fn new_did(tcx: TyCtxt<'tcx>, did: DefId, sp: Span) -> ExtraInfo<'tcx> {
         ExtraInfo { hir_id: None, item_did: Some(did), sp, tcx }
     }
 
@@ -775,7 +783,7 @@ impl LangString {
         string: &str,
         allow_error_code_check: ErrorCodes,
         enable_per_target_ignores: bool,
-        extra: Option<&ExtraInfo<'_, '_>>,
+        extra: Option<&ExtraInfo<'_>>,
     ) -> LangString {
         let allow_error_code_check = allow_error_code_check.as_bool();
         let mut seen_rust_tags = false;
@@ -1208,7 +1216,7 @@ crate struct RustCodeBlock {
 
 /// Returns a range of bytes for each code block in the markdown that is tagged as `rust` or
 /// untagged (and assumed to be rust).
-crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_, '_>) -> Vec<RustCodeBlock> {
+crate fn rust_code_blocks(md: &str, extra_info: &ExtraInfo<'_>) -> Vec<RustCodeBlock> {
     let mut code_blocks = vec![];
 
     if md.is_empty() {
@@ -1313,6 +1321,8 @@ fn init_id_map() -> FxHashMap<String, usize> {
     map.insert("toggle-all-docs".to_owned(), 1);
     map.insert("all-types".to_owned(), 1);
     map.insert("default-settings".to_owned(), 1);
+    map.insert("rustdoc-vars".to_owned(), 1);
+    map.insert("sidebar-vars".to_owned(), 1);
     // This is the list of IDs used by rustdoc sections.
     map.insert("fields".to_owned(), 1);
     map.insert("variants".to_owned(), 1);
@@ -1330,7 +1340,7 @@ impl IdMap {
         IdMap { map: init_id_map() }
     }
 
-    crate fn populate<I: IntoIterator<Item = String>>(&mut self, ids: I) {
+    crate fn populate<I: IntoIterator<Item = S>, S: AsRef<str> + ToString>(&mut self, ids: I) {
         for id in ids {
             let _ = self.derive(id);
         }
@@ -1340,11 +1350,11 @@ impl IdMap {
         self.map = init_id_map();
     }
 
-    crate fn derive(&mut self, candidate: String) -> String {
-        let id = match self.map.get_mut(&candidate) {
-            None => candidate,
+    crate fn derive<S: AsRef<str> + ToString>(&mut self, candidate: S) -> String {
+        let id = match self.map.get_mut(candidate.as_ref()) {
+            None => candidate.to_string(),
             Some(a) => {
-                let id = format!("{}-{}", candidate, *a);
+                let id = format!("{}-{}", candidate.as_ref(), *a);
                 *a += 1;
                 id
             }

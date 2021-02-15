@@ -781,6 +781,7 @@ pub fn walk_assoc_type_binding<'v, V: Visitor<'v>>(
 ) {
     visitor.visit_id(type_binding.hir_id);
     visitor.visit_ident(type_binding.ident);
+    visitor.visit_generic_args(type_binding.span, type_binding.gen_args);
     match type_binding.kind {
         TypeBindingKind::Equality { ref ty } => {
             visitor.visit_ty(ty);
@@ -1146,7 +1147,12 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr<'v>) 
         ExprKind::DropTemps(ref subexpression) => {
             visitor.visit_expr(subexpression);
         }
-        ExprKind::Loop(ref block, ref opt_label, _) => {
+        ExprKind::If(ref cond, ref then, ref else_opt) => {
+            visitor.visit_expr(cond);
+            visitor.visit_expr(then);
+            walk_list!(visitor, visit_expr, else_opt);
+        }
+        ExprKind::Loop(ref block, ref opt_label, _, _) => {
             walk_list!(visitor, visit_label, opt_label);
             visitor.visit_block(block);
         }

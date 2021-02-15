@@ -11,9 +11,9 @@ pub use rustc_ast::{CaptureBy, Movability, Mutability};
 use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_data_structures::sync::{par_for_each_in, Send, Sync};
 use rustc_macros::HashStable_Generic;
-use rustc_span::def_id::LocalDefId;
-use rustc_span::source_map::Spanned;
+use rustc_span::source_map::{SourceMap, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
+use rustc_span::{def_id::LocalDefId, BytePos};
 use rustc_span::{MultiSpan, Span, DUMMY_SP};
 use rustc_target::asm::InlineAsmRegOrRegClass;
 use rustc_target::spec::abi::Abi;
@@ -231,7 +231,11 @@ impl<'hir> PathSegment<'hir> {
         PathSegment { ident, hir_id: None, res: None, infer_args: true, args: None }
     }
 
-    pub fn generic_args(&self) -> &GenericArgs<'hir> {
+    pub fn invalid() -> Self {
+        Self::from_ident(Ident::invalid())
+    }
+
+    pub fn args(&self) -> &GenericArgs<'hir> {
         if let Some(ref args) = self.args {
             args
         } else {
@@ -275,19 +279,15 @@ impl GenericArg<'_> {
         matches!(self, GenericArg::Const(_))
     }
 
+    pub fn is_synthetic(&self) -> bool {
+        matches!(self, GenericArg::Lifetime(lifetime) if lifetime.name.ident() == Ident::invalid())
+    }
+
     pub fn descr(&self) -> &'static str {
         match self {
             GenericArg::Lifetime(_) => "lifetime",
             GenericArg::Type(_) => "type",
             GenericArg::Const(_) => "constant",
-        }
-    }
-
-    pub fn short_descr(&self) -> &'static str {
-        match self {
-            GenericArg::Lifetime(_) => "lifetime",
-            GenericArg::Type(_) => "type",
-            GenericArg::Const(_) => "const",
         }
     }
 
@@ -351,6 +351,39 @@ impl GenericArgs<'_> {
         }
 
         own_counts
+    }
+
+    pub fn span(&self) -> Option<Span> {
+        self.args
+            .iter()
+            .filter(|arg| !arg.is_synthetic())
+            .map(|arg| arg.span())
+            .reduce(|span1, span2| span1.to(span2))
+    }
+
+    /// Returns span encompassing arguments and their surrounding `<>` or `()`
+    pub fn span_ext(&self, sm: &SourceMap) -> Option<Span> {
+        let mut span = self.span()?;
+
+        let (o, c) = if self.parenthesized { ('(', ')') } else { ('<', '>') };
+
+        if let Ok(snippet) = sm.span_to_snippet(span) {
+            let snippet = snippet.as_bytes();
+
+            if snippet[0] != (o as u8) || snippet[snippet.len() - 1] != (c as u8) {
+                span = sm.span_extend_to_prev_char(span, o, true);
+                span = span.with_lo(span.lo() - BytePos(1));
+
+                span = sm.span_extend_to_next_char(span, c, true);
+                span = span.with_hi(span.hi() + BytePos(1));
+            }
+        }
+
+        Some(span)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.args.is_empty()
     }
 }
 
@@ -528,7 +561,7 @@ impl WhereClause<'_> {
     ///  in `fn foo<T>(t: T) where T: Foo,` so we don't suggest two trailing commas.
     pub fn tail_span_for_suggestion(&self) -> Span {
         let end = self.span_for_predicates_or_empty_place().shrink_to_hi();
-        self.predicates.last().map(|p| p.span()).unwrap_or(end).shrink_to_hi().to(end)
+        self.predicates.last().map_or(end, |p| p.span()).shrink_to_hi().to(end)
     }
 }
 
@@ -1079,25 +1112,25 @@ pub type BinOp = Spanned<BinOpKind>;
 #[derive(Copy, Clone, PartialEq, Encodable, Debug, HashStable_Generic)]
 pub enum UnOp {
     /// The `*` operator (deferencing).
-    UnDeref,
+    Deref,
     /// The `!` operator (logical negation).
-    UnNot,
+    Not,
     /// The `-` operator (negation).
-    UnNeg,
+    Neg,
 }
 
 impl UnOp {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::UnDeref => "*",
-            Self::UnNot => "!",
-            Self::UnNeg => "-",
+            Self::Deref => "*",
+            Self::Not => "!",
+            Self::Neg => "-",
         }
     }
 
     /// Returns `true` if the unary operator takes its argument by value.
     pub fn is_by_value(self) -> bool {
-        matches!(self, Self::UnNeg | Self::UnNot)
+        matches!(self, Self::Neg | Self::Not)
     }
 }
 
@@ -1398,6 +1431,7 @@ impl Expr<'_> {
             ExprKind::Lit(_) => ExprPrecedence::Lit,
             ExprKind::Type(..) | ExprKind::Cast(..) => ExprPrecedence::Cast,
             ExprKind::DropTemps(ref expr, ..) => expr.precedence(),
+            ExprKind::If(..) => ExprPrecedence::If,
             ExprKind::Loop(..) => ExprPrecedence::Loop,
             ExprKind::Match(..) => ExprPrecedence::Match,
             ExprKind::Closure(..) => ExprPrecedence::Closure,
@@ -1443,7 +1477,7 @@ impl Expr<'_> {
             // https://github.com/rust-lang/rfcs/blob/master/text/0803-type-ascription.md#type-ascription-and-temporaries
             ExprKind::Type(ref e, _) => e.is_place_expr(allow_projections_from),
 
-            ExprKind::Unary(UnOp::UnDeref, _) => true,
+            ExprKind::Unary(UnOp::Deref, _) => true,
 
             ExprKind::Field(ref base, _) | ExprKind::Index(ref base, _) => {
                 allow_projections_from(base) || base.is_place_expr(allow_projections_from)
@@ -1459,6 +1493,7 @@ impl Expr<'_> {
             | ExprKind::MethodCall(..)
             | ExprKind::Struct(..)
             | ExprKind::Tup(..)
+            | ExprKind::If(..)
             | ExprKind::Match(..)
             | ExprKind::Closure(..)
             | ExprKind::Block(..)
@@ -1508,10 +1543,10 @@ pub fn is_range_literal(expr: &Expr<'_>) -> bool {
             **qpath,
             QPath::LangItem(
                 LangItem::Range
-                | LangItem::RangeTo
-                | LangItem::RangeFrom
-                | LangItem::RangeFull
-                | LangItem::RangeToInclusive,
+                    | LangItem::RangeTo
+                    | LangItem::RangeFrom
+                    | LangItem::RangeFull
+                    | LangItem::RangeToInclusive,
                 _,
             )
         ),
@@ -1575,10 +1610,16 @@ pub enum ExprKind<'hir> {
     /// This construct only exists to tweak the drop order in HIR lowering.
     /// An example of that is the desugaring of `for` loops.
     DropTemps(&'hir Expr<'hir>),
+    /// An `if` block, with an optional else block.
+    ///
+    /// I.e., `if <expr> { <expr> } else { <expr> }`.
+    If(&'hir Expr<'hir>, &'hir Expr<'hir>, Option<&'hir Expr<'hir>>),
     /// A conditionless loop (can be exited with `break`, `continue`, or `return`).
     ///
     /// I.e., `'label: loop { <block> }`.
-    Loop(&'hir Block<'hir>, Option<Label>, LoopSource),
+    ///
+    /// The `Span` is the loop header (`for x in y`/`while let pat = expr`).
+    Loop(&'hir Block<'hir>, Option<Label>, LoopSource, Span),
     /// A `match` block, with a source that indicates whether or not it is
     /// the result of a desugaring, and if so, which kind.
     Match(&'hir Expr<'hir>, &'hir [Arm<'hir>], MatchSource),
@@ -1728,8 +1769,6 @@ pub enum LocalSource {
 pub enum MatchSource {
     /// A `match _ { .. }`.
     Normal,
-    /// An `if _ { .. }` (optionally with `else { .. }`).
-    IfDesugar { contains_else_clause: bool },
     /// An `if let _ = _ { .. }` (optionally with `else { .. }`).
     IfLetDesugar { contains_else_clause: bool },
     /// An `if let _ = _ => { .. }` match guard.
@@ -1752,7 +1791,7 @@ impl MatchSource {
         use MatchSource::*;
         match self {
             Normal => "match",
-            IfDesugar { .. } | IfLetDesugar { .. } | IfLetGuardDesugar => "if",
+            IfLetDesugar { .. } | IfLetGuardDesugar => "if",
             WhileDesugar | WhileLetDesugar => "while",
             ForLoopDesugar => "for",
             TryDesugar => "?",
@@ -1976,6 +2015,7 @@ pub struct TypeBinding<'hir> {
     pub hir_id: HirId,
     #[stable_hasher(project(name))]
     pub ident: Ident,
+    pub gen_args: &'hir GenericArgs<'hir>,
     pub kind: TypeBindingKind<'hir>,
     pub span: Span,
 }
@@ -2018,6 +2058,28 @@ pub enum PrimTy {
 }
 
 impl PrimTy {
+    /// All of the primitive types
+    pub const ALL: [Self; 17] = [
+        // any changes here should also be reflected in `PrimTy::from_name`
+        Self::Int(IntTy::I8),
+        Self::Int(IntTy::I16),
+        Self::Int(IntTy::I32),
+        Self::Int(IntTy::I64),
+        Self::Int(IntTy::I128),
+        Self::Int(IntTy::Isize),
+        Self::Uint(UintTy::U8),
+        Self::Uint(UintTy::U16),
+        Self::Uint(UintTy::U32),
+        Self::Uint(UintTy::U64),
+        Self::Uint(UintTy::U128),
+        Self::Uint(UintTy::Usize),
+        Self::Float(FloatTy::F32),
+        Self::Float(FloatTy::F64),
+        Self::Bool,
+        Self::Char,
+        Self::Str,
+    ];
+
     pub fn name_str(self) -> &'static str {
         match self {
             PrimTy::Int(i) => i.name_str(),
@@ -2038,6 +2100,33 @@ impl PrimTy {
             PrimTy::Bool => sym::bool,
             PrimTy::Char => sym::char,
         }
+    }
+
+    /// Returns the matching `PrimTy` for a `Symbol` such as "str" or "i32".
+    /// Returns `None` if no matching type is found.
+    pub fn from_name(name: Symbol) -> Option<Self> {
+        let ty = match name {
+            // any changes here should also be reflected in `PrimTy::ALL`
+            sym::i8 => Self::Int(IntTy::I8),
+            sym::i16 => Self::Int(IntTy::I16),
+            sym::i32 => Self::Int(IntTy::I32),
+            sym::i64 => Self::Int(IntTy::I64),
+            sym::i128 => Self::Int(IntTy::I128),
+            sym::isize => Self::Int(IntTy::Isize),
+            sym::u8 => Self::Uint(UintTy::U8),
+            sym::u16 => Self::Uint(UintTy::U16),
+            sym::u32 => Self::Uint(UintTy::U32),
+            sym::u64 => Self::Uint(UintTy::U64),
+            sym::u128 => Self::Uint(UintTy::U128),
+            sym::usize => Self::Uint(UintTy::Usize),
+            sym::f32 => Self::Float(FloatTy::F32),
+            sym::f64 => Self::Float(FloatTy::F64),
+            sym::bool => Self::Bool,
+            sym::char => Self::Char,
+            sym::str => Self::Str,
+            _ => return None,
+        };
+        Some(ty)
     }
 }
 

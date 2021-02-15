@@ -446,6 +446,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                 }
 
+                let mut label_span_not_found = || {
+                    if unsatisfied_predicates.is_empty() {
+                        err.span_label(span, format!("{item_kind} not found in `{ty_str}`"));
+                    } else {
+                        err.span_label(span, format!("{item_kind} cannot be called on `{ty_str}` due to unsatisfied trait bounds"));
+                    }
+                    self.tcx.sess.trait_methods_not_found.borrow_mut().insert(orig_span);
+                };
+
                 // If the method name is the name of a field with a function or closure type,
                 // give a helping note that it has to be called as `(x.f)(...)`.
                 if let SelfSource::MethodCall(expr) = source {
@@ -501,12 +510,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         let field_kind = if is_accessible { "field" } else { "private field" };
                         err.span_label(item_name.span, format!("{}, not a method", field_kind));
                     } else if lev_candidate.is_none() && static_sources.is_empty() {
-                        err.span_label(span, format!("{} not found in `{}`", item_kind, ty_str));
-                        self.tcx.sess.trait_methods_not_found.borrow_mut().insert(orig_span);
+                        label_span_not_found();
                     }
                 } else {
-                    err.span_label(span, format!("{} not found in `{}`", item_kind, ty_str));
-                    self.tcx.sess.trait_methods_not_found.borrow_mut().insert(orig_span);
+                    label_span_not_found();
                 }
 
                 if self.is_fn_ty(&rcvr_ty, span) {
@@ -582,8 +589,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     let mut collect_type_param_suggestions =
                         |self_ty: Ty<'tcx>, parent_pred: &ty::Predicate<'tcx>, obligation: &str| {
                             // We don't care about regions here, so it's fine to skip the binder here.
-                            if let (ty::Param(_), ty::PredicateAtom::Trait(p, _)) =
-                                (self_ty.kind(), parent_pred.skip_binders())
+                            if let (ty::Param(_), ty::PredicateKind::Trait(p, _)) =
+                                (self_ty.kind(), parent_pred.kind().skip_binder())
                             {
                                 if let ty::Adt(def, _) = p.trait_ref.self_ty().kind() {
                                     let node = def.did.as_local().map(|def_id| {
@@ -637,9 +644,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         }
                     };
                     let mut format_pred = |pred: ty::Predicate<'tcx>| {
-                        let bound_predicate = pred.bound_atom();
+                        let bound_predicate = pred.kind();
                         match bound_predicate.skip_binder() {
-                            ty::PredicateAtom::Projection(pred) => {
+                            ty::PredicateKind::Projection(pred) => {
                                 let pred = bound_predicate.rebind(pred);
                                 // `<Foo as Iterator>::Item = String`.
                                 let trait_ref =
@@ -658,7 +665,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 bound_span_label(trait_ref.self_ty(), &obligation, &quiet);
                                 Some((obligation, trait_ref.self_ty()))
                             }
-                            ty::PredicateAtom::Trait(poly_trait_ref, _) => {
+                            ty::PredicateKind::Trait(poly_trait_ref, _) => {
                                 let p = poly_trait_ref.trait_ref;
                                 let self_ty = p.self_ty();
                                 let path = p.print_only_trait_path();
@@ -721,10 +728,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             .map(|(_, path)| path)
                             .collect::<Vec<_>>()
                             .join("\n");
+                        let actual_prefix = actual.prefix_string();
+                        err.set_primary_message(&format!(
+                            "the {item_kind} `{item_name}` exists for {actual_prefix} `{ty_str}`, but its trait bounds were not satisfied"
+                        ));
                         err.note(&format!(
-                            "the method `{}` exists but the following trait bounds were not \
-                             satisfied:\n{}",
-                            item_name, bound_list
+                            "the following trait bounds were not satisfied:\n{bound_list}"
                         ));
                     }
                 }
@@ -742,7 +751,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     );
                 }
 
-                if actual.is_enum() {
+                // Don't emit a suggestion if we found an actual method
+                // that had unsatisfied trait bounds
+                if unsatisfied_predicates.is_empty() && actual.is_enum() {
                     let adt_def = actual.ty_adt_def().expect("enum is not an ADT");
                     if let Some(suggestion) = lev_distance::find_best_match_for_name(
                         &adt_def.variants.iter().map(|s| s.ident.name).collect::<Vec<_>>(),
@@ -778,17 +789,21 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         err.span_label(span, msg);
                     }
                 } else if let Some(lev_candidate) = lev_candidate {
-                    let def_kind = lev_candidate.kind.as_def_kind();
-                    err.span_suggestion(
-                        span,
-                        &format!(
-                            "there is {} {} with a similar name",
-                            def_kind.article(),
-                            def_kind.descr(lev_candidate.def_id),
-                        ),
-                        lev_candidate.ident.to_string(),
-                        Applicability::MaybeIncorrect,
-                    );
+                    // Don't emit a suggestion if we found an actual method
+                    // that had unsatisfied trait bounds
+                    if unsatisfied_predicates.is_empty() {
+                        let def_kind = lev_candidate.kind.as_def_kind();
+                        err.span_suggestion(
+                            span,
+                            &format!(
+                                "there is {} {} with a similar name",
+                                def_kind.article(),
+                                def_kind.descr(lev_candidate.def_id),
+                            ),
+                            lev_candidate.ident.to_string(),
+                            Applicability::MaybeIncorrect,
+                        );
+                    }
                 }
 
                 return Some(err);
@@ -992,11 +1007,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // implementing a trait would be legal but is rejected
                 // here).
                 unsatisfied_predicates.iter().all(|(p, _)| {
-                    match p.skip_binders() {
+                    match p.kind().skip_binder() {
                         // Hide traits if they are present in predicates as they can be fixed without
                         // having to implement them.
-                        ty::PredicateAtom::Trait(t, _) => t.def_id() == info.def_id,
-                        ty::PredicateAtom::Projection(p) => {
+                        ty::PredicateKind::Trait(t, _) => t.def_id() == info.def_id,
+                        ty::PredicateKind::Projection(p) => {
                             p.projection_ty.item_def_id == info.def_id
                         }
                         _ => false,
@@ -1193,7 +1208,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         .any(|imp_did| {
                             let imp = self.tcx.impl_trait_ref(imp_did).unwrap();
                             let imp_simp = simplify_type(self.tcx, imp.self_ty(), true);
-                            imp_simp.map(|s| s == simp_rcvr_ty).unwrap_or(false)
+                            imp_simp.map_or(false, |s| s == simp_rcvr_ty)
                         })
                     {
                         explicitly_negative.push(candidate);
@@ -1270,11 +1285,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             match ty.kind() {
                 ty::Adt(def, _) => def.did.is_local(),
                 ty::Foreign(did) => did.is_local(),
-
-                ty::Dynamic(ref tr, ..) => {
-                    tr.principal().map(|d| d.def_id().is_local()).unwrap_or(false)
-                }
-
+                ty::Dynamic(ref tr, ..) => tr.principal().map_or(false, |d| d.def_id().is_local()),
                 ty::Param(_) => true,
 
                 // Everything else (primitive types, etc.) is effectively

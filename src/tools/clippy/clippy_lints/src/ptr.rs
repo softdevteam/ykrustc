@@ -8,8 +8,8 @@ use crate::utils::{
 use if_chain::if_chain;
 use rustc_errors::Applicability;
 use rustc_hir::{
-    BinOpKind, BodyId, Expr, ExprKind, FnDecl, FnRetTy, GenericArg, HirId, ImplItem, ImplItemKind, Item, ItemKind, Impl,
-    Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitFn, TraitItem, TraitItemKind, Ty, TyKind,
+    BinOpKind, BodyId, Expr, ExprKind, FnDecl, FnRetTy, GenericArg, HirId, Impl, ImplItem, ImplItemKind, Item,
+    ItemKind, Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitFn, TraitItem, TraitItemKind, Ty, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty;
@@ -263,8 +263,7 @@ fn check_fn(cx: &LateContext<'_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: 
             } else if match_type(cx, ty, &paths::COW) {
                 if_chain! {
                     if let TyKind::Rptr(_, MutTy { ref ty, ..} ) = arg.kind;
-                    if let TyKind::Path(ref path) = ty.kind;
-                    if let QPath::Resolved(None, ref pp) = *path;
+                    if let TyKind::Path(QPath::Resolved(None, ref pp)) = ty.kind;
                     if let [ref bx] = *pp.segments;
                     if let Some(ref params) = bx.args;
                     if !params.parenthesized;

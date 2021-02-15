@@ -5,14 +5,13 @@ use core::ops::RangeBounds;
 use core::ptr;
 
 use super::node::{marker, ForceResult::*, Handle, NodeRef};
-use super::search::{self, SearchResult};
-use super::unwrap_unchecked;
+use super::search::SearchResult;
 
 /// Finds the leaf edges delimiting a specified range in or underneath a node.
 ///
 /// The result is meaningful only if the tree is ordered by key, like the tree
 /// in a `BTreeMap` is.
-fn range_search<BorrowType, K, V, Q, R>(
+fn range_search<BorrowType: marker::BorrowType, K, V, Q, R>(
     root1: NodeRef<BorrowType, K, V, marker::LeafOrInternal>,
     root2: NodeRef<BorrowType, K, V, marker::LeafOrInternal>,
     range: R,
@@ -25,7 +24,12 @@ where
     K: Borrow<Q>,
     R: RangeBounds<Q>,
 {
-    match (range.start_bound(), range.end_bound()) {
+    // WARNING: Inlining these variables would be unsound (#81138)
+    // We assume the bounds reported by `range` remain the same, but
+    // an adversarial implementation could change between calls
+    let start = range.start_bound();
+    let end = range.end_bound();
+    match (start, end) {
         (Excluded(s), Excluded(e)) if s == e => {
             panic!("range start and end are equal and excluded in BTreeMap")
         }
@@ -41,15 +45,16 @@ where
     let mut max_found = false;
 
     loop {
-        let front = match (min_found, range.start_bound()) {
-            (false, Included(key)) => match search::search_node(min_node, key) {
+        // Using `range` again would be unsound (#81138)
+        let front = match (min_found, start) {
+            (false, Included(key)) => match min_node.search_node(key) {
                 SearchResult::Found(kv) => {
                     min_found = true;
                     kv.left_edge()
                 }
                 SearchResult::GoDown(edge) => edge,
             },
-            (false, Excluded(key)) => match search::search_node(min_node, key) {
+            (false, Excluded(key)) => match min_node.search_node(key) {
                 SearchResult::Found(kv) => {
                     min_found = true;
                     kv.right_edge()
@@ -61,15 +66,16 @@ where
             (_, Unbounded) => min_node.first_edge(),
         };
 
-        let back = match (max_found, range.end_bound()) {
-            (false, Included(key)) => match search::search_node(max_node, key) {
+        // Using `range` again would be unsound (#81138)
+        let back = match (max_found, end) {
+            (false, Included(key)) => match max_node.search_node(key) {
                 SearchResult::Found(kv) => {
                     max_found = true;
                     kv.right_edge()
                 }
                 SearchResult::GoDown(edge) => edge,
             },
-            (false, Excluded(key)) => match search::search_node(max_node, key) {
+            (false, Excluded(key)) => match max_node.search_node(key) {
                 SearchResult::Found(kv) => {
                     max_found = true;
                     kv.left_edge()
@@ -98,7 +104,7 @@ where
 }
 
 /// Equivalent to `range_search(k, v, ..)` but without the `Ord` bound.
-fn full_range<BorrowType, K, V>(
+fn full_range<BorrowType: marker::BorrowType, K, V>(
     root1: NodeRef<BorrowType, K, V, marker::LeafOrInternal>,
     root2: NodeRef<BorrowType, K, V, marker::LeafOrInternal>,
 ) -> (
@@ -195,15 +201,15 @@ impl<'a, K: 'a, V: 'a> NodeRef<marker::ValMut<'a>, K, V, marker::LeafOrInternal>
     }
 }
 
-impl<K, V> NodeRef<marker::Owned, K, V, marker::LeafOrInternal> {
+impl<K, V> NodeRef<marker::Dying, K, V, marker::LeafOrInternal> {
     /// Splits a unique reference into a pair of leaf edges delimiting the full range of the tree.
     /// The results are non-unique references allowing massively destructive mutation, so must be
     /// used with the utmost care.
     pub fn full_range(
         self,
     ) -> (
-        Handle<NodeRef<marker::Owned, K, V, marker::Leaf>, marker::Edge>,
-        Handle<NodeRef<marker::Owned, K, V, marker::Leaf>, marker::Edge>,
+        Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge>,
+        Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge>,
     ) {
         // We duplicate the root NodeRef here -- we will never access it in a way
         // that overlaps references obtained from the root.
@@ -212,7 +218,9 @@ impl<K, V> NodeRef<marker::Owned, K, V, marker::LeafOrInternal> {
     }
 }
 
-impl<BorrowType, K, V> Handle<NodeRef<BorrowType, K, V, marker::Leaf>, marker::Edge> {
+impl<BorrowType: marker::BorrowType, K, V>
+    Handle<NodeRef<BorrowType, K, V, marker::Leaf>, marker::Edge>
+{
     /// Given a leaf edge handle, returns [`Result::Ok`] with a handle to the neighboring KV
     /// on the right side, which is either in the same leaf node or in an ancestor node.
     /// If the leaf edge is the last one in the tree, returns [`Result::Err`] with the root node.
@@ -256,7 +264,9 @@ impl<BorrowType, K, V> Handle<NodeRef<BorrowType, K, V, marker::Leaf>, marker::E
     }
 }
 
-impl<BorrowType, K, V> Handle<NodeRef<BorrowType, K, V, marker::Internal>, marker::Edge> {
+impl<BorrowType: marker::BorrowType, K, V>
+    Handle<NodeRef<BorrowType, K, V, marker::Internal>, marker::Edge>
+{
     /// Given an internal edge handle, returns [`Result::Ok`] with a handle to the neighboring KV
     /// on the right side, which is either in the same internal node or in an ancestor node.
     /// If the internal edge is the last one in the tree, returns [`Result::Err`] with the root node.
@@ -279,37 +289,76 @@ impl<BorrowType, K, V> Handle<NodeRef<BorrowType, K, V, marker::Internal>, marke
     }
 }
 
-macro_rules! def_next_kv_uncheched_dealloc {
-    { unsafe fn $name:ident : $adjacent_kv:ident } => {
-        /// Given a leaf edge handle into an owned tree, returns a handle to the next KV,
-        /// while deallocating any node left behind yet leaving the corresponding edge
-        /// in its parent node dangling.
-        ///
-        /// # Safety
-        /// - The leaf edge must not be the last one in the direction travelled.
-        /// - The node carrying the next KV returned must not have been deallocated by a
-        ///   previous call on any handle obtained for this tree.
-        unsafe fn $name <K, V>(
-            leaf_edge: Handle<NodeRef<marker::Owned, K, V, marker::Leaf>, marker::Edge>,
-        ) -> Handle<NodeRef<marker::Owned, K, V, marker::LeafOrInternal>, marker::KV> {
-            let mut edge = leaf_edge.forget_node_type();
-            loop {
-                edge = match edge.$adjacent_kv() {
-                    Ok(internal_kv) => return internal_kv,
-                    Err(last_edge) => {
-                        unsafe {
-                            let parent_edge = last_edge.into_node().deallocate_and_ascend();
-                            unwrap_unchecked(parent_edge).forget_node_type()
-                        }
-                    }
+impl<K, V> Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge> {
+    /// Given a leaf edge handle into a dying tree, returns the next leaf edge
+    /// on the right side, and the key-value pair in between, which is either
+    /// in the same leaf node, in an ancestor node, or non-existent.
+    ///
+    /// This method also deallocates any node(s) it reaches the end of. This
+    /// implies that if no more key-value pair exists, the entire remainder of
+    /// the tree will have been deallocated and there is nothing left to return.
+    ///
+    /// # Safety
+    /// The given edge must not have been previously returned by counterpart
+    /// `deallocating_next_back`.
+    unsafe fn deallocating_next(self) -> Option<(Self, (K, V))> {
+        let mut edge = self.forget_node_type();
+        loop {
+            edge = match edge.right_kv() {
+                Ok(kv) => {
+                    let k = unsafe { ptr::read(kv.reborrow().into_kv().0) };
+                    let v = unsafe { ptr::read(kv.reborrow().into_kv().1) };
+                    return Some((kv.next_leaf_edge(), (k, v)));
                 }
+                Err(last_edge) => match unsafe { last_edge.into_node().deallocate_and_ascend() } {
+                    Some(parent_edge) => parent_edge.forget_node_type(),
+                    None => return None,
+                },
             }
         }
-    };
-}
+    }
 
-def_next_kv_uncheched_dealloc! {unsafe fn next_kv_unchecked_dealloc: right_kv}
-def_next_kv_uncheched_dealloc! {unsafe fn next_back_kv_unchecked_dealloc: left_kv}
+    /// Given a leaf edge handle into a dying tree, returns the next leaf edge
+    /// on the left side, and the key-value pair in between, which is either
+    /// in the same leaf node, in an ancestor node, or non-existent.
+    ///
+    /// This method also deallocates any node(s) it reaches the end of. This
+    /// implies that if no more key-value pair exists, the entire remainder of
+    /// the tree will have been deallocated and there is nothing left to return.
+    ///
+    /// # Safety
+    /// The given edge must not have been previously returned by counterpart
+    /// `deallocating_next`.
+    unsafe fn deallocating_next_back(self) -> Option<(Self, (K, V))> {
+        let mut edge = self.forget_node_type();
+        loop {
+            edge = match edge.left_kv() {
+                Ok(kv) => {
+                    let k = unsafe { ptr::read(kv.reborrow().into_kv().0) };
+                    let v = unsafe { ptr::read(kv.reborrow().into_kv().1) };
+                    return Some((kv.next_back_leaf_edge(), (k, v)));
+                }
+                Err(last_edge) => match unsafe { last_edge.into_node().deallocate_and_ascend() } {
+                    Some(parent_edge) => parent_edge.forget_node_type(),
+                    None => return None,
+                },
+            }
+        }
+    }
+
+    /// Deallocates a pile of nodes from the leaf up to the root.
+    /// This is the only way to deallocate the remainder of a tree after
+    /// `deallocating_next` and `deallocating_next_back` have been nibbling at
+    /// both sides of the tree, and have hit the same edge. As it is intended
+    /// only to be called when all keys and values have been returned,
+    /// no cleanup is done on any of the keys or values.
+    pub fn deallocating_end(self) {
+        let mut edge = self.forget_node_type();
+        while let Some(parent_edge) = unsafe { edge.into_node().deallocate_and_ascend() } {
+            edge = parent_edge.forget_node_type();
+        }
+    }
+}
 
 impl<'a, K, V> Handle<NodeRef<marker::Immut<'a>, K, V, marker::Leaf>, marker::Edge> {
     /// Moves the leaf edge handle to the next leaf edge and returns references to the
@@ -320,7 +369,7 @@ impl<'a, K, V> Handle<NodeRef<marker::Immut<'a>, K, V, marker::Leaf>, marker::Ed
     pub unsafe fn next_unchecked(&mut self) -> (&'a K, &'a V) {
         super::mem::replace(self, |leaf_edge| {
             let kv = leaf_edge.next_kv();
-            let kv = unsafe { unwrap_unchecked(kv.ok()) };
+            let kv = unsafe { kv.ok().unwrap_unchecked() };
             (kv.next_leaf_edge(), kv.into_kv())
         })
     }
@@ -333,7 +382,7 @@ impl<'a, K, V> Handle<NodeRef<marker::Immut<'a>, K, V, marker::Leaf>, marker::Ed
     pub unsafe fn next_back_unchecked(&mut self) -> (&'a K, &'a V) {
         super::mem::replace(self, |leaf_edge| {
             let kv = leaf_edge.next_back_kv();
-            let kv = unsafe { unwrap_unchecked(kv.ok()) };
+            let kv = unsafe { kv.ok().unwrap_unchecked() };
             (kv.next_back_leaf_edge(), kv.into_kv())
         })
     }
@@ -348,7 +397,7 @@ impl<'a, K, V> Handle<NodeRef<marker::ValMut<'a>, K, V, marker::Leaf>, marker::E
     pub unsafe fn next_unchecked(&mut self) -> (&'a K, &'a mut V) {
         let kv = super::mem::replace(self, |leaf_edge| {
             let kv = leaf_edge.next_kv();
-            let kv = unsafe { unwrap_unchecked(kv.ok()) };
+            let kv = unsafe { kv.ok().unwrap_unchecked() };
             (unsafe { ptr::read(&kv) }.next_leaf_edge(), kv)
         });
         // Doing this last is faster, according to benchmarks.
@@ -363,7 +412,7 @@ impl<'a, K, V> Handle<NodeRef<marker::ValMut<'a>, K, V, marker::Leaf>, marker::E
     pub unsafe fn next_back_unchecked(&mut self) -> (&'a K, &'a mut V) {
         let kv = super::mem::replace(self, |leaf_edge| {
             let kv = leaf_edge.next_back_kv();
-            let kv = unsafe { unwrap_unchecked(kv.ok()) };
+            let kv = unsafe { kv.ok().unwrap_unchecked() };
             (unsafe { ptr::read(&kv) }.next_back_leaf_edge(), kv)
         });
         // Doing this last is faster, according to benchmarks.
@@ -371,7 +420,7 @@ impl<'a, K, V> Handle<NodeRef<marker::ValMut<'a>, K, V, marker::Leaf>, marker::E
     }
 }
 
-impl<K, V> Handle<NodeRef<marker::Owned, K, V, marker::Leaf>, marker::Edge> {
+impl<K, V> Handle<NodeRef<marker::Dying, K, V, marker::Leaf>, marker::Edge> {
     /// Moves the leaf edge handle to the next leaf edge and returns the key and value
     /// in between, deallocating any node left behind while leaving the corresponding
     /// edge in its parent node dangling.
@@ -384,12 +433,9 @@ impl<K, V> Handle<NodeRef<marker::Owned, K, V, marker::Leaf>, marker::Edge> {
     /// The only safe way to proceed with the updated handle is to compare it, drop it,
     /// call this method again subject to its safety conditions, or call counterpart
     /// `next_back_unchecked` subject to its safety conditions.
-    pub unsafe fn next_unchecked(&mut self) -> (K, V) {
-        super::mem::replace(self, |leaf_edge| {
-            let kv = unsafe { next_kv_unchecked_dealloc(leaf_edge) };
-            let k = unsafe { ptr::read(kv.reborrow().into_kv().0) };
-            let v = unsafe { ptr::read(kv.reborrow().into_kv().1) };
-            (kv.next_leaf_edge(), (k, v))
+    pub unsafe fn deallocating_next_unchecked(&mut self) -> (K, V) {
+        super::mem::replace(self, |leaf_edge| unsafe {
+            leaf_edge.deallocating_next().unwrap_unchecked()
         })
     }
 
@@ -405,17 +451,14 @@ impl<K, V> Handle<NodeRef<marker::Owned, K, V, marker::Leaf>, marker::Edge> {
     /// The only safe way to proceed with the updated handle is to compare it, drop it,
     /// call this method again subject to its safety conditions, or call counterpart
     /// `next_unchecked` subject to its safety conditions.
-    pub unsafe fn next_back_unchecked(&mut self) -> (K, V) {
-        super::mem::replace(self, |leaf_edge| {
-            let kv = unsafe { next_back_kv_unchecked_dealloc(leaf_edge) };
-            let k = unsafe { ptr::read(kv.reborrow().into_kv().0) };
-            let v = unsafe { ptr::read(kv.reborrow().into_kv().1) };
-            (kv.next_back_leaf_edge(), (k, v))
+    pub unsafe fn deallocating_next_back_unchecked(&mut self) -> (K, V) {
+        super::mem::replace(self, |leaf_edge| unsafe {
+            leaf_edge.deallocating_next_back().unwrap_unchecked()
         })
     }
 }
 
-impl<BorrowType, K, V> NodeRef<BorrowType, K, V, marker::LeafOrInternal> {
+impl<BorrowType: marker::BorrowType, K, V> NodeRef<BorrowType, K, V, marker::LeafOrInternal> {
     /// Returns the leftmost leaf edge in or underneath a node - in other words, the edge
     /// you need first when navigating forward (or last when navigating backward).
     #[inline]
@@ -496,7 +539,9 @@ impl<'a, K: 'a, V: 'a> NodeRef<marker::Immut<'a>, K, V, marker::LeafOrInternal> 
     }
 }
 
-impl<BorrowType, K, V> Handle<NodeRef<BorrowType, K, V, marker::LeafOrInternal>, marker::KV> {
+impl<BorrowType: marker::BorrowType, K, V>
+    Handle<NodeRef<BorrowType, K, V, marker::LeafOrInternal>, marker::KV>
+{
     /// Returns the leaf edge closest to a KV for forward navigation.
     pub fn next_leaf_edge(self) -> Handle<NodeRef<BorrowType, K, V, marker::Leaf>, marker::Edge> {
         match self.force() {

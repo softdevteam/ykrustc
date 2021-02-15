@@ -1661,6 +1661,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         debug!("exp_found {:?} terr {:?}", exp_found, terr);
         if let Some(exp_found) = exp_found {
             self.suggest_as_ref_where_appropriate(span, &exp_found, diag);
+            self.suggest_accessing_field_where_appropriate(cause, &exp_found, diag);
             self.suggest_await_on_expect_found(cause, span, &exp_found, diag);
         }
 
@@ -1706,8 +1707,8 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
 
             for (predicate, _) in bounds {
                 let predicate = predicate.subst(self.tcx, substs);
-                if let ty::PredicateAtom::Projection(projection_predicate) =
-                    predicate.skip_binders()
+                if let ty::PredicateKind::Projection(projection_predicate) =
+                    predicate.kind().skip_binder()
                 {
                     if projection_predicate.projection_ty.item_def_id == item_def_id {
                         // We don't account for multiple `Future::Output = Ty` contraints.
@@ -1816,6 +1817,53 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 );
             }
             _ => {}
+        }
+    }
+
+    fn suggest_accessing_field_where_appropriate(
+        &self,
+        cause: &ObligationCause<'tcx>,
+        exp_found: &ty::error::ExpectedFound<Ty<'tcx>>,
+        diag: &mut DiagnosticBuilder<'tcx>,
+    ) {
+        debug!(
+            "suggest_accessing_field_where_appropriate(cause={:?}, exp_found={:?})",
+            cause, exp_found
+        );
+        if let ty::Adt(expected_def, expected_substs) = exp_found.expected.kind() {
+            if expected_def.is_enum() {
+                return;
+            }
+
+            if let Some((name, ty)) = expected_def
+                .non_enum_variant()
+                .fields
+                .iter()
+                .filter(|field| field.vis.is_accessible_from(field.did, self.tcx))
+                .map(|field| (field.ident.name, field.ty(self.tcx, expected_substs)))
+                .find(|(_, ty)| ty::TyS::same_type(ty, exp_found.found))
+            {
+                if let ObligationCauseCode::Pattern { span: Some(span), .. } = cause.code {
+                    if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(span) {
+                        let suggestion = if expected_def.is_struct() {
+                            format!("{}.{}", snippet, name)
+                        } else if expected_def.is_union() {
+                            format!("unsafe {{ {}.{} }}", snippet, name)
+                        } else {
+                            return;
+                        };
+                        diag.span_suggestion(
+                            span,
+                            &format!(
+                                "you might have meant to use field `{}` whose type is `{}`",
+                                name, ty
+                            ),
+                            suggestion,
+                            Applicability::MaybeIncorrect,
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -2118,7 +2166,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let consider = format!(
                     "{} {}...",
                     msg,
-                    if type_param_span.map(|(_, _, is_impl_trait)| is_impl_trait).unwrap_or(false) {
+                    if type_param_span.map_or(false, |(_, _, is_impl_trait)| is_impl_trait) {
                         format!(" `{}` to `{}`", sub, bound_kind)
                     } else {
                         format!("`{}: {}`", bound_kind, sub)
@@ -2342,7 +2390,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
                 let var_name = self.tcx.hir().name(upvar_id.var_path.hir_id);
                 format!(" for capture of `{}` by closure", var_name)
             }
-            infer::NLL(..) => bug!("NLL variable found in lexical phase"),
+            infer::Nll(..) => bug!("NLL variable found in lexical phase"),
         };
 
         struct_span_err!(

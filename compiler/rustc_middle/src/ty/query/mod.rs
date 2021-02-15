@@ -53,7 +53,6 @@ use rustc_ast as ast;
 use rustc_attr as attr;
 use rustc_span::symbol::Symbol;
 use rustc_span::{Span, DUMMY_SP};
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -130,3 +129,19 @@ mod sealed {
 }
 
 use sealed::IntoQueryParam;
+
+impl TyCtxt<'tcx> {
+    pub fn def_kind(self, def_id: impl IntoQueryParam<DefId>) -> DefKind {
+        let def_id = def_id.into_query_param();
+        self.opt_def_kind(def_id)
+            .unwrap_or_else(|| bug!("def_kind: unsupported node: {:?}", def_id))
+    }
+}
+
+impl TyCtxtAt<'tcx> {
+    pub fn def_kind(self, def_id: impl IntoQueryParam<DefId>) -> DefKind {
+        let def_id = def_id.into_query_param();
+        self.opt_def_kind(def_id)
+            .unwrap_or_else(|| bug!("def_kind: unsupported node: {:?}", def_id))
+    }
+}

@@ -141,6 +141,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             self.add_moved_or_invoked_closure_note(location, used_place, &mut err);
 
             let mut is_loop_move = false;
+            let mut in_pattern = false;
 
             for move_site in &move_site_vec {
                 let move_out = self.move_data.moves[(*move_site).moi];
@@ -256,6 +257,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         "ref ".to_string(),
                         Applicability::MachineApplicable,
                     );
+                    in_pattern = true;
                 }
 
                 if let Some(DesugaringKind::ForLoop(_)) = move_span.desugaring_kind() {
@@ -287,7 +289,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 );
             }
 
-            let ty = PlaceRef::ty(&used_place, self.body, self.infcx.tcx).ty;
+            let ty = used_place.ty(self.body, self.infcx.tcx).ty;
             let needs_note = match ty.kind() {
                 ty::Closure(id, _) => {
                     let tables = self.infcx.tcx.typeck(id.expect_local());
@@ -302,7 +304,8 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             let place = &self.move_data.move_paths[mpi].place;
             let ty = place.ty(self.body, self.infcx.tcx).ty;
 
-            if is_loop_move {
+            // If we're in pattern, we do nothing in favor of the previous suggestion (#80913).
+            if is_loop_move & !in_pattern {
                 if let ty::Ref(_, _, hir::Mutability::Mut) = ty.kind() {
                     // We have a `&mut` ref, we need to reborrow on each iteration (#62112).
                     err.span_suggestion_verbose(
@@ -725,6 +728,8 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         // Define a small closure that we can use to check if the type of a place
         // is a union.
         let union_ty = |place_base| {
+            // Need to use fn call syntax `PlaceRef::ty` to determine the type of `place_base`;
+            // using a type annotation in the closure argument instead leads to a lifetime error.
             let ty = PlaceRef::ty(&place_base, self.body, self.infcx.tcx).ty;
             ty.ty_adt_def().filter(|adt| adt.is_union()).map(|_| ty)
         };
@@ -1318,21 +1323,30 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             Applicability::MachineApplicable,
         );
 
-        let msg = match category {
+        match category {
             ConstraintCategory::Return(_) | ConstraintCategory::OpaqueType => {
-                format!("{} is returned here", kind)
+                let msg = format!("{} is returned here", kind);
+                err.span_note(constraint_span, &msg);
             }
             ConstraintCategory::CallArgument => {
                 fr_name.highlight_region_name(&mut err);
-                format!("function requires argument type to outlive `{}`", fr_name)
+                if matches!(use_span.generator_kind(), Some(GeneratorKind::Async(_))) {
+                    err.note(
+                        "async blocks are not executed immediately and must either take a \
+                    reference or ownership of outside variables they use",
+                    );
+                } else {
+                    let msg = format!("function requires argument type to outlive `{}`", fr_name);
+                    err.span_note(constraint_span, &msg);
+                }
             }
             _ => bug!(
                 "report_escaping_closure_capture called with unexpected constraint \
                  category: `{:?}`",
                 category
             ),
-        };
-        err.span_note(constraint_span, &msg);
+        }
+
         err
     }
 
@@ -1604,20 +1618,17 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
 
     fn classify_drop_access_kind(&self, place: PlaceRef<'tcx>) -> StorageDeadOrDrop<'tcx> {
         let tcx = self.infcx.tcx;
-        match place.projection {
-            [] => StorageDeadOrDrop::LocalStorageDead,
-            [proj_base @ .., elem] => {
+        match place.last_projection() {
+            None => StorageDeadOrDrop::LocalStorageDead,
+            Some((place_base, elem)) => {
                 // FIXME(spastorino) make this iterate
-                let base_access = self.classify_drop_access_kind(PlaceRef {
-                    local: place.local,
-                    projection: proj_base,
-                });
+                let base_access = self.classify_drop_access_kind(place_base);
                 match elem {
                     ProjectionElem::Deref => match base_access {
                         StorageDeadOrDrop::LocalStorageDead
                         | StorageDeadOrDrop::BoxedStorageDead => {
                             assert!(
-                                Place::ty_from(place.local, proj_base, self.body, tcx).ty.is_box(),
+                                place_base.ty(self.body, tcx).ty.is_box(),
                                 "Drop of value behind a reference or raw pointer"
                             );
                             StorageDeadOrDrop::BoxedStorageDead
@@ -1625,7 +1636,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         StorageDeadOrDrop::Destructor(_) => base_access,
                     },
                     ProjectionElem::Field(..) | ProjectionElem::Downcast(..) => {
-                        let base_ty = Place::ty_from(place.local, proj_base, self.body, tcx).ty;
+                        let base_ty = place_base.ty(self.body, tcx).ty;
                         match base_ty.kind() {
                             ty::Adt(def, _) if def.has_dtor(tcx) => {
                                 // Report the outermost adt with a destructor
@@ -1640,7 +1651,6 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                             _ => base_access,
                         }
                     }
-
                     ProjectionElem::ConstantIndex { .. }
                     | ProjectionElem::Subslice { .. }
                     | ProjectionElem::Index(_) => base_access,

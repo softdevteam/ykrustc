@@ -286,21 +286,32 @@ fn suggest_restriction(
         );
     } else {
         // Trivial case: `T` needs an extra bound: `T: Bound`.
-        let (sp, suggestion) = match super_traits {
-            None => predicate_constraint(
+        let (sp, suggestion) = match (
+            generics
+                .params
+                .iter()
+                .filter(|p| {
+                    !matches!(p.kind, hir::GenericParamKind::Type { synthetic: Some(_), .. })
+                })
+                .next(),
+            super_traits,
+        ) {
+            (_, None) => predicate_constraint(
                 generics,
                 trait_ref.without_const().to_predicate(tcx).to_string(),
             ),
-            Some((ident, bounds)) => match bounds {
-                [.., bound] => (
-                    bound.span().shrink_to_hi(),
-                    format!(" + {}", trait_ref.print_only_trait_path().to_string()),
-                ),
-                [] => (
-                    ident.span.shrink_to_hi(),
-                    format!(": {}", trait_ref.print_only_trait_path().to_string()),
-                ),
-            },
+            (None, Some((ident, []))) => (
+                ident.span.shrink_to_hi(),
+                format!(": {}", trait_ref.print_only_trait_path().to_string()),
+            ),
+            (_, Some((_, [.., bounds]))) => (
+                bounds.span().shrink_to_hi(),
+                format!(" + {}", trait_ref.print_only_trait_path().to_string()),
+            ),
+            (Some(_), Some((_, []))) => (
+                generics.span.shrink_to_hi(),
+                format!(": {}", trait_ref.print_only_trait_path().to_string()),
+            ),
         };
 
         err.span_suggestion_verbose(
@@ -888,8 +899,10 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                     // no return, suggest removal of semicolon on last statement.
                     // Once that is added, close #54771.
                     if let Some(ref stmt) = blk.stmts.last() {
-                        let sp = self.tcx.sess.source_map().end_point(stmt.span);
-                        err.span_label(sp, "consider removing this semicolon");
+                        if let hir::StmtKind::Semi(_) = stmt.kind {
+                            let sp = self.tcx.sess.source_map().end_point(stmt.span);
+                            err.span_label(sp, "consider removing this semicolon");
+                        }
                     }
                 }
             }
@@ -1090,7 +1103,7 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
                 // This is currently not possible to trigger because E0038 takes precedence, but
                 // leave it in for completeness in case anything changes in an earlier stage.
                 err.note(&format!(
-                    "if trait `{}` was object safe, you could return a trait object",
+                    "if trait `{}` were object-safe, you could return a trait object",
                     trait_obj,
                 ));
             }
@@ -1292,8 +1305,8 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
         // the type. The last generator (`outer_generator` below) has information about where the
         // bound was introduced. At least one generator should be present for this diagnostic to be
         // modified.
-        let (mut trait_ref, mut target_ty) = match obligation.predicate.skip_binders() {
-            ty::PredicateAtom::Trait(p, _) => (Some(p.trait_ref), Some(p.self_ty())),
+        let (mut trait_ref, mut target_ty) = match obligation.predicate.kind().skip_binder() {
+            ty::PredicateKind::Trait(p, _) => (Some(p.trait_ref), Some(p.self_ty())),
             _ => (None, None),
         };
         let mut generator = None;
@@ -1868,23 +1881,10 @@ impl<'a, 'tcx> InferCtxtExt<'tcx> for InferCtxt<'a, 'tcx> {
             ObligationCauseCode::Coercion { source: _, target } => {
                 err.note(&format!("required by cast to type `{}`", self.ty_to_string(target)));
             }
-            ObligationCauseCode::RepeatVec(suggest_const_in_array_repeat_expressions) => {
+            ObligationCauseCode::RepeatVec => {
                 err.note(
                     "the `Copy` trait is required because the repeated element will be copied",
                 );
-                if suggest_const_in_array_repeat_expressions {
-                    err.note(
-                        "this array initializer can be evaluated at compile-time, see issue \
-                         #49147 <https://github.com/rust-lang/rust/issues/49147> \
-                         for more information",
-                    );
-                    if tcx.sess.opts.unstable_features.is_nightly_build() {
-                        err.help(
-                            "add `#![feature(const_in_array_repeat_expressions)]` to the \
-                             crate attributes to enable",
-                        );
-                    }
-                }
             }
             ObligationCauseCode::VariableType(hir_id) => {
                 let parent_node = self.tcx.hir().get_parent_node(hir_id);
@@ -2276,6 +2276,12 @@ impl<'v> Visitor<'v> for ReturnsVisitor<'v> {
                 self.in_block_tail = true;
                 if let Some(expr) = block.expr {
                     self.visit_expr(expr);
+                }
+            }
+            hir::ExprKind::If(_, then, else_opt) if self.in_block_tail => {
+                self.visit_expr(then);
+                if let Some(el) = else_opt {
+                    self.visit_expr(el);
                 }
             }
             hir::ExprKind::Match(_, arms, _) if self.in_block_tail => {

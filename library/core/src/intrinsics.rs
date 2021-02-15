@@ -768,13 +768,6 @@ extern "rust-intrinsic" {
     #[rustc_const_stable(feature = "const_size_of", since = "1.40.0")]
     pub fn size_of<T>() -> usize;
 
-    /// Moves a value to an uninitialized memory location.
-    ///
-    /// Drop glue is not run on the destination.
-    ///
-    /// The stabilized version of this intrinsic is [`core::ptr::write`](crate::ptr::write).
-    pub fn move_val_init<T>(dst: *mut T, src: T);
-
     /// The minimum alignment of a type.
     ///
     /// The stabilized version of this intrinsic is [`core::mem::align_of`](crate::mem::align_of).
@@ -1593,7 +1586,7 @@ extern "rust-intrinsic" {
     /// Safe wrappers for this intrinsic are available on the integer
     /// primitives via the `checked_div` method. For example,
     /// [`u32::checked_div`]
-    #[rustc_const_unstable(feature = "const_int_unchecked_arith", issue = "none")]
+    #[rustc_const_stable(feature = "const_int_unchecked_arith", since = "1.52.0")]
     pub fn unchecked_div<T: Copy>(x: T, y: T) -> T;
     /// Returns the remainder of an unchecked division, resulting in
     /// undefined behavior when `y == 0` or `x == T::MIN && y == -1`
@@ -1601,7 +1594,7 @@ extern "rust-intrinsic" {
     /// Safe wrappers for this intrinsic are available on the integer
     /// primitives via the `checked_rem` method. For example,
     /// [`u32::checked_rem`]
-    #[rustc_const_unstable(feature = "const_int_unchecked_arith", issue = "none")]
+    #[rustc_const_stable(feature = "const_int_unchecked_arith", since = "1.52.0")]
     pub fn unchecked_rem<T: Copy>(x: T, y: T) -> T;
 
     /// Performs an unchecked left shift, resulting in undefined behavior when
@@ -1849,6 +1842,7 @@ pub(crate) fn is_nonoverlapping<T>(src: *const T, dst: *const T, count: usize) -
 #[inline]
 pub const unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
     extern "rust-intrinsic" {
+        #[rustc_const_unstable(feature = "const_intrinsic_copy", issue = "80697")]
         fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize);
     }
 
@@ -1933,6 +1927,7 @@ pub const unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: us
 #[inline]
 pub const unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
     extern "rust-intrinsic" {
+        #[rustc_const_unstable(feature = "const_intrinsic_copy", issue = "80697")]
         fn copy<T>(src: *const T, dst: *mut T, count: usize);
     }
 

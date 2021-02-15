@@ -14,7 +14,7 @@ use std::process::Command;
 use build_helper::{self, output, t};
 
 use crate::builder::{Builder, Compiler, Kind, RunConfig, ShouldRun, Step};
-use crate::cache::{Interned, INTERNER};
+use crate::cache::Interned;
 use crate::compile;
 use crate::config::TargetSelection;
 use crate::dist;
@@ -1011,6 +1011,13 @@ note: if you're sure you want to do this, please open an issue as to why. In the
             cmd.arg("--rustdoc-path").arg(builder.rustdoc(compiler));
         }
 
+        if mode == "rustdoc-json" {
+            // Use the beta compiler for jsondocck
+            let json_compiler = compiler.with_stage(0);
+            cmd.arg("--jsondocck-path")
+                .arg(builder.ensure(tool::JsonDocCk { compiler: json_compiler, target }));
+        }
+
         if mode == "run-make" && suite.ends_with("fulldeps") {
             cmd.arg("--rust-demangler-path").arg(builder.tool_exe(Tool::RustDemangler));
         }
@@ -1475,7 +1482,7 @@ impl Step for ErrorIndex {
         // error_index_generator depends on librustdoc. Use the compiler that
         // is normally used to build rustdoc for other tests (like compiletest
         // tests in src/test/rustdoc) so that it shares the same artifacts.
-        let compiler = run.builder.compiler_for(run.builder.top_stage, run.target, run.target);
+        let compiler = run.builder.compiler(run.builder.top_stage, run.builder.config.build);
         run.builder.ensure(ErrorIndex { compiler });
     }
 
@@ -1492,19 +1499,16 @@ impl Step for ErrorIndex {
         t!(fs::create_dir_all(&dir));
         let output = dir.join("error-index.md");
 
-        let mut tool = tool::ErrorIndex::command(builder, compiler);
+        let mut tool = tool::ErrorIndex::command(builder);
         tool.arg("markdown").arg(&output);
 
-        // Use the rustdoc that was built by self.compiler. This copy of
-        // rustdoc is shared with other tests (like compiletest tests in
-        // src/test/rustdoc). This helps avoid building rustdoc multiple
-        // times.
-        let rustdoc_compiler = builder.compiler(builder.top_stage, builder.config.build);
-        builder.info(&format!("Testing error-index stage{}", rustdoc_compiler.stage));
+        builder.info(&format!("Testing error-index stage{}", compiler.stage));
         let _time = util::timeit(&builder);
         builder.run_quiet(&mut tool);
-        builder.ensure(compile::Std { compiler: rustdoc_compiler, target: rustdoc_compiler.host });
-        markdown_test(builder, rustdoc_compiler, &output);
+        // The tests themselves need to link to std, so make sure it is
+        // available.
+        builder.ensure(compile::Std { compiler, target: compiler.host });
+        markdown_test(builder, compiler, &output);
     }
 }
 
@@ -1602,55 +1606,6 @@ impl Step for CrateLibrustc {
             mode: Mode::Rustc,
             test_kind: self.test_kind,
             krate: self.krate,
-        });
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct CrateNotDefault {
-    compiler: Compiler,
-    target: TargetSelection,
-    test_kind: TestKind,
-    krate: &'static str,
-}
-
-impl Step for CrateNotDefault {
-    type Output = ();
-
-    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.path("src/librustc_asan")
-            .path("src/librustc_lsan")
-            .path("src/librustc_msan")
-            .path("src/librustc_tsan")
-    }
-
-    fn make_run(run: RunConfig<'_>) {
-        let builder = run.builder;
-        let compiler = builder.compiler(builder.top_stage, run.build_triple());
-
-        let test_kind = builder.kind.into();
-
-        builder.ensure(CrateNotDefault {
-            compiler,
-            target: run.target,
-            test_kind,
-            krate: match run.path {
-                _ if run.path.ends_with("src/librustc_asan") => "rustc_asan",
-                _ if run.path.ends_with("src/librustc_lsan") => "rustc_lsan",
-                _ if run.path.ends_with("src/librustc_msan") => "rustc_msan",
-                _ if run.path.ends_with("src/librustc_tsan") => "rustc_tsan",
-                _ => panic!("unexpected path {:?}", run.path),
-            },
-        });
-    }
-
-    fn run(self, builder: &Builder<'_>) {
-        builder.ensure(Crate {
-            compiler: self.compiler,
-            target: self.target,
-            mode: Mode::Std,
-            test_kind: self.test_kind,
-            krate: INTERNER.intern_str(self.krate),
         });
     }
 }
@@ -1925,8 +1880,7 @@ impl Step for RemoteCopyLibs {
         builder.info(&format!("REMOTE copy libs to emulator ({})", target));
         t!(fs::create_dir_all(builder.out.join("tmp")));
 
-        let server =
-            builder.ensure(tool::RemoteTestServer { compiler: compiler.with_stage(0), target });
+        let server = builder.ensure(tool::RemoteTestServer { compiler, target });
 
         // Spawn the emulator and wait for it to come online
         let tool = builder.tool_exe(Tool::RemoteTestClient);

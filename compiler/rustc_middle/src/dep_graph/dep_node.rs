@@ -1,16 +1,17 @@
-//! This module defines the `DepNode` type which the compiler uses to represent
-//! nodes in the dependency graph.
+//! Nodes in the dependency graph.
 //!
-//! A `DepNode` consists of a `DepKind` (which
-//! specifies the kind of thing it represents, like a piece of HIR, MIR, etc)
-//! and a `Fingerprint`, a 128-bit hash value the exact meaning of which
+//! A node in the [dependency graph] is represented by a [`DepNode`].
+//! A `DepNode` consists of a [`DepKind`] (which
+//! specifies the kind of thing it represents, like a piece of HIR, MIR, etc.)
+//! and a [`Fingerprint`], a 128-bit hash value, the exact meaning of which
 //! depends on the node's `DepKind`. Together, the kind and the fingerprint
 //! fully identify a dependency node, even across multiple compilation sessions.
 //! In other words, the value of the fingerprint does not depend on anything
 //! that is specific to a given compilation session, like an unpredictable
-//! interning key (e.g., NodeId, DefId, Symbol) or the numeric value of a
+//! interning key (e.g., `NodeId`, `DefId`, `Symbol`) or the numeric value of a
 //! pointer. The concept behind this could be compared to how git commit hashes
-//! uniquely identify a given commit and has a few advantages:
+//! uniquely identify a given commit. The fingerprinting approach has
+//! a few advantages:
 //!
 //! * A `DepNode` can simply be serialized to disk and loaded in another session
 //!   without the need to do any "rebasing" (like we have to do for Spans and
@@ -29,9 +30,10 @@
 //!   contained no `DefId` for thing that had been removed.
 //!
 //! `DepNode` definition happens in the `define_dep_nodes!()` macro. This macro
-//! defines the `DepKind` enum and a corresponding `dep_constructor` module. The
-//! `dep_constructor` module links a `DepKind` to the parameters that are needed at
-//! runtime in order to construct a valid `DepNode` fingerprint.
+//! defines the `DepKind` enum. Each `DepKind` has its own parameters that are
+//! needed at runtime in order to construct a valid `DepNode` fingerprint.
+//! However, only `CompileCodegenUnit` is constructed explicitly (with
+//! `make_compile_codegen_unit`).
 //!
 //! Because the macro sees what parameters a given `DepKind` requires, it can
 //! "infer" some properties for each kind of `DepNode`:
@@ -44,22 +46,16 @@
 //!   `DefId` it was computed from. In other cases, too much information gets
 //!   lost during fingerprint computation.
 //!
-//! The `dep_constructor` module, together with `DepNode::new()`, ensures that only
+//! `make_compile_codegen_unit`, together with `DepNode::new()`, ensures that only
 //! valid `DepNode` instances can be constructed. For example, the API does not
 //! allow for constructing parameterless `DepNode`s with anything other
 //! than a zeroed out fingerprint. More generally speaking, it relieves the
 //! user of the `DepNode` API of having to know how to compute the expected
 //! fingerprint for a given set of node parameters.
+//!
+//! [dependency graph]: https://rustc-dev-guide.rust-lang.org/query.html
 
-use crate::mir::interpret::{GlobalId, LitToConstInput};
-use crate::traits;
-use crate::traits::query::{
-    CanonicalPredicateGoal, CanonicalProjectionGoal, CanonicalTyGoal,
-    CanonicalTypeOpAscribeUserTypeGoal, CanonicalTypeOpEqGoal, CanonicalTypeOpNormalizeGoal,
-    CanonicalTypeOpProvePredicateGoal, CanonicalTypeOpSubtypeGoal,
-};
-use crate::ty::subst::{GenericArg, SubstsRef};
-use crate::ty::{self, ParamEnvAnd, Ty, TyCtxt};
+use crate::ty::TyCtxt;
 
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, CRATE_DEF_INDEX};
@@ -214,17 +210,6 @@ pub mod dep_kind {
         try_load_from_on_disk_cache: |_, _| {},
     };
 
-    // Represents metadata from an extern crate.
-    pub const CrateMetadata: DepKindStruct = DepKindStruct {
-        has_params: true,
-        is_anon: false,
-        is_eval_always: true,
-
-        can_reconstruct_query_key: || true,
-        force_from_dep_node: |_, dep_node| bug!("force_from_dep_node: encountered {:?}", dep_node),
-        try_load_from_on_disk_cache: |_, _| {},
-    };
-
     pub const TraitSelect: DepKindStruct = DepKindStruct {
         has_params: false,
         is_anon: true,
@@ -338,25 +323,6 @@ macro_rules! define_dep_nodes {
             $($variant),*
         }
 
-        #[allow(non_camel_case_types)]
-        pub mod dep_constructor {
-            use super::*;
-
-            $(
-                #[inline(always)]
-                #[allow(unreachable_code, non_snake_case)]
-                pub fn $variant(_tcx: TyCtxt<'_>, $(arg: $tuple_arg_ty)*) -> DepNode {
-                    // tuple args
-                    $({
-                        erase!($tuple_arg_ty);
-                        return DepNode::construct(_tcx, DepKind::$variant, &arg)
-                    })*
-
-                    return DepNode::construct(_tcx, DepKind::$variant, &())
-                }
-            )*
-        }
-
         fn dep_kind_from_label_string(label: &str) -> Result<DepKind, ()> {
             match label {
                 $(stringify!($variant) => Ok(DepKind::$variant),)*
@@ -379,13 +345,17 @@ rustc_dep_node_append!([define_dep_nodes!][ <'tcx>
     // We use this for most things when incr. comp. is turned off.
     [] Null,
 
-    // Represents metadata from an extern crate.
-    [eval_always] CrateMetadata(CrateNum),
-
     [anon] TraitSelect,
 
+    // WARNING: if `Symbol` is changed, make sure you update `make_compile_codegen_unit` below.
     [] CompileCodegenUnit(Symbol),
 ]);
+
+// WARNING: `construct` is generic and does not know that `CompileCodegenUnit` takes `Symbol`s as keys.
+// Be very careful changing this type signature!
+crate fn make_compile_codegen_unit(tcx: TyCtxt<'_>, name: Symbol) -> DepNode {
+    DepNode::construct(tcx, DepKind::CompileCodegenUnit, &name)
+}
 
 pub type DepNode = rustc_query_system::dep_graph::DepNode<DepKind>;
 

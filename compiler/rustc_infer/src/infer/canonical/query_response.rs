@@ -14,7 +14,7 @@ use crate::infer::canonical::{
 };
 use crate::infer::nll_relate::{NormalizationStrategy, TypeRelating, TypeRelatingDelegate};
 use crate::infer::region_constraints::{Constraint, RegionConstraintData};
-use crate::infer::{InferCtxt, InferOk, InferResult, NLLRegionVariableOrigin};
+use crate::infer::{InferCtxt, InferOk, InferResult, NllRegionVariableOrigin};
 use crate::traits::query::{Fallible, NoSolution};
 use crate::traits::TraitEngine;
 use crate::traits::{Obligation, ObligationCause, PredicateObligation};
@@ -530,10 +530,10 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
 
             let atom = match k1.unpack() {
                 GenericArgKind::Lifetime(r1) => {
-                    ty::PredicateAtom::RegionOutlives(ty::OutlivesPredicate(r1, r2))
+                    ty::PredicateKind::RegionOutlives(ty::OutlivesPredicate(r1, r2))
                 }
                 GenericArgKind::Type(t1) => {
-                    ty::PredicateAtom::TypeOutlives(ty::OutlivesPredicate(t1, r2))
+                    ty::PredicateKind::TypeOutlives(ty::OutlivesPredicate(t1, r2))
                 }
                 GenericArgKind::Const(..) => {
                     // Consts cannot outlive one another, so we don't expect to
@@ -541,8 +541,7 @@ impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
                     span_bug!(cause.span, "unexpected const outlives {:?}", constraint);
                 }
             };
-            let predicate =
-                predicate.rebind(atom).potentially_quantified(self.tcx, ty::PredicateKind::ForAll);
+            let predicate = predicate.rebind(atom).to_predicate(self.tcx);
 
             Obligation::new(cause.clone(), param_env, predicate)
         })
@@ -645,7 +644,7 @@ impl<'tcx> TypeRelatingDelegate<'tcx> for QueryTypeRelatingDelegate<'_, 'tcx> {
     }
 
     fn next_existential_region_var(&mut self, from_forall: bool) -> ty::Region<'tcx> {
-        let origin = NLLRegionVariableOrigin::Existential { from_forall };
+        let origin = NllRegionVariableOrigin::Existential { from_forall };
         self.infcx.next_nll_region_var(origin)
     }
 
@@ -655,7 +654,7 @@ impl<'tcx> TypeRelatingDelegate<'tcx> for QueryTypeRelatingDelegate<'_, 'tcx> {
 
     fn generalize_existential(&mut self, universe: ty::UniverseIndex) -> ty::Region<'tcx> {
         self.infcx.next_nll_region_var_in_universe(
-            NLLRegionVariableOrigin::Existential { from_forall: false },
+            NllRegionVariableOrigin::Existential { from_forall: false },
             universe,
         )
     }
@@ -664,7 +663,7 @@ impl<'tcx> TypeRelatingDelegate<'tcx> for QueryTypeRelatingDelegate<'_, 'tcx> {
         self.obligations.push(Obligation {
             cause: self.cause.clone(),
             param_env: self.param_env,
-            predicate: ty::PredicateAtom::RegionOutlives(ty::OutlivesPredicate(sup, sub))
+            predicate: ty::PredicateKind::RegionOutlives(ty::OutlivesPredicate(sup, sub))
                 .to_predicate(self.infcx.tcx),
             recursion_depth: 0,
         });

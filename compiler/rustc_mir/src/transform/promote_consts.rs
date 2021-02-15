@@ -102,9 +102,6 @@ pub enum Candidate {
     /// Borrow of a constant temporary, candidate for lifetime extension.
     Ref(Location),
 
-    /// Promotion of the `x` in `[x; 32]`.
-    Repeat(Location),
-
     /// Currently applied to function calls where the callee has the unstable
     /// `#[rustc_args_required_const]` attribute as well as the SIMD shuffle
     /// intrinsic. The intrinsic requires the arguments are indeed constant and
@@ -120,14 +117,14 @@ impl Candidate {
     /// Returns `true` if we should use the "explicit" rules for promotability for this `Candidate`.
     fn forces_explicit_promotion(&self) -> bool {
         match self {
-            Candidate::Ref(_) | Candidate::Repeat(_) => false,
+            Candidate::Ref(_) => false,
             Candidate::Argument { .. } | Candidate::InlineAsm { .. } => true,
         }
     }
 
     fn source_info(&self, body: &Body<'_>) -> SourceInfo {
         match self {
-            Candidate::Ref(location) | Candidate::Repeat(location) => *body.source_info(*location),
+            Candidate::Ref(location) => *body.source_info(*location),
             Candidate::Argument { bb, .. } | Candidate::InlineAsm { bb, .. } => {
                 *body.source_info(body.terminator_loc(*bb))
             }
@@ -212,11 +209,6 @@ impl<'tcx> Visitor<'tcx> for Collector<'_, 'tcx> {
         match *rvalue {
             Rvalue::Ref(..) => {
                 self.candidates.push(Candidate::Ref(location));
-            }
-            Rvalue::Repeat(..) if self.ccx.tcx.features().const_in_array_repeat_expressions => {
-                // FIXME(#49147) only promote the element when it isn't `Copy`
-                // (so that code that can copy it at runtime is unaffected).
-                self.candidates.push(Candidate::Repeat(location));
             }
             _ => {}
         }
@@ -334,21 +326,6 @@ impl<'tcx> Validator<'_, 'tcx> {
                     _ => bug!(),
                 }
             }
-            Candidate::Repeat(loc) => {
-                assert!(!self.explicit);
-
-                let statement = &self.body[loc.block].statements[loc.statement_index];
-                match &statement.kind {
-                    StatementKind::Assign(box (_, Rvalue::Repeat(ref operand, _))) => {
-                        if !self.tcx.features().const_in_array_repeat_expressions {
-                            return Err(Unpromotable);
-                        }
-
-                        self.validate_operand(operand)
-                    }
-                    _ => bug!(),
-                }
-            }
             Candidate::Argument { bb, index } => {
                 assert!(self.explicit);
 
@@ -415,10 +392,11 @@ impl<'tcx> Validator<'_, 'tcx> {
     // FIXME(eddyb) maybe cache this?
     fn validate_local(&self, local: Local) -> Result<(), Unpromotable> {
         if let TempState::Defined { location: loc, .. } = self.temps[local] {
-            let num_stmts = self.body[loc.block].statements.len();
+            let block = &self.body[loc.block];
+            let num_stmts = block.statements.len();
 
             if loc.statement_index < num_stmts {
-                let statement = &self.body[loc.block].statements[loc.statement_index];
+                let statement = &block.statements[loc.statement_index];
                 match &statement.kind {
                     StatementKind::Assign(box (_, rhs)) => self.validate_rvalue(rhs),
                     _ => {
@@ -430,7 +408,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                     }
                 }
             } else {
-                let terminator = self.body[loc.block].terminator();
+                let terminator = block.terminator();
                 match &terminator.kind {
                     TerminatorKind::Call { func, args, .. } => self.validate_call(func, args),
                     TerminatorKind::Yield { .. } => Err(Unpromotable),
@@ -445,43 +423,43 @@ impl<'tcx> Validator<'_, 'tcx> {
     }
 
     fn validate_place(&self, place: PlaceRef<'tcx>) -> Result<(), Unpromotable> {
-        match place {
-            PlaceRef { local, projection: [] } => self.validate_local(local),
-            PlaceRef { local, projection: [proj_base @ .., elem] } => {
+        match place.last_projection() {
+            None => self.validate_local(place.local),
+            Some((place_base, elem)) => {
                 // Validate topmost projection, then recurse.
-                match *elem {
+                match elem {
                     ProjectionElem::Deref => {
                         let mut promotable = false;
-                        // This is a special treatment for cases like *&STATIC where STATIC is a
-                        // global static variable.
-                        // This pattern is generated only when global static variables are directly
-                        // accessed and is qualified for promotion safely.
-                        if let TempState::Defined { location, .. } = self.temps[local] {
-                            let def_stmt =
-                                self.body[location.block].statements.get(location.statement_index);
-                            if let Some(Statement {
-                                kind:
-                                    StatementKind::Assign(box (_, Rvalue::Use(Operand::Constant(c)))),
-                                ..
-                            }) = def_stmt
-                            {
-                                if let Some(did) = c.check_static_ptr(self.tcx) {
-                                    // Evaluating a promoted may not read statics except if it got
-                                    // promoted from a static (this is a CTFE check). So we
-                                    // can only promote static accesses inside statics.
-                                    if let Some(hir::ConstContext::Static(..)) = self.const_kind {
-                                        // The `is_empty` predicate is introduced to exclude the case
-                                        // where the projection operations are [ .field, * ].
-                                        // The reason is because promotion will be illegal if field
-                                        // accesses precede the dereferencing.
-                                        // Discussion can be found at
-                                        // https://github.com/rust-lang/rust/pull/74945#discussion_r463063247
-                                        // There may be opportunity for generalization, but this needs to be
-                                        // accounted for.
-                                        if proj_base.is_empty()
-                                            && !self.tcx.is_thread_local_static(did)
+                        // We need to make sure this is a `Deref` of a local with no further projections.
+                        // Discussion can be found at
+                        // https://github.com/rust-lang/rust/pull/74945#discussion_r463063247
+                        if let Some(local) = place_base.as_local() {
+                            // This is a special treatment for cases like *&STATIC where STATIC is a
+                            // global static variable.
+                            // This pattern is generated only when global static variables are directly
+                            // accessed and is qualified for promotion safely.
+                            if let TempState::Defined { location, .. } = self.temps[local] {
+                                let def_stmt = self.body[location.block]
+                                    .statements
+                                    .get(location.statement_index);
+                                if let Some(Statement {
+                                    kind:
+                                        StatementKind::Assign(box (
+                                            _,
+                                            Rvalue::Use(Operand::Constant(c)),
+                                        )),
+                                    ..
+                                }) = def_stmt
+                                {
+                                    if let Some(did) = c.check_static_ptr(self.tcx) {
+                                        // Evaluating a promoted may not read statics except if it got
+                                        // promoted from a static (this is a CTFE check). So we
+                                        // can only promote static accesses inside statics.
+                                        if let Some(hir::ConstContext::Static(..)) = self.const_kind
                                         {
-                                            promotable = true;
+                                            if !self.tcx.is_thread_local_static(did) {
+                                                promotable = true;
+                                            }
                                         }
                                     }
                                 }
@@ -498,12 +476,55 @@ impl<'tcx> Validator<'_, 'tcx> {
                     ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. } => {}
 
                     ProjectionElem::Index(local) => {
+                        if !self.explicit {
+                            let mut promotable = false;
+                            // Only accept if we can predict the index and are indexing an array.
+                            let val = if let TempState::Defined { location: loc, .. } =
+                                self.temps[local]
+                            {
+                                let block = &self.body[loc.block];
+                                if loc.statement_index < block.statements.len() {
+                                    let statement = &block.statements[loc.statement_index];
+                                    match &statement.kind {
+                                        StatementKind::Assign(box (
+                                            _,
+                                            Rvalue::Use(Operand::Constant(c)),
+                                        )) => c.literal.try_eval_usize(self.tcx, self.param_env),
+                                        _ => None,
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(idx) = val {
+                                // Determine the type of the thing we are indexing.
+                                let ty = place_base.ty(self.body, self.tcx).ty;
+                                match ty.kind() {
+                                    ty::Array(_, len) => {
+                                        // It's an array; determine its length.
+                                        if let Some(len) =
+                                            len.try_eval_usize(self.tcx, self.param_env)
+                                        {
+                                            // If the index is in-bounds, go ahead.
+                                            if idx < len {
+                                                promotable = true;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !promotable {
+                                return Err(Unpromotable);
+                            }
+                        }
                         self.validate_local(local)?;
                     }
 
                     ProjectionElem::Field(..) => {
-                        let base_ty =
-                            Place::ty_from(place.local, proj_base, self.body, self.tcx).ty;
+                        let base_ty = place_base.ty(self.body, self.tcx).ty;
                         if let Some(def) = base_ty.ty_adt_def() {
                             // No promotion of union field accesses.
                             if def.is_union() {
@@ -513,7 +534,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                     }
                 }
 
-                self.validate_place(PlaceRef { local: place.local, projection: proj_base })
+                self.validate_place(place_base)
             }
         }
     }
@@ -583,9 +604,7 @@ impl<'tcx> Validator<'_, 'tcx> {
 
     fn validate_rvalue(&self, rvalue: &Rvalue<'tcx>) -> Result<(), Unpromotable> {
         match rvalue {
-            Rvalue::Use(operand)
-            | Rvalue::Repeat(operand, _)
-            | Rvalue::UnaryOp(UnOp::Not | UnOp::Neg, operand) => {
+            Rvalue::Use(operand) | Rvalue::Repeat(operand, _) => {
                 self.validate_operand(operand)?;
             }
 
@@ -610,10 +629,26 @@ impl<'tcx> Validator<'_, 'tcx> {
                 self.validate_operand(operand)?;
             }
 
+            Rvalue::NullaryOp(op, _) => match op {
+                NullOp::Box => return Err(Unpromotable),
+                NullOp::SizeOf => {}
+            },
+
+            Rvalue::UnaryOp(op, operand) => {
+                match op {
+                    // These operations can never fail.
+                    UnOp::Neg | UnOp::Not => {}
+                }
+
+                self.validate_operand(operand)?;
+            }
+
             Rvalue::BinaryOp(op, lhs, rhs) | Rvalue::CheckedBinaryOp(op, lhs, rhs) => {
                 let op = *op;
-                if let ty::RawPtr(_) | ty::FnPtr(..) = lhs.ty(self.body, self.tcx).kind() {
-                    // raw pointer operations are not allowed inside consts and thus not promotable
+                let lhs_ty = lhs.ty(self.body, self.tcx);
+
+                if let ty::RawPtr(_) | ty::FnPtr(..) = lhs_ty.kind() {
+                    // Raw and fn pointer operations are not allowed inside consts and thus not promotable.
                     assert!(matches!(
                         op,
                         BinOp::Eq
@@ -628,7 +663,22 @@ impl<'tcx> Validator<'_, 'tcx> {
                 }
 
                 match op {
-                    // FIXME: reject operations that can fail -- namely, division and modulo.
+                    BinOp::Div | BinOp::Rem => {
+                        if !self.explicit && lhs_ty.is_integral() {
+                            // Integer division: the RHS must be a non-zero const.
+                            let const_val = match rhs {
+                                Operand::Constant(c) => {
+                                    c.literal.try_eval_bits(self.tcx, self.param_env, lhs_ty)
+                                }
+                                _ => None,
+                            };
+                            match const_val {
+                                Some(x) if x != 0 => {}        // okay
+                                _ => return Err(Unpromotable), // value not known or 0 -- not okay
+                            }
+                        }
+                    }
+                    // The remaining operations can never fail.
                     BinOp::Eq
                     | BinOp::Ne
                     | BinOp::Le
@@ -639,8 +689,6 @@ impl<'tcx> Validator<'_, 'tcx> {
                     | BinOp::Add
                     | BinOp::Sub
                     | BinOp::Mul
-                    | BinOp::Div
-                    | BinOp::Rem
                     | BinOp::BitXor
                     | BinOp::BitAnd
                     | BinOp::BitOr
@@ -652,21 +700,14 @@ impl<'tcx> Validator<'_, 'tcx> {
                 self.validate_operand(rhs)?;
             }
 
-            Rvalue::NullaryOp(op, _) => match op {
-                NullOp::Box => return Err(Unpromotable),
-                NullOp::SizeOf => {}
-            },
-
             Rvalue::AddressOf(_, place) => {
                 // We accept `&raw *`, i.e., raw reborrows -- creating a raw pointer is
                 // no problem, only using it is.
-                if let [proj_base @ .., ProjectionElem::Deref] = place.projection.as_ref() {
-                    let base_ty = Place::ty_from(place.local, proj_base, self.body, self.tcx).ty;
+                if let Some((place_base, ProjectionElem::Deref)) = place.as_ref().last_projection()
+                {
+                    let base_ty = place_base.ty(self.body, self.tcx).ty;
                     if let ty::Ref(..) = base_ty.kind() {
-                        return self.validate_place(PlaceRef {
-                            local: place.local,
-                            projection: proj_base,
-                        });
+                        return self.validate_place(place_base);
                     }
                 }
                 return Err(Unpromotable);
@@ -675,12 +716,12 @@ impl<'tcx> Validator<'_, 'tcx> {
             Rvalue::Ref(_, kind, place) => {
                 // Special-case reborrows to be more like a copy of the reference.
                 let mut place_simplified = place.as_ref();
-                if let [proj_base @ .., ProjectionElem::Deref] = &place_simplified.projection {
-                    let base_ty =
-                        Place::ty_from(place_simplified.local, proj_base, self.body, self.tcx).ty;
+                if let Some((place_base, ProjectionElem::Deref)) =
+                    place_simplified.last_projection()
+                {
+                    let base_ty = place_base.ty(self.body, self.tcx).ty;
                     if let ty::Ref(..) = base_ty.kind() {
-                        place_simplified =
-                            PlaceRef { local: place_simplified.local, projection: proj_base };
+                        place_simplified = place_base;
                     }
                 }
 
@@ -1026,18 +1067,6 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                         _ => bug!(),
                     }
                 }
-                Candidate::Repeat(loc) => {
-                    let statement = &mut blocks[loc.block].statements[loc.statement_index];
-                    match statement.kind {
-                        StatementKind::Assign(box (_, Rvalue::Repeat(ref mut operand, _))) => {
-                            let ty = operand.ty(local_decls, self.tcx);
-                            let span = statement.source_info.span;
-
-                            Rvalue::Use(mem::replace(operand, promoted_operand(ty, span)))
-                        }
-                        _ => bug!(),
-                    }
-                }
                 Candidate::Argument { bb, index } => {
                     let terminator = blocks[bb].terminator_mut();
                     match terminator.kind {
@@ -1118,8 +1147,7 @@ pub fn promote_candidates<'tcx>(
     let mut extra_statements = vec![];
     for candidate in candidates.into_iter().rev() {
         match candidate {
-            Candidate::Repeat(Location { block, statement_index })
-            | Candidate::Ref(Location { block, statement_index }) => {
+            Candidate::Ref(Location { block, statement_index }) => {
                 if let StatementKind::Assign(box (place, _)) =
                     &body[block].statements[statement_index].kind
                 {
@@ -1202,28 +1230,4 @@ pub fn promote_candidates<'tcx>(
     }
 
     promotions
-}
-
-/// This function returns `true` if the `const_in_array_repeat_expressions` feature attribute should
-/// be suggested. This function is probably quite expensive, it shouldn't be run in the happy path.
-/// Feature attribute should be suggested if `operand` can be promoted and the feature is not
-/// enabled.
-crate fn should_suggest_const_in_array_repeat_expressions_attribute<'tcx>(
-    ccx: &ConstCx<'_, 'tcx>,
-    operand: &Operand<'tcx>,
-) -> bool {
-    let mut rpo = traversal::reverse_postorder(&ccx.body);
-    let (temps, _) = collect_temps_and_candidates(&ccx, &mut rpo);
-    let validator = Validator { ccx, temps: &temps, explicit: false };
-
-    let should_promote = validator.validate_operand(operand).is_ok();
-    let feature_flag = validator.ccx.tcx.features().const_in_array_repeat_expressions;
-    debug!(
-        "should_suggest_const_in_array_repeat_expressions_flag: def_id={:?} \
-            should_promote={:?} feature_flag={:?}",
-        validator.ccx.def_id(),
-        should_promote,
-        feature_flag
-    );
-    should_promote && !feature_flag
 }

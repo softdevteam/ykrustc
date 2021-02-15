@@ -21,7 +21,9 @@ use crate::passes::{EarlyLintPassObject, LateLintPassObject};
 use rustc_ast as ast;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync;
-use rustc_errors::{add_elided_lifetime_in_path_suggestion, struct_span_err, Applicability};
+use rustc_errors::{
+    add_elided_lifetime_in_path_suggestion, struct_span_err, Applicability, SuggestionStyle,
+};
 use rustc_hir as hir;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::{CrateNum, DefId};
@@ -32,13 +34,15 @@ use rustc_middle::middle::stability;
 use rustc_middle::ty::layout::{LayoutError, TyAndLayout};
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::{self, print::Printer, subst::GenericArg, Ty, TyCtxt};
-use rustc_session::lint::BuiltinLintDiagnostics;
+use rustc_serialize::json::Json;
+use rustc_session::lint::{BuiltinLintDiagnostics, ExternDepSpec};
 use rustc_session::lint::{FutureIncompatibleInfo, Level, Lint, LintBuffer, LintId};
 use rustc_session::Session;
 use rustc_session::SessionLintStore;
 use rustc_span::lev_distance::find_best_match_for_name;
 use rustc_span::{symbol::Symbol, MultiSpan, Span, DUMMY_SP};
 use rustc_target::abi::LayoutOf;
+use tracing::debug;
 
 use std::cell::Cell;
 use std::slice;
@@ -336,6 +340,20 @@ impl LintStore {
         }
     }
 
+    /// True if this symbol represents a lint group name.
+    pub fn is_lint_group(&self, lint_name: Symbol) -> bool {
+        debug!(
+            "is_lint_group(lint_name={:?}, lint_groups={:?})",
+            lint_name,
+            self.lint_groups.keys().collect::<Vec<_>>()
+        );
+        let lint_name_str = &*lint_name.as_str();
+        self.lint_groups.contains_key(&lint_name_str) || {
+            let warnings_name_str = crate::WARNINGS.name_lower();
+            lint_name_str == &*warnings_name_str
+        }
+    }
+
     /// Checks the name of a lint for its existence, and whether it was
     /// renamed or removed. Generates a DiagnosticBuilder containing a
     /// warning for renamed and removed lints. This is over both lint
@@ -354,10 +372,23 @@ impl LintStore {
             lint_name.to_string()
         };
         // If the lint was scoped with `tool::` check if the tool lint exists
-        if tool_name.is_some() {
+        if let Some(tool_name) = tool_name {
             match self.by_name.get(&complete_name) {
                 None => match self.lint_groups.get(&*complete_name) {
-                    None => return CheckLintNameResult::Tool(Err((None, String::new()))),
+                    // If the lint isn't registered, there are two possibilities:
+                    None => {
+                        // 1. The tool is currently running, so this lint really doesn't exist.
+                        // FIXME: should this handle tools that never register a lint, like rustfmt?
+                        tracing::debug!("lints={:?}", self.by_name.keys().collect::<Vec<_>>());
+                        let tool_prefix = format!("{}::", tool_name);
+                        return if self.by_name.keys().any(|lint| lint.starts_with(&tool_prefix)) {
+                            self.no_lint_suggestion(&complete_name)
+                        } else {
+                            // 2. The tool isn't currently running, so no lints will be registered.
+                            // To avoid giving a false positive, ignore all unknown lints.
+                            CheckLintNameResult::Tool(Err((None, String::new())))
+                        };
+                    }
                     Some(LintGroup { lint_ids, .. }) => {
                         return CheckLintNameResult::Tool(Ok(&lint_ids));
                     }
@@ -374,7 +405,7 @@ impl LintStore {
                 Some(new_name.to_owned()),
             ),
             Some(&Removed(ref reason)) => CheckLintNameResult::Warning(
-                format!("lint `{}` has been removed: `{}`", complete_name, reason),
+                format!("lint `{}` has been removed: {}", complete_name, reason),
                 None,
             ),
             None => match self.lint_groups.get(&*complete_name) {
@@ -398,6 +429,21 @@ impl LintStore {
         }
     }
 
+    fn no_lint_suggestion(&self, lint_name: &str) -> CheckLintNameResult<'_> {
+        let name_lower = lint_name.to_lowercase();
+        let symbols =
+            self.get_lints().iter().map(|l| Symbol::intern(&l.name_lower())).collect::<Vec<_>>();
+
+        if lint_name.chars().any(char::is_uppercase) && self.find_lints(&name_lower).is_ok() {
+            // First check if the lint name is (partly) in upper case instead of lower case...
+            CheckLintNameResult::NoLint(Some(Symbol::intern(&name_lower)))
+        } else {
+            // ...if not, search for lints with a similar name
+            let suggestion = find_best_match_for_name(&symbols, Symbol::intern(&name_lower), None);
+            CheckLintNameResult::NoLint(suggestion)
+        }
+    }
+
     fn check_tool_name_for_backwards_compat(
         &self,
         lint_name: &str,
@@ -407,18 +453,7 @@ impl LintStore {
         match self.by_name.get(&complete_name) {
             None => match self.lint_groups.get(&*complete_name) {
                 // Now we are sure, that this lint exists nowhere
-                None => {
-                    let symbols =
-                        self.by_name.keys().map(|name| Symbol::intern(&name)).collect::<Vec<_>>();
-
-                    let suggestion = find_best_match_for_name(
-                        &symbols,
-                        Symbol::intern(&lint_name.to_lowercase()),
-                        None,
-                    );
-
-                    CheckLintNameResult::NoLint(suggestion)
-                }
+                None => self.no_lint_suggestion(lint_name),
                 Some(LintGroup { lint_ids, depr, .. }) => {
                     // Reaching this would be weird, but let's cover this case anyway
                     if let Some(LintAlias { name, silent }) = depr {
@@ -600,6 +635,37 @@ pub trait LintContext: Sized {
                 BuiltinLintDiagnostics::PatternsInFnsWithoutBody(span, ident) => {
                     db.span_suggestion(span, "remove `mut` from the parameter", ident.to_string(), Applicability::MachineApplicable);
                 }
+                BuiltinLintDiagnostics::MissingAbi(span, default_abi) => {
+                    db.span_label(span, "ABI should be specified here");
+                    db.help(&format!("the default ABI is {}", default_abi.name()));
+                }
+                BuiltinLintDiagnostics::LegacyDeriveHelpers(span) => {
+                    db.span_label(span, "the attribute is introduced here");
+                }
+                BuiltinLintDiagnostics::ExternDepSpec(krate, loc) => {
+                    let json = match loc {
+                        ExternDepSpec::Json(json) => {
+                            db.help(&format!("remove unnecessary dependency `{}`", krate));
+                            json
+                        }
+                        ExternDepSpec::Raw(raw) => {
+                            db.help(&format!("remove unnecessary dependency `{}` at `{}`", krate, raw));
+                            db.span_suggestion_with_style(
+                                DUMMY_SP,
+                                "raw extern location",
+                                raw.clone(),
+                                Applicability::Unspecified,
+                                SuggestionStyle::CompletelyHidden,
+                            );
+                            Json::String(raw)
+                        }
+                    };
+                    db.tool_only_suggestion_with_metadata(
+                        "json extern location",
+                        Applicability::Unspecified,
+                        json
+                    );
+                }
             }
             // Rewrap `db`, and pass control to the user.
             decorate(LintDiagnosticBuilder::new(db));
@@ -725,6 +791,14 @@ impl<'tcx> LateContext<'tcx> {
             hir::QPath::Resolved(_, ref path) => path.res,
             hir::QPath::TypeRelative(..) | hir::QPath::LangItem(..) => self
                 .maybe_typeck_results()
+                .filter(|typeck_results| typeck_results.hir_owner == id.owner)
+                .or_else(|| {
+                    if self.tcx.has_typeck_results(id.owner.to_def_id()) {
+                        Some(self.tcx.typeck(id.owner))
+                    } else {
+                        None
+                    }
+                })
                 .and_then(|typeck_results| typeck_results.type_dependent_def(id))
                 .map_or(Res::Err, |(kind, def_id)| Res::Def(kind, def_id)),
         }

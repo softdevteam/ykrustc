@@ -76,12 +76,13 @@
 #![cfg_attr(test, feature(test))]
 #![cfg_attr(test, feature(new_uninit))]
 #![feature(allocator_api)]
+#![feature(vec_extend_from_within)]
 #![feature(array_chunks)]
 #![feature(array_methods)]
-#![feature(array_value_iter)]
 #![feature(array_windows)]
 #![feature(allow_internal_unstable)]
 #![feature(arbitrary_self_types)]
+#![feature(async_stream)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(cfg_sanitize)]
@@ -89,7 +90,6 @@
 #![feature(coerce_unsized)]
 #![feature(const_btree_new)]
 #![feature(const_fn)]
-#![feature(const_in_array_repeat_expressions)]
 #![feature(cow_is_borrowed)]
 #![feature(const_cow_is_borrowed)]
 #![feature(dispatch_from_dyn)]
@@ -111,15 +111,16 @@
 #![feature(nll)]
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(auto_traits)]
+#![feature(option_result_unwrap_unchecked)]
 #![feature(or_patterns)]
 #![feature(pattern)]
 #![feature(ptr_internals)]
 #![feature(range_bounds_assert_len)]
-#![feature(raw_ref_op)]
 #![feature(rustc_attrs)]
 #![feature(receiver_trait)]
 #![cfg_attr(bootstrap, feature(min_const_generics))]
 #![feature(min_specialization)]
+#![feature(set_ptr_value)]
 #![feature(slice_ptr_get)]
 #![feature(slice_ptr_len)]
 #![feature(staged_api)]
@@ -139,6 +140,7 @@
 #![feature(type_alias_impl_trait)]
 #![feature(associated_type_bounds)]
 #![feature(slice_group_by)]
+#![feature(decl_macro)]
 // Allow testing this library
 
 #[cfg(test)]
@@ -182,11 +184,6 @@ pub mod task;
 #[cfg(test)]
 mod tests;
 pub mod vec;
-
-#[cfg(not(test))]
-mod std {
-    pub use core::ops; // RangeFull
-}
 
 #[doc(hidden)]
 #[unstable(feature = "liballoc_internals", issue = "none", reason = "implementation detail")]

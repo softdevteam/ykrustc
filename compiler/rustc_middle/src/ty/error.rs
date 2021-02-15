@@ -1,7 +1,6 @@
 use crate::traits::{ObligationCause, ObligationCauseCode};
 use crate::ty::diagnostics::suggest_constraining_type_param;
 use crate::ty::{self, BoundRegionKind, Region, Ty, TyCtxt};
-use rustc_ast as ast;
 use rustc_errors::Applicability::{MachineApplicable, MaybeIncorrect};
 use rustc_errors::{pluralize, DiagnosticBuilder};
 use rustc_hir as hir;
@@ -48,7 +47,7 @@ pub enum TypeError<'tcx> {
 
     Sorts(ExpectedFound<Ty<'tcx>>),
     IntMismatch(ExpectedFound<ty::IntVarValue>),
-    FloatMismatch(ExpectedFound<ast::FloatTy>),
+    FloatMismatch(ExpectedFound<ty::FloatTy>),
     Traits(ExpectedFound<DefId>),
     VariadicMismatch(ExpectedFound<bool>),
 
@@ -647,11 +646,14 @@ impl<T> Trait<T> for X {
         let current_method_ident = body_owner.and_then(|n| n.ident()).map(|i| i.name);
 
         // We don't want to suggest calling an assoc fn in a scope where that isn't feasible.
-        let callable_scope = matches!(body_owner, Some(
+        let callable_scope = matches!(
+            body_owner,
+            Some(
                 hir::Node::Item(hir::Item { kind: hir::ItemKind::Fn(..), .. })
-                | hir::Node::TraitItem(hir::TraitItem { kind: hir::TraitItemKind::Fn(..), .. })
-                | hir::Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Fn(..), .. }),
-            ));
+                    | hir::Node::TraitItem(hir::TraitItem { kind: hir::TraitItemKind::Fn(..), .. })
+                    | hir::Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Fn(..), .. }),
+            )
+        );
         let impl_comparison = matches!(
             cause_code,
             ObligationCauseCode::CompareImplMethodObligation { .. }
@@ -847,7 +849,7 @@ fn foo(&self) -> Self::T { String::new() }
     }
 
     /// Given a slice of `hir::GenericBound`s, if any of them corresponds to the `trait_ref`
-    /// requirement, provide a strucuted suggestion to constrain it to a given type `ty`.
+    /// requirement, provide a structured suggestion to constrain it to a given type `ty`.
     fn constrain_generic_bound_associated_type_structured_suggestion(
         self,
         db: &mut DiagnosticBuilder<'_>,

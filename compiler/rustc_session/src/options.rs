@@ -6,7 +6,7 @@ use crate::search_paths::SearchPath;
 use crate::utils::NativeLibKind;
 
 use rustc_target::spec::{CodeModel, LinkerFlavor, MergeFunctions, PanicStrategy};
-use rustc_target::spec::{RelocModel, RelroLevel, TargetTriple, TlsModel};
+use rustc_target::spec::{RelocModel, RelroLevel, SplitDebuginfo, TargetTriple, TlsModel};
 
 use rustc_feature::UnstableFeatures;
 use rustc_span::edition::Edition;
@@ -112,6 +112,7 @@ top_level_options!(
         borrowck_mode: BorrowckMode [UNTRACKED],
         cg: CodegenOptions [TRACKED],
         externs: Externs [UNTRACKED],
+        extern_dep_specs: ExternDepSpecs [UNTRACKED],
         crate_name: Option<String> [TRACKED],
         // An optional name to use as the crate for std during std injection,
         // written `extern crate name as std`. Defaults to `std`. Used by
@@ -269,7 +270,6 @@ macro_rules! options {
         pub const parse_switch_with_opt_path: &str =
             "an optional path to the profiling data output directory";
         pub const parse_merge_functions: &str = "one of: `disabled`, `trampolines`, or `aliases`";
-        pub const parse_split_dwarf_kind: &str = "one of: `none`, `single` or `split`";
         pub const parse_symbol_mangling_version: &str = "either `legacy` or `v0` (RFC 2603)";
         pub const parse_src_file_hash: &str = "either `md5` or `sha1`";
         pub const parse_relocation_model: &str =
@@ -281,6 +281,8 @@ macro_rules! options {
         pub const parse_tracer: &str = "one of `off`, `sw` or `hw`";
         pub const parse_target_feature: &str = parse_string;
         pub const parse_wasi_exec_model: &str = "either `command` or `reactor`";
+        pub const parse_split_debuginfo: &str =
+            "one of supported split-debuginfo modes (`off` or `dsymutil`)";
     }
 
     #[allow(dead_code)]
@@ -689,19 +691,6 @@ macro_rules! options {
             true
         }
 
-        fn parse_split_dwarf_kind(
-            slot: &mut SplitDwarfKind,
-            v: Option<&str>,
-        ) -> bool {
-            *slot = match v {
-                Some("none") => SplitDwarfKind::None,
-                Some("split") => SplitDwarfKind::Split,
-                Some("single") => SplitDwarfKind::Single,
-                _ => return false,
-            };
-            true
-        }
-
         fn parse_symbol_mangling_version(
             slot: &mut Option<SymbolManglingVersion>,
             v: Option<&str>,
@@ -739,6 +728,14 @@ macro_rules! options {
             match v {
                 Some("command")  => *slot = Some(WasiExecModel::Command),
                 Some("reactor") => *slot = Some(WasiExecModel::Reactor),
+                _ => return false,
+            }
+            true
+        }
+
+        fn parse_split_debuginfo(slot: &mut Option<SplitDebuginfo>, v: Option<&str>) -> bool {
+            match v.and_then(|s| SplitDebuginfo::from_str(s).ok()) {
+                Some(e) => *slot = Some(e),
                 _ => return false,
             }
             true
@@ -841,6 +838,8 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "save all temporary output files during compilation (default: no)"),
     soft_float: bool = (false, parse_bool, [TRACKED],
         "use soft float ABI (*eabihf targets only) (default: no)"),
+    split_debuginfo: Option<SplitDebuginfo> = (None, parse_split_debuginfo, [TRACKED],
+        "how to handle split-debuginfo, a platform-specific option"),
     target_cpu: Option<String> = (None, parse_opt_string, [TRACKED],
         "select target processor (`rustc --print target-cpus` for details)"),
     target_feature: String = (String::new(), parse_target_feature, [TRACKED],
@@ -869,6 +868,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "only allow the listed language features to be enabled in code (space separated)"),
     always_encode_mir: bool = (false, parse_bool, [TRACKED],
         "encode MIR of all functions into the crate metadata (default: no)"),
+    assume_incomplete_release: bool = (false, parse_bool, [TRACKED],
+        "make cfg(version) treat the current version as incomplete (default: no)"),
     asm_comments: bool = (false, parse_bool, [TRACKED],
         "generate comments into the assembly (may change behavior) (default: no)"),
     ast_json: bool = (false, parse_bool, [UNTRACKED],
@@ -1086,11 +1087,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "choose which RELRO level to use"),
     report_delayed_bugs: bool = (false, parse_bool, [TRACKED],
         "immediately print bugs registered with `delay_span_bug` (default: no)"),
-    // The default historical behavior was to always run dsymutil, so we're
-    // preserving that temporarily, but we're likely to switch the default
-    // soon.
-    run_dsymutil: bool = (true, parse_bool, [TRACKED],
-        "if on Mac, run `dsymutil` and delete intermediate object files (default: yes)"),
     sanitizer: SanitizerSet = (SanitizerSet::empty(), parse_sanitizers, [TRACKED],
         "use a sanitizer"),
     sanitizer_memory_track_origins: usize = (0, parse_sanitizer_memory_track_origins, [TRACKED],
@@ -1125,8 +1121,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "hash algorithm of source files in debug info (`md5`, `sha1`, or `sha256`)"),
     strip: Strip = (Strip::None, parse_strip, [UNTRACKED],
         "tell the linker which information to strip (`none` (default), `debuginfo` or `symbols`)"),
-    split_dwarf: SplitDwarfKind = (SplitDwarfKind::None, parse_split_dwarf_kind, [UNTRACKED],
-        "enable generation of split dwarf"),
     split_dwarf_inlining: bool = (true, parse_bool, [UNTRACKED],
         "provide minimal debug info in the object/executable to facilitate online \
          symbolication/stack traces in the absence of .dwo/.dwp files when using Split DWARF"),

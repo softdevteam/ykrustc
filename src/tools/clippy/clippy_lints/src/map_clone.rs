@@ -53,7 +53,7 @@ impl<'tcx> LateLintPass<'tcx> for MapClone {
         if_chain! {
             if let hir::ExprKind::MethodCall(ref method, _, ref args, _) = e.kind;
             if args.len() == 2;
-            if method.ident.as_str() == "map";
+            if method.ident.name == sym::map;
             let ty = cx.typeck_results().expr_ty(&args[0]);
             if is_type_diagnostic_item(cx, ty, sym::option_type) || match_trait_method(cx, e, &paths::ITERATOR);
             if let hir::ExprKind::Closure(_, _, body_id, _, _) = args[1].kind;
@@ -70,7 +70,7 @@ impl<'tcx> LateLintPass<'tcx> for MapClone {
                     },
                     hir::PatKind::Binding(hir::BindingAnnotation::Unannotated, .., name, None) => {
                         match closure_expr.kind {
-                            hir::ExprKind::Unary(hir::UnOp::UnDeref, ref inner) => {
+                            hir::ExprKind::Unary(hir::UnOp::Deref, ref inner) => {
                                 if ident_eq(name, inner) {
                                     if let ty::Ref(.., Mutability::Not) = cx.typeck_results().expr_ty(inner).kind() {
                                         lint(cx, e.span, args[0].span, true);

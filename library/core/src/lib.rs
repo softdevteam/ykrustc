@@ -73,11 +73,8 @@
 #![feature(const_discriminant)]
 #![feature(const_cell_into_inner)]
 #![feature(const_intrinsic_copy)]
-#![feature(const_checked_int_methods)]
-#![feature(const_euclidean_int_methods)]
 #![feature(const_float_classify)]
 #![feature(const_float_bits_conv)]
-#![feature(const_overflowing_int_methods)]
 #![feature(const_int_unchecked_arith)]
 #![feature(const_mut_refs)]
 #![feature(const_cttz)]
@@ -253,6 +250,8 @@ pub mod panicking;
 pub mod pin;
 pub mod raw;
 pub mod result;
+#[unstable(feature = "async_stream", issue = "79024")]
+pub mod stream;
 pub mod sync;
 
 pub mod fmt;

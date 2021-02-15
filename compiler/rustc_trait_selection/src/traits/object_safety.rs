@@ -257,13 +257,11 @@ fn predicates_reference_self(
 }
 
 fn bounds_reference_self(tcx: TyCtxt<'_>, trait_def_id: DefId) -> SmallVec<[Span; 1]> {
-    let trait_ref = ty::Binder::dummy(ty::TraitRef::identity(tcx, trait_def_id));
     tcx.associated_items(trait_def_id)
         .in_definition_order()
         .filter(|item| item.kind == ty::AssocKind::Type)
         .flat_map(|item| tcx.explicit_item_bounds(item.def_id))
-        .map(|&(predicate, sp)| (predicate.subst_supertrait(tcx, &trait_ref), sp))
-        .filter_map(|predicate| predicate_references_self(tcx, predicate))
+        .filter_map(|pred_span| predicate_references_self(tcx, *pred_span))
         .collect()
 }
 
@@ -273,12 +271,12 @@ fn predicate_references_self(
 ) -> Option<Span> {
     let self_ty = tcx.types.self_param;
     let has_self_ty = |arg: &GenericArg<'_>| arg.walk().any(|arg| arg == self_ty.into());
-    match predicate.skip_binders() {
-        ty::PredicateAtom::Trait(ref data, _) => {
+    match predicate.kind().skip_binder() {
+        ty::PredicateKind::Trait(ref data, _) => {
             // In the case of a trait predicate, we can skip the "self" type.
             if data.trait_ref.substs[1..].iter().any(has_self_ty) { Some(sp) } else { None }
         }
-        ty::PredicateAtom::Projection(ref data) => {
+        ty::PredicateKind::Projection(ref data) => {
             // And similarly for projections. This should be redundant with
             // the previous check because any projection should have a
             // matching `Trait` predicate with the same inputs, but we do
@@ -300,15 +298,15 @@ fn predicate_references_self(
                 None
             }
         }
-        ty::PredicateAtom::WellFormed(..)
-        | ty::PredicateAtom::ObjectSafe(..)
-        | ty::PredicateAtom::TypeOutlives(..)
-        | ty::PredicateAtom::RegionOutlives(..)
-        | ty::PredicateAtom::ClosureKind(..)
-        | ty::PredicateAtom::Subtype(..)
-        | ty::PredicateAtom::ConstEvaluatable(..)
-        | ty::PredicateAtom::ConstEquate(..)
-        | ty::PredicateAtom::TypeWellFormedFromEnv(..) => None,
+        ty::PredicateKind::WellFormed(..)
+        | ty::PredicateKind::ObjectSafe(..)
+        | ty::PredicateKind::TypeOutlives(..)
+        | ty::PredicateKind::RegionOutlives(..)
+        | ty::PredicateKind::ClosureKind(..)
+        | ty::PredicateKind::Subtype(..)
+        | ty::PredicateKind::ConstEvaluatable(..)
+        | ty::PredicateKind::ConstEquate(..)
+        | ty::PredicateKind::TypeWellFormedFromEnv(..) => None,
     }
 }
 
@@ -328,20 +326,20 @@ fn generics_require_sized_self(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     let predicates = tcx.predicates_of(def_id);
     let predicates = predicates.instantiate_identity(tcx).predicates;
     elaborate_predicates(tcx, predicates.into_iter()).any(|obligation| {
-        match obligation.predicate.skip_binders() {
-            ty::PredicateAtom::Trait(ref trait_pred, _) => {
+        match obligation.predicate.kind().skip_binder() {
+            ty::PredicateKind::Trait(ref trait_pred, _) => {
                 trait_pred.def_id() == sized_def_id && trait_pred.self_ty().is_param(0)
             }
-            ty::PredicateAtom::Projection(..)
-            | ty::PredicateAtom::Subtype(..)
-            | ty::PredicateAtom::RegionOutlives(..)
-            | ty::PredicateAtom::WellFormed(..)
-            | ty::PredicateAtom::ObjectSafe(..)
-            | ty::PredicateAtom::ClosureKind(..)
-            | ty::PredicateAtom::TypeOutlives(..)
-            | ty::PredicateAtom::ConstEvaluatable(..)
-            | ty::PredicateAtom::ConstEquate(..)
-            | ty::PredicateAtom::TypeWellFormedFromEnv(..) => false,
+            ty::PredicateKind::Projection(..)
+            | ty::PredicateKind::Subtype(..)
+            | ty::PredicateKind::RegionOutlives(..)
+            | ty::PredicateKind::WellFormed(..)
+            | ty::PredicateKind::ObjectSafe(..)
+            | ty::PredicateKind::ClosureKind(..)
+            | ty::PredicateKind::TypeOutlives(..)
+            | ty::PredicateKind::ConstEvaluatable(..)
+            | ty::PredicateKind::ConstEquate(..)
+            | ty::PredicateKind::TypeWellFormedFromEnv(..) => false,
         }
     })
 }
@@ -828,7 +826,7 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
             // constants which are not considered const evaluatable.
             use rustc_middle::mir::abstract_const::Node;
             if let Ok(Some(ct)) = AbstractConst::from_const(self.tcx, ct) {
-                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node {
+                const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node.root() {
                     Node::Leaf(leaf) => {
                         let leaf = leaf.subst(self.tcx, ct.substs);
                         self.visit_const(leaf)
@@ -843,13 +841,13 @@ fn contains_illegal_self_type_reference<'tcx, T: TypeFoldable<'tcx>>(
         }
 
         fn visit_predicate(&mut self, pred: ty::Predicate<'tcx>) -> ControlFlow<Self::BreakTy> {
-            if let ty::PredicateAtom::ConstEvaluatable(def, substs) = pred.skip_binders() {
+            if let ty::PredicateKind::ConstEvaluatable(def, substs) = pred.kind().skip_binder() {
                 // FIXME(const_evaluatable_checked): We should probably deduplicate the logic for
                 // `AbstractConst`s here, it might make sense to change `ConstEvaluatable` to
                 // take a `ty::Const` instead.
                 use rustc_middle::mir::abstract_const::Node;
                 if let Ok(Some(ct)) = AbstractConst::new(self.tcx, def, substs) {
-                    const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node {
+                    const_evaluatable::walk_abstract_const(self.tcx, ct, |node| match node.root() {
                         Node::Leaf(leaf) => {
                             let leaf = leaf.subst(self.tcx, ct.substs);
                             self.visit_const(leaf)

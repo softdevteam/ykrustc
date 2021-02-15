@@ -171,14 +171,15 @@ pub fn target_features(sess: &Session) -> Vec<Symbol> {
 }
 
 pub fn print_version() {
-    // Can be called without initializing LLVM
-    unsafe {
-        println!("LLVM version: {}.{}", llvm::LLVMRustVersionMajor(), llvm::LLVMRustVersionMinor());
-    }
+    let (major, minor, patch) = get_version();
+    println!("LLVM version: {}.{}.{}", major, minor, patch);
 }
 
-pub fn get_major_version() -> u32 {
-    unsafe { llvm::LLVMRustVersionMajor() }
+pub fn get_version() -> (u32, u32, u32) {
+    // Can be called without initializing LLVM
+    unsafe {
+        (llvm::LLVMRustVersionMajor(), llvm::LLVMRustVersionMinor(), llvm::LLVMRustVersionPatch())
+    }
 }
 
 pub fn print_passes() {
@@ -213,11 +214,7 @@ fn handle_native(name: &str) -> &str {
 }
 
 pub fn target_cpu(sess: &Session) -> &str {
-    let name = match sess.opts.cg.target_cpu {
-        Some(ref s) => &**s,
-        None => &*sess.target.cpu,
-    };
-
+    let name = sess.opts.cg.target_cpu.as_ref().unwrap_or(&sess.target.cpu);
     handle_native(name)
 }
 
@@ -253,8 +250,6 @@ pub fn handle_native_features(sess: &Session) -> Vec<String> {
 }
 
 pub fn tune_cpu(sess: &Session) -> Option<&str> {
-    match sess.opts.debugging_opts.tune_cpu {
-        Some(ref s) => Some(handle_native(&**s)),
-        None => None,
-    }
+    let name = sess.opts.debugging_opts.tune_cpu.as_ref()?;
+    Some(handle_native(name))
 }

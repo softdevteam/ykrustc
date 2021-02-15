@@ -9,7 +9,6 @@
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(or_patterns)]
-#![feature(peekable_next_if)]
 #![feature(test)]
 #![feature(crate_visibility_modifier)]
 #![feature(never_type)]
@@ -18,6 +17,7 @@
 #![feature(str_split_once)]
 #![feature(iter_intersperse)]
 #![recursion_limit = "256"]
+#![deny(rustc::internal)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -65,7 +65,7 @@ use std::process;
 use rustc_driver::abort_on_err;
 use rustc_errors::ErrorReported;
 use rustc_interface::interface;
-use rustc_middle::ty;
+use rustc_middle::ty::TyCtxt;
 use rustc_session::config::{make_crate_type_option, ErrorOutputType, RustcOptGroup};
 use rustc_session::getopts;
 use rustc_session::{early_error, early_warn};
@@ -82,7 +82,8 @@ mod doctree;
 mod error;
 mod doctest;
 mod fold;
-crate mod formats;
+mod formats;
+// used by the error-index generator, so it needs to be public
 pub mod html;
 mod json;
 mod markdown;
@@ -166,6 +167,14 @@ fn opts() -> Vec<RustcOptGroup> {
         stable("test", |o| o.optflag("", "test", "run code examples as tests")),
         stable("test-args", |o| {
             o.optmulti("", "test-args", "arguments to pass to the test runner", "ARGS")
+        }),
+        unstable("test-run-directory", |o| {
+            o.optopt(
+                "",
+                "test-run-directory",
+                "The working directory in which to run tests",
+                "PATH",
+            )
         }),
         stable("target", |o| o.optopt("", "target", "target triple to document", "TRIPLE")),
         stable("markdown-css", |o| {
@@ -471,7 +480,7 @@ fn run_renderer<'tcx, T: formats::FormatRenderer<'tcx>>(
     render_info: config::RenderInfo,
     diag: &rustc_errors::Handler,
     edition: rustc_span::edition::Edition,
-    tcx: ty::TyCtxt<'tcx>,
+    tcx: TyCtxt<'tcx>,
 ) -> MainResult {
     match formats::run_format::<T>(krate, renderopts, render_info, &diag, edition, tcx) {
         Ok(_) => Ok(()),
@@ -539,7 +548,7 @@ fn main_options(options: config::Options) -> MainResult {
                 sess.fatal("Compilation failed, aborting rustdoc");
             }
 
-            let mut global_ctxt = abort_on_err(queries.global_ctxt(), sess).take();
+            let mut global_ctxt = abort_on_err(queries.global_ctxt(), sess).peek_mut();
 
             global_ctxt.enter(|tcx| {
                 let (mut krate, render_info, render_opts) = sess.time("run_global_ctxt", || {
@@ -569,7 +578,7 @@ fn main_options(options: config::Options) -> MainResult {
                 let (error_format, edition, debugging_options) = diag_opts;
                 let diag = core::new_handler(error_format, None, &debugging_options);
                 match output_format {
-                    None | Some(config::OutputFormat::Html) => sess.time("render_html", || {
+                    config::OutputFormat::Html => sess.time("render_html", || {
                         run_renderer::<html::render::Context<'_>>(
                             krate,
                             render_opts,
@@ -579,7 +588,7 @@ fn main_options(options: config::Options) -> MainResult {
                             tcx,
                         )
                     }),
-                    Some(config::OutputFormat::Json) => sess.time("render_json", || {
+                    config::OutputFormat::Json => sess.time("render_json", || {
                         run_renderer::<json::JsonRenderer<'_>>(
                             krate,
                             render_opts,

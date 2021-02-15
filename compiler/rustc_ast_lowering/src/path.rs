@@ -273,7 +273,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         if !generic_args.parenthesized && !has_lifetimes {
             generic_args.args = self
                 .elided_path_lifetimes(
-                    first_generic_span.map(|s| s.shrink_to_lo()).unwrap_or(segment.ident.span),
+                    first_generic_span.map_or(segment.ident.span, |s| s.shrink_to_lo()),
                     expected_lifetimes,
                 )
                 .map(GenericArg::Lifetime)
@@ -362,7 +362,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         }
     }
 
-    fn lower_angle_bracketed_parameter_data(
+    pub(crate) fn lower_angle_bracketed_parameter_data(
         &mut self,
         data: &AngleBracketedArgs,
         param_mode: ParamMode,
@@ -401,15 +401,15 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         // compatibility, even in contexts like an impl header where
         // we generally don't permit such things (see #51008).
         self.with_anonymous_lifetime_mode(AnonymousLifetimeMode::PassThrough, |this| {
-            let &ParenthesizedArgs { ref inputs, ref output, span } = data;
+            let ParenthesizedArgs { span, inputs, inputs_span, output } = data;
             let inputs = this.arena.alloc_from_iter(
                 inputs.iter().map(|ty| this.lower_ty_direct(ty, ImplTraitContext::disallowed())),
             );
             let output_ty = match output {
                 FnRetTy::Ty(ty) => this.lower_ty(&ty, ImplTraitContext::disallowed()),
-                FnRetTy::Default(_) => this.arena.alloc(this.ty_tup(span, &[])),
+                FnRetTy::Default(_) => this.arena.alloc(this.ty_tup(*span, &[])),
             };
-            let args = smallvec![GenericArg::Type(this.ty_tup(span, inputs))];
+            let args = smallvec![GenericArg::Type(this.ty_tup(*inputs_span, inputs))];
             let binding = this.output_ty_binding(output_ty.span, output_ty);
             (
                 GenericArgsCtor { args, bindings: arena_vec![this; binding], parenthesized: true },
@@ -426,6 +426,9 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     ) -> hir::TypeBinding<'hir> {
         let ident = Ident::with_dummy_span(hir::FN_OUTPUT_NAME);
         let kind = hir::TypeBindingKind::Equality { ty };
-        hir::TypeBinding { hir_id: self.next_id(), span, ident, kind }
+        let args = arena_vec![self;];
+        let bindings = arena_vec![self;];
+        let gen_args = self.arena.alloc(hir::GenericArgs { args, bindings, parenthesized: false });
+        hir::TypeBinding { hir_id: self.next_id(), gen_args, span, ident, kind }
     }
 }

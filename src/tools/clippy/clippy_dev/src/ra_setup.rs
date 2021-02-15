@@ -1,5 +1,3 @@
-#![allow(clippy::filter_map)]
-
 use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
@@ -10,6 +8,9 @@ use std::path::{Path, PathBuf};
 // This allows rust analyzer to analyze rustc internals and show proper information inside clippy
 // code. See https://github.com/rust-analyzer/rust-analyzer/issues/3517 and https://github.com/rust-lang/rust-clippy/issues/5514 for details
 
+/// # Panics
+///
+/// Panics if `rustc_path` does not lead to a rustc repo or the files could not be read
 pub fn run(rustc_path: Option<&str>) {
     // we can unwrap here because the arg is required by clap
     let rustc_path = PathBuf::from(rustc_path.unwrap());

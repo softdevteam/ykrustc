@@ -4,6 +4,8 @@
 #![feature(bindings_after_at)]
 #![feature(iter_order_by)]
 #![feature(or_patterns)]
+#![feature(box_syntax)]
+#![feature(box_patterns)]
 
 use rustc_ast as ast;
 use rustc_ast::attr::HasAttrs;
@@ -292,7 +294,7 @@ pub fn nt_to_tokenstream(
     } else if matches!(synthesize_tokens, CanSynthesizeMissingTokens::Yes) {
         return fake_token_stream(sess, nt);
     } else {
-        panic!("Missing tokens for nt {:?}", pprust::nonterminal_to_string(nt));
+        panic!("Missing tokens for nt at {:?}: {:?}", nt.span(), pprust::nonterminal_to_string(nt));
     }
 }
 

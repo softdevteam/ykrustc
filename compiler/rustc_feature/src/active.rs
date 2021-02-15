@@ -36,7 +36,7 @@ macro_rules! declare_features {
             ),+];
 
         /// A set of features to be used by later passes.
-        #[derive(Clone, Default)]
+        #[derive(Clone, Default, Debug)]
         pub struct Features {
             /// `#![feature]` attrs for language features, for error reporting.
             pub declared_lang_features: Vec<(Symbol, Span, Option<Symbol>)>,
@@ -485,9 +485,6 @@ declare_features! (
     /// Allows `async || body` closures.
     (active, async_closure, "1.37.0", Some(62290), None),
 
-    /// Allows `[x; N]` where `x` is a constant (RFC 2203).
-    (active, const_in_array_repeat_expressions, "1.37.0", Some(49147), None),
-
     /// Allows `impl Trait` to be used inside type aliases (RFC 2515).
     (active, type_alias_impl_trait, "1.38.0", Some(63063), None),
 
@@ -628,6 +625,18 @@ declare_features! (
 
     /// Allows references to types with interior mutability within constants
     (active, const_refs_to_cell, "1.51.0", Some(80384), None),
+
+    /// Allows using `pointer` and `reference` in intra-doc links
+    (active, intra_doc_pointers, "1.51.0", Some(80896), None),
+
+    /// Allows `extern "C-cmse-nonsecure-call" fn()`.
+    (active, abi_c_cmse_nonsecure_call, "1.51.0", Some(81391), None),
+
+    /// Lessens the requirements for structs to implement `Unsize`.
+    (active, relaxed_struct_unsize, "1.51.0", Some(1), None),
+
+    /// Allows macro attributes to observe output of `#[derive]`.
+    (active, macro_attributes_in_derive_output, "1.51.0", Some(81119), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
