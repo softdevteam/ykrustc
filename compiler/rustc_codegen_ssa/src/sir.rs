@@ -379,7 +379,7 @@ impl SirFuncCx<'tcx> {
                     ty::Slice(_elem_ty) => self.offset_iplace(
                         bx,
                         ip,
-                        i32::try_from(self.tcx.data_layout.pointer_size.bits()).unwrap(),
+                        i32::try_from(self.tcx.data_layout.pointer_size.bytes()).unwrap(),
                         dest_ty,
                     ),
                     _ => unreachable!(),
