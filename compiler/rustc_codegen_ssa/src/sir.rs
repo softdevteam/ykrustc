@@ -73,8 +73,8 @@ pub struct SirFuncCx<'tcx> {
     mir: &'tcx mir::Body<'tcx>,
     /// The builder for the SIR function.
     pub sir_builder: ykpack::build::SirBuilder,
-    /// Maps each MIR local to a SIR IPlace.
-    var_map: FxHashMap<mir::Local, ykpack::IPlace>,
+    /// Maps each MIR local to a SIR IRPlace.
+    var_map: FxHashMap<mir::Local, ykpack::IRPlace>,
     /// The compiler's type context.
     tcx: TyCtxt<'tcx>,
 }
@@ -139,7 +139,7 @@ impl SirFuncCx<'tcx> {
         if crate_name == "core" || crate_name == "alloc" {
             flags |= ykpack::BodyFlags::DO_NOT_TRACE;
         }
-        let var_map: FxHashMap<mir::Local, ykpack::IPlace> = FxHashMap::default();
+        let var_map: FxHashMap<mir::Local, ykpack::IRPlace> = FxHashMap::default();
 
         let mut this = Self {
             instance: instance.clone(),
@@ -165,7 +165,7 @@ impl SirFuncCx<'tcx> {
                 .push(ykpack::LocalDecl { ty: sirty, referenced: false });
             this.var_map.insert(
                 ml,
-                ykpack::IPlace::Val {
+                ykpack::IRPlace::Val {
                     local: ykpack::Local(u32::try_from(idx).unwrap()),
                     off: 0,
                     ty: sirty,
@@ -189,13 +189,13 @@ impl SirFuncCx<'tcx> {
         self.sir_builder.func.layout = (layout.size(), layout.align());
     }
 
-    /// Returns the IPlace corresponding with MIR local `ml`. A new IPlace is constructed if we've
+    /// Returns the IRPlace corresponding with MIR local `ml`. A new IRPlace is constructed if we've
     /// never seen this MIR local before.
     fn sir_local<Bx: BuilderMethods<'a, 'tcx>>(
         &mut self,
         bx: &Bx,
         ml: &mir::Local,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         let ret = if let Some(ip) = self.var_map.get(ml) {
             ip.clone()
         } else {
@@ -208,8 +208,8 @@ impl SirFuncCx<'tcx> {
         ret
     }
 
-    /// Returns a zero-offset IPlace for a new SIR local.
-    fn new_sir_local(&mut self, sirty: ykpack::TypeId) -> ykpack::IPlace {
+    /// Returns a zero-offset IRPlace for a new SIR local.
+    fn new_sir_local(&mut self, sirty: ykpack::TypeId) -> ykpack::IRPlace {
         self.sir_builder.new_sir_local(sirty)
     }
 
@@ -321,7 +321,7 @@ impl SirFuncCx<'tcx> {
         bx: &Bx,
         bb: ykpack::BasicBlockIndex,
         operand: &mir::Operand<'tcx>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         match operand {
             mir::Operand::Copy(place) | mir::Operand::Move(place) => {
                 self.lower_place(bx, bb, place)
@@ -336,7 +336,7 @@ impl SirFuncCx<'tcx> {
         bb: ykpack::BasicBlockIndex,
         op: &mir::Operand<'tcx>,
         ty: Ty<'tcx>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         let lop = self.lower_operand(bx, bb, op);
 
         // The ty we are casting to is equivalent to dest_ty.
@@ -353,7 +353,7 @@ impl SirFuncCx<'tcx> {
         bb: ykpack::BasicBlockIndex,
         dest_ty: Ty<'tcx>,
         rvalue: &mir::Rvalue<'tcx>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         match rvalue {
             mir::Rvalue::Use(opnd) => self.lower_operand(bx, bb, opnd),
             mir::Rvalue::Ref(_, _, p) => self.lower_ref(bx, bb, dest_ty, p),
@@ -374,7 +374,7 @@ impl SirFuncCx<'tcx> {
                         let val = ykpack::Constant::Int(ykpack::ConstantInt::UnsignedInt(
                             ykpack::UnsignedInt::Usize(raw_val),
                         ));
-                        ykpack::IPlace::Const { val, ty: ip.ty() }
+                        ykpack::IRPlace::Const { val, ty: ip.ty() }
                     }
                     ty::Slice(_elem_ty) => self.offset_iplace(
                         bx,
@@ -385,7 +385,7 @@ impl SirFuncCx<'tcx> {
                     _ => unreachable!(),
                 }
             }
-            _ => ykpack::IPlace::Unimplemented(with_no_trimmed_paths(|| {
+            _ => ykpack::IRPlace::Unimplemented(with_no_trimmed_paths(|| {
                 format!("unimplemented rvalue: {:?}", rvalue)
             })),
         }
@@ -411,29 +411,29 @@ impl SirFuncCx<'tcx> {
         bx.layout_of(self.monomorphize(&t))
     }
 
-    /// Apply an offset to an IPlace.
+    /// Apply an offset to an IRPlace.
     fn offset_iplace<Bx: BuilderMethods<'a, 'tcx>>(
         &mut self,
         bx: &Bx,
-        mut ip: ykpack::IPlace,
+        mut ip: ykpack::IRPlace,
         add: ykpack::OffT,
         mirty: Ty<'tcx>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         match &mut ip {
-            ykpack::IPlace::Val { off, ty, .. } => {
+            ykpack::IRPlace::Val { off, ty, .. } => {
                 *off += add;
                 *ty = self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, mirty));
                 ip
             }
-            ykpack::IPlace::Indirect { off, ty, .. } => {
+            ykpack::IRPlace::Indirect { off, ty, .. } => {
                 *off += add;
                 *ty = self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, mirty));
                 ip
             }
-            ykpack::IPlace::Const { .. } => {
-                ykpack::IPlace::Unimplemented("offset_iplace on a constant".to_owned())
+            ykpack::IRPlace::Const { .. } => {
+                ykpack::IRPlace::Unimplemented("offset_iplace on a constant".to_owned())
             }
-            ykpack::IPlace::Unimplemented(_) => ip,
+            ykpack::IRPlace::Unimplemented(_) => ip,
         }
     }
 
@@ -442,7 +442,7 @@ impl SirFuncCx<'tcx> {
         bx: &Bx,
         bb: ykpack::BasicBlockIndex,
         place: &mir::Place<'_>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         // We start with the base local and project away from it.
         let mut cur_iplace = self.sir_local(bx, &place.local);
         let mut cur_mirty = self.monomorphize(&self.mir.local_decls[place.local].ty);
@@ -467,18 +467,18 @@ impl SirFuncCx<'tcx> {
                                     );
                                     new_mirty
                                 } else {
-                                    return ykpack::IPlace::Unimplemented(format!(
+                                    return ykpack::IRPlace::Unimplemented(format!(
                                         "struct field shape: {:?}",
                                         st_lay.fields
                                     ));
                                 }
                             } else if def.is_enum() {
-                                return ykpack::IPlace::Unimplemented(format!(
+                                return ykpack::IRPlace::Unimplemented(format!(
                                     "enum_projection: {:?}",
                                     def
                                 ));
                             } else {
-                                return ykpack::IPlace::Unimplemented(format!("adt: {:?}", def));
+                                return ykpack::IRPlace::Unimplemented(format!("adt: {:?}", def));
                             }
                         }
                         ty::Tuple(..) => {
@@ -495,7 +495,7 @@ impl SirFuncCx<'tcx> {
                                     new_mirty
                                 }
                                 _ => {
-                                    return ykpack::IPlace::Unimplemented(format!(
+                                    return ykpack::IRPlace::Unimplemented(format!(
                                         "tuple field shape: {:?}",
                                         tup_lay.fields
                                     ));
@@ -503,7 +503,7 @@ impl SirFuncCx<'tcx> {
                             }
                         }
                         _ => {
-                            return ykpack::IPlace::Unimplemented(format!(
+                            return ykpack::IRPlace::Unimplemented(format!(
                                 "field access on: {:?}",
                                 cur_mirty
                             ));
@@ -535,13 +535,13 @@ impl SirFuncCx<'tcx> {
                         elem_ty
                     }
                     _ => {
-                        return ykpack::IPlace::Unimplemented(format!("index on {:?}", cur_mirty));
+                        return ykpack::IRPlace::Unimplemented(format!("index on {:?}", cur_mirty));
                     }
                 },
                 mir::ProjectionElem::Deref => {
                     match cur_mirty.kind() {
                         ty::Ref(_, ty, _) | ty::RawPtr(ty::TypeAndMut { ty, .. }) => {
-                            if let ykpack::IPlace::Indirect { ty: dty, .. } = cur_iplace {
+                            if let ykpack::IRPlace::Indirect { ty: dty, .. } = cur_iplace {
                                 // We are dereffing an already indirect place, so we emit an
                                 // intermediate store to strip away one level of indirection.
                                 let dest = self.new_sir_local(dty);
@@ -560,14 +560,14 @@ impl SirFuncCx<'tcx> {
                             ty
                         }
                         _ => {
-                            return ykpack::IPlace::Unimplemented(format!(
+                            return ykpack::IRPlace::Unimplemented(format!(
                                 "invalid deref: {:?}",
                                 cur_mirty.kind()
                             ));
                         }
                     }
                 }
-                _ => return ykpack::IPlace::Unimplemented(format!("projection: {:?}", pj)),
+                _ => return ykpack::IRPlace::Unimplemented(format!("projection: {:?}", pj)),
             };
             cur_mirty = self.monomorphize(&next_mirty);
         }
@@ -578,15 +578,15 @@ impl SirFuncCx<'tcx> {
         &mut self,
         bx: &Bx,
         constant: &mir::Constant<'tcx>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         match constant.literal.val {
             ty::ConstKind::Value(mir::interpret::ConstValue::Scalar(s)) => {
                 let val = self.lower_scalar(bx, constant.literal.ty, s);
                 let ty =
                     self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, constant.literal.ty));
-                ykpack::IPlace::Const { val, ty }
+                ykpack::IRPlace::Const { val, ty }
             }
-            _ => ykpack::IPlace::Unimplemented(with_no_trimmed_paths(|| {
+            _ => ykpack::IRPlace::Unimplemented(with_no_trimmed_paths(|| {
                 format!("unimplemented constant: {:?}", constant)
             })),
         }
@@ -707,7 +707,7 @@ impl SirFuncCx<'tcx> {
         opnd1: &mir::Operand<'tcx>,
         opnd2: &mir::Operand<'tcx>,
         checked: bool,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         let op = binop_lowerings!(
             op, Add, Sub, Mul, Div, Rem, BitXor, BitAnd, BitOr, Shl, Shr, Eq, Lt, Le, Ne, Ge, Gt,
             Offset
@@ -739,7 +739,7 @@ impl SirFuncCx<'tcx> {
         bb: ykpack::BasicBlockIndex,
         dest_ty: Ty<'tcx>,
         place: &mir::Place<'tcx>,
-    ) -> ykpack::IPlace {
+    ) -> ykpack::IRPlace {
         let ty = self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, dest_ty));
         let dest_ip = self.new_sir_local(ty);
         let src_ip = self.lower_place(bx, bb, place);
