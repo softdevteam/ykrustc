@@ -101,6 +101,18 @@ impl SirFuncCx<'tcx> {
                     );
                 }
 
+                let inst_kind = instance.ty(tcx, ty::ParamEnv::reveal_all()).kind();
+                if !matches!(inst_kind, ty::FnDef(..)) {
+                    // We reject anything that isn't a regular function to ensure that we don't
+                    // encounter odd problems elsewhere. For example, closures prepend an argument
+                    // for upvars which breaks the invariant that Local(1) is the interpreter
+                    // context.
+                    tcx.sess.span_fatal(
+                        tcx.def_span(instance.def_id()),
+                        "#[interp_step] can only be applied to regular function definitions",
+                    );
+                }
+
                 if mir.args_iter().count() != 1 {
                     tcx.sess.span_fatal(
                         tcx.def_span(instance.def_id()),
