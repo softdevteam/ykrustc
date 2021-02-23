@@ -193,6 +193,7 @@ const PERMITTED_DEPENDENCIES: &[&str] = &[
     "bincode",
     "fallible-iterator",
     "fxhash",
+    "memmap2",
     "num-traits",
     "ykpack",
 ];
