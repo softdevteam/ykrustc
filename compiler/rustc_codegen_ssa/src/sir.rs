@@ -537,7 +537,7 @@ impl SirFuncCx<'tcx> {
                         let dest = self.new_sir_local(dest_ty);
                         let idx_ip = self.sir_local(bx, &idx);
                         let stmt = ykpack::Statement::DynOffs {
-                            dest: dest.clone(),
+                            dst: dest.clone(),
                             base: cur_iplace.clone(),
                             idx: idx_ip,
                             scale: elem_size,
@@ -733,7 +733,7 @@ impl SirFuncCx<'tcx> {
 
         let ty = self.lower_ty_and_layout(bx, &self.mono_layout_of(bx, dest_ty));
         let dest_ip = self.new_sir_local(ty);
-        let stmt = ykpack::Statement::BinaryOp { dest: dest_ip.clone(), op, opnd1, opnd2, checked };
+        let stmt = ykpack::Statement::BinaryOp { dst: dest_ip.clone(), op, opnd1, opnd2, checked };
         self.push_stmt(bb, stmt);
         dest_ip
     }
