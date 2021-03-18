@@ -134,10 +134,10 @@ impl SirFuncCx<'tcx> {
                     );
                 }
 
-                if !mir.return_ty().is_unit() {
+                if !matches!(mir.return_ty().kind(), ty::Bool) {
                     tcx.sess.span_err(
                         tcx.def_span(instance.def_id()),
-                        "The #[interp_step] function must return unit",
+                        "The #[interp_step] function must return bool",
                     );
                 }
 
