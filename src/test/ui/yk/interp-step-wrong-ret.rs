@@ -9,6 +9,6 @@ fn main() {
 }
 
 #[interp_step]
-fn f1(_io: &mut IO) -> u8 { //~ ERROR: The #[interp_step] function must return unit
+fn f1(_io: &mut IO) -> u8 { //~ ERROR: The #[interp_step] function must return bool
     0
 }
