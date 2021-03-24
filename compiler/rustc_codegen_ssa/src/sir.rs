@@ -187,7 +187,7 @@ impl SirFuncCx<'tcx> {
         this
     }
 
-    /// Compute layout and offsets required for blackholing.
+    /// Compute layout and offsets required for the stopgap interpreter.
     pub fn compute_layout_and_offsets<Bx: BuilderMethods<'a, 'tcx>>(&mut self, bx: &Bx) {
         let mut layout = Layout::from_size_align(0, 1).unwrap();
         for ld in &self.sir_builder.func.local_decls {
@@ -201,8 +201,8 @@ impl SirFuncCx<'tcx> {
         self.sir_builder.func.layout = (layout.size(), layout.align());
     }
 
-    /// Returns the IRPlace corresponding with MIR local `ml`. A new IRPlace is constructed if we've
-    /// never seen this MIR local before.
+    /// Returns the IRPlace corresponding with MIR local `ml`. A new IRPlace is constructed if
+    /// we've never seen this MIR local before.
     fn sir_local<Bx: BuilderMethods<'a, 'tcx>>(
         &mut self,
         bx: &Bx,
