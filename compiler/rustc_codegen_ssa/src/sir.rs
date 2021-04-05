@@ -789,7 +789,7 @@ impl SirFuncCx<'tcx> {
             ty::Tuple(..) => self.lower_tuple_ty(bx, ty_layout),
             _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
         };
-        let sir_ty = ykpack::Ty { size, align, kind: sir_tykind };
+        let sir_ty = ykpack::Ty::new(size, align, sir_tykind);
         let tyid = bx.cx().define_sir_type(sir_ty);
         tyid
     }
