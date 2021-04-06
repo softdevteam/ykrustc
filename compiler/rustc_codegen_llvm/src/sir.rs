@@ -108,6 +108,6 @@ impl SirMethods for CodegenCx<'b, 'tcx> {
     fn get_size_align(&self, tyid: ykpack::TypeId) -> (usize, usize) {
         let types = self.sir.as_ref().unwrap().types.borrow();
         let ty = types.get(tyid);
-        (ty.size, ty.align)
+        (ty.size(), ty.align())
     }
 }

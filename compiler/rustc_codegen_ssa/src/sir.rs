@@ -171,10 +171,7 @@ impl SirFuncCx<'tcx> {
             let ml = mir::Local::from_usize(idx);
             let sirty =
                 this.lower_ty_and_layout(bx, &this.mono_layout_of(bx, this.mir.local_decls[ml].ty));
-            this.sir_builder
-                .func
-                .local_decls
-                .push(ykpack::LocalDecl { ty: sirty, referenced: false });
+            this.sir_builder.func.local_decls.push(ykpack::LocalDecl::new(sirty, false));
             this.var_map.insert(
                 ml,
                 ykpack::IRPlace::Val {
@@ -191,7 +188,7 @@ impl SirFuncCx<'tcx> {
     pub fn compute_layout_and_offsets<Bx: BuilderMethods<'a, 'tcx>>(&mut self, bx: &Bx) {
         let mut layout = Layout::from_size_align(0, 1).unwrap();
         for ld in &self.sir_builder.func.local_decls {
-            let (size, align) = bx.cx().get_size_align(ld.ty);
+            let (size, align) = bx.cx().get_size_align(ld.ty());
             let l = Layout::from_size_align(size, align).unwrap();
             let (nl, off) = layout.extend(l).unwrap();
             self.sir_builder.func.offsets.push(off);
@@ -789,7 +786,7 @@ impl SirFuncCx<'tcx> {
             ty::Tuple(..) => self.lower_tuple_ty(bx, ty_layout),
             _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
         };
-        let sir_ty = ykpack::Ty { size, align, kind: sir_tykind };
+        let sir_ty = ykpack::Ty::new(size, align, sir_tykind);
         let tyid = bx.cx().define_sir_type(sir_ty);
         tyid
     }
@@ -830,9 +827,10 @@ impl SirFuncCx<'tcx> {
                     sir_offsets.push(off.bytes().try_into().unwrap());
                 }
 
-                ykpack::TyKind::Tuple(ykpack::TupleTy {
-                    fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
-                })
+                ykpack::TyKind::Tuple(ykpack::TupleTy::new(ykpack::Fields::new(
+                    sir_offsets,
+                    sir_tys,
+                )))
             }
             _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
         }
@@ -857,9 +855,8 @@ impl SirFuncCx<'tcx> {
                         sir_offsets.push(off.bytes().try_into().unwrap());
                     }
 
-                    ykpack::TyKind::Struct(ykpack::StructTy {
-                        fields: ykpack::Fields { offsets: sir_offsets, tys: sir_tys },
-                    })
+                    let fields = ykpack::Fields::new(sir_offsets, sir_tys);
+                    ykpack::TyKind::Struct(ykpack::StructTy::new(fields))
                 }
                 _ => ykpack::TyKind::Unimplemented(format!("{:?}", ty_layout)),
             }
