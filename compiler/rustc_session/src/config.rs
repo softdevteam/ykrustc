@@ -2026,12 +2026,12 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
 
     let sysroot_opt = matches.opt_str("sysroot").map(|m| PathBuf::from(&m));
     let target_triple = parse_target_triple(matches, error_format);
-    let opt_level = parse_opt_level(matches, &cg, error_format);
+    let mut opt_level = parse_opt_level(matches, &cg, error_format);
 
-    // We don't allow optimisation and tracing to be enabled simultaneously as LLVM is likely to
-    // reorder things, thus destroying the correctness of our SIR and DILabels.
-    if opt_level != OptLevel::No && cg.tracer != TracerMode::Off {
-        early_error(error_format, &format!("optimisation cannot be enabled with a tracer"));
+    if cg.tracer == TracerMode::Hardware {
+        // Hardware tracing requires that LLVM doesn't reorder blocks. If it did then our SIR and
+        // DILabels would be out of sync with the code in the end binary.
+        opt_level = OptLevel::No;
     }
 
     // The `-g` and `-C debuginfo` flags specify the same setting, so we want to be able
