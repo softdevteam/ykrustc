@@ -49,7 +49,7 @@ pub fn write_sir<'tcx>(
     }
 
     for func in sir_funcs {
-        hdr.bodies.insert(func.symbol_name.clone(), encoder.tell());
+        hdr.bodies.insert(func.symbol_name().clone(), encoder.tell());
         encoder.serialise(ykpack::Pack::Body(func)).unwrap();
     }
 
