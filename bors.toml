@@ -4,7 +4,7 @@ status = ["buildbot/yorick-buildbot-build-script-hw"]
 # Allow eight hours for builds + tests.
 timeout_sec = 28800
 
-# Have bors delete auto-merged branches
+# Have bors delete auto-merged branches (if possible).
 delete_merged_branches = true
 
 # Don't include PR description in merge commit.
