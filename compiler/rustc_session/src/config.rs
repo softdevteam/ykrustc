@@ -656,6 +656,39 @@ impl OutputFilenames {
     }
 }
 
+/// The different ways that we can compile for Yorick tracing.
+#[derive(Clone, Copy, PartialEq, Hash, Debug)]
+pub enum YkTracer {
+    /// Hardware tracing (`-C yk_tracer=hw`).
+    Hardware,
+    /// No tracing support (`-C yk_tracer=off`).
+    Off,
+}
+
+impl Default for YkTracer {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+impl YkTracer {
+    /// The string value used to populate the `yk_tracer` cfg.
+    pub fn cfg_str(&self) -> &'static str {
+        match self {
+            Self::Hardware => "hw",
+            Self::Off => "off",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "hw" => Ok(Self::Hardware),
+            "off" => Ok(Self::Off),
+            _ => Err(()),
+        }
+    }
+}
+
 pub fn host_triple() -> &'static str {
     // Get the host triple out of the build environment. This ensures that our
     // idea of the host triple is the same as for the set of libraries we've
@@ -868,6 +901,10 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     if sess.opts.crate_types.contains(&CrateType::ProcMacro) {
         ret.insert((sym::proc_macro, None));
     }
+    ret.insert((
+        Symbol::intern("yk_tracer"),
+        Some(Symbol::intern(sess.opts.cg.yk_tracer.cfg_str())),
+    ));
     ret
 }
 
@@ -2280,7 +2317,7 @@ crate mod dep_tracking {
     use super::{
         CFGuard, CrateType, DebugInfo, ErrorOutputType, InstrumentCoverage, LinkerPluginLto,
         LtoCli, OptLevel, OutputTypes, Passes, SourceFileHashAlgorithm, SwitchWithOptPath,
-        SymbolManglingVersion, TrimmedDefPaths,
+        SymbolManglingVersion, TrimmedDefPaths, YkTracer,
     };
     use crate::lint;
     use crate::options::WasiExecModel;
@@ -2369,6 +2406,7 @@ crate mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(Option<SymbolManglingVersion>);
     impl_dep_tracking_hash_via_hash!(Option<SourceFileHashAlgorithm>);
     impl_dep_tracking_hash_via_hash!(TrimmedDefPaths);
+    impl_dep_tracking_hash_via_hash!(YkTracer);
 
     impl_dep_tracking_hash_for_sortable_vec_of!(String);
     impl_dep_tracking_hash_for_sortable_vec_of!(PathBuf);

@@ -287,6 +287,7 @@ macro_rules! options {
         pub const parse_wasi_exec_model: &str = "either `command` or `reactor`";
         pub const parse_split_debuginfo: &str =
             "one of supported split-debuginfo modes (`off` or `dsymutil`)";
+        pub const parse_yk_tracer: &str = "`hw` or `off` (default)";
     }
 
     #[allow(dead_code)]
@@ -770,6 +771,14 @@ macro_rules! options {
             }
             true
         }
+
+        fn parse_yk_tracer(slot: &mut YkTracer, v: Option<&str>) -> bool {
+            match v.and_then(|s| YkTracer::from_str(s).ok()) {
+                Some(tracer) => *slot = tracer,
+                None => return false,
+            }
+            true
+        }
     }
 ) }
 
@@ -875,6 +884,8 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
     target_feature: String = (String::new(), parse_target_feature, [TRACKED],
         "target specific attributes. (`rustc --print target-features` for details). \
         This feature is unsafe."),
+    yk_tracer: YkTracer = (YkTracer::default(), parse_yk_tracer, [TRACKED],
+        "which kind of Yorick tracing to compile for."),
 
     // This list is in alphabetical order.
     //
