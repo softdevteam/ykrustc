@@ -1,6 +1,7 @@
 use rustc_hir as hir;
 use rustc_hir::Node;
 use rustc_index::vec::Idx;
+use rustc_middle::hir::map::Map;
 use rustc_middle::mir::{Mutability, Place, PlaceRef, ProjectionElem};
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_middle::{
@@ -509,47 +510,89 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         the_place_err: PlaceRef<'tcx>,
         err: &mut DiagnosticBuilder<'_>,
     ) {
-        let id = id.expect_local();
-        let tables = tcx.typeck(id);
-        let hir_id = tcx.hir().local_def_id_to_hir_id(id);
-        let (span, place) = &tables.closure_kind_origins()[hir_id];
-        let reason = if let PlaceBase::Upvar(upvar_id) = place.base {
-            let upvar = ty::place_to_string_for_capture(tcx, place);
-            match tables.upvar_capture(upvar_id) {
-                ty::UpvarCapture::ByRef(ty::UpvarBorrow {
-                    kind: ty::BorrowKind::MutBorrow | ty::BorrowKind::UniqueImmBorrow,
-                    ..
-                }) => {
-                    format!("mutable borrow of `{}`", upvar)
+        let closure_local_def_id = id.expect_local();
+        let tables = tcx.typeck(closure_local_def_id);
+        let closure_hir_id = tcx.hir().local_def_id_to_hir_id(closure_local_def_id);
+        if let Some((span, closure_kind_origin)) =
+            &tables.closure_kind_origins().get(closure_hir_id)
+        {
+            let reason = if let PlaceBase::Upvar(upvar_id) = closure_kind_origin.base {
+                let upvar = ty::place_to_string_for_capture(tcx, closure_kind_origin);
+                let root_hir_id = upvar_id.var_path.hir_id;
+                // we have a origin for this closure kind starting at this root variable so it's safe to unwrap here
+                let captured_places = tables.closure_min_captures[id].get(&root_hir_id).unwrap();
+
+                let origin_projection = closure_kind_origin
+                    .projections
+                    .iter()
+                    .map(|proj| proj.kind)
+                    .collect::<Vec<_>>();
+                let mut capture_reason = String::new();
+                for captured_place in captured_places {
+                    let captured_place_kinds = captured_place
+                        .place
+                        .projections
+                        .iter()
+                        .map(|proj| proj.kind)
+                        .collect::<Vec<_>>();
+                    if rustc_middle::ty::is_ancestor_or_same_capture(
+                        &captured_place_kinds,
+                        &origin_projection,
+                    ) {
+                        match captured_place.info.capture_kind {
+                            ty::UpvarCapture::ByRef(ty::UpvarBorrow {
+                                kind: ty::BorrowKind::MutBorrow | ty::BorrowKind::UniqueImmBorrow,
+                                ..
+                            }) => {
+                                capture_reason = format!("mutable borrow of `{}`", upvar);
+                            }
+                            ty::UpvarCapture::ByValue(_) => {
+                                capture_reason = format!("possible mutation of `{}`", upvar);
+                            }
+                            _ => bug!("upvar `{}` borrowed, but not mutably", upvar),
+                        }
+                        break;
+                    }
                 }
-                ty::UpvarCapture::ByValue(_) => {
-                    format!("possible mutation of `{}`", upvar)
+                if capture_reason.is_empty() {
+                    bug!("upvar `{}` borrowed, but cannot find reason", upvar);
                 }
-                val => bug!("upvar `{}` borrowed, but not mutably: {:?}", upvar, val),
-            }
-        } else {
-            bug!("not an upvar")
-        };
-        err.span_label(
-            *span,
-            format!(
-                "calling `{}` requires mutable binding due to {}",
-                self.describe_place(the_place_err).unwrap(),
-                reason
-            ),
-        );
+                capture_reason
+            } else {
+                bug!("not an upvar")
+            };
+            err.span_label(
+                *span,
+                format!(
+                    "calling `{}` requires mutable binding due to {}",
+                    self.describe_place(the_place_err).unwrap(),
+                    reason
+                ),
+            );
+        }
     }
 
-    // Attempt to search similar mutable assosiated items for suggestion.
+    // Attempt to search similar mutable associated items for suggestion.
     // In the future, attempt in all path but initially for RHS of for_loop
     fn suggest_similar_mut_method_for_for_loop(&self, err: &mut DiagnosticBuilder<'_>) {
-        let hir = self.infcx.tcx.hir();
-        let node = hir.item(self.mir_hir_id());
         use hir::{
-            Expr,
+            BodyId, Expr,
             ExprKind::{Block, Call, DropTemps, Match, MethodCall},
+            HirId, ImplItem, ImplItemKind, Item, ItemKind,
         };
-        if let hir::ItemKind::Fn(_, _, body_id) = node.kind {
+
+        fn maybe_body_id_of_fn(hir_map: &Map<'tcx>, id: HirId) -> Option<BodyId> {
+            match hir_map.find(id) {
+                Some(Node::Item(Item { kind: ItemKind::Fn(_, _, body_id), .. }))
+                | Some(Node::ImplItem(ImplItem { kind: ImplItemKind::Fn(_, body_id), .. })) => {
+                    Some(*body_id)
+                }
+                _ => None,
+            }
+        }
+        let hir_map = self.infcx.tcx.hir();
+        let mir_body_hir_id = self.mir_hir_id();
+        if let Some(fn_body_id) = maybe_body_id_of_fn(&hir_map, mir_body_hir_id) {
             if let Block(
                 hir::Block {
                     expr:
@@ -579,7 +622,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                     ..
                 },
                 _,
-            ) = hir.body(body_id).value.kind
+            ) = hir_map.body(fn_body_id).value.kind
             {
                 let opt_suggestions = path_segment
                     .hir_id

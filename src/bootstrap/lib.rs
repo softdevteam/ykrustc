@@ -151,10 +151,6 @@ pub mod util;
 #[cfg(windows)]
 mod job;
 
-/// During development of Yorick, we override dependencies to local paths, and this confuses the
-/// bootstrapper into believing that our code is in-tree. It's not!
-const NOT_IN_TREE: [&str; 1] = ["ykpack"];
-
 #[cfg(all(unix, not(target_os = "haiku")))]
 mod job {
     pub unsafe fn setup(build: &mut crate::Build) {
@@ -551,7 +547,7 @@ impl Build {
     fn std_features(&self, target: TargetSelection) -> String {
         let mut features = "panic-unwind".to_string();
 
-        match self.config.llvm_libunwind.unwrap_or_default() {
+        match self.config.llvm_libunwind {
             LlvmLibunwind::InTree => features.push_str(" llvm-libunwind"),
             LlvmLibunwind::System => features.push_str(" system-llvm-libunwind"),
             LlvmLibunwind::No => {}
@@ -639,6 +635,10 @@ impl Build {
     /// Output directory for all documentation for a target
     fn doc_out(&self, target: TargetSelection) -> PathBuf {
         self.out.join(&*target.triple).join("doc")
+    }
+
+    fn test_out(&self, target: TargetSelection) -> PathBuf {
+        self.out.join(&*target.triple).join("test")
     }
 
     /// Output directory for all documentation for a target
@@ -1129,9 +1129,6 @@ impl Build {
         let mut list = vec![INTERNER.intern_str(root)];
         let mut visited = HashSet::new();
         while let Some(krate) = list.pop() {
-            if NOT_IN_TREE.contains(&&*krate) {
-                continue;
-            }
             let krate = &self.crates[&krate];
             ret.push(krate);
             for dep in &krate.deps {

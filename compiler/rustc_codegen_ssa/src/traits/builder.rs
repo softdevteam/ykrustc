@@ -14,7 +14,7 @@ use crate::mir::place::PlaceRef;
 use crate::MemFlags;
 
 use rustc_middle::ty::layout::{HasParamEnv, TyAndLayout};
-use rustc_middle::ty::{SymbolName, Ty};
+use rustc_middle::ty::Ty;
 use rustc_span::Span;
 use rustc_target::abi::{Abi, Align, Scalar, Size};
 use rustc_target::spec::HasTargetSpec;
@@ -47,7 +47,6 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn llbb(&self) -> Self::BasicBlock;
     fn set_span(&mut self, span: Span);
 
-    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName<'_>, bbidx: usize);
     fn position_at_end(&mut self, llbb: Self::BasicBlock);
     fn ret_void(&mut self);
     fn ret(&mut self, v: Self::Value);

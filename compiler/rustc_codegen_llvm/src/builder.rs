@@ -5,26 +5,26 @@ use crate::llvm::{AtomicOrdering, AtomicRmwBinOp, SynchronizationScope};
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
+use cstr::cstr;
 use libc::{c_char, c_uint};
 use rustc_codegen_ssa::common::{IntPredicate, RealPredicate, TypeKind};
 use rustc_codegen_ssa::mir::operand::{OperandRef, OperandValue};
 use rustc_codegen_ssa::mir::place::PlaceRef;
 use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::MemFlags;
-use rustc_data_structures::const_cstr;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_hir::def_id::DefId;
 use rustc_middle::ty::layout::TyAndLayout;
-use rustc_middle::ty::{self, Instance, SymbolName, Ty, TyCtxt};
-use rustc_span::{self, sym, Span};
+use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_span::{sym, Span};
 use rustc_target::abi::{self, Align, Size};
 use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
+use std::iter;
 use std::ops::{Deref, Range};
 use std::ptr;
 use tracing::debug;
-use ykpack::BLOCK_LABEL_PREFIX;
 
 // All Builders must have an llfn associated with them
 #[must_use]
@@ -146,53 +146,6 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     fn position_at_end(&mut self, llbb: &'ll BasicBlock) {
         unsafe {
             llvm::LLVMPositionBuilderAtEnd(self.llbuilder, llbb);
-        }
-    }
-
-    fn add_yk_block_label(&mut self, fname: &str, sym: &SymbolName<'_>, bbidx: usize) {
-        if !self.tcx.sess.opts.cg.tracer.sir_labels() {
-            // We are not in hardware tracing mode.
-            return;
-        }
-
-        if self.tcx.crate_name(LOCAL_CRATE).as_str().starts_with("rustc") {
-            // Skip rustc crates since we will never trace them.
-            return;
-        }
-
-        // Auto-generated testing entry points cause our label insertion to crash. We don't need
-        // to trace them anyway.
-        if self.tcx.sess.opts.test {
-            let entry_fn = self.tcx.entry_fn(LOCAL_CRATE).unwrap().0.to_def_id();
-            let entry_inst = Instance::mono(self.tcx, entry_fn);
-            let entry_sym = &*self.tcx.symbol_name(entry_inst).name;
-            if sym.name == entry_sym {
-                return;
-            }
-        }
-
-        if fname == "core::intrinsics::drop_in_place"
-            || fname == "std::intrinsics::drop_in_place"
-            || fname == "ptr::drop_in_place"
-            || sym.name == "main"
-        {
-            // Generating labels for these functions results in segfaults.
-            return;
-        }
-
-        // Create the label
-        let lbl_name = CString::new(format!("{}:{}:{}", BLOCK_LABEL_PREFIX, sym, bbidx)).unwrap();
-
-        if let Some(dbg_cx) = self.cx().dbg_cx.as_ref() {
-            let di_bldr = dbg_cx.get_builder();
-            unsafe {
-                llvm::LLVMRustAddYkBlockLabel(
-                    self.llbuilder,
-                    di_bldr,
-                    self.llbb(),
-                    lbl_name.as_ptr(),
-                );
-            }
         }
     }
 
@@ -1027,7 +980,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     fn cleanup_pad(&mut self, parent: Option<&'ll Value>, args: &[&'ll Value]) -> Funclet<'ll> {
-        let name = const_cstr!("cleanuppad");
+        let name = cstr!("cleanuppad");
         let ret = unsafe {
             llvm::LLVMRustBuildCleanupPad(
                 self.llbuilder,
@@ -1051,7 +1004,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
     }
 
     fn catch_pad(&mut self, parent: &'ll Value, args: &[&'ll Value]) -> Funclet<'ll> {
-        let name = const_cstr!("catchpad");
+        let name = cstr!("catchpad");
         let ret = unsafe {
             llvm::LLVMRustBuildCatchPad(
                 self.llbuilder,
@@ -1070,7 +1023,7 @@ impl BuilderMethods<'a, 'tcx> for Builder<'a, 'll, 'tcx> {
         unwind: Option<&'ll BasicBlock>,
         num_handlers: usize,
     ) -> &'ll Value {
-        let name = const_cstr!("catchswitch");
+        let name = cstr!("catchswitch");
         let ret = unsafe {
             llvm::LLVMRustBuildCatchSwitch(
                 self.llbuilder,
@@ -1400,18 +1353,14 @@ impl Builder<'a, 'll, 'tcx> {
 
         let param_tys = self.cx.func_params_types(fn_ty);
 
-        let all_args_match = param_tys
-            .iter()
-            .zip(args.iter().map(|&v| self.val_ty(v)))
+        let all_args_match = iter::zip(&param_tys, args.iter().map(|&v| self.val_ty(v)))
             .all(|(expected_ty, actual_ty)| *expected_ty == actual_ty);
 
         if all_args_match {
             return Cow::Borrowed(args);
         }
 
-        let casted_args: Vec<_> = param_tys
-            .into_iter()
-            .zip(args.iter())
+        let casted_args: Vec<_> = iter::zip(param_tys, args)
             .enumerate()
             .map(|(i, (expected_ty, &actual_val))| {
                 let actual_ty = self.val_ty(actual_val);

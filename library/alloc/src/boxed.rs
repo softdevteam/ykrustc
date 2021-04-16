@@ -99,13 +99,11 @@
 //! pub struct Foo;
 //!
 //! #[no_mangle]
-//! #[allow(improper_ctypes_definitions)]
 //! pub extern "C" fn foo_new() -> Box<Foo> {
 //!     Box::new(Foo)
 //! }
 //!
 //! #[no_mangle]
-//! #[allow(improper_ctypes_definitions)]
 //! pub extern "C" fn foo_delete(_: Option<Box<Foo>>) {}
 //! ```
 //!
@@ -795,7 +793,7 @@ impl<T: ?Sized, A: Allocator> Box<T, A> {
     /// use std::alloc::{Allocator, Layout, System};
     ///
     /// unsafe {
-    ///     let ptr = System.allocate(Layout::new::<i32>())?.as_mut_ptr();
+    ///     let ptr = System.allocate(Layout::new::<i32>())?.as_mut_ptr() as *mut i32;
     ///     // In general .write is required to avoid attempting to destruct
     ///     // the (uninitialized) previous contents of `ptr`, though for this
     ///     // simple example `*ptr = 5` would have worked as well.

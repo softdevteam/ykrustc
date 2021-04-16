@@ -44,10 +44,12 @@ impl EarlyProps {
         let mut props = EarlyProps::default();
         let rustc_has_profiler_support = env::var_os("RUSTC_PROFILER_SUPPORT").is_some();
         let rustc_has_sanitizer_support = env::var_os("RUSTC_SANITIZER_SUPPORT").is_some();
+        let has_asm_support = util::has_asm_support(&config.target);
         let has_asan = util::ASAN_SUPPORTED_TARGETS.contains(&&*config.target);
         let has_lsan = util::LSAN_SUPPORTED_TARGETS.contains(&&*config.target);
         let has_msan = util::MSAN_SUPPORTED_TARGETS.contains(&&*config.target);
         let has_tsan = util::TSAN_SUPPORTED_TARGETS.contains(&&*config.target);
+        let has_hwasan = util::HWASAN_SUPPORTED_TARGETS.contains(&&*config.target);
 
         iter_header(testfile, None, rdr, &mut |ln| {
             // we should check if any only-<platform> exists and if it exists
@@ -75,6 +77,10 @@ impl EarlyProps {
                     props.ignore = true;
                 }
 
+                if !has_asm_support && config.parse_name_directive(ln, "needs-asm-support") {
+                    props.ignore = true;
+                }
+
                 if !rustc_has_profiler_support && config.parse_needs_profiler_support(ln) {
                     props.ignore = true;
                 }
@@ -98,6 +104,10 @@ impl EarlyProps {
                 }
 
                 if !has_tsan && config.parse_name_directive(ln, "needs-sanitizer-thread") {
+                    props.ignore = true;
+                }
+
+                if !has_hwasan && config.parse_name_directive(ln, "needs-sanitizer-hwaddress") {
                     props.ignore = true;
                 }
 
@@ -703,8 +713,8 @@ impl Config {
         self.parse_name_value_directive(line, "aux-crate").map(|r| {
             let mut parts = r.trim().splitn(2, '=');
             (
-                parts.next().expect("aux-crate name").to_string(),
-                parts.next().expect("aux-crate value").to_string(),
+                parts.next().expect("missing aux-crate name (e.g. log=log.rs)").to_string(),
+                parts.next().expect("missing aux-crate value (e.g. log=log.rs)").to_string(),
             )
         })
     }
@@ -968,7 +978,11 @@ fn parse_normalization_string(line: &mut &str) -> Option<String> {
 }
 
 pub fn extract_llvm_version(version: &str) -> Option<u32> {
-    let version_without_suffix = version.trim_end_matches("git").split('-').next().unwrap();
+    let pat = |c: char| !c.is_ascii_digit() && c != '.';
+    let version_without_suffix = match version.find(pat) {
+        Some(pos) => &version[..pos],
+        None => version,
+    };
     let components: Vec<u32> = version_without_suffix
         .split('.')
         .map(|s| s.parse().expect("Malformed version component"))

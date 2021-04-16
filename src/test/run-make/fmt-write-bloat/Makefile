@@ -1,6 +1,5 @@
 -include ../../run-make-fulldeps/tools.mk
 
-# ignore-test broken if debug-assertions set, as in Yorick CI.
 # ignore-windows
 
 ifeq ($(shell $(RUSTC) -vV | grep 'host: $(TARGET)'),)

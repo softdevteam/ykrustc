@@ -200,7 +200,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     if self.can_coerce(expr_ty, sole_field_ty) {
                         let variant_path = self.tcx.def_path_str(variant.def_id);
                         // FIXME #56861: DRYer prelude filtering
-                        Some(variant_path.trim_start_matches("std::prelude::v1::").to_string())
+                        if let Some(path) = variant_path.strip_prefix("std::prelude::") {
+                            if let Some((_, path)) = path.split_once("::") {
+                                return Some(path.to_string());
+                            }
+                        }
+                        Some(variant_path)
                     } else {
                         None
                     }
@@ -356,6 +361,29 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         }
                     }
                 }
+            }
+        }
+        false
+    }
+
+    /// If the given `HirId` corresponds to a block with a trailing expression, return that expression
+    crate fn maybe_get_block_expr(&self, hir_id: hir::HirId) -> Option<&'tcx hir::Expr<'tcx>> {
+        match self.tcx.hir().find(hir_id)? {
+            Node::Expr(hir::Expr { kind: hir::ExprKind::Block(block, ..), .. }) => block.expr,
+            _ => None,
+        }
+    }
+
+    /// Returns whether the given expression is an `else if`.
+    crate fn is_else_if_block(&self, expr: &hir::Expr<'_>) -> bool {
+        if let hir::ExprKind::If(..) = expr.kind {
+            let parent_id = self.tcx.hir().get_parent_node(expr.hir_id);
+            if let Some(Node::Expr(hir::Expr {
+                kind: hir::ExprKind::If(_, _, Some(else_expr)),
+                ..
+            })) = self.tcx.hir().find(parent_id)
+            {
+                return else_expr.hir_id == expr.hir_id;
             }
         }
         false
@@ -616,10 +644,30 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             _ if sp == expr.span && !is_macro => {
                 if let Some(steps) = self.deref_steps(checked_ty, expected) {
+                    let expr = expr.peel_blocks();
+
                     if steps == 1 {
-                        // For a suggestion to make sense, the type would need to be `Copy`.
-                        if self.infcx.type_is_copy_modulo_regions(self.param_env, expected, sp) {
-                            if let Ok(code) = sm.span_to_snippet(sp) {
+                        if let hir::ExprKind::AddrOf(_, mutbl, inner) = expr.kind {
+                            // If the expression has `&`, removing it would fix the error
+                            let prefix_span = expr.span.with_hi(inner.span.lo());
+                            let message = match mutbl {
+                                hir::Mutability::Not => "consider removing the `&`",
+                                hir::Mutability::Mut => "consider removing the `&mut`",
+                            };
+                            let suggestion = String::new();
+                            return Some((
+                                prefix_span,
+                                message,
+                                suggestion,
+                                Applicability::MachineApplicable,
+                            ));
+                        } else if self.infcx.type_is_copy_modulo_regions(
+                            self.param_env,
+                            expected,
+                            sp,
+                        ) {
+                            // For this suggestion to make sense, the type would need to be `Copy`.
+                            if let Ok(code) = sm.span_to_snippet(expr.span) {
                                 let message = if checked_ty.is_region_ptr() {
                                     "consider dereferencing the borrow"
                                 } else {
@@ -627,11 +675,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 };
                                 let suggestion = if is_struct_pat_shorthand_field {
                                     format!("{}: *{}", code, code)
+                                } else if self.is_else_if_block(expr) {
+                                    // Don't suggest nonsense like `else *if`
+                                    return None;
+                                } else if let Some(expr) = self.maybe_get_block_expr(expr.hir_id) {
+                                    format!("*{}", sm.span_to_snippet(expr.span).unwrap_or(code))
                                 } else {
                                     format!("*{}", code)
                                 };
                                 return Some((
-                                    sp,
+                                    expr.span,
                                     message,
                                     suggestion,
                                     Applicability::MachineApplicable,

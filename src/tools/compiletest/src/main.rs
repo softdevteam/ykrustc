@@ -44,7 +44,7 @@ fn main() {
     }
 
     if !config.has_tidy && config.mode == Mode::Rustdoc {
-        eprintln!("warning: `tidy` is not installed; generated diffs will be harder to read");
+        eprintln!("warning: `tidy` is not installed; diffs will not be generated");
     }
 
     log_config(&config);
@@ -126,6 +126,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         .reqopt("", "llvm-components", "list of LLVM components built in", "LIST")
         .optopt("", "llvm-bin-dir", "Path to LLVM's `bin` directory", "PATH")
         .optopt("", "nodejs", "the name of nodejs", "PATH")
+        .optopt("", "npm", "the name of npm", "PATH")
         .optopt("", "remote-test-client", "path to the remote test client", "PATH")
         .optopt(
             "",
@@ -194,11 +195,17 @@ pub fn parse_config(args: Vec<String>) -> Config {
 
     let src_base = opt_path(matches, "src-base");
     let run_ignored = matches.opt_present("ignored");
-    let has_tidy = Command::new("tidy")
-        .arg("--version")
-        .stdout(Stdio::null())
-        .status()
-        .map_or(false, |status| status.success());
+    let mode = matches.opt_str("mode").unwrap().parse().expect("invalid mode");
+    let has_tidy = if mode == Mode::Rustdoc {
+        Command::new("tidy")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .status()
+            .map_or(false, |status| status.success())
+    } else {
+        // Avoid spawning an external command when we know tidy won't be used.
+        false
+    };
     Config {
         bless: matches.opt_present("bless"),
         compile_lib_path: make_absolute(opt_path(matches, "compile-lib-path")),
@@ -217,7 +224,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         src_base,
         build_base: opt_path(matches, "build-base"),
         stage_id: matches.opt_str("stage-id").unwrap(),
-        mode: matches.opt_str("mode").unwrap().parse().expect("invalid mode"),
+        mode,
         suite: matches.opt_str("suite").unwrap(),
         debugger: None,
         run_ignored,
@@ -264,6 +271,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         linker: matches.opt_str("linker"),
         llvm_components: matches.opt_str("llvm-components").unwrap(),
         nodejs: matches.opt_str("nodejs"),
+        npm: matches.opt_str("npm"),
     }
 }
 
@@ -901,7 +909,8 @@ fn extract_gdb_version(full_version_line: &str) -> Option<u32> {
     // This particular form is documented in the GNU coding standards:
     // https://www.gnu.org/prep/standards/html_node/_002d_002dversion.html#g_t_002d_002dversion
 
-    let mut splits = full_version_line.rsplit(' ');
+    let unbracketed_part = full_version_line.split('[').next().unwrap();
+    let mut splits = unbracketed_part.trim_end().rsplit(' ');
     let version_string = splits.next().unwrap();
 
     let mut splits = version_string.split('.');

@@ -8,10 +8,12 @@
 #![feature(bool_to_option)]
 #![feature(const_cstr_unchecked)]
 #![feature(crate_visibility_modifier)]
+#![feature(extended_key_value_attributes)]
 #![feature(extern_types)]
 #![feature(in_band_lifetimes)]
+#![feature(iter_zip)]
 #![feature(nll)]
-#![feature(or_patterns)]
+#![cfg_attr(bootstrap, feature(or_patterns))]
 #![recursion_limit = "256"]
 
 use back::write::{create_informational_target_machine, create_target_machine};
@@ -58,7 +60,6 @@ mod coverageinfo;
 mod debuginfo;
 mod declare;
 mod intrinsic;
-mod sir;
 
 // The following is a work around that replaces `pub mod llvm;` and that fixes issue 53912.
 #[path = "llvm/mod.rs"]
