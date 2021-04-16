@@ -1230,13 +1230,13 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
         };
 
         let res = Res::Def(DefKind::Macro(ext.macro_kind()), def_id.to_def_id());
+        let is_macro_export = self.r.session.contains_name(&item.attrs, sym::macro_export);
         self.r.macro_map.insert(def_id.to_def_id(), ext);
         self.r.local_macro_def_scopes.insert(def_id, parent_scope.module);
 
-        if macro_rules {
+        if macro_rules && matches!(item.vis.kind, ast::VisibilityKind::Inherited) {
             let ident = ident.normalize_to_macros_2_0();
             self.r.macro_names.insert(ident);
-            let is_macro_export = self.r.session.contains_name(&item.attrs, sym::macro_export);
             let vis = if is_macro_export {
                 ty::Visibility::Public
             } else {
@@ -1261,6 +1261,11 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                 }),
             ))
         } else {
+            if is_macro_export {
+                let what = if macro_rules { "`macro_rules` with `pub`" } else { "`macro` items" };
+                let msg = format!("`#[macro_export]` cannot be used on {what}");
+                self.r.session.span_err(item.span, &msg);
+            }
             let module = parent_scope.module;
             let vis = match item.kind {
                 // Visibilities must not be resolved non-speculatively twice
@@ -1421,19 +1426,19 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
         }
     }
 
-    fn visit_field(&mut self, f: &'b ast::Field) {
+    fn visit_expr_field(&mut self, f: &'b ast::ExprField) {
         if f.is_placeholder {
             self.visit_invoc(f.id);
         } else {
-            visit::walk_field(self, f);
+            visit::walk_expr_field(self, f);
         }
     }
 
-    fn visit_field_pattern(&mut self, fp: &'b ast::FieldPat) {
+    fn visit_pat_field(&mut self, fp: &'b ast::PatField) {
         if fp.is_placeholder {
             self.visit_invoc(fp.id);
         } else {
-            visit::walk_field_pattern(self, fp);
+            visit::walk_pat_field(self, fp);
         }
     }
 
@@ -1453,13 +1458,13 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
         }
     }
 
-    fn visit_struct_field(&mut self, sf: &'b ast::StructField) {
+    fn visit_field_def(&mut self, sf: &'b ast::FieldDef) {
         if sf.is_placeholder {
             self.visit_invoc(sf.id);
         } else {
             let vis = self.resolve_visibility(&sf.vis);
             self.r.visibilities.insert(self.r.local_def_id(sf.id), vis);
-            visit::walk_struct_field(self, sf);
+            visit::walk_field_def(self, sf);
         }
     }
 

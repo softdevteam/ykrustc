@@ -289,7 +289,6 @@ use super::{PatternFoldable, PatternFolder};
 
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_data_structures::sync::OnceCell;
 
 use rustc_arena::TypedArena;
 use rustc_hir::def_id::DefId;
@@ -300,6 +299,7 @@ use rustc_span::Span;
 use smallvec::{smallvec, SmallVec};
 use std::fmt;
 use std::iter::{FromIterator, IntoIterator};
+use std::lazy::OnceCell;
 
 crate struct MatchCheckCtxt<'a, 'tcx> {
     crate tcx: TyCtxt<'tcx>,
@@ -439,6 +439,7 @@ impl<'p, 'tcx> PatStack<'p, 'tcx> {
         self.pats[0]
     }
 
+    #[inline]
     fn head_ctor<'a>(&'a self, cx: &MatchCheckCtxt<'p, 'tcx>) -> &'a Constructor<'tcx> {
         self.head_ctor.get_or_init(|| Constructor::from_pat(cx, self.head()))
     }
@@ -1079,7 +1080,10 @@ impl<'tcx> Witness<'tcx> {
 /// `is_under_guard` is used to inform if the pattern has a guard. If it
 /// has one it must not be inserted into the matrix. This shouldn't be
 /// relied on for soundness.
-#[instrument(skip(cx, matrix, witness_preference, hir_id, is_under_guard, is_top_level))]
+#[instrument(
+    level = "debug",
+    skip(cx, matrix, witness_preference, hir_id, is_under_guard, is_top_level)
+)]
 fn is_useful<'p, 'tcx>(
     cx: &MatchCheckCtxt<'p, 'tcx>,
     matrix: &Matrix<'p, 'tcx>,

@@ -1,8 +1,9 @@
 # The Rust Programming Language
 
-This is a modified version of the Rust compiler for the Yorick meta-tracer.
+This is the main source code repository for [Rust]. It contains the compiler,
+standard library, and documentation.
 
-For Yorick-specific notes, see [the wiki](https://github.com/softdevteam/ykrustc/wiki).
+[Rust]: https://www.rust-lang.org
 
 **Note: this README is for _users_ rather than _contributors_.
 If you wish to _contribute_ to the compiler, you should read the
@@ -30,7 +31,7 @@ by running `./x.py --help` or reading the [rustc dev guide][rustcguidebuild].
    * `g++` 5.1 or later or `clang++` 3.5 or later
    * `python` 3 or 2.7
    * GNU `make` 3.81 or later
-   * `cmake` 3.4.3 or later
+   * `cmake` 3.13.4 or later
    * `ninja`
    * `curl`
    * `git`
@@ -89,7 +90,7 @@ build.
 
 [MSYS2][msys2] can be used to easily build Rust on Windows:
 
-[msys2]: https://msys2.github.io/
+[msys2]: https://www.msys2.org/
 
 1. Grab the latest [MSYS2 installer][msys2] and go through the installer.
 

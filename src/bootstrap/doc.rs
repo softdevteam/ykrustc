@@ -270,6 +270,10 @@ fn invoke_rustdoc(
         .arg("--markdown-css")
         .arg("../rust.css");
 
+    if !builder.config.docs_minification {
+        cmd.arg("-Z").arg("unstable-options").arg("--disable-minification");
+    }
+
     builder.run(&mut cmd);
 }
 
@@ -365,6 +369,10 @@ impl Step for Standalone {
                 .arg(&out)
                 .arg(&path);
 
+            if !builder.config.docs_minification {
+                cmd.arg("--disable-minification");
+            }
+
             if filename == "not_found.md" {
                 cmd.arg("--markdown-css").arg("https://doc.rust-lang.org/rust.css");
             } else {
@@ -437,6 +445,10 @@ impl Step for Std {
                 .arg("--index-page")
                 .arg(&builder.src.join("src/doc/index.md"));
 
+            if !builder.config.docs_minification {
+                cargo.arg("--disable-minification");
+            }
+
             builder.run(&mut cargo.into());
         };
         // Only build the following crates. While we could just iterate over the
@@ -449,6 +461,15 @@ impl Step for Std {
         // create correct links between crates because rustdoc depends on the
         // existence of the output directories to know if it should be a local
         // or remote link.
+        //
+        // There's also a mild hack here where we build the first crate in this
+        // list, core, twice. This is currently necessary to make sure that
+        // cargo's cached rustc/rustdoc versions are up to date which means
+        // cargo won't delete the out_dir we create for the stampfile.
+        // Essentially any crate could go into the first slot here as it's
+        // output directory will be deleted by us (as cargo will purge the stamp
+        // file during the first slot's run), and core is relatively fast to
+        // build so works OK to fill this 'dummy' slot.
         let krates = ["core", "alloc", "std", "proc_macro", "test"];
         for krate in &krates {
             run_cargo_rustdoc_for(krate);
@@ -528,6 +549,8 @@ impl Step for Rustc {
         // Build cargo command.
         let mut cargo = builder.cargo(compiler, Mode::Rustc, SourceType::InTree, target, "doc");
         cargo.rustdocflag("--document-private-items");
+        // Since we always pass --document-private-items, there's no need to warn about linking to private items.
+        cargo.rustdocflag("-Arustdoc::private-intra-doc-links");
         cargo.rustdocflag("--enable-index-page");
         cargo.rustdocflag("-Zunstable-options");
         cargo.rustdocflag("-Znormalize-docs");

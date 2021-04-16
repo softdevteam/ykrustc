@@ -232,12 +232,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ungated!(export_name, AssumedUsed, template!(NameValueStr: "name")),
     ungated!(link_section, AssumedUsed, template!(NameValueStr: "name")),
     ungated!(no_mangle, AssumedUsed, template!(Word)),
-
-    // Yorick-related stuff.
-    ungated!(do_not_trace, AssumedUsed, template!(Word)),
-    ungated!(interp_step, AssumedUsed, template!(Word)),
-    ungated!(trace_debug, AssumedUsed, template!(Word)),
-
     ungated!(used, AssumedUsed, template!(Word)),
 
     // Limits:
@@ -285,11 +279,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     // Linking:
     gated!(naked, AssumedUsed, template!(Word), naked_functions, experimental!(naked)),
-    gated!(
-        link_args, Normal, template!(NameValueStr: "args"),
-        "the `link_args` attribute is experimental and not portable across platforms, \
-        it is recommended to use `#[link(name = \"foo\")] instead",
-    ),
     gated!(
         link_ordinal, AssumedUsed, template!(List: "ordinal"), raw_dylib,
         experimental!(link_ordinal)
@@ -476,6 +465,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     rustc_attr!(rustc_promotable, AssumedUsed, template!(Word), IMPL_DETAIL),
     rustc_attr!(rustc_args_required_const, AssumedUsed, template!(List: "N"), INTERNAL_UNSTABLE),
+    rustc_attr!(rustc_legacy_const_generics, AssumedUsed, template!(List: "N"), INTERNAL_UNSTABLE),
 
     // ==========================================================================
     // Internal attributes, Layout related:

@@ -129,8 +129,9 @@ pub trait Linker {
     fn group_start(&mut self);
     fn group_end(&mut self);
     fn linker_plugin_lto(&mut self);
-    fn export_dynamic(&mut self);
     fn add_eh_frame_header(&mut self) {}
+    fn add_no_exec(&mut self) {}
+    fn add_as_needed(&mut self) {}
     fn finalize(&mut self);
 }
 
@@ -185,7 +186,7 @@ impl<'a> GccLinker<'a> {
         // * On OSX they have their own linker, not binutils'
         // * For WebAssembly the only functional linker is LLD, which doesn't
         //   support hint flags
-        !self.sess.target.is_like_osx && self.sess.target.arch != "wasm32"
+        !self.sess.target.is_like_osx && !self.sess.target.is_like_wasm
     }
 
     // Some platforms take hints about whether a library is static or dynamic.
@@ -636,15 +637,25 @@ impl<'a> Linker for GccLinker<'a> {
         }
     }
 
-    fn export_dynamic(&mut self) {
-        self.linker_arg("--export-dynamic");
-    }
-
     // Add the `GNU_EH_FRAME` program header which is required to locate unwinding information.
     // Some versions of `gcc` add it implicitly, some (e.g. `musl-gcc`) don't,
     // so we just always add it.
     fn add_eh_frame_header(&mut self) {
         self.linker_arg("--eh-frame-hdr");
+    }
+
+    fn add_no_exec(&mut self) {
+        if self.sess.target.is_like_windows {
+            self.linker_arg("--nxcompat");
+        } else if self.sess.target.linker_is_gnu {
+            self.linker_arg("-znoexecstack");
+        }
+    }
+
+    fn add_as_needed(&mut self) {
+        if self.sess.target.linker_is_gnu {
+            self.linker_arg("--as-needed");
+        }
     }
 }
 
@@ -884,8 +895,8 @@ impl<'a> Linker for MsvcLinker<'a> {
         // Do nothing
     }
 
-    fn export_dynamic(&mut self) {
-        todo!("export-dynamic");
+    fn add_no_exec(&mut self) {
+        self.cmd.arg("/NXCOMPAT");
     }
 }
 
@@ -1040,10 +1051,6 @@ impl<'a> Linker for EmLinker<'a> {
 
     fn linker_plugin_lto(&mut self) {
         // Do nothing
-    }
-
-    fn export_dynamic(&mut self) {
-        todo!("export-dynamic");
     }
 }
 
@@ -1223,10 +1230,6 @@ impl<'a> Linker for WasmLd<'a> {
     fn linker_plugin_lto(&mut self) {
         // Do nothing for now
     }
-
-    fn export_dynamic(&mut self) {
-        todo!("export-dynamic");
-    }
 }
 
 fn exported_symbols(tcx: TyCtxt<'_>, crate_type: CrateType) -> Vec<String> {
@@ -1373,8 +1376,4 @@ impl<'a> Linker for PtxLinker<'a> {
     fn group_end(&mut self) {}
 
     fn linker_plugin_lto(&mut self) {}
-
-    fn export_dynamic(&mut self) {
-        todo!("export-dynamic");
-    }
 }

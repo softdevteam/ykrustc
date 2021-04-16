@@ -453,41 +453,6 @@ impl SourceMap {
         }
     }
 
-    /// Returns `Some(span)`, a union of the LHS and RHS span. The LHS must precede the RHS. If
-    /// there are gaps between LHS and RHS, the resulting union will cross these gaps.
-    /// For this to work,
-    ///
-    ///    * the syntax contexts of both spans much match,
-    ///    * the LHS span needs to end on the same line the RHS span begins,
-    ///    * the LHS span must start at or before the RHS span.
-    pub fn merge_spans(&self, sp_lhs: Span, sp_rhs: Span) -> Option<Span> {
-        // Ensure we're at the same expansion ID.
-        if sp_lhs.ctxt() != sp_rhs.ctxt() {
-            return None;
-        }
-
-        let lhs_end = match self.lookup_line(sp_lhs.hi()) {
-            Ok(x) => x,
-            Err(_) => return None,
-        };
-        let rhs_begin = match self.lookup_line(sp_rhs.lo()) {
-            Ok(x) => x,
-            Err(_) => return None,
-        };
-
-        // If we must cross lines to merge, don't merge.
-        if lhs_end.line != rhs_begin.line {
-            return None;
-        }
-
-        // Ensure these follow the expected order and that we don't overlap.
-        if (sp_lhs.lo() <= sp_rhs.lo()) && (sp_lhs.hi() <= sp_rhs.lo()) {
-            Some(sp_lhs.to(sp_rhs))
-        } else {
-            None
-        }
-    }
-
     pub fn span_to_string(&self, sp: Span) -> String {
         if self.files.borrow().source_files.is_empty() && sp.is_dummy() {
             return "no-location".to_string();
@@ -778,16 +743,35 @@ impl SourceMap {
         self.span_until_char(sp, '{')
     }
 
-    /// Returns a new span representing just the start point of this span.
+    /// Returns a new span representing just the first character of the given span.
     pub fn start_point(&self, sp: Span) -> Span {
-        let pos = sp.lo().0;
-        let width = self.find_width_of_character_at_span(sp, false);
-        let corrected_start_position = pos.checked_add(width).unwrap_or(pos);
-        let end_point = BytePos(cmp::max(corrected_start_position, sp.lo().0));
-        sp.with_hi(end_point)
+        let width = {
+            let sp = sp.data();
+            let local_begin = self.lookup_byte_offset(sp.lo);
+            let start_index = local_begin.pos.to_usize();
+            let src = local_begin.sf.external_src.borrow();
+
+            let snippet = if let Some(ref src) = local_begin.sf.src {
+                Some(&src[start_index..])
+            } else if let Some(src) = src.get_source() {
+                Some(&src[start_index..])
+            } else {
+                None
+            };
+
+            match snippet {
+                None => 1,
+                Some(snippet) => match snippet.chars().next() {
+                    None => 1,
+                    Some(c) => c.len_utf8(),
+                },
+            }
+        };
+
+        sp.with_hi(BytePos(sp.lo().0 + width as u32))
     }
 
-    /// Returns a new span representing just the end point of this span.
+    /// Returns a new span representing just the last character of this span.
     pub fn end_point(&self, sp: Span) -> Span {
         let pos = sp.hi().0;
 
@@ -816,7 +800,8 @@ impl SourceMap {
         Span::new(BytePos(start_of_next_point), end_of_next_point, sp.ctxt())
     }
 
-    /// Finds the width of a character, either before or after the provided span.
+    /// Finds the width of the character, either before or after the end of provided span,
+    /// depending on the `forwards` parameter.
     fn find_width_of_character_at_span(&self, sp: Span, forwards: bool) -> u32 {
         let sp = sp.data();
         if sp.lo == sp.hi {
@@ -863,11 +848,9 @@ impl SourceMap {
         // We need to extend the snippet to the end of the src rather than to end_index so when
         // searching forwards for boundaries we've got somewhere to search.
         let snippet = if let Some(ref src) = local_begin.sf.src {
-            let len = src.len();
-            &src[start_index..len]
+            &src[start_index..]
         } else if let Some(src) = src.get_source() {
-            let len = src.len();
-            &src[start_index..len]
+            &src[start_index..]
         } else {
             return 1;
         };
@@ -911,13 +894,6 @@ impl SourceMap {
         let sf = (*self.files.borrow().source_files)[idx].clone();
         let offset = bpos - sf.start_pos;
         SourceFileAndBytePos { sf, pos: offset }
-    }
-
-    /// Converts an absolute `BytePos` to a `CharPos` relative to the `SourceFile`.
-    pub fn bytepos_to_file_charpos(&self, bpos: BytePos) -> CharPos {
-        let idx = self.lookup_source_file_idx(bpos);
-        let sf = &(*self.files.borrow().source_files)[idx];
-        sf.bytepos_to_file_charpos(bpos)
     }
 
     // Returns the index of the `SourceFile` (in `self.files`) that contains `pos`.

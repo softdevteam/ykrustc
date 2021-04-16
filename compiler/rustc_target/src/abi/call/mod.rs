@@ -18,8 +18,7 @@ mod riscv;
 mod s390x;
 mod sparc;
 mod sparc64;
-mod wasm32;
-mod wasm32_bindgen_compat;
+mod wasm;
 mod x86;
 mod x86_64;
 mod x86_win64;
@@ -65,7 +64,10 @@ mod attr_impl {
             const NoCapture = 1 << 2;
             const NonNull   = 1 << 3;
             const ReadOnly  = 1 << 4;
-            const InReg     = 1 << 8;
+            const InReg     = 1 << 5;
+            // NoAlias on &mut arguments can only be used with LLVM >= 12 due to miscompiles
+            // in earlier versions. FIXME: Remove this distinction once possible.
+            const NoAliasMutRef = 1 << 6;
         }
     }
 }
@@ -603,6 +605,13 @@ impl<'a, Ty> FnAbi<'a, Ty> {
         Ty: TyAndLayoutMethods<'a, C> + Copy,
         C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout + HasTargetSpec,
     {
+        if abi == spec::abi::Abi::X86Interrupt {
+            if let Some(arg) = self.args.first_mut() {
+                arg.make_indirect_byval();
+            }
+            return Ok(());
+        }
+
         match &cx.target_spec().arch[..] {
             "x86" => {
                 let flavor = if abi == spec::abi::Abi::Fastcall {
@@ -637,11 +646,14 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "nvptx64" => nvptx64::compute_abi_info(self),
             "hexagon" => hexagon::compute_abi_info(self),
             "riscv32" | "riscv64" => riscv::compute_abi_info(cx, self),
-            "wasm32" => match cx.target_spec().os.as_str() {
-                "emscripten" | "wasi" => wasm32::compute_abi_info(cx, self),
-                _ => wasm32_bindgen_compat::compute_abi_info(self),
-            },
-            "asmjs" => wasm32::compute_abi_info(cx, self),
+            "wasm32" | "wasm64" => {
+                if cx.target_spec().adjust_abi(abi) == spec::abi::Abi::Wasm {
+                    wasm::compute_wasm_abi_info(self)
+                } else {
+                    wasm::compute_c_abi_info(cx, self)
+                }
+            }
+            "asmjs" => wasm::compute_c_abi_info(cx, self),
             a => return Err(format!("unrecognized arch \"{}\" in target specification", a)),
         }
 

@@ -57,14 +57,6 @@ pub trait Step: 'static + Clone + Debug + PartialEq + Eq + Hash {
     /// `true` here can still be overwritten by `should_run` calling `default_condition`.
     const DEFAULT: bool = false;
 
-    /// Whether this step should be run even when `download-rustc` is set.
-    ///
-    /// Most steps are not important when the compiler is downloaded, since they will be included in
-    /// the pre-compiled sysroot. Steps can set this to `true` to be built anyway.
-    ///
-    /// When in doubt, set this to `false`.
-    const ENABLE_DOWNLOAD_RUSTC: bool = false;
-
     /// If true, then this rule should be skipped if --target was specified, but --host was not
     const ONLY_HOSTS: bool = false;
 
@@ -107,7 +99,6 @@ impl RunConfig<'_> {
 
 struct StepDescription {
     default: bool,
-    enable_download_rustc: bool,
     only_hosts: bool,
     should_run: fn(ShouldRun<'_>) -> ShouldRun<'_>,
     make_run: fn(RunConfig<'_>),
@@ -162,7 +153,6 @@ impl StepDescription {
     fn from<S: Step>() -> StepDescription {
         StepDescription {
             default: S::DEFAULT,
-            enable_download_rustc: S::ENABLE_DOWNLOAD_RUSTC,
             only_hosts: S::ONLY_HOSTS,
             should_run: S::should_run,
             make_run: S::make_run,
@@ -179,14 +169,6 @@ impl StepDescription {
                 "{:?} not skipped for {:?} -- not in {:?}",
                 pathset, self.name, builder.config.exclude
             );
-        } else if builder.config.download_rustc && !self.enable_download_rustc {
-            if !builder.config.dry_run {
-                eprintln!(
-                    "Not running {} because its artifacts have been downloaded from CI (`download-rustc` is set)",
-                    self.name
-                );
-            }
-            return;
         }
 
         // Determine the targets participating in this rule.
@@ -415,6 +397,7 @@ impl<'a> Builder<'a> {
                 test::Crate,
                 test::CrateLibrustc,
                 test::CrateRustdoc,
+                test::CrateRustdocJsonTypes,
                 test::Linkcheck,
                 test::TierCheck,
                 test::Cargotest,
@@ -437,9 +420,11 @@ impl<'a> Builder<'a> {
                 test::Rustfmt,
                 test::Miri,
                 test::Clippy,
+                test::RustDemangler,
                 test::CompiletestTest,
                 test::RustdocJSStd,
                 test::RustdocJSNotStd,
+                test::RustdocGUI,
                 test::RustdocTheme,
                 test::RustdocUi,
                 test::RustdocJson,
@@ -482,6 +467,7 @@ impl<'a> Builder<'a> {
                 dist::Rls,
                 dist::RustAnalyzer,
                 dist::Rustfmt,
+                dist::RustDemangler,
                 dist::Clippy,
                 dist::Miri,
                 dist::LlvmTools,
@@ -497,6 +483,7 @@ impl<'a> Builder<'a> {
                 install::Rls,
                 install::RustAnalyzer,
                 install::Rustfmt,
+                install::RustDemangler,
                 install::Clippy,
                 install::Miri,
                 install::Analysis,
@@ -579,8 +566,7 @@ impl<'a> Builder<'a> {
         self.run_step_descriptions(&Builder::get_step_descriptions(self.kind), &self.paths);
     }
 
-    pub fn default_doc(&self, paths: Option<&[PathBuf]>) {
-        let paths = paths.unwrap_or(&[]);
+    pub fn default_doc(&self, paths: &[PathBuf]) {
         self.run_step_descriptions(&Builder::get_step_descriptions(Kind::Doc), paths);
     }
 
@@ -753,8 +739,10 @@ impl<'a> Builder<'a> {
             .env("RUSTDOC_LIBDIR", self.rustc_libdir(compiler))
             .env("CFG_RELEASE_CHANNEL", &self.config.channel)
             .env("RUSTDOC_REAL", self.rustdoc(compiler))
-            .env("RUSTC_BOOTSTRAP", "1")
-            .arg("-Winvalid_codeblock_attributes");
+            .env("RUSTC_BOOTSTRAP", "1");
+
+        cmd.arg("-Wrustdoc::invalid_codeblock_attributes");
+
         if self.config.deny_warnings {
             cmd.arg("-Dwarnings");
         }
@@ -939,6 +927,12 @@ impl<'a> Builder<'a> {
         // but this breaks CI. At the very least, stage0 `rustdoc` needs `--cfg bootstrap`. See
         // #71458.
         let mut rustdocflags = rustflags.clone();
+        rustdocflags.propagate_cargo_env("RUSTDOCFLAGS");
+        if stage == 0 {
+            rustdocflags.env("RUSTDOCFLAGS_BOOTSTRAP");
+        } else {
+            rustdocflags.env("RUSTDOCFLAGS_NOT_BOOTSTRAP");
+        }
 
         if let Ok(s) = env::var("CARGOFLAGS") {
             cargo.args(s.split_whitespace());
@@ -1161,18 +1155,10 @@ impl<'a> Builder<'a> {
         // itself, we skip it by default since we know it's safe to do so in that case.
         // See https://github.com/rust-lang/rust/issues/79361 for more info on this flag.
         if target.contains("apple") {
-            if stage == 0 {
-                if self.config.rust_run_dsymutil {
-                    rustflags.arg("-Zrun-dsymutil=yes");
-                } else {
-                    rustflags.arg("-Zrun-dsymutil=no");
-                }
+            if self.config.rust_run_dsymutil {
+                rustflags.arg("-Csplit-debuginfo=packed");
             } else {
-                if self.config.rust_run_dsymutil {
-                    rustflags.arg("-Csplit-debuginfo=packed");
-                } else {
-                    rustflags.arg("-Csplit-debuginfo=unpacked");
-                }
+                rustflags.arg("-Csplit-debuginfo=unpacked");
             }
         }
 
@@ -1267,6 +1253,10 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_PRINT_STEP_TIMINGS", "1");
         }
 
+        if self.config.print_step_rusage {
+            cargo.env("RUSTC_PRINT_STEP_RUSAGE", "1");
+        }
+
         if self.config.backtrace_on_ice {
             cargo.env("RUSTC_BACKTRACE_ON_ICE", "1");
         }
@@ -1308,7 +1298,7 @@ impl<'a> Builder<'a> {
             // fixed via better support from Cargo.
             cargo.env("RUSTC_LINT_FLAGS", lint_flags.join(" "));
 
-            rustdocflags.arg("-Winvalid_codeblock_attributes");
+            rustdocflags.arg("-Wrustdoc::invalid_codeblock_attributes");
         }
 
         if mode == Mode::Rustc {
@@ -1552,21 +1542,27 @@ impl<'a> Builder<'a> {
 mod tests;
 
 #[derive(Debug, Clone)]
-struct Rustflags(String);
+struct Rustflags(String, TargetSelection);
 
 impl Rustflags {
     fn new(target: TargetSelection) -> Rustflags {
-        let mut ret = Rustflags(String::new());
-
-        // Inherit `RUSTFLAGS` by default ...
-        ret.env("RUSTFLAGS");
-
-        // ... and also handle target-specific env RUSTFLAGS if they're
-        // configured.
-        let target_specific = format!("CARGO_TARGET_{}_RUSTFLAGS", crate::envify(&target.triple));
-        ret.env(&target_specific);
-
+        let mut ret = Rustflags(String::new(), target);
+        ret.propagate_cargo_env("RUSTFLAGS");
         ret
+    }
+
+    /// By default, cargo will pick up on various variables in the environment. However, bootstrap
+    /// reuses those variables to pass additional flags to rustdoc, so by default they get overriden.
+    /// Explicitly add back any previous value in the environment.
+    ///
+    /// `prefix` is usually `RUSTFLAGS` or `RUSTDOCFLAGS`.
+    fn propagate_cargo_env(&mut self, prefix: &str) {
+        // Inherit `RUSTFLAGS` by default ...
+        self.env(prefix);
+
+        // ... and also handle target-specific env RUSTFLAGS if they're configured.
+        let target_specific = format!("CARGO_TARGET_{}_{}", crate::envify(&self.1.triple), prefix);
+        self.env(&target_specific);
     }
 
     fn env(&mut self, env: &str) {

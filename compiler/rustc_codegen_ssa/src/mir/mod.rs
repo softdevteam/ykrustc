@@ -16,7 +16,6 @@ use rustc_index::vec::IndexVec;
 use self::analyze::CleanupKind;
 use self::debuginfo::{FunctionDebugContext, PerLocalVarDebugInfo};
 use self::place::PlaceRef;
-use crate::sir::{self, SirFuncCx};
 use rustc_middle::mir::traversal;
 
 use self::operand::{OperandRef, OperandValue};
@@ -85,8 +84,6 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 
     /// Caller location propagated if this function has `#[track_caller]`.
     caller_location: Option<OperandRef<'tcx, Bx::Value>>,
-
-    pub sir_func_cx: Option<SirFuncCx<'tcx>>,
 }
 
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
@@ -101,13 +98,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             value,
         )
     }
-
-    pub fn fn_metadata(&self, source_info: mir::SourceInfo) -> Option<Bx::DILocation> {
-        self.dbg_loc(source_info)
-    }
 }
 
-pub(crate) enum LocalRef<'tcx, V> {
+enum LocalRef<'tcx, V> {
     Place(PlaceRef<'tcx, V>),
     /// `UnsizedPlace(p)`: `p` itself is a thin pointer (indirect place).
     /// `*p` is the fat pointer that references the actual unsized place.
@@ -156,8 +149,6 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         bx.set_personality_fn(cx.eh_personality());
     }
 
-    bx.sideeffect(false);
-
     let cleanup_kinds = analyze::cleanup_kinds(&mir);
     // Allocate a `Block` for every basic block, except
     // the start block, if nothing loops back to it.
@@ -175,13 +166,6 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         .collect();
 
     let (landing_pads, funclets) = create_funclets(&mir, &mut bx, &cleanup_kinds, &block_bxs);
-
-    let sir_func_cx = if sir::is_sir_required(cx.tcx()) {
-        Some(SirFuncCx::new(&bx, cx.tcx(), &instance, mir))
-    } else {
-        None
-    };
-
     let mut fx = FunctionCx {
         instance,
         mir,
@@ -198,7 +182,6 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         debug_context,
         per_local_var_debug_info: None,
         caller_location: None,
-        sir_func_cx,
     };
 
     fx.per_local_var_debug_info = fx.compute_per_local_var_debug_info(&mut bx);
@@ -288,17 +271,6 @@ pub fn codegen_mir<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
             }
         }
     }
-
-    if let Some(mut sfcx) = fx.sir_func_cx {
-        // Often there are function declarations with no blocks. I think these are call targets
-        // from other crates or compilation units, which have to be declared to keep LLVM happy.
-        // There's no use in serialising these "empty functions" and they clash with the real
-        // declarations.
-        if !sfcx.is_empty() {
-            sfcx.compute_layout_and_offsets(&bx);
-            cx.define_function_sir(sfcx.sir_builder.func);
-        }
-    }
 }
 
 fn create_funclets<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
@@ -310,9 +282,7 @@ fn create_funclets<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     IndexVec<mir::BasicBlock, Option<Bx::BasicBlock>>,
     IndexVec<mir::BasicBlock, Option<Bx::Funclet>>,
 ) {
-    block_bxs
-        .iter_enumerated()
-        .zip(cleanup_kinds)
+    iter::zip(block_bxs.iter_enumerated(), cleanup_kinds)
         .map(|((bb, &llbb), cleanup_kind)| {
             match *cleanup_kind {
                 CleanupKind::Funclet if base::wants_msvc_seh(bx.sess()) => {}

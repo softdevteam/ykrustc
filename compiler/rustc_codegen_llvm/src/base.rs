@@ -32,8 +32,9 @@ use rustc_middle::middle::cstore::EncodedMetadata;
 use rustc_middle::middle::exported_symbols;
 use rustc_middle::mir::mono::{Linkage, Visibility};
 use rustc_middle::ty::TyCtxt;
-use rustc_session::config::{DebugInfo, SanitizerSet};
+use rustc_session::config::DebugInfo;
 use rustc_span::symbol::Symbol;
+use rustc_target::spec::SanitizerSet;
 
 use std::ffi::CString;
 use std::time::Instant;
@@ -143,7 +144,7 @@ pub fn compile_codegen_unit(
 
             // Finalize code coverage by injecting the coverage map. Note, the coverage map will
             // also be added to the `llvm.used` variable, created next.
-            if cx.sess().opts.debugging_opts.instrument_coverage {
+            if cx.sess().instrument_coverage() {
                 cx.coverageinfo_finalize();
             }
 
@@ -156,16 +157,6 @@ pub fn compile_codegen_unit(
             // Finalize debuginfo
             if cx.sess().opts.debuginfo != DebugInfo::None {
                 cx.debuginfo_finalize();
-            }
-
-            if let Some(sir) = cx.sir {
-                crate::sir::write_sir(
-                    cx.tcx,
-                    &llvm_module,
-                    &*cgu_name.as_str(),
-                    sir.types.into_inner(),
-                    sir.funcs.into_inner(),
-                );
             }
         }
 

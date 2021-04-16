@@ -24,7 +24,6 @@ mod debuginfo;
 mod declare;
 mod intrinsic;
 mod misc;
-mod sir;
 mod statics;
 mod type_;
 mod write;
@@ -44,7 +43,6 @@ pub use self::type_::{
     ArgAbiMethods, BaseTypeMethods, DerivedTypeMethods, LayoutTypeMethods, TypeMethods,
 };
 pub use self::write::{ModuleBufferMethods, ThinBufferMethods, WriteBackendMethods};
-pub use sir::SirMethods;
 
 use rustc_middle::ty::layout::{HasParamEnv, HasTyCtxt};
 use rustc_target::spec::HasTargetSpec;
@@ -60,14 +58,13 @@ pub trait CodegenMethods<'tcx>:
     + MiscMethods<'tcx>
     + ConstMethods<'tcx>
     + StaticMethods
-    + CoverageInfoMethods
+    + CoverageInfoMethods<'tcx>
     + DebugInfoMethods<'tcx>
     + AsmMethods
     + PreDefineMethods<'tcx>
     + HasParamEnv<'tcx>
     + HasTyCtxt<'tcx>
     + HasTargetSpec
-    + SirMethods
 {
 }
 
@@ -77,14 +74,13 @@ impl<'tcx, T> CodegenMethods<'tcx> for T where
         + MiscMethods<'tcx>
         + ConstMethods<'tcx>
         + StaticMethods
-        + CoverageInfoMethods
+        + CoverageInfoMethods<'tcx>
         + DebugInfoMethods<'tcx>
         + AsmMethods
         + PreDefineMethods<'tcx>
         + HasParamEnv<'tcx>
         + HasTyCtxt<'tcx>
         + HasTargetSpec
-        + SirMethods
 {
 }
 

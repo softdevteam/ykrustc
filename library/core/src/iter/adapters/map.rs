@@ -57,7 +57,8 @@ use crate::ops::Try;
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Clone)]
 pub struct Map<I, F> {
-    iter: I,
+    // Used for `SplitWhitespace` and `SplitAsciiWhitespace` `as_str` methods
+    pub(crate) iter: I,
     f: F,
 }
 
@@ -189,10 +190,7 @@ unsafe impl<I, F> TrustedRandomAccess for Map<I, F>
 where
     I: TrustedRandomAccess,
 {
-    #[inline]
-    fn may_have_side_effect() -> bool {
-        true
-    }
+    const MAY_HAVE_SIDE_EFFECT: bool = true;
 }
 
 #[unstable(issue = "none", feature = "inplace_iteration")]
