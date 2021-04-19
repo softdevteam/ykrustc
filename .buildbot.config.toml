@@ -1,4 +1,5 @@
 # Config file for continuous integration.
+changelog-seen = 2
 
 [rust]
 codegen-units = 0           # Use many compilation units.
